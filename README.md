@@ -3,9 +3,11 @@
 > [!WARNING]
 > This project is under active development and not yet ready for production use.
 
-*In music, polyphony is the simultaneous combination of independent voices that harmonize as a whole.*
+Polyphony is a chat application with native LLM integration.
 
-Polyphony brings this concept to AI chat — a platform where humans and AI each contribute their own independent voice, collaborating in shared rooms to create something greater than the sum of its parts.
+Users can chat with each other on Polyphony while also engaging with LLMs based on the conversation history. Multiple users and LLMs can participate in a single room simultaneously, and each room supports flexible access control through roles — Guest for chat-only access without AI, Reader for view-only access, and more.
+
+A next-generation chat application that extends team thinking with LLMs.
 
 [日本語](README-ja.md)
 
