@@ -36,8 +36,15 @@ impl OpenAIProvider {
             .unwrap_or_else(|_| "https://api.openai.com".to_string());
         let api_key = key_store.get_key("openai")?;
 
+        let client = Client::builder()
+            // To avoid connection issues like misconfiguration or network failures, we set a timeout of 10 seconds
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e|
+                DomainError::ProviderError(format!("failed to create reqwest client: {e}")))?;
+
         Ok(Self {
-            client: Client::new(),
+            client,
             base_url,
             api_key,
         })
@@ -107,8 +114,12 @@ fn role_to_string(role: &Role) -> String {
 fn string_to_role(s: &str) -> Role {
     match s {
         "system" => Role::System,
+        "user" => Role::User,
         "assistant" => Role::Assistant,
-        _ => Role::User,
+        other => {
+            tracing::warn!(role = other, "unknown OpenAI role, falling back to User");
+            Role::User
+        }
     }
 }
 

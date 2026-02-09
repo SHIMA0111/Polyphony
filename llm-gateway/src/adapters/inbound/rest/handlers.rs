@@ -40,7 +40,7 @@ pub async fn complete(
     State(service): State<AppState>,
     Json(dto): Json<CompletionRequestDto>,
 ) -> Result<impl IntoResponse, AppError> {
-    let req = dto.into();
+    let req = dto.into_domain()?;
     let resp = service.complete(req).await?;
     Ok(Json(CompletionResponseDto::from(resp)))
 }

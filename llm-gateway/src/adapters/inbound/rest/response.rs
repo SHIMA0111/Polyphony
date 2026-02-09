@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::domain::model::{CompletionResponse, ModelInfo};
+use crate::domain::model::{CompletionResponse, ModelInfo, Role};
 
 /// REST API用の補完レスポンスDTO。
 #[derive(Serialize)]
@@ -34,6 +34,15 @@ pub struct UsageDto {
     pub total_tokens: u32,
 }
 
+/// ドメインRoleをREST APIのロール文字列に変換する。
+fn role_to_api_string(role: &Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+    }
+}
+
 impl From<CompletionResponse> for CompletionResponseDto {
     fn from(resp: CompletionResponse) -> Self {
         Self {
@@ -45,10 +54,7 @@ impl From<CompletionResponse> for CompletionResponseDto {
                 .map(|c| ChoiceDto {
                     index: c.index,
                     message: MessageDto {
-                        role: serde_json::to_value(&c.message.role)
-                            .ok()
-                            .and_then(|v| v.as_str().map(String::from))
-                            .unwrap_or_else(|| "unknown".to_string()),
+                        role: role_to_api_string(&c.message.role).to_string(),
                         content: c.message.content,
                     },
                     finish_reason: c.finish_reason,
