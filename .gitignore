@@ -1,0 +1,66 @@
+# ===== IDE / Editor =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== Rust (llm-gateway) =====
+**/target/
+**/*.rs.bk
+Cargo.lock
+
+# ===== Go (server) =====
+/server/tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# ===== Node.js / Next.js (web) =====
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# ===== Flutter (mobile) =====
+**/build/
+**/.dart_tool/
+**/.packages
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/*.g.dart
+**/*.freezed.dart
+
+# ===== Environment / Secrets =====
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ===== Docker =====
+docker-compose.override.yml
+
+# ===== Terraform =====
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# ===== Test / Coverage =====
+coverage/
+*.lcov
+htmlcov/
+
+# ===== Misc =====
+*.log
+tmp/
