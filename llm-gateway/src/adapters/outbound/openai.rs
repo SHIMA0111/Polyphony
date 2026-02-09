@@ -4,13 +4,19 @@ use std::pin::Pin;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+use std::sync::Arc;
+
 use crate::domain::error::DomainError;
 use crate::domain::model::{
     ChatMessage, Choice, CompletionRequest, CompletionResponse, ModelInfo, Role, Usage,
 };
+use crate::ports::outbound::key_store::KeyStore;
 use crate::ports::outbound::provider::LLMProvider;
 
 /// OpenAI Chat Completions APIアダプター。
+///
+/// APIキーは `KeyStore` 経由で取得し、ベースURLは環境変数 `OPENAI_BASE_URL` から読み込む。
+/// プロバイダー固有の設定はこのアダプター内で完結し、共通Configには含めない。
 pub struct OpenAIProvider {
     client: Client,
     base_url: String,
@@ -21,14 +27,20 @@ impl OpenAIProvider {
     /// 新しい `OpenAIProvider` を生成する。
     ///
     /// # Arguments
-    /// * `base_url` — OpenAI APIベースURL（例: "https://api.openai.com"）
-    /// * `api_key` — OpenAI APIキー
-    pub fn new(base_url: String, api_key: String) -> Self {
-        Self {
+    /// * `key_store` — APIキー取得に使用するキーストア
+    ///
+    /// # Environment Variables
+    /// * `OPENAI_BASE_URL` — OpenAI APIベースURL（デフォルト: https://api.openai.com）
+    pub fn new(key_store: Arc<dyn KeyStore>) -> Result<Self, DomainError> {
+        let base_url = std::env::var("OPENAI_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com".to_string());
+        let api_key = key_store.get_key("openai")?;
+
+        Ok(Self {
             client: Client::new(),
             base_url,
             api_key,
-        }
+        })
     }
 }
 

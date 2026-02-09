@@ -6,6 +6,7 @@ mod ports;
 use std::sync::Arc;
 
 use adapters::inbound::rest::router::build_router;
+use adapters::outbound::env_key::EnvKeyStore;
 use adapters::outbound::openai::OpenAIProvider;
 use config::Config;
 use domain::service::CompletionService;
@@ -26,7 +27,14 @@ async fn main() {
     tracing::info!(port = config.port, "starting LLM Gateway");
 
     // DI組み立て
-    let openai_provider = OpenAIProvider::new(config.openai_base_url, config.openai_api_key);
+    let key_store = Arc::new(EnvKeyStore);
+    let openai_provider = match OpenAIProvider::new(key_store) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("failed to initialize OpenAIProvider: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let service = CompletionService::new(vec![Box::new(openai_provider)]);
     let state = Arc::new(service);
