@@ -3,7 +3,7 @@ use serde::Deserialize;
 use crate::domain::error::DomainError;
 use crate::domain::model::{ChatMessage, CompletionRequest, Role};
 
-/// REST API用の補完リクエストDTO。
+/// Completion request DTO for the REST API.
 #[derive(Debug, Deserialize)]
 pub struct CompletionRequestDto {
     pub model: String,
@@ -12,10 +12,10 @@ pub struct CompletionRequestDto {
     pub max_tokens: Option<u32>,
 }
 
-/// REST API用のメッセージDTO。
+/// Message DTO for the REST API.
 ///
-/// ロールは文字列で受け取り、ドメインの `Role` に変換する。
-/// REST APIはOpenAI互換の文字列（"system", "user", "assistant"）を受け付ける。
+/// Roles are received as strings and converted to the domain `Role`.
+/// The REST API accepts OpenAI-compatible strings ("system", "user", "assistant", "tool").
 #[derive(Debug, Deserialize)]
 pub struct MessageDto {
     pub role: String,
@@ -27,6 +27,7 @@ fn parse_role(s: &str) -> Result<Role, DomainError> {
         "system" => Ok(Role::System),
         "user" => Ok(Role::User),
         "assistant" => Ok(Role::Assistant),
+        "tool" => Ok(Role::Tool),
         other => Err(DomainError::InvalidRequest(format!(
             "unknown role: {other}"
         ))),
@@ -34,10 +35,10 @@ fn parse_role(s: &str) -> Result<Role, DomainError> {
 }
 
 impl CompletionRequestDto {
-    /// DTOからドメインモデルに変換する。
+    /// Converts this DTO into a domain model.
     ///
     /// # Errors
-    /// 不明なロール文字列が含まれる場合 `DomainError::InvalidRequest` を返す。
+    /// Returns `DomainError::InvalidRequest` if an unknown role string is encountered.
     pub fn into_domain(self) -> Result<CompletionRequest, DomainError> {
         let messages = self
             .messages

@@ -1,26 +1,28 @@
-/// チャットメッセージのロール。
+/// Chat message role.
 ///
-/// アプリケーション内部の概念的なロールを表す。
-/// 各LLMプロバイダー固有のロール文字列（OpenAIの"system"/"developer"、Geminiの"model"等）
-/// への変換はアダプター層で行う。
+/// Represents the conceptual role within the application.
+/// Conversion to provider-specific role strings (e.g. OpenAI's "developer", Gemini's "model")
+/// is handled in the adapter layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Role {
-    /// システム指示・コンテキスト設定
+    /// System instructions / context setting.
     System,
-    /// ユーザー入力
+    /// User input.
     User,
-    /// AI応答
+    /// AI response.
     Assistant,
+    /// Tool execution result (web search, function calls, etc.).
+    Tool,
 }
 
-/// チャットメッセージ。ロールと内容のペア。
+/// A chat message consisting of a role and content.
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
 }
 
-/// LLM補完リクエスト。プロバイダー非依存のドメインモデル。
+/// LLM completion request. Provider-agnostic domain model.
 #[derive(Debug, Clone)]
 pub struct CompletionRequest {
     pub model: String,
@@ -29,7 +31,7 @@ pub struct CompletionRequest {
     pub max_tokens: Option<u32>,
 }
 
-/// LLM補完レスポンス。プロバイダー非依存のドメインモデル。
+/// LLM completion response. Provider-agnostic domain model.
 #[derive(Debug, Clone)]
 pub struct CompletionResponse {
     pub id: String,
@@ -38,7 +40,7 @@ pub struct CompletionResponse {
     pub usage: Usage,
 }
 
-/// レスポンス内の選択肢。
+/// A choice within a completion response.
 #[derive(Debug, Clone)]
 pub struct Choice {
     pub index: u32,
@@ -46,7 +48,7 @@ pub struct Choice {
     pub finish_reason: String,
 }
 
-/// トークン使用量。
+/// Token usage statistics.
 #[derive(Debug, Clone)]
 pub struct Usage {
     pub prompt_tokens: u32,
@@ -54,7 +56,7 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
-/// 利用可能なモデル情報。
+/// Information about an available model.
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
     pub id: String,

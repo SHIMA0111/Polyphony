@@ -1,19 +1,19 @@
 use std::fmt;
 
-/// ドメイン層のエラー型。
+/// Domain-layer error type.
 ///
-/// 全てのビジネスロジックエラーを表現する。アダプター層でHTTPステータスコード等に変換される。
+/// Represents all business logic errors. Converted to HTTP status codes etc. in the adapter layer.
 #[derive(Debug)]
 pub enum DomainError {
-    /// LLMプロバイダーからのエラー応答
+    /// Error response from an LLM provider.
     ProviderError(String),
-    /// リクエストパラメータが不正
+    /// Invalid request parameters.
     InvalidRequest(String),
-    /// 指定されたモデルが見つからない
+    /// The requested model was not found.
     ModelNotFound(String),
-    /// APIキーが見つからない
+    /// API key not found for a provider.
     KeyNotFound(String),
-    /// プロバイダーへのリクエストがタイムアウト
+    /// Request to a provider timed out.
     Timeout,
 }
 

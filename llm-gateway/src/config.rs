@@ -1,17 +1,17 @@
-/// アプリケーション共通設定。環境変数から読み込む。
+/// Application-wide configuration loaded from environment variables.
 ///
-/// プロバイダー固有の設定（APIキー、ベースURL等）はここに含めない。
-/// それらは各アダプターが `KeyStore` や自身の環境変数から取得する。
+/// Provider-specific settings (API keys, base URLs, etc.) are NOT included here.
+/// Each adapter retrieves those via `KeyStore` or its own environment variables.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub port: u16,
 }
 
 impl Config {
-    /// 環境変数から設定を読み込む。
+    /// Loads configuration from environment variables.
     ///
     /// # Environment Variables
-    /// - `LLM_GATEWAY_PORT` — リッスンポート（デフォルト: 8081）
+    /// - `LLM_GATEWAY_PORT` — Listen port (default: 8081)
     pub fn from_env() -> Self {
         let port = std::env::var("LLM_GATEWAY_PORT")
             .ok()

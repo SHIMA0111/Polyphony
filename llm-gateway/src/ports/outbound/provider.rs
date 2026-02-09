@@ -4,26 +4,26 @@ use std::pin::Pin;
 use crate::domain::error::DomainError;
 use crate::domain::model::{CompletionRequest, CompletionResponse, ModelInfo};
 
-/// LLMプロバイダーポート。
+/// LLM provider port.
 ///
-/// 各LLMプロバイダー（OpenAI, Anthropic, Gemini等）のアダプターが実装するトレイト。
-/// プロバイダー追加時はこのトレイトを実装するだけでよい。
+/// Trait implemented by each LLM provider adapter (OpenAI, Anthropic, Gemini, etc.).
+/// Adding a new provider only requires implementing this trait.
 pub trait LLMProvider: Send + Sync {
-    /// チャット補完リクエストを実行する。
+    /// Executes a chat completion request.
     ///
     /// # Arguments
-    /// * `req` — 補完リクエスト
+    /// * `req` — Completion request
     ///
     /// # Errors
-    /// プロバイダーエラー、タイムアウト等で `DomainError` を返す。
+    /// Returns `DomainError` on provider errors, timeouts, etc.
     fn complete(
         &self,
         req: &CompletionRequest,
     ) -> Pin<Box<dyn Future<Output = Result<CompletionResponse, DomainError>> + Send + '_>>;
 
-    /// このプロバイダーが提供するモデル一覧を返す。
+    /// Returns the list of models provided by this provider.
     fn models(&self) -> Vec<ModelInfo>;
 
-    /// プロバイダー名を返す（例: "openai"）。
+    /// Returns the provider name (e.g. "openai").
     fn provider_name(&self) -> &str;
 }

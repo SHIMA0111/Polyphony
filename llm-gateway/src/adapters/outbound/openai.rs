@@ -13,10 +13,11 @@ use crate::domain::model::{
 use crate::ports::outbound::key_store::KeyStore;
 use crate::ports::outbound::provider::LLMProvider;
 
-/// OpenAI Chat Completions APIアダプター。
+/// OpenAI Chat Completions API adapter.
 ///
-/// APIキーは `KeyStore` 経由で取得し、ベースURLは環境変数 `OPENAI_BASE_URL` から読み込む。
-/// プロバイダー固有の設定はこのアダプター内で完結し、共通Configには含めない。
+/// API keys are retrieved via `KeyStore` and the base URL is read from the
+/// `OPENAI_BASE_URL` environment variable. Provider-specific configuration is
+/// encapsulated within this adapter and not included in the shared Config.
 pub struct OpenAIProvider {
     client: Client,
     base_url: String,
@@ -24,17 +25,19 @@ pub struct OpenAIProvider {
 }
 
 impl OpenAIProvider {
-    /// 新しい `OpenAIProvider` を生成する。
+    const PROVIDER_NAME: &'static str = "openai";
+
+    /// Creates a new `OpenAIProvider`.
     ///
     /// # Arguments
-    /// * `key_store` — APIキー取得に使用するキーストア
+    /// * `key_store` — Key store used to retrieve the API key
     ///
     /// # Environment Variables
-    /// * `OPENAI_BASE_URL` — OpenAI APIベースURL（デフォルト: https://api.openai.com）
+    /// * `OPENAI_BASE_URL` — OpenAI API base URL (default: https://api.openai.com)
     pub fn new(key_store: Arc<dyn KeyStore>) -> Result<Self, DomainError> {
         let base_url = std::env::var("OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com".to_string());
-        let api_key = key_store.get_key("openai")?;
+        let api_key = key_store.get_key(Self::PROVIDER_NAME)?;
 
         let client = Client::builder()
             // To avoid connection issues like misconfiguration or network failures, we set a timeout of 10 seconds
@@ -51,7 +54,7 @@ impl OpenAIProvider {
     }
 }
 
-// --- OpenAI固有のDTO ---
+// --- OpenAI-specific DTOs ---
 
 #[derive(Serialize)]
 struct OpenAIRequest {
@@ -101,21 +104,31 @@ struct OpenAIErrorDetail {
     message: String,
 }
 
-// --- ドメインモデル ↔ OpenAI DTO 変換 ---
+// --- Domain model ↔ OpenAI DTO conversion ---
 
-fn role_to_string(role: &Role) -> String {
+/// Converts a domain Role to an OpenAI API role string.
+///
+/// - `System` → `"developer"` (OpenAI recommended; `"system"` is internally converted to `"developer"`)
+/// - `Tool` → `"tool"` (`"function"` is deprecated)
+fn role_to_string(role: &Role) -> &'static str {
     match role {
-        Role::System => "system".to_string(),
-        Role::User => "user".to_string(),
-        Role::Assistant => "assistant".to_string(),
+        Role::System => "developer",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
     }
 }
 
+/// Converts an OpenAI API role string to a domain Role.
+///
+/// - `"system"` / `"developer"` → `System` (same concept; `"system"` is kept for legacy compat)
+/// - `"function"` / `"tool"` → `Tool` (`"function"` is deprecated but may appear in responses)
 fn string_to_role(s: &str) -> Role {
     match s {
-        "system" => Role::System,
+        "system" | "developer" => Role::System,
         "user" => Role::User,
         "assistant" => Role::Assistant,
+        "tool" | "function" => Role::Tool,
         other => {
             tracing::warn!(role = other, "unknown OpenAI role, falling back to User");
             Role::User
@@ -130,7 +143,7 @@ fn to_openai_request(req: &CompletionRequest) -> OpenAIRequest {
             .messages
             .iter()
             .map(|m| OpenAIMessage {
-                role: role_to_string(&m.role),
+                role: role_to_string(&m.role).to_string(),
                 content: m.content.clone(),
             })
             .collect(),
@@ -266,7 +279,7 @@ mod tests {
         let openai_req = to_openai_request(&req);
         assert_eq!(openai_req.model, "gpt-5.2");
         assert_eq!(openai_req.messages.len(), 2);
-        assert_eq!(openai_req.messages[0].role, "system");
+        assert_eq!(openai_req.messages[0].role, "developer");
         assert_eq!(openai_req.messages[1].role, "user");
         assert_eq!(openai_req.temperature, Some(0.7));
         assert_eq!(openai_req.max_tokens, Some(1000));
@@ -303,14 +316,26 @@ mod tests {
     }
 
     #[test]
-    fn test_role_conversions() {
-        assert_eq!(role_to_string(&Role::System), "system");
+    fn test_role_to_string() {
+        assert_eq!(role_to_string(&Role::System), "developer");
         assert_eq!(role_to_string(&Role::User), "user");
         assert_eq!(role_to_string(&Role::Assistant), "assistant");
+        assert_eq!(role_to_string(&Role::Tool), "tool");
+    }
 
-        assert_eq!(string_to_role("system"), Role::System);
+    #[test]
+    fn test_string_to_role() {
+        // Current roles
+        assert_eq!(string_to_role("developer"), Role::System);
         assert_eq!(string_to_role("user"), Role::User);
         assert_eq!(string_to_role("assistant"), Role::Assistant);
+        assert_eq!(string_to_role("tool"), Role::Tool);
+
+        // Legacy compatibility
+        assert_eq!(string_to_role("system"), Role::System);
+        assert_eq!(string_to_role("function"), Role::Tool);
+
+        // Unknown role
         assert_eq!(string_to_role("unknown"), Role::User);
     }
 }

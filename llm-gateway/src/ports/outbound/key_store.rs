@@ -1,15 +1,15 @@
 use crate::domain::error::DomainError;
 
-/// APIキー取得ポート。
+/// API key retrieval port.
 ///
-/// プロバイダー名からAPIキーを取得する。環境変数、Vault等のバックエンドに差し替え可能。
+/// Retrieves API keys by provider name. Can be backed by environment variables, Vault, etc.
 pub trait KeyStore: Send + Sync {
-    /// 指定プロバイダーのAPIキーを取得する。
+    /// Retrieves the API key for the specified provider.
     ///
     /// # Arguments
-    /// * `provider` — プロバイダー名（例: "openai"）
+    /// * `provider` — Provider name (e.g. "openai")
     ///
     /// # Errors
-    /// キーが見つからない場合 `DomainError::KeyNotFound` を返す。
+    /// Returns `DomainError::KeyNotFound` if the key is not found.
     fn get_key(&self, provider: &str) -> Result<String, DomainError>;
 }

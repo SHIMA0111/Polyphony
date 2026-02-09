@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::domain::model::{CompletionResponse, ModelInfo, Role};
 
-/// REST API用の補完レスポンスDTO。
+/// Completion response DTO for the REST API.
 #[derive(Serialize)]
 pub struct CompletionResponseDto {
     pub id: String,
@@ -11,7 +11,7 @@ pub struct CompletionResponseDto {
     pub usage: UsageDto,
 }
 
-/// REST API用の選択肢DTO。
+/// Choice DTO for the REST API.
 #[derive(Serialize)]
 pub struct ChoiceDto {
     pub index: u32,
@@ -19,14 +19,14 @@ pub struct ChoiceDto {
     pub finish_reason: String,
 }
 
-/// REST API用のメッセージDTO。
+/// Message DTO for the REST API.
 #[derive(Serialize)]
 pub struct MessageDto {
     pub role: String,
     pub content: String,
 }
 
-/// REST API用のトークン使用量DTO。
+/// Token usage DTO for the REST API.
 #[derive(Serialize)]
 pub struct UsageDto {
     pub prompt_tokens: u32,
@@ -34,12 +34,13 @@ pub struct UsageDto {
     pub total_tokens: u32,
 }
 
-/// ドメインRoleをREST APIのロール文字列に変換する。
+/// Converts a domain Role to a REST API role string.
 fn role_to_api_string(role: &Role) -> &'static str {
     match role {
         Role::System => "system",
         Role::User => "user",
         Role::Assistant => "assistant",
+        Role::Tool => "tool",
     }
 }
 
@@ -69,13 +70,13 @@ impl From<CompletionResponse> for CompletionResponseDto {
     }
 }
 
-/// REST API用のモデル一覧レスポンスDTO。
+/// Models list response DTO for the REST API.
 #[derive(Serialize)]
 pub struct ModelsResponseDto {
     pub models: Vec<ModelInfoDto>,
 }
 
-/// REST API用のモデル情報DTO。
+/// Model info DTO for the REST API.
 #[derive(Serialize)]
 pub struct ModelInfoDto {
     pub id: String,

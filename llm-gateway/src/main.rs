@@ -13,7 +13,7 @@ use domain::service::CompletionService;
 
 #[tokio::main]
 async fn main() {
-    // 構造化ログ初期化（JSON形式）
+    // Initialize structured logging (JSON format)
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(
@@ -26,7 +26,7 @@ async fn main() {
 
     tracing::info!(port = config.port, "starting LLM Gateway");
 
-    // DI組み立て
+    // Dependency injection assembly
     let key_store = Arc::new(EnvKeyStore);
     let openai_provider = match OpenAIProvider::new(key_store) {
         Ok(p) => p,

@@ -4,22 +4,22 @@ use std::pin::Pin;
 use crate::domain::error::DomainError;
 use crate::domain::model::{CompletionRequest, CompletionResponse, ModelInfo};
 
-/// 補完ユースケースポート。
+/// Completion use case port.
 ///
-/// インバウンドアダプター（REST, gRPC等）がドメインサービスを呼び出すためのインターフェース。
+/// Interface for inbound adapters (REST, gRPC, etc.) to invoke the domain service.
 pub trait CompletionUseCase: Send + Sync {
-    /// チャット補完を実行する。
+    /// Executes a chat completion.
     ///
     /// # Arguments
-    /// * `req` — 補完リクエスト
+    /// * `req` — Completion request
     ///
     /// # Errors
-    /// モデル未発見、プロバイダーエラー等で `DomainError` を返す。
+    /// Returns `DomainError` on model not found, provider errors, etc.
     fn complete(
         &self,
         req: CompletionRequest,
     ) -> Pin<Box<dyn Future<Output = Result<CompletionResponse, DomainError>> + Send + '_>>;
 
-    /// 全プロバイダーの利用可能モデル一覧を返す。
+    /// Returns a list of all available models across all providers.
     fn list_models(&self) -> Vec<ModelInfo>;
 }

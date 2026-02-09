@@ -1,10 +1,10 @@
 use crate::domain::error::DomainError;
 use crate::ports::outbound::key_store::KeyStore;
 
-/// 環境変数からAPIキーを取得するキーストア。
+/// Key store that retrieves API keys from environment variables.
 ///
-/// `{PROVIDER}_API_KEY`（大文字）の環境変数からキーを読み取る。
-/// 例: provider="openai" → `OPENAI_API_KEY`
+/// Reads keys from `{PROVIDER}_API_KEY` (uppercased) environment variables.
+/// Example: provider="openai" → `OPENAI_API_KEY`
 pub struct EnvKeyStore;
 
 impl KeyStore for EnvKeyStore {

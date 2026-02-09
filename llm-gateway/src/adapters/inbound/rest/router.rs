@@ -3,10 +3,10 @@ use axum::Router;
 
 use super::handlers::{complete, health, list_models, AppState};
 
-/// axumルーターを構築する。
+/// Builds the axum router.
 ///
 /// # Arguments
-/// * `state` — `CompletionUseCase` を実装した共有状態
+/// * `state` — Shared state implementing `CompletionUseCase`
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))

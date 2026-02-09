@@ -6,23 +6,24 @@ use crate::domain::model::{CompletionRequest, CompletionResponse, ModelInfo};
 use crate::ports::inbound::completion::CompletionUseCase;
 use crate::ports::outbound::provider::LLMProvider;
 
-/// 補完ドメインサービス。
+/// Completion domain service.
 ///
-/// 複数のLLMプロバイダーを保持し、リクエストされたモデル名からプロバイダーを選択して補完を実行する。
+/// Holds multiple LLM providers and dispatches completion requests
+/// to the appropriate provider based on the requested model name.
 pub struct CompletionService {
     providers: Vec<Box<dyn LLMProvider>>,
 }
 
 impl CompletionService {
-    /// 新しい `CompletionService` を生成する。
+    /// Creates a new `CompletionService`.
     ///
     /// # Arguments
-    /// * `providers` — 利用可能なLLMプロバイダーのリスト
+    /// * `providers` — List of available LLM providers
     pub fn new(providers: Vec<Box<dyn LLMProvider>>) -> Self {
         Self { providers }
     }
 
-    /// モデルIDから対応するプロバイダーを検索する。
+    /// Finds a provider that supports the given model ID.
     fn find_provider(&self, model: &str) -> Option<&dyn LLMProvider> {
         self.providers
             .iter()
@@ -68,7 +69,7 @@ mod tests {
     use super::*;
     use crate::domain::model::{ChatMessage, Choice, Role, Usage};
 
-    /// テスト用モックプロバイダー
+    /// Mock provider for testing.
     struct MockProvider {
         name: String,
         model_ids: Vec<String>,

@@ -11,19 +11,19 @@ use crate::ports::inbound::completion::CompletionUseCase;
 use super::request::CompletionRequestDto;
 use super::response::{CompletionResponseDto, ModelsResponseDto, ModelInfoDto};
 
-/// アプリケーション共有状態。
+/// Shared application state.
 pub type AppState = Arc<dyn CompletionUseCase>;
 
-/// ヘルスチェックエンドポイント。
+/// Health check endpoint.
 ///
-/// `GET /health` — サービスの生存確認。
+/// `GET /health` — Returns service liveness status.
 pub async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status": "ok"}))
 }
 
-/// モデル一覧エンドポイント。
+/// List models endpoint.
 ///
-/// `GET /models` — 全プロバイダーの利用可能モデルを返す。
+/// `GET /models` — Returns available models from all providers.
 pub async fn list_models(State(service): State<AppState>) -> impl IntoResponse {
     let models = service
         .list_models()
@@ -33,9 +33,9 @@ pub async fn list_models(State(service): State<AppState>) -> impl IntoResponse {
     Json(ModelsResponseDto { models })
 }
 
-/// チャット補完エンドポイント。
+/// Chat completion endpoint.
 ///
-/// `POST /completions` — LLMにチャット補完を要求する。
+/// `POST /completions` — Sends a chat completion request to an LLM provider.
 pub async fn complete(
     State(service): State<AppState>,
     Json(dto): Json<CompletionRequestDto>,
@@ -45,7 +45,7 @@ pub async fn complete(
     Ok(Json(CompletionResponseDto::from(resp)))
 }
 
-/// ドメインエラーをHTTPレスポンスに変換するラッパー。
+/// Wrapper that converts domain errors into HTTP responses.
 pub struct AppError(DomainError);
 
 impl From<DomainError> for AppError {
