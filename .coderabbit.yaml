@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  review_status: true
+  commit_status: true
+  collapse_walkthrough: true
+  sequence_diagrams: true
+  path_filters:
+    - "!**/Cargo.lock"
+    - "!**/package-lock.json"
+    - "!**/pnpm-lock.yaml"
+    - "!**/pubspec.lock"
+    - "!**/go.sum"
+  path_instructions:
+    - path: "llm-gateway/**"
+      instructions: |
+        Rust (edition 2024) codebase following Hexagonal Architecture (Ports & Adapters).
+        The domain layer must NOT depend on infrastructure/adapter layers.
+        Use Pin<Box<dyn Future + Send + '_>> for async trait methods requiring dynamic dispatch.
+    - path: "server/**"
+      instructions: |
+        Go API server following Clean Architecture. Dependency direction: domain → usecase → interface/infrastructure.
+        The domain/ package must not depend on anything outside the standard library.
+    - path: "web/**"
+      instructions: |
+        Next.js App Router + Bulletproof React architecture frontend.
+    - path: "mobile/**"
+      instructions: |
+        Flutter (Riverpod) mobile application.
+  auto_review:
+    enabled: true
+    drafts: false
+  tools:
+    golangci-lint:
+      enabled: true
+    clippy:
+      enabled: true
+    eslint:
+      enabled: true
+    biome:
+      enabled: true
+    actionlint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    hadolint:
+      enabled: true
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    shellcheck:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: auto
+  issues:
+    scope: auto
+  pull_requests:
+    scope: auto
