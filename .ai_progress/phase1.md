@@ -6,22 +6,22 @@
 
 ## LLM Gateway (Rust)
 
-- [ ] Cargoプロジェクト初期化（`llm-gateway/`）
-- [ ] `domain/model.rs` — CompletionRequest, CompletionResponse, ModelInfo型
-- [ ] `domain/error.rs` — ドメインエラー型
-- [ ] `domain/service.rs` — LLM呼び出しドメインサービス
-- [ ] `ports/inbound/completion.rs` — CompletionUseCase trait
-- [ ] `ports/outbound/provider.rs` — LLMProvider trait
-- [ ] `ports/outbound/key_store.rs` — APIキー取得 trait
-- [ ] `adapters/outbound/openai.rs` — OpenAI APIアダプター
-- [ ] `adapters/outbound/env_key.rs` — 環境変数からのAPIキー取得
-- [ ] `adapters/inbound/rest/` — REST APIハンドラ（axum）
-  - [ ] `POST /completions` — チャット補完
-  - [ ] `GET /models` — 利用可能モデル一覧
-  - [ ] `GET /health` — ヘルスチェック
-- [ ] `config.rs` — アプリケーション設定
-- [ ] `main.rs` — DI組み立て + サーバー起動
-- [ ] ユニットテスト（モックプロバイダー）
+- [x] Cargoプロジェクト初期化（`llm-gateway/`）+ 依存クレート追加
+- [x] `config.rs` — 環境変数設定読み込み
+- [x] `domain/model.rs` — CompletionRequest, CompletionResponse, ModelInfo型
+- [x] `domain/error.rs` — ドメインエラー型
+- [x] `domain/service.rs` — CompletionService（プロバイダー選択ロジック）
+- [x] `ports/inbound/completion.rs` — CompletionUseCase trait
+- [x] `ports/outbound/provider.rs` — LLMProvider trait
+- [x] `ports/outbound/key_store.rs` — KeyStore trait
+- [x] `adapters/outbound/openai.rs` — OpenAI APIアダプター
+- [x] `adapters/outbound/env_key.rs` — 環境変数からのAPIキー取得
+- [x] `adapters/inbound/rest/` — REST APIハンドラ（axum）
+  - [x] `POST /completions` — チャット補完
+  - [x] `GET /models` — 利用可能モデル一覧
+  - [x] `GET /health` — ヘルスチェック
+- [x] `main.rs` — DI組み立て + サーバー起動
+- [x] ユニットテスト（モックプロバイダー）— 9件パス
 - [ ] 動作確認（curl等でローカルテスト）
 
 ## Go API Server
