@@ -32,7 +32,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `server/` — Go APIサーバー（クリーンアーキテクチャ: domain → usecase → interface/infrastructure）
 - `llm-gateway/` — Rust LLM Gateway（ヘキサゴナル: domain/ports/adapters）
 - `web/` — Next.js Web Frontend（Bulletproof React: app/features/components/hooks/lib）
-- `migrations/` — golang-migrate
+- `server/schema.sql` — DBスキーマ定義（Atlas宣言的管理）
+- `server/atlas.hcl` — Atlas設定
 - `phases.md` — 開発フェーズ計画（26フェーズ）
 - `.ai_progress/` — フェーズ別実装チェックリスト
 
@@ -53,7 +54,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **CQRS-lite**: 読み取り/書き込みクエリパスを分離、ただしDB単一
 - **イベント駆動**: メッセージ送信・ユーザーアクションはイベントを発行。WebSocket配信・AI呼び出しはイベントハンドラで処理
 - **テスト**: Repository/Gatewayをモックしたユニットテスト、testcontainers統合テスト（PostgreSQL）、Playwright E2E（web）、Flutter統合テスト、k6負荷テスト
-- **DBマイグレーション**: golang-migrate
+- **DBマイグレーション**: Atlas（宣言的スキーマ管理 + versioned migrations）
 - **構造化ログ**: Go は `slog`、Rust は `tracing`。JSON形式
 - **トレーシング**: OpenTelemetry、リクエストID伝播
 
