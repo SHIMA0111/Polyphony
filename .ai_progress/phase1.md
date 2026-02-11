@@ -26,35 +26,35 @@
 
 ## Go API Server
 
-- [ ] Goモジュール初期化（`server/`）
-- [ ] `cmd/api/main.go` — エントリポイント、DI組み立て
-- [ ] `internal/infrastructure/config/config.go` — 設定読み込み
-- [ ] `internal/infrastructure/database/postgres.go` — DBコネクション
-- [ ] **domain層**
-  - [ ] `domain/user/entity.go` — User構造体
-  - [ ] `domain/user/repository.go` — UserRepository interface
-  - [ ] `domain/auth/service.go` — AuthService interface
-  - [ ] `domain/room/entity.go` — Room, RoomMember構造体
-  - [ ] `domain/room/repository.go` — RoomRepository interface
-  - [ ] `domain/message/entity.go` — Message, MessageType構造体
-  - [ ] `domain/message/repository.go` — MessageRepository interface
-  - [ ] `domain/ai/entity.go` — AIRequest, AIResponse構造体
-  - [ ] `domain/ai/gateway.go` — LLMGateway interface
-- [ ] **usecase層**
-  - [ ] `usecase/auth/usecase.go` — Register, Login
-  - [ ] `usecase/room/usecase.go` — CreateRoom, GetRoom, ListRooms
-  - [ ] `usecase/message/usecase.go` — SendMessage, ListMessages（カーソルページネーション）, SendAIMessage
-- [ ] **interface層**
-  - [ ] `interface/handler/auth_handler.go` — POST /auth/register, POST /auth/login
-  - [ ] `interface/handler/room_handler.go` — CRUD API
-  - [ ] `interface/handler/message_handler.go` — メッセージ送信・取得API
-  - [ ] `interface/middleware/auth.go` — JWT検証ミドルウェア
-  - [ ] `interface/repository/postgres/user_repository.go`
-  - [ ] `interface/repository/postgres/room_repository.go`
-  - [ ] `interface/repository/postgres/message_repository.go`
-  - [ ] `interface/gateway/llm_client.go` — LLM Gateway RESTクライアント
-- [ ] SimpleJWT実装（argon2 + JWT発行/検証）
-- [ ] ユニットテスト（モックRepository/Gateway）
+- [x] Goモジュール初期化（`server/`）
+- [x] `cmd/api/main.go` — エントリポイント、DI組み立て
+- [x] `internal/infrastructure/config/config.go` — 設定読み込み
+- [x] `internal/infrastructure/database/postgres.go` — DBコネクション
+- [x] **domain層**
+  - [x] `domain/user/entity.go` — User構造体
+  - [x] `domain/user/repository.go` — UserRepository interface
+  - [x] `domain/auth/service.go` — AuthService interface
+  - [x] `domain/room/entity.go` — Room, RoomMember構造体
+  - [x] `domain/room/repository.go` — RoomRepository interface
+  - [x] `domain/message/entity.go` — Message, MessageType構造体
+  - [x] `domain/message/repository.go` — MessageRepository interface
+  - [x] `domain/ai/entity.go` — AIRequest, AIResponse構造体
+  - [x] `domain/ai/gateway.go` — LLMGateway interface
+- [x] **usecase層**
+  - [x] `usecase/auth/usecase.go` — Register, Login
+  - [x] `usecase/room/usecase.go` — CreateRoom, GetRoom, ListRooms
+  - [x] `usecase/message/usecase.go` — SendMessage, ListMessages（カーソルページネーション）, SendAIMessage
+- [x] **interface層**
+  - [x] `interface/handler/auth_handler.go` — POST /auth/register, POST /auth/login
+  - [x] `interface/handler/room_handler.go` — CRUD API
+  - [x] `interface/handler/message_handler.go` — メッセージ送信・取得API
+  - [x] `interface/middleware/auth.go` — JWT検証ミドルウェア
+  - [x] `interface/repository/postgres/user_repository.go`
+  - [x] `interface/repository/postgres/room_repository.go`
+  - [x] `interface/repository/postgres/message_repository.go`
+  - [x] `interface/gateway/llm_client.go` — LLM Gateway RESTクライアント
+- [x] SimpleJWT実装（argon2 + JWT発行/検証）
+- [x] ユニットテスト（モックRepository/Gateway）
 - [ ] 動作確認
 
 ## Web Frontend (Next.js)
@@ -82,12 +82,12 @@
 
 ## DB マイグレーション
 
-- [ ] `migrations/` — golang-migrate初期マイグレーション
-  - [ ] `users`テーブル
-  - [ ] `rooms`テーブル
-  - [ ] `room_members`テーブル
-  - [ ] `messages`テーブル
-  - [ ] `room_sequences`テーブル
+- [x] `migrations/` — golang-migrate初期マイグレーション
+  - [x] `users`テーブル
+  - [x] `rooms`テーブル
+  - [x] `room_members`テーブル
+  - [x] `messages`テーブル
+  - [x] `room_sequences`テーブル
 
 ## インフラ
 
