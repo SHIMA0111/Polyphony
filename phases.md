@@ -1,57 +1,57 @@
-# 開発フェーズ計画
+# Development Phase Plan
 
-## アプリケーション概要
+## Application Overview
 
-マルチユーザー対応AIチャットアプリケーション。ChatGPTライクなAIチャットとLINE/Slackライクなマルチユーザーチャットルームを統合する。
+A multi-user AI chat application. Combines ChatGPT-like AI chat with LINE/Slack-like multi-user chat rooms.
 
-### 差別化要素
+### Differentiators
 
-- **マルチプロバイダーAI統合** — OpenAI, Anthropic, Gemini, Ollama, vLLM
-- **チームコラボレーション** — ユーザーとAIが共存するチャットルーム
-- **ルーム単位のRBAC** — Reader → Guest → Member → Admin → Master
+- **Multi-provider AI integration** — OpenAI, Anthropic, Gemini, Ollama, vLLM
+- **Team collaboration** — Chat rooms where users and AI coexist
+- **Per-room RBAC** — Reader → Guest → Member → Admin → Master
 
-### 構成コンポーネント（4つ）
+### Components (4)
 
-1. **Web Frontend** — Next.js App Router + Bulletproof Reactアーキテクチャ
-2. **Mobile Frontend** — Flutter (iOS/Android), Riverpod状態管理
-3. **Main API Server** — Go + Echo, クリーンアーキテクチャ, WebSocket via Redis Pub/Sub
-4. **LLM Gateway** — Rust, ヘキサゴナルアーキテクチャ (Ports & Adapters), gRPC/REST
+1. **Web Frontend** — Next.js App Router + Bulletproof React architecture
+2. **Mobile Frontend** — Flutter (iOS/Android), Riverpod state management
+3. **Main API Server** — Go + Echo, Clean Architecture, WebSocket via Redis Pub/Sub
+4. **LLM Gateway** — Rust, Hexagonal Architecture (Ports & Adapters), gRPC/REST
 
-### データ層・インフラ
+### Data Layer & Infrastructure
 
-- **DB**: PostgreSQL単一DB（メッセージは月次パーティショニング）
-- **キャッシュ/Pub/Sub**: Redis（セッション、Pub/Sub、レート制限）
-- **ストレージ**: S3 + CloudFront（画像、presigned URL）
-- **認証**: 初期はSimpleJWT（argon2+JWT）→ Phase 9でOry Kratos → Phase 15でOry Hydra
-- **インフラ**: 初期はDocker Compose → Phase 21でAWS（ECS Fargate, Aurora, ElastiCache）
+- **DB**: Single PostgreSQL (messages with monthly partitioning)
+- **Cache/Pub/Sub**: Redis (sessions, Pub/Sub, rate limiting)
+- **Storage**: S3 + CloudFront (images, presigned URLs)
+- **Auth**: Initially SimpleJWT (argon2+JWT) → Phase 9 Ory Kratos → Phase 15 Ory Hydra
+- **Infra**: Initially Docker Compose → Phase 21 AWS (ECS Fargate, Aurora, ElastiCache)
 
-## 方針: 1フェーズ = 1テーマ
+## Approach: 1 Phase = 1 Theme
 
-本計画では **1フェーズ = 1テーマ** の小さな更新を積み重ねる。全26フェーズで段階的にアプリケーションを構築する。
+This plan incrementally builds the application through 26 phases, each focused on a single theme.
 
-### 基本原則
+### Core Principles
 
-- **小さく積み重ねる**: 各フェーズは1〜2週間で完了できる粒度にする。前フェーズの成果物が次フェーズの土台になる
-- **インターフェースで差し替え可能にする**: 初期実装はシンプルに、将来の差し替えはインターフェース境界で行う。最初から本番品質を目指さない
-- **動くものを常に維持する**: 各フェーズ完了時点でアプリケーションが動作する状態を保つ
+- **Small increments**: Each phase is scoped to complete within 1–2 weeks. Each phase builds on the previous one
+- **Swappable via interfaces**: Start with simple implementations; swap at interface boundaries later. Don't aim for production quality from the start
+- **Always keep it working**: The application must be functional at the end of every phase
 
 ---
 
-## Go APIサーバーアーキテクチャ: クリーンアーキテクチャ
+## Go API Server Architecture: Clean Architecture
 
-Go APIサーバーはクリーンアーキテクチャに従い、依存方向を domain → usecase → interface/infrastructure に厳守する。
+The Go API server follows Clean Architecture with strict dependency direction: domain → usecase → interface/infrastructure.
 
 ```
 server/
 ├── cmd/
 │   └── api/
-│       └── main.go                    # エントリポイント、DI組み立て
+│       └── main.go                    # Entry point, DI assembly
 ├── internal/
-│   ├── domain/                        # ドメイン層（外部依存なし）
+│   ├── domain/                        # Domain layer (no external dependencies)
 │   │   ├── user/
-│   │   │   ├── entity.go              # User構造体
+│   │   │   ├── entity.go              # User struct
 │   │   │   ├── repository.go          # UserRepository interface
-│   │   │   └── service.go             # ドメインロジック
+│   │   │   └── service.go             # Domain logic
 │   │   ├── room/
 │   │   │   ├── entity.go              # Room, RoomMember, RoomRole
 │   │   │   ├── repository.go          # RoomRepository interface
@@ -61,771 +61,770 @@ server/
 │   │   │   ├── repository.go
 │   │   │   └── service.go
 │   │   ├── auth/
-│   │   │   └── service.go             # AuthService interface（★差し替えポイント）
+│   │   │   └── service.go             # AuthService interface (★ swap point)
 │   │   └── ai/
 │   │       ├── entity.go              # AIRequest, AIResponse
-│   │       ├── context_builder.go     # コンテキスト構築ロジック
-│   │       └── gateway.go             # LLMGateway interface（★差し替えポイント）
-│   ├── usecase/                       # ユースケース層
+│   │       ├── context_builder.go     # Context building logic
+│   │       └── gateway.go             # LLMGateway interface (★ swap point)
+│   ├── usecase/                       # Usecase layer
 │   │   ├── auth/usecase.go            # Register, Login
 │   │   ├── room/usecase.go            # CreateRoom, JoinRoom
 │   │   ├── message/usecase.go         # SendMessage, SendAIMessage
 │   │   └── ai/usecase.go             # InvokeAI, BuildContext
-│   ├── interface/                     # アダプター層（外側）
-│   │   ├── handler/                   # Echo HTTPハンドラ
+│   ├── interface/                     # Adapter layer (outer)
+│   │   ├── handler/                   # Echo HTTP handlers
 │   │   │   ├── auth_handler.go
 │   │   │   ├── room_handler.go
 │   │   │   ├── message_handler.go
-│   │   │   └── ws_handler.go          # WebSocket（Phase 2で追加）
+│   │   │   └── ws_handler.go          # WebSocket (added in Phase 2)
 │   │   ├── middleware/
-│   │   │   ├── auth.go                # JWT検証 → Phase 9でKratosセッション検証に差し替え
-│   │   │   └── rbac.go                # Phase 4で追加
+│   │   │   ├── auth.go                # JWT verification → swap to Kratos session in Phase 9
+│   │   │   └── rbac.go                # Added in Phase 4
 │   │   ├── repository/
-│   │   │   └── postgres/              # PostgreSQL実装（全テーブル）
+│   │   │   └── postgres/              # PostgreSQL implementations (all tables)
 │   │   └── gateway/
-│   │       └── llm_client.go          # LLM Gateway REST/gRPCクライアント
+│   │       └── llm_client.go          # LLM Gateway REST/gRPC client
 │   └── infrastructure/
-│       ├── database/postgres.go       # コネクションプール
-│       ├── websocket/                 # Phase 2で追加
+│       ├── database/postgres.go       # Connection pool
+│       ├── websocket/                 # Added in Phase 2
 │       │   ├── hub.go                 # MessageHub interface + InProcessHub
 │       │   ├── client.go
 │       │   └── event.go
 │       └── config/config.go
 ├── migrations/                        # golang-migrate
-├── proto/                             # Phase 8で追加
+├── proto/                             # Added in Phase 8
 └── go.mod
 ```
 
-**原則**:
-- `domain/`は標準ライブラリ以外に依存しない
-- Repository/Service/Gatewayは全てinterfaceとして`domain/`で定義、実装は`interface/`か`infrastructure/`
-- ユースケース層はドメインのinterfaceのみ参照（具象型を知らない）
-- DI組み立ては`cmd/api/main.go`で行う
+**Principles**:
+- `domain/` has no dependencies beyond the standard library
+- All Repository/Service/Gateway are defined as interfaces in `domain/`; implementations live in `interface/` or `infrastructure/`
+- The usecase layer only references domain interfaces (no knowledge of concrete types)
+- DI assembly happens in `cmd/api/main.go`
 
 ---
 
-## フロントエンドアーキテクチャ: Bulletproof React
+## Frontend Architecture: Bulletproof React
 
-Web FrontendはBulletproof Reactのアーキテクチャに従う。
+The Web Frontend follows the Bulletproof React architecture.
 
 ```
 web/
 ├── src/
-│   ├── app/              # Next.js App Router（ルーティング層のみ）
-│   │   ├── layout.tsx    # ルートレイアウト
-│   │   ├── (auth)/       # 認証系ルートグループ
+│   ├── app/              # Next.js App Router (routing layer only)
+│   │   ├── layout.tsx    # Root layout
+│   │   ├── (auth)/       # Auth route group
 │   │   │   ├── login/page.tsx
 │   │   │   └── register/page.tsx
-│   │   └── (main)/       # メインアプリルートグループ
+│   │   └── (main)/       # Main app route group
 │   │       ├── layout.tsx
 │   │       ├── rooms/page.tsx
 │   │       └── rooms/[roomId]/page.tsx
-│   ├── components/       # 共有コンポーネント
-│   ├── config/           # グローバル設定
-│   ├── features/         # 機能ごとのモジュール（★中心）
-│   │   ├── auth/         # 認証（api/, components/, hooks/, types/）
-│   │   ├── rooms/        # ルーム管理
-│   │   ├── messages/     # メッセージ
-│   │   ├── ai/           # AI呼び出し
+│   ├── components/       # Shared components
+│   ├── config/           # Global configuration
+│   ├── features/         # Feature modules (★ core)
+│   │   ├── auth/         # Auth (api/, components/, hooks/, types/)
+│   │   ├── rooms/        # Room management
+│   │   ├── messages/     # Messages
+│   │   ├── ai/           # AI invocation
 │   │   └── ...
-│   ├── hooks/            # 共有フック
-│   ├── lib/              # ライブラリ設定済みラッパー
-│   ├── stores/           # グローバルステート
-│   ├── testing/          # テストユーティリティ
-│   ├── types/            # 共有型定義
-│   └── utils/            # 共有ユーティリティ
-└── public/               # 静的ファイル
+│   ├── hooks/            # Shared hooks
+│   ├── lib/              # Pre-configured library wrappers
+│   ├── stores/           # Global state
+│   ├── testing/          # Test utilities
+│   ├── types/            # Shared type definitions
+│   └── utils/            # Shared utilities
+└── public/               # Static files
 ```
 
-**Next.js App Router との共存ルール**:
-- `app/`ディレクトリはルーティングとレイアウトのみ。ビジネスロジックは置かない
-- 各`page.tsx`は対応する`features/`のコンポーネントをimportして表示するだけの薄いラッパー
-- Server Components/Server Actionsは`features/`内の`api/`ディレクトリに定義
+**Coexistence rules with Next.js App Router**:
+- The `app/` directory is for routing and layouts only. No business logic
+- Each `page.tsx` is a thin wrapper that imports and renders the corresponding `features/` component
+- Server Components/Server Actions are defined in `api/` directories within `features/`
 
-**原則**:
-- feature間の直接importは禁止（共有部品は`components/`, `hooks/`, `lib/`経由）
-- 依存方向は一方向: shared → features → app
-- barrel file（index.ts）は使わない（tree-shaking最適化のため）
+**Principles**:
+- Direct imports between features are forbidden (shared parts go through `components/`, `hooks/`, `lib/`)
+- Dependency direction is one-way: shared → features → app
+- No barrel files (index.ts) for tree-shaking optimization
 
 ---
 
-## LLM Gatewayアーキテクチャ: ヘキサゴナルアーキテクチャ (Ports & Adapters)
+## LLM Gateway Architecture: Hexagonal Architecture (Ports & Adapters)
 
-LLM Gateway（Rust）はヘキサゴナルアーキテクチャを採用し、シングルトンファイルへの肥大化を防ぐ。
+The LLM Gateway (Rust) adopts Hexagonal Architecture to prevent singleton file bloat.
 
 ```
 llm-gateway/src/
-├── domain/                # ドメイン層（純粋なビジネスロジック）
-│   ├── model.rs           # CompletionRequest, CompletionResponse, ModelInfo等
-│   ├── error.rs           # ドメインエラー型
-│   └── service.rs         # LLM呼び出しのドメインサービス
-├── ports/                 # ポート定義（trait）
-│   ├── inbound/           # 駆動側ポート（外→内）
+├── domain/                # Domain layer (pure business logic)
+│   ├── model.rs           # CompletionRequest, CompletionResponse, ModelInfo, etc.
+│   ├── error.rs           # Domain error types
+│   └── service.rs         # LLM invocation domain service
+├── ports/                 # Port definitions (traits)
+│   ├── inbound/           # Driving ports (outside → inside)
 │   │   └── completion.rs  # CompletionUseCase trait
-│   └── outbound/          # 被駆動側ポート（内→外）
-│       ├── provider.rs    # LLMProvider trait（各AIプロバイダー）
-│       └── key_store.rs   # APIキー取得 trait
-├── adapters/              # アダプター実装
-│   ├── inbound/           # 駆動側アダプター
-│   │   ├── grpc/          # gRPCサーバー（Phase 8で追加）
-│   │   └── rest/          # REST APIハンドラ（axum/actix-web）
-│   └── outbound/          # 被駆動側アダプター
+│   └── outbound/          # Driven ports (inside → outside)
+│       ├── provider.rs    # LLMProvider trait (per AI provider)
+│       └── key_store.rs   # API key retrieval trait
+├── adapters/              # Adapter implementations
+│   ├── inbound/           # Driving adapters
+│   │   ├── grpc/          # gRPC server (added in Phase 8)
+│   │   └── rest/          # REST API handlers (axum/actix-web)
+│   └── outbound/          # Driven adapters
 │       ├── openai.rs      # OpenAI API adapter
-│       ├── anthropic.rs   # Anthropic API adapter（Phase 6）
-│       ├── gemini.rs      # Gemini API adapter（Phase 7）
-│       └── env_key.rs     # 環境変数からのAPIキー取得
-├── config.rs              # アプリケーション設定
-└── main.rs                # エントリポイント（DI組み立て）
+│       ├── anthropic.rs   # Anthropic API adapter (Phase 6)
+│       ├── gemini.rs      # Gemini API adapter (Phase 7)
+│       └── env_key.rs     # API key retrieval from environment variables
+├── config.rs              # Application configuration
+└── main.rs                # Entry point (DI assembly)
 ```
 
-**原則**:
-- `domain/`と`ports/`は外部クレートに依存しない（`serde`等のみ許容）
-- プロバイダー追加は`adapters/outbound/`にファイル追加 + `main.rs`でDI登録のみ
-- inboundアダプター（REST/gRPC）は`ports/inbound/`のtraitを呼ぶだけ
+**Principles**:
+- `domain/` and `ports/` have no external crate dependencies (only `serde`, etc. allowed)
+- Adding a provider = add a file in `adapters/outbound/` + register DI in `main.rs`
+- Inbound adapters (REST/gRPC) only call traits from `ports/inbound/`
 
 ---
 
-## フェーズ一覧
+## Phase Overview
 
-| # | テーマ | ゴール |
-|---|--------|--------|
-| 1 | プロジェクト骨格 + 最小AIチャット | 1ユーザーがAIと会話できる |
-| 2 | WebSocket + リアルタイム | メッセージがリアルタイムに表示される |
-| 3 | 招待 + メンバー管理 | ルームにユーザーを招待できる |
-| 4 | 基本RBAC | reader/member/masterの3ロール |
-| 5 | AIコンテキスト制御 | メッセージのAI除外、トークン推定 |
-| 6 | マルチプロバイダー (Anthropic) | 2つ目のAIプロバイダー |
-| 7 | マルチプロバイダー (Gemini) + モデル選択UI | ユーザーがモデルを選べる |
-| 8 | gRPC化 + LLM Gateway堅牢化 | リトライ、ヘルスチェック、モデルメタデータ |
-| 9 | Ory Kratos導入 | 本格認証基盤に移行 |
-| 10 | Redis + マルチインスタンス | WebSocket Pub/Sub、レート制限 |
-| 11 | フルRBAC | guest/admin追加で5段階権限 |
-| 12 | 画像アップロード + Vision | S3、マルチモーダルAI |
-| 13 | グループ管理 + 一括招待 | グループでまとめて招待 |
-| 14 | プライベートAIモード | 自分だけに見えるAI応答 |
-| 15 | OAuthソーシャルログイン | Google/GitHub連携 |
-| 16 | トークン残高管理 | 消費記録、残高チェック |
-| 17 | Stripe課金 | サブスクリプション + オンデマンド購入 |
-| 18 | コンテキスト要約 | 古い履歴をAIで要約→キャッシュ |
-| 19 | ストリーミングAIレスポンス | トークンが順次表示される |
-| 20 | ルームフォーク | 非同期バッチコピー |
-| 21 | AWS基盤 (Terraform) | VPC、ECS、Aurora、ElastiCache |
-| 22 | CI/CD + ステージング | GitHub Actions、ECR、ECSデプロイ |
-| 23 | 監視 + 本番運用 | CloudWatch、WAF、パーティショニング、k6 |
-| 24 | Flutter モバイルアプリ | iOS/Android対応 |
-| 25 | モバイル課金 + プッシュ通知 | App Store/Google Play連携 |
-| 26+ | エンタープライズ（将来） | SSO/SAML、管理ダッシュボード、Ollama/vLLM |
-
----
-
-## インターフェースによる差し替えポイント
-
-以下の抽象化により、初期実装をシンプルに保ちつつ、後のフェーズで本番品質の実装に差し替える。
-
-| 抽象化 | 初期実装 | 差し替え時期 | 説明 |
-|--------|----------|-------------|------|
-| `AuthService` | SimpleJWT (argon2+JWT) | Phase 9 (Kratos) | 認証・セッション管理。Phase 1ではargon2でパスワードハッシュ、JWTでトークン発行。Phase 9でOry Kratosのセッション検証に差し替え |
-| `MessageHub` | InProcessHub | Phase 10 (Redis) | WebSocketメッセージ配信。Phase 2ではインプロセスHub、Phase 10でRedis Pub/Subに差し替えてマルチインスタンス対応 |
-| `LLMClient` | REST client | Phase 8 (gRPC) | LLM Gateway通信。Phase 1ではシンプルなRESTクライアント、Phase 8でgRPCクライアントに差し替え |
-| インフラ | Docker Compose | Phase 21 (AWS) | 実行環境。開発中はDocker Compose、Phase 21でTerraformによるAWS基盤（ECS Fargate、Aurora、ElastiCache）に移行 |
+| # | Theme | Goal |
+|---|-------|------|
+| 1 | Project skeleton + minimal AI chat | A single user can chat with AI |
+| 2 | WebSocket + real-time | Messages displayed in real-time |
+| 3 | Invitations + member management | Users can be invited to rooms |
+| 4 | Basic RBAC | 3 roles: reader/member/master |
+| 5 | AI context control | Per-message AI exclusion, token estimation |
+| 6 | Multi-provider (Anthropic) | Second AI provider |
+| 7 | Multi-provider (Gemini) + model selection UI | Users can choose models |
+| 8 | gRPC + LLM Gateway hardening | Retries, health checks, model metadata |
+| 9 | Ory Kratos adoption | Migrate to production auth |
+| 10 | Redis + multi-instance | WebSocket Pub/Sub, rate limiting |
+| 11 | Full RBAC | 5-tier permissions with guest/admin |
+| 12 | Image upload + Vision | S3, multimodal AI |
+| 13 | Group management + batch invitations | Invite by group |
+| 14 | Private AI mode | AI responses visible only to sender |
+| 15 | OAuth social login | Google/GitHub integration |
+| 16 | Token balance management | Usage tracking, balance checks |
+| 17 | Stripe billing | Subscriptions + on-demand purchases |
+| 18 | Context summarization | Summarize old history with AI → cache |
+| 19 | Streaming AI responses | Tokens displayed incrementally |
+| 20 | Room fork | Async batch copy |
+| 21 | AWS infrastructure (Terraform) | VPC, ECS, Aurora, ElastiCache |
+| 22 | CI/CD + staging | GitHub Actions, ECR, ECS deploy |
+| 23 | Monitoring + production ops | CloudWatch, WAF, partitioning, k6 |
+| 24 | Flutter mobile app | iOS/Android support |
+| 25 | Mobile billing + push notifications | App Store/Google Play integration |
+| 26+ | Enterprise (future) | SSO/SAML, admin dashboard, Ollama/vLLM |
 
 ---
 
-## 各フェーズ詳細
+## Interface Swap Points
 
-### Phase 1: プロジェクト骨格 + 最小AIチャット
+The following abstractions keep the initial implementation simple while allowing production-quality swaps in later phases.
 
-**ゴール**: 1ユーザーがブラウザからAIと会話できる最小限のアプリケーション
+| Abstraction | Initial Implementation | Swap Timing | Description |
+|-------------|----------------------|-------------|-------------|
+| `AuthService` | SimpleJWT (argon2+JWT) | Phase 9 (Kratos) | Auth & session management. Phase 1: argon2 password hashing, JWT token issuance. Phase 9: swap to Ory Kratos session verification |
+| `MessageHub` | InProcessHub | Phase 10 (Redis) | WebSocket message delivery. Phase 2: in-process hub. Phase 10: swap to Redis Pub/Sub for multi-instance support |
+| `LLMClient` | REST client | Phase 8 (gRPC) | LLM Gateway communication. Phase 1: simple REST client. Phase 8: swap to gRPC client |
+| Infra | Docker Compose | Phase 21 (AWS) | Runtime environment. Docker Compose during development. Phase 21: migrate to AWS via Terraform (ECS Fargate, Aurora, ElastiCache) |
+
+---
+
+## Phase Details
+
+### Phase 1: Project Skeleton + Minimal AI Chat
+
+**Goal**: A minimal application where a single user can chat with AI from a browser
 
 #### Go API
 
-- クリーンアーキテクチャ骨格（domain/usecase/interface/infrastructure）
-- `AuthService`インターフェース + SimpleJWT実装（argon2 + JWT）
-- ユーザー登録・ログインAPI
-- ルームCRUD API
-- メッセージ永続化 + カーソルページネーション
-- AI呼び出し（LLM Gateway RESTクライアント → 同期レスポンス → DB保存。LLM失敗時は `status=failed` のプレースホルダーAIメッセージを保存）
-- AI応答再生成API（`POST /rooms/:roomId/messages/:messageId/regenerate` — 指定humanメッセージ直後のAIメッセージを常にUPDATEで上書き。新規作成パスなし。sequence/created_atを保持するため順序が崩れない）
+- Clean Architecture skeleton (domain/usecase/interface/infrastructure)
+- `AuthService` interface + SimpleJWT implementation (argon2 + JWT)
+- User registration & login API
+- Room CRUD API
+- Message persistence + cursor pagination
+- AI invocation (LLM Gateway REST client → synchronous response → DB save. On LLM failure, saves a `status=failed` placeholder AI message)
+- AI response regeneration API (`POST /rooms/:roomId/messages/:messageId/regenerate` — always UPDATEs the AI message immediately following the specified human message. No create path. Preserves sequence/created_at to maintain ordering)
 
 #### LLM Gateway (Rust)
 
-- ヘキサゴナルアーキテクチャ骨格
-- `domain/` — CompletionRequest/Response型、ドメインエラー
-- `ports/outbound/provider.rs` — `LLMProvider` trait定義
-- `ports/inbound/completion.rs` — `CompletionUseCase` trait定義
-- `adapters/outbound/openai.rs` — OpenAIアダプター
-- `adapters/inbound/rest/` — REST APIハンドラ（`/completions`, `/models`, `/health`）
-- `main.rs` — DI組み立て
+- Hexagonal Architecture skeleton
+- `domain/` — CompletionRequest/Response types, domain errors
+- `ports/outbound/provider.rs` — `LLMProvider` trait definition
+- `ports/inbound/completion.rs` — `CompletionUseCase` trait definition
+- `adapters/outbound/openai.rs` — OpenAI adapter
+- `adapters/inbound/rest/` — REST API handlers (`/completions`, `/models`, `/health`)
+- `main.rs` — DI assembly
 
 #### Web Frontend (Next.js)
 
-- Next.js App Router + Bulletproof Reactディレクトリ構造
-- SSR（Server Components）+ Server Actions
-- `features/auth/` — ログイン・登録ページ
-- `features/rooms/` — ルーム一覧
-- `features/messages/` — チャット画面（ポーリングまたは手動リロード、リアルタイムなし）
+- Next.js App Router + Bulletproof React directory structure
+- SSR (Server Components) + Server Actions
+- `features/auth/` — Login & registration pages
+- `features/rooms/` — Room listing
+- `features/messages/` — Chat screen (polling or manual reload, no real-time)
 
-#### DB変更
+#### DB Changes
 
-- `users` — ユーザー基本情報、パスワードハッシュ
-- `rooms` — ルーム情報
-- `room_members` — ルームメンバーシップ
-- `messages` — メッセージ本文、送信者、タイプ（human/ai）、ステータス（completed/failed）
-- `room_sequences` — ルーム内メッセージ連番
+- `users` — Basic user info, password hash
+- `rooms` — Room info
+- `room_members` — Room membership
+- `messages` — Message body, sender, type (human/ai), status (completed/failed)
+- `room_sequences` — Per-room message sequence counter
 
-#### インフラ
+#### Infrastructure
 
-- Docker Compose（PostgreSQL + Go API + Rust LLM Gateway + Next.js）
+- Docker Compose (PostgreSQL + Go API + Rust LLM Gateway + Next.js)
 
-#### 除外
+#### Excluded
 
-- WebSocket（Phase 2）
-- RBAC（Phase 4）
-- マルチプロバイダー（Phase 6〜7）
-- 画像（Phase 12）
-- 課金（Phase 16〜17）
-- Redis（Phase 10）
-- S3（Phase 12）
-
----
-
-### Phase 2: WebSocket + リアルタイム
-
-**ゴール**: メッセージ送信がリアルタイムに全メンバーへ配信される
-
-#### スコープ
-
-- Go API: WebSocketエンドポイント、`MessageHub`インターフェース + `InProcessHub`実装
-- Web Frontend: WebSocket接続、メッセージのリアルタイム受信・表示
-- イベント駆動: メッセージ送信 → Hub → 接続中クライアントへブロードキャスト
-
-#### DB変更
-
-なし
-
-#### 除外
-
-- Redis Pub/Sub（Phase 10）
-- 複数インスタンス対応（Phase 10）
+- WebSocket (Phase 2)
+- RBAC (Phase 4)
+- Multi-provider (Phase 6–7)
+- Images (Phase 12)
+- Billing (Phase 16–17)
+- Redis (Phase 10)
+- S3 (Phase 12)
 
 ---
 
-### Phase 3: 招待 + メンバー管理
+### Phase 2: WebSocket + Real-time
 
-**ゴール**: ルームオーナーがユーザーを招待でき、メンバー一覧を表示できる
+**Goal**: Messages are delivered to all members in real-time
 
-#### スコープ
+#### Scope
 
-- Go API: 招待API、メンバー一覧API、招待承認/拒否
-- Go API: オーナー移譲API（`PATCH /rooms/:roomId/owner`）— 現ownerが別メンバーにownershipを移譲。課金主体（`token_balances`）の移行にも必要
-- Go API: メンバー退室API（`DELETE /rooms/:roomId/members/:userId`）— `room_members`のON DELETE RESTRICTにより、退室はアプリ側で明示的に処理
-- Web Frontend: メンバー管理画面、招待フォーム、オーナー移譲UI
+- Go API: WebSocket endpoint, `MessageHub` interface + `InProcessHub` implementation
+- Web Frontend: WebSocket connection, real-time message receive & display
+- Event-driven: Message send → Hub → broadcast to connected clients
 
-- 招待リンクまたはユーザー名検索による招待
+#### DB Changes
 
-#### DB変更
+None
 
-- `room_invitations` — 招待情報
+#### Excluded
 
-#### 除外
-
-- ロール管理（Phase 4）
-- グループ一括招待（Phase 13）
+- Redis Pub/Sub (Phase 10)
+- Multi-instance support (Phase 10)
 
 ---
 
-### Phase 4: 基本RBAC
+### Phase 3: Invitations + Member Management
 
-**ゴール**: reader/member/masterの3段階ロールで権限制御
+**Goal**: Room owners can invite users and view the member list
 
-#### スコープ
+#### Scope
 
-- Go API: RBACミドルウェア、ロール変更API
-- ルーム作成者が自動的にmaster
-- reader: メッセージ閲覧のみ（送信不可）
-- member: メッセージ送信 + AI呼び出し可能
-- master: メンバー管理、ルーム設定変更
-- Web Frontend: ロール表示、master向け管理UI
+- Go API: Invitation API, member list API, invitation accept/reject
+- Go API: Ownership transfer API (`PATCH /rooms/:roomId/owner`) — current owner transfers ownership to another member. Also required for billing entity (`token_balances`) migration
+- Go API: Member leave API (`DELETE /rooms/:roomId/members/:userId`) — `room_members` uses ON DELETE RESTRICT, so leave must be handled explicitly by the app
+- Web Frontend: Member management screen, invitation form, ownership transfer UI
+- Invitation via link or username search
 
-#### DB変更
+#### DB Changes
 
-- `room_members`テーブルにroleカラム追加（既存データはmember）
+- `room_invitations` — Invitation records
 
-#### 除外
+#### Excluded
 
-- guest/adminロール（Phase 11）
-
----
-
-### Phase 5: AIコンテキスト制御
-
-**ゴール**: メッセージ単位でAI除外フラグを設定でき、トークン数を推定できる
-
-#### スコープ
-
-- Go API: メッセージにAI除外フラグ、コンテキスト構築ロジック（除外フラグ、削除済み、カットオフ日時を考慮）
-- LLM Gateway: トークン推定エンドポイント
-- Web Frontend: メッセージのAI除外トグル、推定トークン数表示
-
-#### DB変更
-
-- `messages`テーブルに`exclude_from_ai`カラム追加
-- `rooms`テーブルに`ai_context_cutoff_at`カラム追加
-
-#### 除外
-
-- 履歴要約（Phase 18）
-- プライベートAIモード（Phase 14）
+- Role management (Phase 4)
+- Group batch invitations (Phase 13)
 
 ---
 
-### Phase 6: マルチプロバイダー (Anthropic)
+### Phase 4: Basic RBAC
 
-**ゴール**: OpenAIに加えてAnthropicのモデルを利用できる
+**Goal**: 3-tier role-based access control with reader/member/master
 
-#### スコープ
+#### Scope
 
-- LLM Gateway: `adapters/outbound/anthropic.rs` — Anthropic APIアダプター
-- Go API: ルーム設定でプロバイダー/モデル指定
-- Web Frontend: モデル設定UI（ルーム設定内）
+- Go API: RBAC middleware, role change API
+- Room creator automatically becomes master
+- reader: View messages only (cannot send)
+- member: Send messages + invoke AI
+- master: Manage members, change room settings
+- Web Frontend: Role display, master admin UI
 
-#### DB変更
+#### DB Changes
 
-- `rooms`テーブルに`ai_provider`, `ai_model`カラム追加
+- Add role column to `room_members` table (existing data defaults to member)
 
-#### 除外
+#### Excluded
 
-- Gemini（Phase 7）
-- モデル選択のリッチUI（Phase 7）
-
----
-
-### Phase 7: マルチプロバイダー (Gemini) + モデル選択UI
-
-**ゴール**: 3プロバイダー対応、ユーザーが直感的にモデルを選べるUI
-
-#### スコープ
-
-- LLM Gateway: `adapters/outbound/gemini.rs` — Gemini APIアダプター
-- LLM Gateway: `/models`エンドポイントで利用可能モデル一覧返却
-- Web Frontend: モデル選択ドロップダウン（プロバイダー + モデル名）
-
-#### DB変更
-
-なし
-
-#### 除外
-
-- Ollama/vLLM（Phase 26+）
+- guest/admin roles (Phase 11)
 
 ---
 
-### Phase 8: gRPC化 + LLM Gateway堅牢化
+### Phase 5: AI Context Control
 
-**ゴール**: Go APIとLLM Gateway間をgRPC通信にし、リトライ・ヘルスチェックを追加
+**Goal**: Set per-message AI exclusion flags and estimate token counts
 
-#### スコープ
+#### Scope
 
-- LLM Gateway: gRPCサーバー追加（`adapters/inbound/grpc/`）
-- Go API: gRPCクライアントに差し替え（`LLMClient`インターフェースの実装差し替え）
-- proto定義（`server/proto/`）
-- リトライポリシー（指数バックオフ）
-- ヘルスチェックエンドポイント
-- モデルメタデータ（トークン上限、料金情報）
+- Go API: AI exclusion flag on messages, context building logic (considers exclusion flag, deleted messages, cutoff datetime)
+- LLM Gateway: Token estimation endpoint
+- Web Frontend: AI exclusion toggle per message, estimated token count display
 
-#### DB変更
+#### DB Changes
 
-なし
+- Add `exclude_from_ai` column to `messages` table
+- Add `ai_context_cutoff_at` column to `rooms` table
 
-#### 除外
+#### Excluded
 
-- ストリーミング（Phase 19）
-
----
-
-### Phase 9: Ory Kratos導入
-
-**ゴール**: 認証基盤をSimpleJWTからOry Kratosに移行
-
-#### スコープ
-
-- Ory Kratosコンテナ追加（Docker Compose）
-- Go API: `AuthService`実装をKratosセッション検証に差し替え
-- ミドルウェア: JWTヘッダ検証 → Kratosセッションcookie検証
-- Web Frontend: ログイン/登録フローをKratos UIに合わせて修正
-- 既存ユーザーデータ移行スクリプト
-
-#### DB変更
-
-- Kratos独自のDBスキーマ（Kratos管理）
-- `users`テーブルに`kratos_identity_id`カラム追加
-
-#### 除外
-
-- OAuth/ソーシャルログイン（Phase 15）
-- Ory Hydra（Phase 15）
+- History summarization (Phase 18)
+- Private AI mode (Phase 14)
 
 ---
 
-### Phase 10: Redis + マルチインスタンス
+### Phase 6: Multi-provider (Anthropic)
 
-**ゴール**: Redis導入によりWebSocket Pub/Sub対応、レート制限、セッションキャッシュ
+**Goal**: Use Anthropic models in addition to OpenAI
 
-#### スコープ
+#### Scope
 
-- Redisコンテナ追加（Docker Compose）
-- Go API: `MessageHub`実装をRedis Pub/Subに差し替え
-- レート制限ミドルウェア（Redis Token Bucket）
-- セッションキャッシュ（Kratosセッション検証結果のキャッシュ）
+- LLM Gateway: `adapters/outbound/anthropic.rs` — Anthropic API adapter
+- Go API: Provider/model selection in room settings
+- Web Frontend: Model settings UI (within room settings)
 
-#### DB変更
+#### DB Changes
 
-なし
+- Add `ai_provider`, `ai_model` columns to `rooms` table
 
-#### 除外
+#### Excluded
 
-- Redis Cluster構成（Phase 21）
-
----
-
-### Phase 11: フルRBAC
-
-**ゴール**: reader/guest/member/admin/masterの5段階権限
-
-#### スコープ
-
-- Go API: guestロール（メッセージ送信可、AI呼び出し不可）、adminロール（メンバー管理可、ルーム削除不可）
-- RBACミドルウェア更新
-- Web Frontend: ロール選択UI更新、権限に応じたUI表示制御
-
-#### DB変更
-
-- `room_members`テーブルのroleカラムに新しい値追加
-
-#### 除外
-
-なし
+- Gemini (Phase 7)
+- Rich model selection UI (Phase 7)
 
 ---
 
-### Phase 12: 画像アップロード + Vision
+### Phase 7: Multi-provider (Gemini) + Model Selection UI
 
-**ゴール**: 画像をアップロードしてAIに画像認識させられる
+**Goal**: 3-provider support, intuitive model selection UI
 
-#### スコープ
+#### Scope
 
-- S3（MinIO for local）+ presigned URL
-- Go API: 画像アップロードAPI、presigned URL発行
-- LLM Gateway: マルチモーダルリクエスト対応（Vision API）
-- Web Frontend: 画像アップロードUI、画像プレビュー
+- LLM Gateway: `adapters/outbound/gemini.rs` — Gemini API adapter
+- LLM Gateway: `/models` endpoint returns available model list
+- Web Frontend: Model selection dropdown (provider + model name)
 
-#### DB変更
+#### DB Changes
 
-- `message_attachments` — ファイルメタ情報（S3キー、MIME type、サイズ）
+None
 
-#### 除外
+#### Excluded
 
-- CloudFront（Phase 21）
-- 動画・PDF等の他のファイル形式
+- Ollama/vLLM (Phase 26+)
 
 ---
 
-### Phase 13: グループ管理 + 一括招待
+### Phase 8: gRPC + LLM Gateway Hardening
 
-**ゴール**: ユーザーグループを作成し、グループ単位でルームに招待できる
+**Goal**: Switch Go API ↔ LLM Gateway communication to gRPC, add retries and health checks
 
-#### スコープ
+#### Scope
 
-- Go API: グループCRUD、グループメンバー管理、グループ単位招待
-- Web Frontend: グループ管理画面、グループ招待UI
+- LLM Gateway: Add gRPC server (`adapters/inbound/grpc/`)
+- Go API: Swap to gRPC client (`LLMClient` interface implementation swap)
+- Proto definitions (`server/proto/`)
+- Retry policy (exponential backoff)
+- Health check endpoint
+- Model metadata (token limits, pricing info)
 
-#### DB変更
+#### DB Changes
 
-- `groups` — グループ情報
-- `group_members` — グループメンバーシップ
+None
 
-#### 除外
+#### Excluded
 
-なし
-
----
-
-### Phase 14: プライベートAIモード
-
-**ゴール**: AI応答を自分だけに表示するモードを選択できる
-
-#### スコープ
-
-- Go API: メッセージに`visibility`フラグ（public/private）
-- AIリクエスト時にprivateモード指定
-- private応答は送信者にのみWebSocket配信
-- Web Frontend: AIリクエスト時のプライベートモードトグル
-
-#### DB変更
-
-- `messages`テーブルに`visibility`カラム追加
-
-#### 除外
-
-なし
+- Streaming (Phase 19)
 
 ---
 
-### Phase 15: OAuthソーシャルログイン
+### Phase 9: Ory Kratos Adoption
 
-**ゴール**: Google/GitHubアカウントでログインできる
+**Goal**: Migrate auth from SimpleJWT to Ory Kratos
 
-#### スコープ
+#### Scope
 
-- Ory Hydra導入（OAuth2/OIDCプロバイダー）
-- Kratos設定: Google/GitHub OIDCプロバイダー追加
-- Web Frontend: ソーシャルログインボタン
+- Add Ory Kratos container (Docker Compose)
+- Go API: Swap `AuthService` implementation to Kratos session verification
+- Middleware: JWT header verification → Kratos session cookie verification
+- Web Frontend: Adjust login/registration flow for Kratos UI
+- Existing user data migration script
 
-#### DB変更
+#### DB Changes
 
-- Kratos管理（外部プロバイダーリンク）
+- Kratos-managed DB schema
+- Add `kratos_identity_id` column to `users` table
 
-#### 除外
+#### Excluded
 
-- SSO/SAML（Phase 26+）
-
----
-
-### Phase 16: トークン残高管理
-
-**ゴール**: AI利用のトークン消費を記録し、残高を管理できる
-
-#### スコープ
-
-- Go API: トークン消費記録、残高チェック（AIリクエスト前）、残高不足エラー
-- ルームmasterが残高を持つ（ルーム課金モデル）
-- Web Frontend: 残高表示、消費履歴
-
-#### DB変更
-
-- `token_balances` — ユーザー別残高
-- `token_transactions` — トークン消費・チャージ履歴
-
-#### 除外
-
-- 決済連携（Phase 17）
-- 初期残高付与の自動化
+- OAuth/social login (Phase 15)
+- Ory Hydra (Phase 15)
 
 ---
 
-### Phase 17: Stripe課金
+### Phase 10: Redis + Multi-instance
 
-**ゴール**: Stripeでサブスクリプション購入・オンデマンドトークン購入ができる
+**Goal**: Introduce Redis for WebSocket Pub/Sub, rate limiting, and session caching
 
-#### スコープ
+#### Scope
 
-- Go API: Stripe Webhook処理、サブスクリプション管理、一回限り購入
-- サブスクリプションプラン（月次トークン付与）
-- Web Frontend: 料金プラン選択、Stripe Checkout連携、課金履歴
+- Add Redis container (Docker Compose)
+- Go API: Swap `MessageHub` implementation to Redis Pub/Sub
+- Rate limiting middleware (Redis Token Bucket)
+- Session cache (cache Kratos session verification results)
 
-#### DB変更
+#### DB Changes
 
-- `subscriptions` — サブスクリプション情報
-- `payment_history` — 決済履歴
+None
 
-#### 除外
+#### Excluded
 
-- App Store/Google Play課金（Phase 25）
-
----
-
-### Phase 18: コンテキスト要約
-
-**ゴール**: 長い会話履歴をAIで要約し、コンテキストウィンドウに収める
-
-#### スコープ
-
-- Go API: コンテキスト構築時にトークン上限超過を検知
-- 超過時: 古いメッセージをAIで要約 → `message_context_summaries`にキャッシュ
-- 要約結果をコンテキストの先頭に挿入、個別メッセージは最新分のみ
-- Web Frontend: 要約が使われていることの表示
-
-#### DB変更
-
-- `message_context_summaries` — 要約キャッシュ（ルーム、対象期間、要約テキスト、トークン数）
-
-#### 除外
-
-なし
+- Redis Cluster configuration (Phase 21)
 
 ---
 
-### Phase 19: ストリーミングAIレスポンス
+### Phase 11: Full RBAC
 
-**ゴール**: AIの応答がトークン単位で逐次表示される
+**Goal**: 5-tier permissions with reader/guest/member/admin/master
 
-#### スコープ
+#### Scope
 
-- LLM Gateway: Server-Sent Events（SSE）またはgRPCストリーミング対応
-- Go API: ストリーミングレスポンスをWebSocket経由でクライアントに転送
-- Web Frontend: トークン逐次表示、タイピングインジケーター
+- Go API: guest role (can send messages, cannot invoke AI), admin role (can manage members, cannot delete room)
+- RBAC middleware update
+- Web Frontend: Updated role selection UI, permission-based UI display control
 
-#### DB変更
+#### DB Changes
 
-なし（ストリーミング完了後に既存のメッセージ保存フロー）
+- Add new values to role column in `room_members` table
 
-#### 除外
+#### Excluded
 
-なし
-
----
-
-### Phase 20: ルームフォーク
-
-**ゴール**: 既存ルームの会話を別ルームにコピーして分岐できる
-
-#### スコープ
-
-- Go API: 非同期バッチジョブ（1000メッセージ/バッチでコピー）
-- 連番再採番
-- コピー完了まで`is_archived=true`で新規投稿をブロック
-- Web Frontend: フォークボタン、進行状況表示
-
-#### DB変更
-
-- `rooms`テーブルに`forked_from_room_id`, `is_archived`カラム追加
-- `room_fork_jobs` — フォークジョブ進行状況
-
-#### 除外
-
-なし
+None
 
 ---
 
-### Phase 21: AWS基盤 (Terraform)
+### Phase 12: Image Upload + Vision
 
-**ゴール**: AWS上に本番環境を構築
+**Goal**: Upload images and have AI perform image recognition
 
-#### スコープ
+#### Scope
 
-- Terraform: VPC、サブネット、セキュリティグループ
-- ECS Fargate（Go API、LLM Gateway、Next.js、Kratos）
-- Aurora Serverless v2（PostgreSQL互換）
-- ElastiCache（Redis）
-- S3 + CloudFront（画像配信）
-- ALB + ACM（HTTPS）
+- S3 (MinIO for local) + presigned URLs
+- Go API: Image upload API, presigned URL issuance
+- LLM Gateway: Multimodal request support (Vision API)
+- Web Frontend: Image upload UI, image preview
 
-#### DB変更
+#### DB Changes
 
-なし
+- `message_attachments` — File metadata (S3 key, MIME type, size)
 
-#### 除外
+#### Excluded
 
-- CI/CD（Phase 22）
-- 監視（Phase 23）
+- CloudFront (Phase 21)
+- Other file formats (video, PDF, etc.)
 
 ---
 
-### Phase 22: CI/CD + ステージング
+### Phase 13: Group Management + Batch Invitations
 
-**ゴール**: mainブランチへのマージで自動的にステージング環境へデプロイ
+**Goal**: Create user groups and invite entire groups to rooms
 
-#### スコープ
+#### Scope
 
-- GitHub Actions: テスト → ビルド → ECRプッシュ → ECSデプロイ
-- ステージング環境（Terraformワークスペース分離）
-- DB マイグレーション自動実行
-- E2Eテスト（Playwright）をステージングで実行
+- Go API: Group CRUD, group member management, group-based invitations
+- Web Frontend: Group management screen, group invitation UI
 
-#### DB変更
+#### DB Changes
 
-なし
+- `groups` — Group info
+- `group_members` — Group membership
 
-#### 除外
+#### Excluded
 
-- 本番デプロイフロー（Phase 23）
-
----
-
-### Phase 23: 監視 + 本番運用
-
-**ゴール**: 本番運用に必要な監視・セキュリティ・パフォーマンス対策
-
-#### スコープ
-
-- CloudWatch Logs + メトリクス + アラーム
-- AWS WAF（レート制限、SQLi/XSS防御）
-- PostgreSQLメッセージテーブルの月次パーティショニング
-- k6 負荷テスト
-- OpenTelemetryトレース（X-Ray連携）
-- 本番デプロイフロー（承認ゲート付き）
-
-#### DB変更
-
-- `messages`テーブルのパーティショニング設定
-
-#### 除外
-
-なし
+None
 
 ---
 
-### Phase 24: Flutter モバイルアプリ
+### Phase 14: Private AI Mode
 
-**ゴール**: iOS/AndroidネイティブアプリでWebと同等の機能を利用できる
+**Goal**: Option to make AI responses visible only to the sender
 
-#### スコープ
+#### Scope
 
-- Flutter: Riverpod状態管理
-- 認証（Kratosセッション）
-- ルーム一覧、チャット画面、WebSocket接続
-- 画像アップロード（カメラ/ギャラリー）
+- Go API: `visibility` flag on messages (public/private)
+- Private mode specification during AI requests
+- Private responses delivered via WebSocket only to the sender
+- Web Frontend: Private mode toggle during AI requests
 
-#### DB変更
+#### DB Changes
 
-なし
+- Add `visibility` column to `messages` table
 
-#### 除外
+#### Excluded
 
-- App Store/Google Play課金（Phase 25）
-- プッシュ通知（Phase 25）
+None
 
 ---
 
-### Phase 25: モバイル課金 + プッシュ通知
+### Phase 15: OAuth Social Login
 
-**ゴール**: アプリ内課金とプッシュ通知に対応
+**Goal**: Login with Google/GitHub accounts
 
-#### スコープ
+#### Scope
 
-- Flutter: App Store/Google Play課金連携（RevenueCat等）
+- Introduce Ory Hydra (OAuth2/OIDC provider)
+- Kratos config: Add Google/GitHub OIDC providers
+- Web Frontend: Social login buttons
+
+#### DB Changes
+
+- Kratos-managed (external provider links)
+
+#### Excluded
+
+- SSO/SAML (Phase 26+)
+
+---
+
+### Phase 16: Token Balance Management
+
+**Goal**: Track AI token usage and manage balances
+
+#### Scope
+
+- Go API: Token consumption recording, balance check (before AI requests), insufficient balance error
+- Room master holds the balance (per-room billing model)
+- Web Frontend: Balance display, usage history
+
+#### DB Changes
+
+- `token_balances` — Per-user balance
+- `token_transactions` — Token consumption & charge history
+
+#### Excluded
+
+- Payment integration (Phase 17)
+- Automated initial balance provisioning
+
+---
+
+### Phase 17: Stripe Billing
+
+**Goal**: Purchase subscriptions and on-demand tokens via Stripe
+
+#### Scope
+
+- Go API: Stripe Webhook processing, subscription management, one-time purchases
+- Subscription plans (monthly token allocation)
+- Web Frontend: Plan selection, Stripe Checkout integration, billing history
+
+#### DB Changes
+
+- `subscriptions` — Subscription info
+- `payment_history` — Payment records
+
+#### Excluded
+
+- App Store/Google Play billing (Phase 25)
+
+---
+
+### Phase 18: Context Summarization
+
+**Goal**: Summarize long conversation history with AI to fit within the context window
+
+#### Scope
+
+- Go API: Detect token limit exceeded during context building
+- On overflow: Summarize old messages with AI → cache in `message_context_summaries`
+- Insert summary at the beginning of context, only include recent individual messages
+- Web Frontend: Indicate when summaries are being used
+
+#### DB Changes
+
+- `message_context_summaries` — Summary cache (room, covered period, summary text, token count)
+
+#### Excluded
+
+None
+
+---
+
+### Phase 19: Streaming AI Responses
+
+**Goal**: AI responses are displayed incrementally, token by token
+
+#### Scope
+
+- LLM Gateway: Server-Sent Events (SSE) or gRPC streaming support
+- Go API: Forward streaming responses to clients via WebSocket
+- Web Frontend: Incremental token display, typing indicator
+
+#### DB Changes
+
+None (existing message save flow after streaming completes)
+
+#### Excluded
+
+None
+
+---
+
+### Phase 20: Room Fork
+
+**Goal**: Copy a room's conversation to a new room to create a branch
+
+#### Scope
+
+- Go API: Async batch job (copy 1000 messages/batch)
+- Sequence renumbering
+- Block new posts with `is_archived=true` until copy completes
+- Web Frontend: Fork button, progress display
+
+#### DB Changes
+
+- Add `forked_from_room_id`, `is_archived` columns to `rooms` table
+- `room_fork_jobs` — Fork job progress
+
+#### Excluded
+
+None
+
+---
+
+### Phase 21: AWS Infrastructure (Terraform)
+
+**Goal**: Build production environment on AWS
+
+#### Scope
+
+- Terraform: VPC, subnets, security groups
+- ECS Fargate (Go API, LLM Gateway, Next.js, Kratos)
+- Aurora Serverless v2 (PostgreSQL compatible)
+- ElastiCache (Redis)
+- S3 + CloudFront (image delivery)
+- ALB + ACM (HTTPS)
+
+#### DB Changes
+
+None
+
+#### Excluded
+
+- CI/CD (Phase 22)
+- Monitoring (Phase 23)
+
+---
+
+### Phase 22: CI/CD + Staging
+
+**Goal**: Automatic deployment to staging on merge to main branch
+
+#### Scope
+
+- GitHub Actions: Test → Build → ECR push → ECS deploy
+- Staging environment (Terraform workspace isolation)
+- Automated DB migration
+- E2E tests (Playwright) run on staging
+
+#### DB Changes
+
+None
+
+#### Excluded
+
+- Production deployment flow (Phase 23)
+
+---
+
+### Phase 23: Monitoring + Production Operations
+
+**Goal**: Monitoring, security, and performance measures required for production
+
+#### Scope
+
+- CloudWatch Logs + Metrics + Alarms
+- AWS WAF (rate limiting, SQLi/XSS protection)
+- PostgreSQL messages table monthly partitioning
+- k6 load testing
+- OpenTelemetry traces (X-Ray integration)
+- Production deployment flow (with approval gate)
+
+#### DB Changes
+
+- Partitioning configuration for `messages` table
+
+#### Excluded
+
+None
+
+---
+
+### Phase 24: Flutter Mobile App
+
+**Goal**: Use equivalent features on iOS/Android native apps as on the web
+
+#### Scope
+
+- Flutter: Riverpod state management
+- Auth (Kratos sessions)
+- Room list, chat screen, WebSocket connection
+- Image upload (camera/gallery)
+
+#### DB Changes
+
+None
+
+#### Excluded
+
+- App Store/Google Play billing (Phase 25)
+- Push notifications (Phase 25)
+
+---
+
+### Phase 25: Mobile Billing + Push Notifications
+
+**Goal**: In-app purchases and push notification support
+
+#### Scope
+
+- Flutter: App Store/Google Play billing integration (RevenueCat, etc.)
 - Go API: App Store Server Notifications / Google Play RTDN Webhook
-- `token_balances`への残高反映（Stripe/App Store/Google Play共通）
-- Firebase Cloud Messaging（FCM）によるプッシュ通知
-- Go API: 通知送信ロジック（新メッセージ、招待、AI応答完了）
+- Balance reflection in `token_balances` (shared across Stripe/App Store/Google Play)
+- Push notifications via Firebase Cloud Messaging (FCM)
+- Go API: Notification send logic (new message, invitation, AI response complete)
 
-#### DB変更
+#### DB Changes
 
-- `device_tokens` — FCMデバイストークン
-- `payment_history`テーブルにpayment_rail（stripe/app_store/google_play）追加
+- `device_tokens` — FCM device tokens
+- Add payment_rail (stripe/app_store/google_play) to `payment_history` table
 
-#### 除外
+#### Excluded
 
-なし
+None
 
 ---
 
-### Phase 26+: エンタープライズ（将来）
+### Phase 26+: Enterprise (Future)
 
-**ゴール**: 大規模組織向け機能
+**Goal**: Features for large-scale organizations
 
-#### スコープ（候補）
+#### Scope (Candidates)
 
-- SSO/SAML対応（Ory Hydra拡張）
-- 管理ダッシュボード（利用状況、ユーザー管理、監査ログ）
-- Ollama/vLLM対応（オンプレミスLLM）
-- メッセージエクスポート
-- データリテンションポリシー
+- SSO/SAML support (Ory Hydra extension)
+- Admin dashboard (usage stats, user management, audit logs)
+- Ollama/vLLM support (on-premises LLM)
+- Message export
+- Data retention policies
 
-#### DB変更
+#### DB Changes
 
-未定
+TBD
 
-#### 除外
+#### Excluded
 
-未定
+TBD
