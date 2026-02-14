@@ -91,8 +91,10 @@ server/
 │       │   ├── client.go
 │       │   └── event.go
 │       └── config/config.go
-├── migrations/                        # golang-migrate
+├── migrations/                        # Atlas
 ├── proto/                             # Added in Phase 8
+├── atlas.hcl
+├── schema.sql
 └── go.mod
 ```
 
