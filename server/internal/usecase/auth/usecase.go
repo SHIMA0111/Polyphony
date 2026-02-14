@@ -6,6 +6,10 @@ import (
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
 )
 
+type TokenValidator interface {
+	ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error)
+}
+
 // AuthUsecase wraps AuthService to provide authentication use cases.
 type AuthUsecase struct {
 	authService domainauth.AuthService
@@ -24,4 +28,8 @@ func (u *AuthUsecase) Register(ctx context.Context, email, username, password st
 // Login authenticates a user and returns a token pair.
 func (u *AuthUsecase) Login(ctx context.Context, email, password string) (*domainauth.TokenPair, error) {
 	return u.authService.Login(ctx, email, password)
+}
+
+func (u *AuthUsecase) ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error) {
+	return u.authService.ValidateToken(ctx, token)
 }

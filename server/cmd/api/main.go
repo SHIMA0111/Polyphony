@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -80,7 +81,7 @@ func main() {
 	e.POST("/auth/login", authHandler.Login)
 
 	// Authenticated routes
-	auth := e.Group("", middleware.JWTAuth(authService))
+	auth := e.Group("", middleware.JWTAuth(authUC))
 	auth.POST("/rooms", roomHandler.Create)
 	auth.GET("/rooms", roomHandler.List)
 	auth.GET("/rooms/:roomId", roomHandler.Get)
@@ -89,22 +90,29 @@ func main() {
 	auth.POST("/rooms/:roomId/messages", msgHandler.Send)
 	auth.GET("/rooms/:roomId/messages", msgHandler.List)
 	auth.POST("/rooms/:roomId/messages/ai", msgHandler.SendAI)
+	auth.POST("/rooms/:roomId/messages/:messageId/regenerate", msgHandler.RegenerateAI)
 
 	// Start server
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	slog.Info("starting server", "addr", addr)
 
+	errCh := make(chan error, 1)
 	go func() {
-		if err := e.Start(addr); err != nil && err != http.ErrServerClosed {
+		if err := e.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server error", "error", err)
-			os.Exit(1)
+			errCh <- err
 		}
 	}()
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	select {
+	case <-quit:
+	case err := <-errCh:
+		slog.Error("server terminated", "error", err)
+		return
+	}
 
 	slog.Info("shutting down server")
 

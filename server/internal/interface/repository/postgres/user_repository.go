@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,11 +32,11 @@ func (r *UserRepository) Create(ctx context.Context, u *user.User) error {
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			if pgErr.ConstraintName == "users_email_key" {
+		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation {
+			if pgErr.ConstraintName == "users_email_unique" {
 				return domain.ErrEmailAlreadyExists
 			}
-			if pgErr.ConstraintName == "users_username_key" {
+			if pgErr.ConstraintName == "users_username_unique" {
 				return domain.ErrUsernameAlreadyExists
 			}
 		}

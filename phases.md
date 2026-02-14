@@ -244,7 +244,8 @@ llm-gateway/src/
 - ユーザー登録・ログインAPI
 - ルームCRUD API
 - メッセージ永続化 + カーソルページネーション
-- AI呼び出し（LLM Gateway RESTクライアント → 同期レスポンス → DB保存）
+- AI呼び出し（LLM Gateway RESTクライアント → 同期レスポンス → DB保存。LLM失敗時は `status=failed` のプレースホルダーAIメッセージを保存）
+- AI応答再生成API（`POST /rooms/:roomId/messages/:messageId/regenerate` — 指定humanメッセージ直後のAIメッセージを常にUPDATEで上書き。新規作成パスなし。sequence/created_atを保持するため順序が崩れない）
 
 #### LLM Gateway (Rust)
 
@@ -269,7 +270,7 @@ llm-gateway/src/
 - `users` — ユーザー基本情報、パスワードハッシュ
 - `rooms` — ルーム情報
 - `room_members` — ルームメンバーシップ
-- `messages` — メッセージ本文、送信者、タイプ（human/ai）
+- `messages` — メッセージ本文、送信者、タイプ（human/ai）、ステータス（completed/failed）
 - `room_sequences` — ルーム内メッセージ連番
 
 #### インフラ
@@ -316,7 +317,10 @@ llm-gateway/src/
 #### スコープ
 
 - Go API: 招待API、メンバー一覧API、招待承認/拒否
-- Web Frontend: メンバー管理画面、招待フォーム
+- Go API: オーナー移譲API（`PATCH /rooms/:roomId/owner`）— 現ownerが別メンバーにownershipを移譲。課金主体（`token_balances`）の移行にも必要
+- Go API: メンバー退室API（`DELETE /rooms/:roomId/members/:userId`）— `room_members`のON DELETE RESTRICTにより、退室はアプリ側で明示的に処理
+- Web Frontend: メンバー管理画面、招待フォーム、オーナー移譲UI
+
 - 招待リンクまたはユーザー名検索による招待
 
 #### DB変更

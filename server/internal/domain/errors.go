@@ -26,6 +26,9 @@ var (
 
 	// ErrLLMGateway indicates an error communicating with the LLM Gateway.
 	ErrLLMGateway = errors.New("llm gateway error")
+
+	// ErrInvalidMessageType indicates the message type is not valid for the operation.
+	ErrInvalidMessageType = errors.New("invalid message type")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.

@@ -36,18 +36,20 @@
   - [x] `domain/auth/service.go` — AuthService interface
   - [x] `domain/room/entity.go` — Room, RoomMember構造体
   - [x] `domain/room/repository.go` — RoomRepository interface
-  - [x] `domain/message/entity.go` — Message, MessageType構造体
+  - [x] `domain/message/entity.go` — Message, MessageType, MessageStatus構造体
   - [x] `domain/message/repository.go` — MessageRepository interface
   - [x] `domain/ai/entity.go` — AIRequest, AIResponse構造体
   - [x] `domain/ai/gateway.go` — LLMGateway interface
 - [x] **usecase層**
   - [x] `usecase/auth/usecase.go` — Register, Login
   - [x] `usecase/room/usecase.go` — CreateRoom, GetRoom, ListRooms
-  - [x] `usecase/message/usecase.go` — SendMessage, ListMessages（カーソルページネーション）, SendAIMessage
+  - [x] `usecase/message/usecase.go` — SendMessage, ListMessages（カーソルページネーション）, SendAIMessage（LLM失敗時はstatus=failedプレースホルダー保存）
+  - [x] `usecase/message/usecase.go` — RegenerateAIMessage（既存AIメッセージを常にUPDATE、新規作成なし）
 - [x] **interface層**
   - [x] `interface/handler/auth_handler.go` — POST /auth/register, POST /auth/login
   - [x] `interface/handler/room_handler.go` — CRUD API
   - [x] `interface/handler/message_handler.go` — メッセージ送信・取得API
+  - [x] `interface/handler/message_handler.go` — RegenerateAI handler（`POST /rooms/:roomId/messages/:messageId/regenerate`）
   - [x] `interface/middleware/auth.go` — JWT検証ミドルウェア
   - [x] `interface/repository/postgres/user_repository.go`
   - [x] `interface/repository/postgres/room_repository.go`
@@ -84,9 +86,9 @@
 
 - [x] `migrations/` — golang-migrate初期マイグレーション
   - [x] `users`テーブル
-  - [x] `rooms`テーブル
-  - [x] `room_members`テーブル
-  - [x] `messages`テーブル
+  - [x] `rooms`テーブル（`owner_id` ON DELETE RESTRICT — 移譲なしでは退会不可）
+  - [x] `room_members`テーブル（`user_id` ON DELETE RESTRICT — 退室はアプリ側で明示処理）
+  - [x] `messages`テーブル（`status`カラム: completed/failed、`sender_id` ON DELETE SET NULL）
   - [x] `room_sequences`テーブル
 
 ## インフラ
