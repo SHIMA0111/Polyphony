@@ -1,100 +1,102 @@
-# Phase 1: プロジェクト骨格 + 最小AIチャット
+# Phase 1: Project Skeleton + Minimal AI Chat
 
-**ゴール**: 1ユーザーがブラウザからAIと会話できる最小限のアプリケーション
+**Goal**: A minimal application where a single user can chat with AI from a browser
 
 ---
 
 ## LLM Gateway (Rust)
 
-- [x] Cargoプロジェクト初期化（`llm-gateway/`）+ 依存クレート追加
-- [x] `config.rs` — 環境変数設定読み込み
-- [x] `domain/model.rs` — CompletionRequest, CompletionResponse, ModelInfo型
-- [x] `domain/error.rs` — ドメインエラー型
-- [x] `domain/service.rs` — CompletionService（プロバイダー選択ロジック）
+- [x] Initialize Cargo project (`llm-gateway/`) + add dependency crates
+- [x] `config.rs` — Environment variable configuration loading
+- [x] `domain/model.rs` — CompletionRequest, CompletionResponse, ModelInfo types
+- [x] `domain/error.rs` — Domain error types
+- [x] `domain/service.rs` — CompletionService (provider selection logic)
 - [x] `ports/inbound/completion.rs` — CompletionUseCase trait
 - [x] `ports/outbound/provider.rs` — LLMProvider trait
 - [x] `ports/outbound/key_store.rs` — KeyStore trait
-- [x] `adapters/outbound/openai.rs` — OpenAI APIアダプター
-- [x] `adapters/outbound/env_key.rs` — 環境変数からのAPIキー取得
-- [x] `adapters/inbound/rest/` — REST APIハンドラ（axum）
-  - [x] `POST /completions` — チャット補完
-  - [x] `GET /models` — 利用可能モデル一覧
-  - [x] `GET /health` — ヘルスチェック
-- [x] `main.rs` — DI組み立て + サーバー起動
-- [x] ユニットテスト（モックプロバイダー）— 10件パス
-- [x] 動作確認（curl等でローカルテスト）
+- [x] `adapters/outbound/openai.rs` — OpenAI API adapter
+- [x] `adapters/outbound/env_key.rs` — API key retrieval from environment variables
+- [x] `adapters/inbound/rest/` — REST API handlers (axum)
+  - [x] `POST /completions` — Chat completion
+  - [x] `GET /models` — Available model listing
+  - [x] `GET /health` — Health check
+- [x] `main.rs` — DI assembly + server startup
+- [x] Unit tests (mock provider) — 10 passing
+- [x] Manual verification (local testing with curl, etc.)
 
 ## Go API Server
 
-- [ ] Goモジュール初期化（`server/`）
-- [ ] `cmd/api/main.go` — エントリポイント、DI組み立て
-- [ ] `internal/infrastructure/config/config.go` — 設定読み込み
-- [ ] `internal/infrastructure/database/postgres.go` — DBコネクション
-- [ ] **domain層**
-  - [ ] `domain/user/entity.go` — User構造体
-  - [ ] `domain/user/repository.go` — UserRepository interface
-  - [ ] `domain/auth/service.go` — AuthService interface
-  - [ ] `domain/room/entity.go` — Room, RoomMember構造体
-  - [ ] `domain/room/repository.go` — RoomRepository interface
-  - [ ] `domain/message/entity.go` — Message, MessageType構造体
-  - [ ] `domain/message/repository.go` — MessageRepository interface
-  - [ ] `domain/ai/entity.go` — AIRequest, AIResponse構造体
-  - [ ] `domain/ai/gateway.go` — LLMGateway interface
-- [ ] **usecase層**
-  - [ ] `usecase/auth/usecase.go` — Register, Login
-  - [ ] `usecase/room/usecase.go` — CreateRoom, GetRoom, ListRooms
-  - [ ] `usecase/message/usecase.go` — SendMessage, ListMessages（カーソルページネーション）, SendAIMessage
-- [ ] **interface層**
-  - [ ] `interface/handler/auth_handler.go` — POST /auth/register, POST /auth/login
-  - [ ] `interface/handler/room_handler.go` — CRUD API
-  - [ ] `interface/handler/message_handler.go` — メッセージ送信・取得API
-  - [ ] `interface/middleware/auth.go` — JWT検証ミドルウェア
-  - [ ] `interface/repository/postgres/user_repository.go`
-  - [ ] `interface/repository/postgres/room_repository.go`
-  - [ ] `interface/repository/postgres/message_repository.go`
-  - [ ] `interface/gateway/llm_client.go` — LLM Gateway RESTクライアント
-- [ ] SimpleJWT実装（argon2 + JWT発行/検証）
-- [ ] ユニットテスト（モックRepository/Gateway）
-- [ ] 動作確認
+- [x] Initialize Go module (`server/`)
+- [x] `cmd/api/main.go` — Entry point, DI assembly
+- [x] `internal/infrastructure/config/config.go` — Configuration loading
+- [x] `internal/infrastructure/database/postgres.go` — DB connection pool
+- [x] **Domain layer**
+  - [x] `domain/user/entity.go` — User struct
+  - [x] `domain/user/repository.go` — UserRepository interface
+  - [x] `domain/auth/service.go` — AuthService interface
+  - [x] `domain/room/entity.go` — Room, RoomMember structs
+  - [x] `domain/room/repository.go` — RoomRepository interface
+  - [x] `domain/message/entity.go` — Message, MessageType, MessageStatus structs
+  - [x] `domain/message/repository.go` — MessageRepository interface
+  - [x] `domain/ai/entity.go` — AIRequest, AIResponse structs
+  - [x] `domain/ai/gateway.go` — LLMGateway interface
+- [x] **Usecase layer**
+  - [x] `usecase/auth/usecase.go` — Register, Login
+  - [x] `usecase/room/usecase.go` — CreateRoom, GetRoom, ListRooms
+  - [x] `usecase/message/usecase.go` — SendMessage, ListMessages (cursor pagination), SendAIMessage (saves status=failed placeholder on LLM failure)
+  - [x] `usecase/message/usecase.go` — RegenerateAIMessage (always UPDATEs existing AI message, never creates new)
+- [x] **Interface layer**
+  - [x] `interface/handler/auth_handler.go` — POST /auth/register, POST /auth/login
+  - [x] `interface/handler/room_handler.go` — CRUD API
+  - [x] `interface/handler/message_handler.go` — Message send/list API
+  - [x] `interface/handler/message_handler.go` — RegenerateAI handler (`POST /rooms/:roomId/messages/:messageId/regenerate`)
+  - [x] `interface/middleware/auth.go` — JWT verification middleware
+  - [x] `interface/repository/postgres/user_repository.go`
+  - [x] `interface/repository/postgres/room_repository.go`
+  - [x] `interface/repository/postgres/message_repository.go`
+  - [x] `interface/gateway/llm_client.go` — LLM Gateway REST client
+- [x] SimpleJWT implementation (argon2 + JWT issue/verify)
+- [x] Unit tests (mock Repository/Gateway)
+- [ ] Manual verification
 
 ## Web Frontend (Next.js)
 
-- [ ] Next.jsプロジェクト初期化（`web/`）、Bulletproof Reactディレクトリ構造
-- [ ] `src/lib/api.ts` — APIクライアント設定
-- [ ] `src/features/auth/` — ログイン・登録
+- [ ] Initialize Next.js project (`web/`), Bulletproof React directory structure
+- [ ] `src/lib/api.ts` — API client configuration
+- [ ] `src/features/auth/` — Login & registration
   - [ ] `components/LoginForm.tsx`
   - [ ] `components/RegisterForm.tsx`
   - [ ] `api/actions.ts` — Server Actions
-- [ ] `src/features/rooms/` — ルーム一覧・作成
+- [ ] `src/features/rooms/` — Room listing & creation
   - [ ] `components/RoomList.tsx`
   - [ ] `components/CreateRoomForm.tsx`
   - [ ] `api/actions.ts`
-- [ ] `src/features/messages/` — チャット画面
+- [ ] `src/features/messages/` — Chat screen
   - [ ] `components/MessageList.tsx`
   - [ ] `components/MessageInput.tsx`
   - [ ] `api/actions.ts`
-- [ ] `src/app/` — ルーティング
+- [ ] `src/app/` — Routing
   - [ ] `(auth)/login/page.tsx`
   - [ ] `(auth)/register/page.tsx`
   - [ ] `(main)/rooms/page.tsx`
   - [ ] `(main)/rooms/[roomId]/page.tsx`
-- [ ] 動作確認
+- [ ] Manual verification
 
-## DB マイグレーション
+## DB Migration
 
-- [ ] `migrations/` — golang-migrate初期マイグレーション
-  - [ ] `users`テーブル
-  - [ ] `rooms`テーブル
-  - [ ] `room_members`テーブル
-  - [ ] `messages`テーブル
-  - [ ] `room_sequences`テーブル
+- [x] `migrations/` — golang-migrate initial migration
+  - [x] `users` table
+  - [x] `rooms` table (`owner_id` ON DELETE RESTRICT — cannot delete account without ownership transfer)
+  - [x] `room_members` table (`user_id` ON DELETE RESTRICT — leave is handled explicitly by the app)
+  - [x] `messages` table (`status` column: completed/failed, `sender_id` ON DELETE SET NULL)
+  - [x] `room_sequences` table
 
-## インフラ
+## Infrastructure
 
-- [ ] `docker-compose.yml`（PostgreSQL + Go API + Rust LLM Gateway + Next.js）
-- [ ] 各サービスのDockerfile
+- [ ] `docker-compose.yml` (PostgreSQL + Go API + Rust LLM Gateway + Next.js)
+- [ ] Dockerfiles for each service
 - [ ] `.env.example`
 
-## 結合テスト
+## Integration Test
 
-- [ ] Docker Compose起動 → 登録 → ログイン → ルーム作成 → メッセージ送信 → AI応答取得の一連フロー確認
+- [ ] End-to-end flow via Docker Compose: register → login → create room → send message → get AI response
