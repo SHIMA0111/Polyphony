@@ -60,6 +60,11 @@ type SendAIMessageRequest struct {
 	Model   string `json:"model"`
 }
 
+// RegenerateAIMessageRequest is the request body for regenerating an AI response.
+type RegenerateAIMessageRequest struct {
+	Model string `json:"model"`
+}
+
 // MessageResponse is the response body for a message.
 type MessageResponse struct {
 	ID        string    `json:"id"`
@@ -67,8 +72,18 @@ type MessageResponse struct {
 	SenderID  *string   `json:"sender_id"`
 	Content   string    `json:"content"`
 	Type      string    `json:"type"`
+	Status    string    `json:"status"`
 	Sequence  int64     `json:"sequence"`
 	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SendAIMessageResponse is the response body for POST /rooms/:roomId/messages/ai.
+// Always contains both the user message and AI message.
+// Check ai_message.status to determine if the LLM call succeeded ("completed") or failed ("failed").
+type SendAIMessageResponse struct {
+	UserMessage MessageResponse `json:"user_message"`
+	AIMessage   MessageResponse `json:"ai_message"`
 }
 
 // MessageListResponse is the response body for a paginated list of messages.

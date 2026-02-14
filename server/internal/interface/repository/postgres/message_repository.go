@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,29 +26,41 @@ func NewMessageRepository(pool *pgxpool.Pool) *MessageRepository {
 // Create persists a new message.
 func (r *MessageRepository) Create(ctx context.Context, msg *message.Message) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO messages (id, room_id, sender_id, content, type, sequence, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		msg.ID, msg.RoomID, msg.SenderID, msg.Content, string(msg.Type), msg.Sequence, msg.CreatedAt, msg.UpdatedAt,
+		`INSERT INTO messages (id, room_id, sender_id, content, type, status, sequence, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		msg.ID, msg.RoomID, msg.SenderID, msg.Content, string(msg.Type), string(msg.Status), msg.Sequence, msg.CreatedAt, msg.UpdatedAt,
 	)
 	return err
 }
 
+// scanMessage scans a message row into a Message struct.
+func scanMessage(scanner interface{ Scan(dest ...any) error }) (*message.Message, error) {
+	var msg message.Message
+	var msgType, status string
+	err := scanner.Scan(&msg.ID, &msg.RoomID, &msg.SenderID, &msg.Content, &msgType, &status, &msg.Sequence, &msg.CreatedAt, &msg.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	msg.Type = message.MessageType(msgType)
+	msg.Status = message.MessageStatus(status)
+	return &msg, nil
+}
+
+const messageColumns = `id, room_id, sender_id, content, type, status, sequence, created_at, updated_at`
+
 // GetByID retrieves a message by ID.
 func (r *MessageRepository) GetByID(ctx context.Context, id string) (*message.Message, error) {
-	var msg message.Message
-	var msgType string
-	err := r.pool.QueryRow(ctx,
-		`SELECT id, room_id, sender_id, content, type, sequence, created_at, updated_at
-		 FROM messages WHERE id = $1`, id,
-	).Scan(&msg.ID, &msg.RoomID, &msg.SenderID, &msg.Content, &msgType, &msg.Sequence, &msg.CreatedAt, &msg.UpdatedAt)
+	row := r.pool.QueryRow(ctx,
+		`SELECT `+messageColumns+` FROM messages WHERE id = $1`, id,
+	)
+	msg, err := scanMessage(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
 		return nil, err
 	}
-	msg.Type = message.MessageType(msgType)
-	return &msg, nil
+	return msg, nil
 }
 
 // ListByRoom returns messages using cursor-based pagination (newest first).
@@ -58,8 +71,7 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 
 	if cursor == "" {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, room_id, sender_id, content, type, sequence, created_at, updated_at
-			 FROM messages WHERE room_id = $1
+			`SELECT `+messageColumns+` FROM messages WHERE room_id = $1
 			 ORDER BY sequence DESC LIMIT $2`,
 			roomID, limit+1,
 		)
@@ -77,8 +89,7 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 		}
 
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, room_id, sender_id, content, type, sequence, created_at, updated_at
-			 FROM messages WHERE room_id = $1 AND sequence < $2
+			`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence < $2
 			 ORDER BY sequence DESC LIMIT $3`,
 			roomID, cursorSeq, limit+1,
 		)
@@ -90,13 +101,11 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 
 	var messages []*message.Message
 	for rows.Next() {
-		var msg message.Message
-		var msgType string
-		if err := rows.Scan(&msg.ID, &msg.RoomID, &msg.SenderID, &msg.Content, &msgType, &msg.Sequence, &msg.CreatedAt, &msg.UpdatedAt); err != nil {
+		msg, err := scanMessage(rows)
+		if err != nil {
 			return nil, err
 		}
-		msg.Type = message.MessageType(msgType)
-		messages = append(messages, &msg)
+		messages = append(messages, msg)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -113,6 +122,65 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 
 	page.Messages = messages
 	return page, nil
+}
+
+// ListByRoomUpTo returns up to limit messages with sequence <= maxSequence.
+func (r *MessageRepository) ListByRoomUpTo(ctx context.Context, roomID string, maxSequence int64, limit int) ([]*message.Message, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence <= $2
+		 ORDER BY sequence DESC LIMIT $3`,
+		roomID, maxSequence, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []*message.Message
+	for rows.Next() {
+		msg, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return messages, nil
+}
+
+// GetNextInRoom returns the message with the smallest sequence greater than afterSequence.
+func (r *MessageRepository) GetNextInRoom(ctx context.Context, roomID string, afterSequence int64) (*message.Message, error) {
+	row := r.pool.QueryRow(ctx,
+		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence > $2
+		 ORDER BY sequence ASC LIMIT 1`,
+		roomID, afterSequence,
+	)
+	msg, err := scanMessage(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return msg, nil
+}
+
+// UpdateAIResponse updates the content, status, and updated_at of an AI message.
+func (r *MessageRepository) UpdateAIResponse(ctx context.Context, id string, content string, status message.MessageStatus, updatedAt time.Time) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE messages SET content = $1, status = $2, updated_at = $3 WHERE id = $4`,
+		content, string(status), updatedAt, id,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 // Delete removes a message by ID.

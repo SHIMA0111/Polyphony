@@ -50,7 +50,7 @@ func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO room_members (id, room_id, user_id, role, joined_at)
-		 VALUES ($1, $2, $3, 'owner', $4)`,
+		 VALUES ($1, $2, $3, 'master', $4)`,
 		uuid.New().String(), rm.ID, rm.OwnerID, time.Now(),
 	)
 	if err != nil {

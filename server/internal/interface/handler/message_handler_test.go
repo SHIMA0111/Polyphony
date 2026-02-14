@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -52,6 +54,43 @@ func (m *mockMsgRepoForHandler) ListByRoom(_ context.Context, roomID, _ string, 
 		msgs = msgs[:limit]
 	}
 	return &domainmessage.CursorPage{Messages: msgs}, nil
+}
+func (m *mockMsgRepoForHandler) ListByRoomUpTo(_ context.Context, roomID string, maxSequence int64, limit int) ([]*domainmessage.Message, error) {
+	var msgs []*domainmessage.Message
+	for _, msg := range m.messages {
+		if msg.RoomID == roomID && msg.Sequence <= maxSequence {
+			msgs = append(msgs, msg)
+		}
+	}
+	if len(msgs) > limit {
+		msgs = msgs[:limit]
+	}
+	return msgs, nil
+}
+func (m *mockMsgRepoForHandler) GetNextInRoom(_ context.Context, roomID string, afterSequence int64) (*domainmessage.Message, error) {
+	var candidates []*domainmessage.Message
+	for _, msg := range m.messages {
+		if msg.RoomID == roomID && msg.Sequence > afterSequence {
+			candidates = append(candidates, msg)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, domain.ErrNotFound
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Sequence < candidates[j].Sequence
+	})
+	return candidates[0], nil
+}
+func (m *mockMsgRepoForHandler) UpdateAIResponse(_ context.Context, id string, content string, status domainmessage.MessageStatus, updatedAt time.Time) error {
+	msg, ok := m.messages[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	msg.Content = content
+	msg.Status = status
+	msg.UpdatedAt = updatedAt
+	return nil
 }
 func (m *mockMsgRepoForHandler) Delete(_ context.Context, id string) error {
 	delete(m.messages, id)
@@ -219,5 +258,51 @@ func TestSendAIHandler201(t *testing.T) {
 	}
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+
+	// Verify response contains both user_message and ai_message
+	body := rec.Body.String()
+	if !strings.Contains(body, `"user_message"`) {
+		t.Fatal("response should contain user_message")
+	}
+	if !strings.Contains(body, `"ai_message"`) {
+		t.Fatal("response should contain ai_message")
+	}
+	if !strings.Contains(body, `"updated_at"`) {
+		t.Fatal("response should contain updated_at")
+	}
+}
+
+func TestSendAIHandlerLLMFailure201(t *testing.T) {
+	msgRepo := newMockMsgRepoForHandler()
+	roomRepo := newMockRoomRepoForMsg()
+	roomRepo.addMember("room-1", "user-1")
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mockLLMForHandler{shouldErr: true})
+	e := echo.New()
+	h := NewMessageHandler(uc)
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai",
+		strings.NewReader(`{"content":"Hello","model":"test"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.SendAI(c); err != nil {
+		t.Fatalf("SendAI error: %v", err)
+	}
+	// Should still return 201 — both messages were created
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"failed"`) {
+		t.Fatal("response should contain failed status for AI message")
+	}
+	if !strings.Contains(body, `"user_message"`) {
+		t.Fatal("response should contain user_message")
 	}
 }

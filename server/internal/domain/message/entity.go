@@ -13,6 +13,17 @@ const (
 	MessageTypeAI MessageType = "ai"
 )
 
+// MessageStatus represents the delivery status of a message.
+type MessageStatus string
+
+const (
+	// MessageStatusCompleted indicates the message was delivered successfully.
+	MessageStatusCompleted MessageStatus = "completed"
+
+	// MessageStatusFailed indicates the AI call failed. Eligible for regeneration.
+	MessageStatusFailed MessageStatus = "failed"
+)
+
 // Message represents a single message in a chat room.
 type Message struct {
 	ID        string
@@ -20,6 +31,7 @@ type Message struct {
 	SenderID  *string // nil for AI messages
 	Content   string
 	Type      MessageType
+	Status    MessageStatus
 	Sequence  int64
 	CreatedAt time.Time
 	UpdatedAt time.Time
