@@ -6,6 +6,8 @@ import (
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
 )
 
+// ValidateToken parses and validates a JWT token string, returning the associated claims.
+// Returns domain.ErrInvalidToken if the token is malformed, expired, or signed with an incorrect secret.
 type TokenValidator interface {
 	ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error)
 }

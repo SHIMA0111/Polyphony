@@ -133,7 +133,9 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		// Save failed placeholder so regenerate can update it later
 		aiMsg.Content = ""
 		aiMsg.Status = domainmessage.MessageStatusFailed
-		_ = u.msgRepo.Create(ctx, aiMsg) // best-effort save
+		if err := u.msgRepo.Create(ctx, aiMsg); err != nil {
+			return nil, err
+		}
 		return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg}, nil
 	}
 
