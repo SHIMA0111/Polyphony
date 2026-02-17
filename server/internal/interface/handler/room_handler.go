@@ -11,17 +11,23 @@ import (
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
 )
 
-// RoomHandler handles room HTTP requests.
+// RoomHandler handles HTTP requests for room endpoints, including creating,
+// reading, listing, updating, and deleting chat rooms. It delegates business
+// logic to RoomUsecase.
 type RoomHandler struct {
 	usecase *roomusecase.RoomUsecase
 }
 
-// NewRoomHandler creates a new RoomHandler.
+// NewRoomHandler creates a new RoomHandler with the given RoomUsecase.
 func NewRoomHandler(usecase *roomusecase.RoomUsecase) *RoomHandler {
 	return &RoomHandler{usecase: usecase}
 }
 
-// Create handles POST /rooms.
+// Create handles POST /rooms. It creates a new chat room owned by the
+// authenticated user. The request body must include a non-empty name and may
+// include an optional description. On success it returns HTTP 201 with a
+// RoomResponse. It returns HTTP 400 for invalid or incomplete input and
+// HTTP 500 for unexpected errors.
 func (h *RoomHandler) Create(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 
@@ -49,7 +55,10 @@ func (h *RoomHandler) Create(c echo.Context) error {
 	})
 }
 
-// Get handles GET /rooms/:roomId.
+// Get handles GET /rooms/:roomId. It retrieves a single room by ID. The
+// authenticated user must have access to the room. On success it returns
+// HTTP 200 with a RoomResponse. It returns HTTP 403 if the user lacks
+// permission and HTTP 404 if the room does not exist.
 func (h *RoomHandler) Get(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")
@@ -69,7 +78,9 @@ func (h *RoomHandler) Get(c echo.Context) error {
 	})
 }
 
-// List handles GET /rooms.
+// List handles GET /rooms. It returns all rooms the authenticated user has
+// access to. On success it returns HTTP 200 with a JSON array of RoomResponse
+// objects. It returns HTTP 500 for unexpected errors.
 func (h *RoomHandler) List(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 
@@ -93,7 +104,11 @@ func (h *RoomHandler) List(c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
-// Update handles PUT /rooms/:roomId.
+// Update handles PUT /rooms/:roomId. It updates the name and description of an
+// existing room. The request body must include a non-empty name. On success it
+// returns HTTP 200 with the updated RoomResponse. It returns HTTP 400 for
+// invalid input, HTTP 403 if the user lacks permission, and HTTP 404 if the
+// room does not exist.
 func (h *RoomHandler) Update(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")
@@ -122,7 +137,10 @@ func (h *RoomHandler) Update(c echo.Context) error {
 	})
 }
 
-// Delete handles DELETE /rooms/:roomId.
+// Delete handles DELETE /rooms/:roomId. It deletes the specified room. Only
+// the room owner or a user with sufficient privileges may delete a room. On
+// success it returns HTTP 204 with no content. It returns HTTP 403 if the user
+// lacks permission and HTTP 404 if the room does not exist.
 func (h *RoomHandler) Delete(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")

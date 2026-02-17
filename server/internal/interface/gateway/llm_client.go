@@ -13,13 +13,14 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 )
 
-// LLMClient implements ai.LLMGateway using REST calls to the LLM Gateway.
+// LLMClient implements the ai.LLMGateway interface using REST calls to the LLM Gateway service.
 type LLMClient struct {
 	baseURL    string
 	httpClient *http.Client
 }
 
-// NewLLMClient creates a new LLMClient.
+// NewLLMClient creates a new LLMClient configured to call the LLM Gateway at the given base URL.
+// The HTTP client is configured with a 60-second timeout.
 func NewLLMClient(baseURL string) *LLMClient {
 	return &LLMClient{
 		baseURL: baseURL,
@@ -63,7 +64,8 @@ type modelsRespDTO struct {
 	Models []modelDTO `json:"models"`
 }
 
-// Complete sends a completion request to the LLM Gateway.
+// Complete sends a chat completion request to the LLM Gateway and returns the response.
+// It returns a domain.ErrLLMGateway-wrapped error on request marshalling, HTTP, or decode failures.
 func (c *LLMClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
 	msgs := make([]chatMsgDTO, len(req.Messages))
 	for i, m := range req.Messages {
@@ -112,7 +114,8 @@ func (c *LLMClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*a
 	}, nil
 }
 
-// ListModels retrieves available models from the LLM Gateway.
+// ListModels retrieves the list of available models from the LLM Gateway.
+// It returns a domain.ErrLLMGateway-wrapped error on HTTP or decode failures.
 func (c *LLMClient) ListModels(ctx context.Context) ([]ai.ModelInfo, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
 	if err != nil {

@@ -13,17 +13,17 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 )
 
-// MessageRepository implements message.MessageRepository using PostgreSQL.
+// MessageRepository implements the message.MessageRepository interface using PostgreSQL.
 type MessageRepository struct {
 	pool *pgxpool.Pool
 }
 
-// NewMessageRepository creates a new MessageRepository.
+// NewMessageRepository creates a new MessageRepository backed by the given connection pool.
 func NewMessageRepository(pool *pgxpool.Pool) *MessageRepository {
 	return &MessageRepository{pool: pool}
 }
 
-// Create persists a new message.
+// Create persists a new message to the database.
 func (r *MessageRepository) Create(ctx context.Context, msg *message.Message) error {
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO messages (id, room_id, sender_id, content, type, status, sequence, created_at, updated_at)
@@ -48,7 +48,7 @@ func scanMessage(scanner interface{ Scan(dest ...any) error }) (*message.Message
 
 const messageColumns = `id, room_id, sender_id, content, type, status, sequence, created_at, updated_at`
 
-// GetByID retrieves a message by ID.
+// GetByID retrieves a message by its unique identifier. It returns domain.ErrNotFound if the message does not exist.
 func (r *MessageRepository) GetByID(ctx context.Context, id string) (*message.Message, error) {
 	row := r.pool.QueryRow(ctx,
 		`SELECT `+messageColumns+` FROM messages WHERE id = $1`, id,
@@ -63,8 +63,9 @@ func (r *MessageRepository) GetByID(ctx context.Context, id string) (*message.Me
 	return msg, nil
 }
 
-// ListByRoom returns messages using cursor-based pagination (newest first).
-// Cursor is a message ID; if empty, starts from the most recent.
+// ListByRoom returns messages for a room using cursor-based pagination, ordered newest first.
+// The cursor is a message ID; if empty, fetching starts from the most recent message.
+// It returns a CursorPage containing up to limit messages and a next cursor if more pages exist.
 func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, cursor string, limit int) (*message.CursorPage, error) {
 	var rows pgx.Rows
 	var err error
@@ -124,7 +125,7 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 	return page, nil
 }
 
-// ListByRoomUpTo returns up to limit messages with sequence <= maxSequence.
+// ListByRoomUpTo returns up to limit messages with sequence less than or equal to maxSequence, ordered newest first.
 func (r *MessageRepository) ListByRoomUpTo(ctx context.Context, roomID string, maxSequence int64, limit int) ([]*message.Message, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence <= $2
@@ -152,6 +153,7 @@ func (r *MessageRepository) ListByRoomUpTo(ctx context.Context, roomID string, m
 }
 
 // GetNextInRoom returns the message with the smallest sequence greater than afterSequence.
+// It returns domain.ErrNotFound if no subsequent message exists.
 func (r *MessageRepository) GetNextInRoom(ctx context.Context, roomID string, afterSequence int64) (*message.Message, error) {
 	row := r.pool.QueryRow(ctx,
 		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence > $2
@@ -168,7 +170,8 @@ func (r *MessageRepository) GetNextInRoom(ctx context.Context, roomID string, af
 	return msg, nil
 }
 
-// UpdateAIResponse updates the content, status, and updated_at of an AI message.
+// UpdateAIResponse updates the content, status, and updated_at fields of an AI message.
+// It returns domain.ErrNotFound if the message does not exist.
 func (r *MessageRepository) UpdateAIResponse(ctx context.Context, id string, content string, status message.MessageStatus, updatedAt time.Time) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE messages SET content = $1, status = $2, updated_at = $3 WHERE id = $4`,
@@ -183,7 +186,7 @@ func (r *MessageRepository) UpdateAIResponse(ctx context.Context, id string, con
 	return nil
 }
 
-// Delete removes a message by ID.
+// Delete removes a message by its unique identifier. It returns domain.ErrNotFound if the message does not exist.
 func (r *MessageRepository) Delete(ctx context.Context, id string) error {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM messages WHERE id = $1`, id)
 	if err != nil {
@@ -195,7 +198,8 @@ func (r *MessageRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// GetNextSequence atomically allocates the next sequence number for a room.
+// GetNextSequence atomically allocates and returns the next sequence number for a room.
+// It returns domain.ErrNotFound if the room has no sequence counter entry.
 func (r *MessageRepository) GetNextSequence(ctx context.Context, roomID string) (int64, error) {
 	var seq int64
 	err := r.pool.QueryRow(ctx,

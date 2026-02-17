@@ -13,17 +13,23 @@ import (
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
 )
 
-// MessageHandler handles message HTTP requests.
+// MessageHandler handles HTTP requests for message endpoints, including
+// sending, listing, AI-assisted messaging, and AI response regeneration.
+// It delegates business logic to MessageUsecase.
 type MessageHandler struct {
 	usecase *msgusecase.MessageUsecase
 }
 
-// NewMessageHandler creates a new MessageHandler.
+// NewMessageHandler creates a new MessageHandler with the given MessageUsecase.
 func NewMessageHandler(usecase *msgusecase.MessageUsecase) *MessageHandler {
 	return &MessageHandler{usecase: usecase}
 }
 
-// Send handles POST /rooms/:roomId/messages.
+// Send handles POST /rooms/:roomId/messages. It sends a user message to the
+// specified room. The authenticated user ID is extracted from the Echo context.
+// On success it returns HTTP 201 with the created MessageResponse. It returns
+// HTTP 400 for invalid input, HTTP 403 if the user lacks permission, HTTP 404
+// if the room is not found, and HTTP 500 for unexpected errors.
 func (h *MessageHandler) Send(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")
@@ -45,7 +51,11 @@ func (h *MessageHandler) Send(c echo.Context) error {
 	return c.JSON(http.StatusCreated, toMessageResponse(msg))
 }
 
-// List handles GET /rooms/:roomId/messages.
+// List handles GET /rooms/:roomId/messages. It returns a paginated list of
+// messages in the specified room. Pagination is controlled by the optional
+// "cursor" and "limit" query parameters. The limit is clamped between 1 and
+// 100, defaulting to 20. On success it returns HTTP 200 with a
+// MessageListResponse containing the messages and an optional next cursor.
 func (h *MessageHandler) List(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")
@@ -76,9 +86,14 @@ func (h *MessageHandler) List(c echo.Context) error {
 	})
 }
 
-// SendAI handles POST /rooms/:roomId/messages/ai.
-// Always returns both the user message and AI message.
-// Check ai_message.status to determine if the LLM call succeeded.
+// SendAI handles POST /rooms/:roomId/messages/ai. It sends a user message and
+// invokes the LLM Gateway to generate an AI response. The request body may
+// optionally specify a model name. On success it returns HTTP 201 with a
+// SendAIMessageResponse containing both the user message and the AI message.
+// Check ai_message.status to determine if the LLM call succeeded ("completed")
+// or failed ("failed"). It returns HTTP 400 for invalid input, HTTP 403 if the
+// user lacks permission, HTTP 404 if the room is not found, and HTTP 502 if the
+// AI service encounters an error.
 func (h *MessageHandler) SendAI(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")
@@ -104,6 +119,10 @@ func (h *MessageHandler) SendAI(c echo.Context) error {
 }
 
 // RegenerateAI handles POST /rooms/:roomId/messages/:messageId/regenerate.
+// It regenerates an AI response for an existing human message. The request body
+// may optionally specify a different model. The target message must be of type
+// "human"; otherwise HTTP 400 is returned. On success it returns HTTP 200 with
+// the new AI MessageResponse.
 func (h *MessageHandler) RegenerateAI(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")

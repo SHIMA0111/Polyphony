@@ -6,9 +6,11 @@ import (
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
 )
 
-// ValidateToken parses and validates a JWT token string, returning the associated claims.
-// Returns domain.ErrInvalidToken if the token is malformed, expired, or signed with an incorrect secret.
+// TokenValidator defines the interface for validating JWT tokens.
+// Implementations parse and validate a JWT token string, returning the associated claims.
 type TokenValidator interface {
+	// ValidateToken parses and validates a JWT token string, returning the associated claims.
+	// Returns domain.ErrInvalidToken if the token is malformed, expired, or signed with an incorrect secret.
 	ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error)
 }
 
@@ -32,6 +34,8 @@ func (u *AuthUsecase) Login(ctx context.Context, email, password string) (*domai
 	return u.authService.Login(ctx, email, password)
 }
 
+// ValidateToken validates the given JWT token string and returns the associated claims.
+// Returns an error if the token is invalid, expired, or cannot be verified.
 func (u *AuthUsecase) ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error) {
 	return u.authService.ValidateToken(ctx, token)
 }

@@ -28,13 +28,13 @@ const (
 	tokenExpiry   = 24 * time.Hour
 )
 
-// SimpleJWTService implements AuthService using argon2id password hashing and HS256 JWT.
+// SimpleJWTService implements the auth.AuthService interface using argon2id password hashing and HS256 JWT tokens.
 type SimpleJWTService struct {
 	userRepo  user.UserRepository
 	jwtSecret []byte
 }
 
-// NewSimpleJWTService creates a new SimpleJWTService.
+// NewSimpleJWTService creates a new SimpleJWTService with the given user repository and JWT signing secret.
 func NewSimpleJWTService(userRepo user.UserRepository, jwtSecret string) *SimpleJWTService {
 	return &SimpleJWTService{
 		userRepo:  userRepo,
@@ -42,7 +42,9 @@ func NewSimpleJWTService(userRepo user.UserRepository, jwtSecret string) *Simple
 	}
 }
 
-// Register creates a new user and returns a token pair.
+// Register creates a new user with the given credentials and returns a JWT token pair.
+// It hashes the password using argon2id before storing. It returns domain.ErrEmailAlreadyExists
+// or domain.ErrUsernameAlreadyExists if the email or username is already taken.
 func (s *SimpleJWTService) Register(ctx context.Context, email, username, password string) (*domainauth.TokenPair, error) {
 	hash, err := hashPassword(password)
 	if err != nil {
@@ -74,7 +76,8 @@ func (s *SimpleJWTService) Register(ctx context.Context, email, username, passwo
 	}, nil
 }
 
-// Login authenticates a user and returns a token pair.
+// Login authenticates a user by email and password and returns a JWT token pair.
+// It returns domain.ErrInvalidCredentials if the email is not found or the password does not match.
 func (s *SimpleJWTService) Login(ctx context.Context, email, password string) (*domainauth.TokenPair, error) {
 	u, err := s.userRepo.GetByEmail(ctx, email)
 	if err != nil {
@@ -99,7 +102,8 @@ func (s *SimpleJWTService) Login(ctx context.Context, email, password string) (*
 	}, nil
 }
 
-// ValidateToken validates a JWT and returns the claims.
+// ValidateToken validates a JWT string and returns the extracted claims.
+// It returns domain.ErrInvalidToken if the token is malformed, expired, or uses an unexpected signing method.
 func (s *SimpleJWTService) ValidateToken(_ context.Context, tokenString string) (*domainauth.Claims, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {

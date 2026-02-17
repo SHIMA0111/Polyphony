@@ -10,17 +10,23 @@ import (
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
 )
 
-// AuthHandler handles authentication HTTP requests.
+// AuthHandler handles HTTP requests for authentication endpoints, including
+// user registration and login. It delegates business logic to AuthUsecase.
 type AuthHandler struct {
 	usecase *authusecase.AuthUsecase
 }
 
-// NewAuthHandler creates a new AuthHandler.
+// NewAuthHandler creates a new AuthHandler with the given AuthUsecase.
 func NewAuthHandler(usecase *authusecase.AuthUsecase) *AuthHandler {
 	return &AuthHandler{usecase: usecase}
 }
 
-// Register handles POST /auth/register.
+// Register handles POST /auth/register. It binds the request body to a
+// RegisterRequest, validates that email, username, and password are non-empty,
+// and creates a new user account. On success it returns HTTP 201 with a
+// TokenResponse. It returns HTTP 400 for invalid or incomplete input,
+// HTTP 409 if the email or username already exists, and HTTP 500 for
+// unexpected errors.
 func (h *AuthHandler) Register(c echo.Context) error {
 	var req RegisterRequest
 	if err := c.Bind(&req); err != nil {
@@ -48,7 +54,11 @@ func (h *AuthHandler) Register(c echo.Context) error {
 	})
 }
 
-// Login handles POST /auth/login.
+// Login handles POST /auth/login. It binds the request body to a
+// LoginRequest, validates that email and password are provided, and
+// authenticates the user. On success it returns HTTP 200 with a TokenResponse.
+// It returns HTTP 400 for invalid or incomplete input, HTTP 401 for invalid
+// credentials, and HTTP 500 for unexpected errors.
 func (h *AuthHandler) Login(c echo.Context) error {
 	var req LoginRequest
 	if err := c.Bind(&req); err != nil {
