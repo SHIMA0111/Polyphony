@@ -84,7 +84,7 @@
 
 ## DB Migration
 
-- [x] `migrations/` — golang-migrate initial migration
+- [x] `migrations/` — atlas initial migration
   - [x] `users` table
   - [x] `rooms` table (`owner_id` ON DELETE RESTRICT — cannot delete account without ownership transfer)
   - [x] `room_members` table (`user_id` ON DELETE RESTRICT — leave is handled explicitly by the app)

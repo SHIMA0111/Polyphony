@@ -103,6 +103,9 @@ func (m *mockMsgRepo) Delete(_ context.Context, id string) error {
 
 func (m *mockMsgRepo) GetNextSequence(_ context.Context, roomID string) (int64, error) {
 	seq := m.seqs[roomID]
+	if seq == 0 {
+		seq = 1
+	}
 	m.seqs[roomID] = seq + 1
 	return seq, nil
 }

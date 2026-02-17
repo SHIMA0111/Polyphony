@@ -62,6 +62,7 @@ func (m *mockRoomRepoForHandler) Delete(_ context.Context, id string) error {
 		return domain.ErrNotFound
 	}
 	delete(m.rooms, id)
+	delete(m.members, id)
 	return nil
 }
 

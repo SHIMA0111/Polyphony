@@ -71,6 +71,15 @@ func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 		u.Email, u.Username, u.PasswordHash, u.UpdatedAt, u.ID,
 	)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation {
+			if pgErr.ConstraintName == "users_email_unique" {
+				return domain.ErrEmailAlreadyExists
+			}
+			if pgErr.ConstraintName == "users_username_unique" {
+				return domain.ErrUsernameAlreadyExists
+			}
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {
