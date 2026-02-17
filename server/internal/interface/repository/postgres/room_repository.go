@@ -13,17 +13,18 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 )
 
-// RoomRepository implements room.RoomRepository using PostgreSQL.
+// RoomRepository implements the room.RoomRepository interface using PostgreSQL.
 type RoomRepository struct {
 	pool *pgxpool.Pool
 }
 
-// NewRoomRepository creates a new RoomRepository.
+// NewRoomRepository creates a new RoomRepository backed by the given connection pool.
 func NewRoomRepository(pool *pgxpool.Pool) *RoomRepository {
 	return &RoomRepository{pool: pool}
 }
 
-// Create persists a new room, initializes its sequence counter, and adds the owner as a member.
+// Create persists a new room, initializes its sequence counter, and adds the owner as a master member.
+// The entire operation runs within a single transaction to ensure atomicity.
 func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -60,7 +61,7 @@ func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 	return tx.Commit(ctx)
 }
 
-// GetByID retrieves a room by ID.
+// GetByID retrieves a room by its unique identifier. It returns domain.ErrNotFound if the room does not exist.
 func (r *RoomRepository) GetByID(ctx context.Context, id string) (*room.Room, error) {
 	var rm room.Room
 	err := r.pool.QueryRow(ctx,
@@ -75,7 +76,7 @@ func (r *RoomRepository) GetByID(ctx context.Context, id string) (*room.Room, er
 	return &rm, nil
 }
 
-// ListByUserID returns all rooms the user is a member of.
+// ListByUserID returns all rooms that the given user is a member of, ordered by creation time descending.
 func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*room.Room, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT r.id, r.name, r.description, r.owner_id, r.created_at, r.updated_at
@@ -100,7 +101,7 @@ func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*ro
 	return rooms, rows.Err()
 }
 
-// Update updates room fields.
+// Update updates the name, description, and updated_at fields of a room. It returns domain.ErrNotFound if the room does not exist.
 func (r *RoomRepository) Update(ctx context.Context, rm *room.Room) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE rooms SET name = $1, description = $2, updated_at = $3 WHERE id = $4`,
@@ -115,7 +116,7 @@ func (r *RoomRepository) Update(ctx context.Context, rm *room.Room) error {
 	return nil
 }
 
-// Delete removes a room by ID.
+// Delete removes a room by its unique identifier. It returns domain.ErrNotFound if the room does not exist.
 func (r *RoomRepository) Delete(ctx context.Context, id string) error {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM rooms WHERE id = $1`, id)
 	if err != nil {
@@ -127,7 +128,7 @@ func (r *RoomRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// AddMember adds a user to a room.
+// AddMember adds a user to a room with the role specified in the RoomMember struct.
 func (r *RoomRepository) AddMember(ctx context.Context, member *room.RoomMember) error {
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO room_members (id, room_id, user_id, role, joined_at)
@@ -137,7 +138,7 @@ func (r *RoomRepository) AddMember(ctx context.Context, member *room.RoomMember)
 	return err
 }
 
-// GetMember retrieves a specific membership.
+// GetMember retrieves a specific room membership by room ID and user ID. It returns domain.ErrNotFound if the membership does not exist.
 func (r *RoomRepository) GetMember(ctx context.Context, roomID, userID string) (*room.RoomMember, error) {
 	var m room.RoomMember
 	err := r.pool.QueryRow(ctx,
@@ -153,7 +154,7 @@ func (r *RoomRepository) GetMember(ctx context.Context, roomID, userID string) (
 	return &m, nil
 }
 
-// ListMembers returns all members of a room.
+// ListMembers returns all members of a room, ordered by join time ascending.
 func (r *RoomRepository) ListMembers(ctx context.Context, roomID string) ([]*room.RoomMember, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, room_id, user_id, role, joined_at FROM room_members WHERE room_id = $1 ORDER BY joined_at`,
@@ -175,7 +176,7 @@ func (r *RoomRepository) ListMembers(ctx context.Context, roomID string) ([]*roo
 	return members, rows.Err()
 }
 
-// RemoveMember removes a user from a room.
+// RemoveMember removes a user from a room. It returns domain.ErrNotFound if the membership does not exist.
 func (r *RoomRepository) RemoveMember(ctx context.Context, roomID, userID string) error {
 	tag, err := r.pool.Exec(ctx,
 		`DELETE FROM room_members WHERE room_id = $1 AND user_id = $2`,

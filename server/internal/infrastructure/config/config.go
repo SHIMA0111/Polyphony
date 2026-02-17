@@ -7,14 +7,19 @@ import (
 
 // Config holds the application configuration loaded from environment variables.
 type Config struct {
-	Port          string
-	DatabaseURL   string
-	JWTSecret     string
+	// Port is the HTTP server listen port (default "8080").
+	Port string
+	// DatabaseURL is the PostgreSQL connection string (required).
+	DatabaseURL string
+	// JWTSecret is the HMAC secret used for signing and verifying JWT tokens (required).
+	JWTSecret string
+	// LLMGatewayURL is the base URL of the LLM Gateway service (default "http://localhost:8081").
 	LLMGatewayURL string
 }
 
-// Load reads configuration from environment variables.
-// DATABASE_URL and JWT_SECRET are required; others have defaults.
+// Load reads configuration from environment variables and returns a Config.
+// DATABASE_URL and JWT_SECRET are required; PORT defaults to "8080" and LLM_GATEWAY_URL
+// defaults to "http://localhost:8081". It returns an error if any required variable is missing.
 func Load() (*Config, error) {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {

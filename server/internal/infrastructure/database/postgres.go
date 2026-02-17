@@ -8,7 +8,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NewPool creates a new PostgreSQL connection pool and verifies connectivity.
+// NewPool creates a new PostgreSQL connection pool with a max of 20 and min of 5 connections,
+// then verifies connectivity with a 5-second ping timeout. It closes the pool and returns an error
+// if the database is unreachable.
 func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {

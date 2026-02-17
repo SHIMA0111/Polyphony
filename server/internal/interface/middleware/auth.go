@@ -15,7 +15,11 @@ type errorResponse struct {
 	Message string `json:"message"`
 }
 
-// JWTAuth returns middleware that validates Bearer tokens using the given TokenValidator.
+// JWTAuth returns an Echo middleware that validates JWT Bearer tokens using the
+// given TokenValidator. It extracts the token from the Authorization header,
+// validates it, and stores the authenticated user ID in the Echo context for
+// downstream handlers. If the header is missing, malformed, or contains an
+// invalid/expired token, it returns HTTP 401.
 func JWTAuth(tokenValidator auth.TokenValidator) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -40,7 +44,9 @@ func JWTAuth(tokenValidator auth.TokenValidator) echo.MiddlewareFunc {
 	}
 }
 
-// GetUserID extracts the authenticated user ID from the Echo context.
+// GetUserID extracts the authenticated user ID from the Echo context. It
+// returns an empty string if the user ID is not set, which indicates that the
+// JWTAuth middleware was not applied or the request is unauthenticated.
 func GetUserID(c echo.Context) string {
 	id, _ := c.Get(userIDKey).(string)
 	return id

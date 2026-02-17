@@ -13,17 +13,18 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
 )
 
-// UserRepository implements user.UserRepository using PostgreSQL.
+// UserRepository implements the user.UserRepository interface using PostgreSQL.
 type UserRepository struct {
 	pool *pgxpool.Pool
 }
 
-// NewUserRepository creates a new UserRepository.
+// NewUserRepository creates a new UserRepository backed by the given connection pool.
 func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 
-// Create persists a new user.
+// Create persists a new user. It returns domain.ErrEmailAlreadyExists or
+// domain.ErrUsernameAlreadyExists if the email or username is already taken.
 func (r *UserRepository) Create(ctx context.Context, u *user.User) error {
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO users (id, email, username, password_hash, created_at, updated_at)
@@ -45,25 +46,25 @@ func (r *UserRepository) Create(ctx context.Context, u *user.User) error {
 	return nil
 }
 
-// GetByID retrieves a user by ID.
+// GetByID retrieves a user by their unique identifier. It returns domain.ErrNotFound if the user does not exist.
 func (r *UserRepository) GetByID(ctx context.Context, id string) (*user.User, error) {
 	return r.scanUser(r.pool.QueryRow(ctx,
 		`SELECT id, email, username, password_hash, created_at, updated_at FROM users WHERE id = $1`, id))
 }
 
-// GetByEmail retrieves a user by email.
+// GetByEmail retrieves a user by their email address. It returns domain.ErrNotFound if no user matches.
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*user.User, error) {
 	return r.scanUser(r.pool.QueryRow(ctx,
 		`SELECT id, email, username, password_hash, created_at, updated_at FROM users WHERE email = $1`, email))
 }
 
-// GetByUsername retrieves a user by username.
+// GetByUsername retrieves a user by their username. It returns domain.ErrNotFound if no user matches.
 func (r *UserRepository) GetByUsername(ctx context.Context, username string) (*user.User, error) {
 	return r.scanUser(r.pool.QueryRow(ctx,
 		`SELECT id, email, username, password_hash, created_at, updated_at FROM users WHERE username = $1`, username))
 }
 
-// Update updates user fields.
+// Update updates the email, username, password hash, and updated_at fields of a user. It returns domain.ErrNotFound if the user does not exist.
 func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE users SET email = $1, username = $2, password_hash = $3, updated_at = $4 WHERE id = $5`,
@@ -78,7 +79,7 @@ func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 	return nil
 }
 
-// Delete removes a user by ID.
+// Delete removes a user by their unique identifier. It returns domain.ErrNotFound if the user does not exist.
 func (r *UserRepository) Delete(ctx context.Context, id string) error {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
 	if err != nil {
