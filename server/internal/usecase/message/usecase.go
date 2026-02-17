@@ -97,6 +97,15 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		return nil, err
 	}
 
+	// Reserve sequence for the AI message immediately after the human message
+	// to guarantee adjacency. This prevents concurrent requests from inserting
+	// a message between the human and AI messages, which RegenerateAIMessage
+	// (via GetNextInRoom) relies on.
+	aiSeq, err := u.msgRepo.GetNextSequence(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+
 	// Fetch context messages
 	contextPage, err := u.msgRepo.ListByRoom(ctx, roomID, "", defaultContextMessages)
 	if err != nil {
@@ -111,12 +120,6 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		Model:    model,
 		Messages: chatMsgs,
 	})
-
-	// Allocate sequence for the AI message regardless of success/failure
-	aiSeq, err := u.msgRepo.GetNextSequence(ctx, roomID)
-	if err != nil {
-		return nil, err
-	}
 
 	aiNow := time.Now()
 	aiMsg := &domainmessage.Message{

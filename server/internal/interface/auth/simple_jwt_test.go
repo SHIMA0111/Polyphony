@@ -143,9 +143,12 @@ func TestExpiredToken(t *testing.T) {
 		IssuedAt:  jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenStr, _ := token.SignedString([]byte("test-secret"))
+	tokenStr, err := token.SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("SignedString failed: %v", err)
+	}
 
-	_, err := svc.ValidateToken(ctx, tokenStr)
+	_, err = svc.ValidateToken(ctx, tokenStr)
 	if err != domain.ErrInvalidToken {
 		t.Fatalf("expected ErrInvalidToken, got %v", err)
 	}
@@ -161,9 +164,12 @@ func TestWrongSecret(t *testing.T) {
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenStr, _ := token.SignedString([]byte("secret-b"))
+	tokenStr, err := token.SignedString([]byte("secret-b"))
+	if err != nil {
+		t.Fatalf("SignedString failed: %v", err)
+	}
 
-	_, err := svc.ValidateToken(ctx, tokenStr)
+	_, err = svc.ValidateToken(ctx, tokenStr)
 	if err != domain.ErrInvalidToken {
 		t.Fatalf("expected ErrInvalidToken, got %v", err)
 	}
