@@ -6,6 +6,8 @@ reviews:
   high_level_summary: true
   review_status: true
   commit_status: true
+  request_changes_workflow: true
+  related_prs: false
   collapse_walkthrough: true
   sequence_diagrams: true
   path_filters:
@@ -33,6 +35,7 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    auto_pause_after_reviewed_commits: 0
   tools:
     golangci-lint:
       enabled: true

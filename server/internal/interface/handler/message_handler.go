@@ -1,0 +1,172 @@
+package handler
+
+import (
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
+	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
+)
+
+// MessageHandler handles HTTP requests for message endpoints, including
+// sending, listing, AI-assisted messaging, and AI response regeneration.
+// It delegates business logic to MessageUsecase.
+type MessageHandler struct {
+	usecase *msgusecase.MessageUsecase
+}
+
+// NewMessageHandler creates a new MessageHandler with the given MessageUsecase.
+func NewMessageHandler(usecase *msgusecase.MessageUsecase) *MessageHandler {
+	return &MessageHandler{usecase: usecase}
+}
+
+// Send handles POST /rooms/:roomId/messages. It sends a user message to the
+// specified room. The authenticated user ID is extracted from the Echo context.
+// On success it returns HTTP 201 with the created MessageResponse. It returns
+// HTTP 400 for invalid input, HTTP 403 if the user lacks permission, HTTP 404
+// if the room is not found, and HTTP 500 for unexpected errors.
+func (h *MessageHandler) Send(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+
+	var req SendMessageRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
+	}
+
+	if req.Content == "" {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "content is required"})
+	}
+
+	msg, err := h.usecase.SendMessage(c.Request().Context(), userID, roomID, req.Content)
+	if err != nil {
+		return handleMessageError(c, err)
+	}
+
+	return c.JSON(http.StatusCreated, toMessageResponse(msg))
+}
+
+// List handles GET /rooms/:roomId/messages. It returns a paginated list of
+// messages in the specified room. Pagination is controlled by the optional
+// "cursor" and "limit" query parameters. The limit is clamped between 1 and
+// 100, defaulting to 20. On success it returns HTTP 200 with a
+// MessageListResponse containing the messages and an optional next cursor.
+func (h *MessageHandler) List(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+	cursor := c.QueryParam("cursor")
+
+	limit := 20
+	if l := c.QueryParam("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil {
+			limit = parsed
+		}
+	}
+	// Clamp limit between 1 and 100
+	limit = max(1, min(100, limit))
+
+	page, err := h.usecase.ListMessages(c.Request().Context(), userID, roomID, cursor, limit)
+	if err != nil {
+		return handleMessageError(c, err)
+	}
+
+	messages := make([]MessageResponse, len(page.Messages))
+	for i, msg := range page.Messages {
+		messages[i] = toMessageResponse(msg)
+	}
+
+	return c.JSON(http.StatusOK, MessageListResponse{
+		Messages:   messages,
+		NextCursor: page.NextCursor,
+	})
+}
+
+// SendAI handles POST /rooms/:roomId/messages/ai. It sends a user message and
+// invokes the LLM Gateway to generate an AI response. The request body may
+// optionally specify a model name. On success it returns HTTP 201 with a
+// SendAIMessageResponse containing both the user message and the AI message.
+// Check ai_message.status to determine if the LLM call succeeded ("completed")
+// or failed ("failed"). It returns HTTP 400 for invalid input, HTTP 403 if the
+// user lacks permission, HTTP 404 if the room is not found, and HTTP 502 if the
+// AI service encounters an error.
+func (h *MessageHandler) SendAI(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+
+	var req SendAIMessageRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
+	}
+
+	if req.Content == "" {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "content is required"})
+	}
+
+	result, err := h.usecase.SendAIMessage(c.Request().Context(), userID, roomID, req.Content, req.Model)
+	if err != nil {
+		return handleMessageError(c, err)
+	}
+
+	return c.JSON(http.StatusCreated, SendAIMessageResponse{
+		UserMessage: toMessageResponse(result.HumanMessage),
+		AIMessage:   toMessageResponse(result.AIMessage),
+	})
+}
+
+// RegenerateAI handles POST /rooms/:roomId/messages/:messageId/regenerate.
+// It regenerates an AI response for an existing human message. The request body
+// may optionally specify a different model. The target message must be of type
+// "human"; otherwise HTTP 400 is returned. On success it returns HTTP 200 with
+// the new AI MessageResponse.
+func (h *MessageHandler) RegenerateAI(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+	messageID := c.Param("messageId")
+
+	var req RegenerateAIMessageRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
+	}
+
+	msg, err := h.usecase.RegenerateAIMessage(c.Request().Context(), userID, roomID, messageID, req.Model)
+	if err != nil {
+		return handleMessageError(c, err)
+	}
+
+	return c.JSON(http.StatusOK, toMessageResponse(msg))
+}
+
+func toMessageResponse(msg *domainmessage.Message) MessageResponse {
+	return MessageResponse{
+		ID:        msg.ID,
+		RoomID:    msg.RoomID,
+		SenderID:  msg.SenderID,
+		Content:   msg.Content,
+		Type:      string(msg.Type),
+		Status:    string(msg.Status),
+		Sequence:  msg.Sequence,
+		CreatedAt: msg.CreatedAt,
+		UpdatedAt: msg.UpdatedAt,
+	}
+}
+
+func handleMessageError(c echo.Context, err error) error {
+	if errors.Is(err, domain.ErrForbidden) {
+		return c.JSON(http.StatusForbidden, ErrorResponse{Message: "forbidden"})
+	}
+	if errors.Is(err, domain.ErrNotFound) {
+		return c.JSON(http.StatusNotFound, ErrorResponse{Message: "not found"})
+	}
+	if errors.Is(err, domain.ErrLLMGateway) {
+		return c.JSON(http.StatusBadGateway, ErrorResponse{Message: "ai service error"})
+	}
+	if errors.Is(err, domain.ErrInvalidMessageType) {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "message must be of type human"})
+	}
+	return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
+}
