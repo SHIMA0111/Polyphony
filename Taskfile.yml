@@ -1,0 +1,140 @@
+version: '3'
+
+tasks:
+  # ---------------------------------------------------------------------------
+  # Docker
+  # ---------------------------------------------------------------------------
+  up:
+    desc: Generate latest migration and start all services
+    deps: [migrate:generate]
+    cmds:
+      - docker compose up -d
+
+  down:
+    desc: Stop all services
+    cmds:
+      - docker compose down
+
+  down:clean:
+    desc: Stop all services and remove volumes
+    cmds:
+      - docker compose down -v
+
+  build:
+    desc: Build all Docker images
+    cmds:
+      - docker compose build
+
+  logs:
+    desc: Tail service logs (use -- <service> to filter)
+    cmds:
+      - docker compose logs -f {{.CLI_ARGS}}
+
+  ps:
+    desc: Show running services
+    cmds:
+      - docker compose ps
+
+  # ---------------------------------------------------------------------------
+  # Migration
+  # ---------------------------------------------------------------------------
+  migrate:generate:
+    desc: Generate migration SQL from schema.sql diff
+    dir: server
+    vars:
+      NAME: '{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}auto_{{now | date "20060102150405"}}{{end}}'
+    cmds:
+      - atlas migrate diff {{.NAME}} --env local
+
+  migrate:apply:
+    desc: Start db and run migrations via Docker
+    cmds:
+      - docker compose up -d db
+      - docker compose run --rm migrate
+
+  migrate:status:
+    desc: Show migration status
+    dir: server
+    cmds:
+      - atlas migrate status --env local
+
+  # ---------------------------------------------------------------------------
+  # Test
+  # ---------------------------------------------------------------------------
+  test:
+    desc: Run all tests in parallel
+    deps: [test:server, test:gateway]
+
+  test:server:
+    desc: Run Go tests
+    dir: server
+    cmds:
+      - go test ./...
+
+  test:gateway:
+    desc: Run Rust tests
+    dir: llm-gateway
+    cmds:
+      - cargo test
+
+  # ---------------------------------------------------------------------------
+  # Lint & Format
+  # ---------------------------------------------------------------------------
+  lint:
+    desc: Lint all projects in parallel
+    deps: [lint:server, lint:gateway, lint:web]
+
+  lint:server:
+    desc: Lint Go code
+    dir: server
+    cmds:
+      - go vet ./...
+
+  lint:gateway:
+    desc: Lint Rust code
+    dir: llm-gateway
+    cmds:
+      - cargo clippy
+
+  lint:web:
+    desc: Lint web frontend
+    dir: web
+    cmds:
+      - bun run lint
+
+  fmt:
+    desc: Format all projects in parallel
+    deps: [fmt:server, fmt:gateway]
+
+  fmt:server:
+    desc: Format Go code
+    dir: server
+    cmds:
+      - go fmt ./...
+
+  fmt:gateway:
+    desc: Format Rust code
+    dir: llm-gateway
+    cmds:
+      - cargo fmt
+
+  # ---------------------------------------------------------------------------
+  # Local Development
+  # ---------------------------------------------------------------------------
+  dev:server:
+    desc: Run Go API server locally
+    dir: server
+    cmds:
+      - go run ./cmd/api
+
+  dev:gateway:
+    desc: Run LLM Gateway locally
+    dir: llm-gateway
+    cmds:
+      - cargo run
+
+  dev:web:
+    desc: Run web frontend dev server
+    dir: web
+    cmds:
+      - bun run dev

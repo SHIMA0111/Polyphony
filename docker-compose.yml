@@ -1,0 +1,66 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-polyphony}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-polyphony}
+      POSTGRES_DB: ${POSTGRES_DB:-polyphony}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-polyphony}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  migrate:
+    image: arigaio/atlas:latest
+    command: >
+      migrate apply
+      --url "${DATABASE_URL:-postgres://polyphony:polyphony@db:5432/polyphony?sslmode=disable}"
+      --dir "file://migrations"
+    volumes:
+      - ./server/migrations:/migrations:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ./server
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://polyphony:polyphony@db:5432/polyphony?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      PORT: ${PORT:-8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://llm-gateway:8081}
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  llm-gateway:
+    build:
+      context: ./llm-gateway
+    environment:
+      LLM_GATEWAY_PORT: ${LLM_GATEWAY_PORT:-8081}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ports:
+      - "8081:8081"
+
+  web:
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+        NEXT_PUBLIC_MOCK_API: ${NEXT_PUBLIC_MOCK_API:-false}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

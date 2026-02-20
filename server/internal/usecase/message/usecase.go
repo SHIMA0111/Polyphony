@@ -14,6 +14,7 @@ import (
 )
 
 const defaultContextMessages = 50
+const defaultModel = "gpt-5-mini"
 
 // SendAIResult holds both the human and AI messages from a SendAIMessage call.
 // When AIMessage.Status is "failed", the LLM call failed but both messages were persisted.
@@ -92,6 +93,10 @@ func (u *MessageUsecase) ListMessages(ctx context.Context, userID, roomID, curso
 // The result always contains both the human and AI messages; check AIMessage.Status
 // to determine whether the LLM call succeeded.
 func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, content, model string) (*SendAIResult, error) {
+	if model == "" {
+		model = defaultModel
+	}
+
 	humanMsg, err := u.SendMessage(ctx, userID, roomID, content)
 	if err != nil {
 		return nil, err
@@ -157,6 +162,10 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 // preserving sequence order. The AI message is guaranteed to exist because
 // SendAIMessage always creates a placeholder even on LLM failure.
 func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID, messageID, model string) (*domainmessage.Message, error) {
+	if model == "" {
+		model = defaultModel
+	}
+
 	if err := u.checkMembership(ctx, roomID, userID); err != nil {
 		return nil, err
 	}

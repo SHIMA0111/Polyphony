@@ -13,6 +13,7 @@ Thumbs.db
 Cargo.lock
 
 # ===== Go (server) =====
+/server/api
 /server/tmp/
 *.exe
 *.exe~
@@ -60,6 +61,10 @@ docker-compose.override.yml
 coverage/
 *.lcov
 htmlcov/
+
+# ===== Claude Code =====
+.claude/
+.agents/
 
 # ===== Misc =====
 *.log

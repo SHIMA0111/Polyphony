@@ -1,0 +1,7 @@
+**/*_test.go
+.git
+.gitignore
+README.md
+atlas.hcl
+schema.sql
+migrations/

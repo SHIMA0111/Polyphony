@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -68,15 +69,22 @@ func main() {
 	authHandler := handler.NewAuthHandler(authUC)
 	roomHandler := handler.NewRoomHandler(roomUC)
 	msgHandler := handler.NewMessageHandler(msgUC)
+	modelHandler := handler.NewModelHandler(llmClient)
 
 	// Echo setup
 	e := echo.New()
 	e.HideBanner = true
 	e.Use(echomw.Recover())
 	e.Use(echomw.RequestID())
+	e.Use(echomw.CORSWithConfig(echomw.CORSConfig{
+		AllowOrigins: strings.Split(cfg.CORSOrigins, ","),
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
+		AllowHeaders: []string{echo.HeaderContentType, echo.HeaderAuthorization},
+	}))
 
 	// Public routes
 	e.GET("/health", healthHandler.Health)
+	e.GET("/models", modelHandler.List)
 	e.POST("/auth/register", authHandler.Register)
 	e.POST("/auth/login", authHandler.Login)
 
