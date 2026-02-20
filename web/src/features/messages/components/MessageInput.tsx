@@ -63,9 +63,14 @@ export function MessageInput({
   }, [input, isSending, selectedModel, onSendWithAI])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
+    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+      if (e.metaKey || e.ctrlKey) {
+        e.preventDefault()
+        handleSendWithAI()
+      } else if (!e.shiftKey) {
+        e.preventDefault()
+        handleSend()
+      }
     }
   }
 
@@ -159,7 +164,7 @@ export function MessageInput({
 
         {/* Hint text */}
         <Text textAlign="center" fontSize="xs" color="fg.muted">
-          Press Enter to send, Shift+Enter for new line
+          Enter to send, Shift+Enter for new line, Ctrl+Enter to send with AI
         </Text>
       </Flex>
     </Box>
