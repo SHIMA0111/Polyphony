@@ -102,6 +102,19 @@ type MessageListResponse struct {
 	NextCursor *string           `json:"next_cursor"`
 }
 
+// --- Model DTOs ---
+
+// ModelResponse is the JSON response representation of an available LLM model.
+type ModelResponse struct {
+	ID       string `json:"id"`
+	Provider string `json:"provider"`
+}
+
+// ModelListResponse is the response body for GET /models.
+type ModelListResponse struct {
+	Models []ModelResponse `json:"models"`
+}
+
 // --- Common DTOs ---
 
 // ErrorResponse is the standard error response body used across all handler

@@ -15,6 +15,8 @@ type Config struct {
 	JWTSecret string
 	// LLMGatewayURL is the base URL of the LLM Gateway service (default "http://localhost:8081").
 	LLMGatewayURL string
+	// CORSOrigins is a comma-separated list of allowed CORS origins (default "http://localhost:3000").
+	CORSOrigins string
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -41,10 +43,16 @@ func Load() (*Config, error) {
 		llmURL = "http://localhost:8081"
 	}
 
+	corsOrigins := os.Getenv("CORS_ORIGINS")
+	if corsOrigins == "" {
+		corsOrigins = "http://localhost:3000"
+	}
+
 	return &Config{
 		Port:          port,
 		DatabaseURL:   dbURL,
 		JWTSecret:     jwtSecret,
 		LLMGatewayURL: llmURL,
+		CORSOrigins:   corsOrigins,
 	}, nil
 }

@@ -45,14 +45,19 @@ type chatMsgDTO struct {
 }
 
 type completionRespDTO struct {
-	Content string   `json:"content"`
-	Model   string   `json:"model"`
-	Usage   usageDTO `json:"usage"`
+	Model   string      `json:"model"`
+	Choices []choiceDTO `json:"choices"`
+	Usage   usageDTO    `json:"usage"`
+}
+
+type choiceDTO struct {
+	Message chatMsgDTO `json:"message"`
 }
 
 type usageDTO struct {
 	PromptTokens int `json:"prompt_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens int `json:"total_tokens"`
 }
 
 type modelDTO struct {
@@ -106,11 +111,16 @@ func (c *LLMClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*a
 		return nil, fmt.Errorf("%w: decode response: %v", domain.ErrLLMGateway, err)
 	}
 
+	content := ""
+	if len(result.Choices) > 0 {
+		content = result.Choices[0].Message.Content
+	}
+
 	return &ai.CompletionResponse{
-		Content:      result.Content,
+		Content:      content,
 		Model:        result.Model,
 		PromptTokens: result.Usage.PromptTokens,
-		OutputTokens: result.Usage.OutputTokens,
+		OutputTokens: result.Usage.CompletionTokens,
 	}, nil
 }
 

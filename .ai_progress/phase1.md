@@ -57,30 +57,30 @@
   - [x] `interface/gateway/llm_client.go` — LLM Gateway REST client
 - [x] SimpleJWT implementation (argon2 + JWT issue/verify)
 - [x] Unit tests (mock Repository/Gateway)
-- [ ] Manual verification
+- [x] Manual verification
 
 ## Web Frontend (Next.js)
 
-- [ ] Initialize Next.js project (`web/`), Bulletproof React directory structure
-- [ ] `src/lib/api.ts` — API client configuration
-- [ ] `src/features/auth/` — Login & registration
-  - [ ] `components/LoginForm.tsx`
-  - [ ] `components/RegisterForm.tsx`
+- [x] Initialize Next.js project (`web/`), Bulletproof React directory structure
+- [x] `src/lib/api.ts` — API client configuration
+- [x] `src/features/auth/` — Login & registration
+  - [x] `components/LoginForm.tsx`
+  - [x] `components/RegisterForm.tsx`
   - [ ] `api/actions.ts` — Server Actions
-- [ ] `src/features/rooms/` — Room listing & creation
-  - [ ] `components/RoomList.tsx`
-  - [ ] `components/CreateRoomForm.tsx`
+- [x] `src/features/rooms/` — Room listing & creation
+  - [x] `components/RoomList.tsx`
+  - [x] `components/CreateRoomForm.tsx`
   - [ ] `api/actions.ts`
-- [ ] `src/features/messages/` — Chat screen
-  - [ ] `components/MessageList.tsx`
-  - [ ] `components/MessageInput.tsx`
+- [x] `src/features/messages/` — Chat screen
+  - [x] `components/MessageList.tsx`
+  - [x] `components/MessageInput.tsx`
   - [ ] `api/actions.ts`
-- [ ] `src/app/` — Routing
-  - [ ] `(auth)/login/page.tsx`
-  - [ ] `(auth)/register/page.tsx`
-  - [ ] `(main)/rooms/page.tsx`
-  - [ ] `(main)/rooms/[roomId]/page.tsx`
-- [ ] Manual verification
+- [x] `src/app/` — Routing
+  - [x] `(auth)/login/page.tsx`
+  - [x] `(auth)/register/page.tsx`
+  - [x] `(main)/rooms/page.tsx`
+  - [x] `(main)/rooms/[roomId]/page.tsx`
+- [x] Manual verification
 
 ## DB Migration
 
@@ -93,10 +93,10 @@
 
 ## Infrastructure
 
-- [ ] `docker-compose.yml` (PostgreSQL + Go API + Rust LLM Gateway + Next.js)
-- [ ] Dockerfiles for each service
-- [ ] `.env.example`
+- [x] `docker-compose.yml` (PostgreSQL + Go API + Rust LLM Gateway + Next.js)
+- [x] Dockerfiles for each service
+- [x] `.env.example`
 
 ## Integration Test
 
-- [ ] End-to-end flow via Docker Compose: register → login → create room → send message → get AI response
+- [x] End-to-end flow via Docker Compose: register → login → create room → send message → get AI response

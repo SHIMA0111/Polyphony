@@ -74,3 +74,25 @@ Create `.ai_progress/phaseX.md` when starting each phase, and track tasks with c
 | `MessageHub` | InProcessHub | Phase 10 (Redis) |
 | `LLMClient` | REST client | Phase 8 (gRPC) |
 | Infrastructure | Docker Compose | Phase 21 (AWS) |
+
+## UI Development Workflow
+
+Use the `v0-design` skill to delegate design generation to v0 when creating new UI components or pages.
+Small modifications to existing components or logic-only changes can be edited directly.
+
+## Available MCP Servers
+
+- `v0`: UI design generation (`v0:create_chat`, `v0:send_message`, `v0:get_chat`, `v0:find_chats`)
+- `chakra-ui`: Chakra UI v3 component info, code examples, design tokens, migration (`@chakra-ui/react-mcp`)
+- `playwright`: Browser automation and screenshots
+- `context7`: Library documentation reference
+- `serena`: Codebase analysis
+
+## Project Structure
+
+- Next.js App Router (under `web/` directory)
+- Bulletproof React architecture: `web/src/app/`, `web/src/features/`, `web/src/components/`, etc.
+
+## Project Rules (auto-loaded by path matching)
+
+- `chakra-ui.md`: Chakra UI v3 component conventions (web/src/app/**, web/src/components/**, web/src/features/**/components/**)
