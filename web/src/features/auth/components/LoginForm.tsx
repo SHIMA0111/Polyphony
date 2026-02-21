@@ -2,17 +2,9 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import {
-  Box,
-  Button,
-  Card,
-  Field,
-  Flex,
-  Heading,
-  Input,
-  Text,
-} from "@chakra-ui/react"
+import { Box, Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/react"
 import { Pen } from "lucide-react"
+import { PasswordInput } from "@/components/ui/password-input"
 import { useAuth } from "@/hooks/use-auth"
 
 export function LoginForm() {
@@ -87,8 +79,7 @@ export function LoginForm() {
               </Field.Root>
               <Field.Root>
                 <Field.Label>Password</Field.Label>
-                <Input
-                  type="password"
+                <PasswordInput
                   placeholder="Enter your password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
