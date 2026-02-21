@@ -32,13 +32,15 @@ A next-generation chat application that extends team thinking with LLMs.
 ## Directory Structure
 
 ```
-server/        — Go API Server (Clean Architecture)
-llm-gateway/   — Rust LLM Gateway (Ports & Adapters)
-web/           — Next.js Web Frontend
-mobile/        — Flutter Mobile App
-migrations/    — DB Migrations (golang-migrate)
-phases.md      — Development Phase Plan (26 phases)
-.ai_progress/  — Per-phase Implementation Checklists
+server/            — Go API Server (Clean Architecture)
+llm-gateway/       — Rust LLM Gateway (Ports & Adapters)
+web/               — Next.js Web Frontend
+mobile/            — Flutter Mobile App
+server/migrations/ — DB Migrations (Atlas)
+docker-compose.yml — Local development environment
+Taskfile.yml       — Task runner (go-task)
+phases.md          — Development Phase Plan (26 phases)
+.ai_progress/      — Per-phase Implementation Checklists
 ```
 
 ## Development
@@ -47,21 +49,41 @@ phases.md      — Development Phase Plan (26 phases)
 
 - Rust 1.93+
 - Go 1.24+
-- Node.js 22+
+- Bun 1.2+
 - Flutter 3+
 - Docker / Docker Compose
 - PostgreSQL 17 / Redis 7
+- [go-task](https://taskfile.dev/) (optional, for `task` commands)
 
-### LLM Gateway
+### Quick Start (Docker Compose)
 
 ```bash
-cd llm-gateway
-cargo build
-cargo test
+# Start all services (PostgreSQL, Go API, LLM Gateway, Web Frontend)
+task up
+# or: docker compose up -d
 
-# Start server
+# View logs
+task logs
+```
+
+### Individual Services
+
+```bash
+# LLM Gateway
+cd llm-gateway
+cargo build && cargo test
 OPENAI_API_KEY=sk-... cargo run
 # → http://localhost:8081/health
+
+# Go API Server
+cd server
+go run ./cmd/api
+# → http://localhost:8080
+
+# Web Frontend
+cd web
+bun install && bun run dev
+# → http://localhost:3000
 ```
 
 ## License

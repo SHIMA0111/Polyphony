@@ -32,13 +32,15 @@ LLMを活用してチームの思考を拡張する、次世代チャットア�
 ## ディレクトリ構成
 
 ```
-server/        — Go APIサーバー（クリーンアーキテクチャ）
-llm-gateway/   — Rust LLM Gateway（Ports & Adapters）
-web/           — Next.js Web Frontend
-mobile/        — Flutter Mobile App
-migrations/    — DBマイグレーション（golang-migrate）
-phases.md      — 開発フェーズ計画（26フェーズ）
-.ai_progress/  — フェーズ別実装チェックリスト
+server/            — Go APIサーバー（クリーンアーキテクチャ）
+llm-gateway/       — Rust LLM Gateway（Ports & Adapters）
+web/               — Next.js Web Frontend
+mobile/            — Flutter Mobile App
+server/migrations/ — DBマイグレーション（Atlas）
+docker-compose.yml — ローカル開発環境
+Taskfile.yml       — タスクランナー（go-task）
+phases.md          — 開発フェーズ計画（26フェーズ）
+.ai_progress/      — フェーズ別実装チェックリスト
 ```
 
 ## 開発
@@ -47,21 +49,41 @@ phases.md      — 開発フェーズ計画（26フェーズ）
 
 - Rust 1.93+
 - Go 1.24+
-- Node.js 22+
+- Bun 1.2+
 - Flutter 3+
 - Docker / Docker Compose
 - PostgreSQL 17 / Redis 7
+- [go-task](https://taskfile.dev/)（任意、`task` コマンド用）
 
-### LLM Gateway
+### クイックスタート（Docker Compose）
 
 ```bash
-cd llm-gateway
-cargo build
-cargo test
+# 全サービス起動（PostgreSQL, Go API, LLM Gateway, Web Frontend）
+task up
+# または: docker compose up -d
 
-# サーバー起動
+# ログ確認
+task logs
+```
+
+### 個別サービス
+
+```bash
+# LLM Gateway
+cd llm-gateway
+cargo build && cargo test
 OPENAI_API_KEY=sk-... cargo run
 # → http://localhost:8081/health
+
+# Go API Server
+cd server
+go run ./cmd/api
+# → http://localhost:8080
+
+# Web Frontend
+cd web
+bun install && bun run dev
+# → http://localhost:3000
 ```
 
 ## ライセンス

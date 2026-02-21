@@ -223,26 +223,31 @@ impl LLMProvider for OpenAIProvider {
         vec![
             ModelInfo {
                 id: "gpt-5.2".to_string(),
+                name: "GPT-5.2".to_string(),
                 provider: "openai".to_string(),
                 owned_by: "openai".to_string(),
             },
             ModelInfo {
                 id: "gpt-5".to_string(),
+                name: "GPT-5".to_string(),
                 provider: "openai".to_string(),
                 owned_by: "openai".to_string(),
             },
             ModelInfo {
                 id: "gpt-5-mini".to_string(),
+                name: "GPT-5 Mini".to_string(),
                 provider: "openai".to_string(),
                 owned_by: "openai".to_string(),
             },
             ModelInfo {
                 id: "o4-mini".to_string(),
+                name: "o4-mini".to_string(),
                 provider: "openai".to_string(),
                 owned_by: "openai".to_string(),
             },
             ModelInfo {
                 id: "o3".to_string(),
+                name: "o3".to_string(),
                 provider: "openai".to_string(),
                 owned_by: "openai".to_string(),
             },

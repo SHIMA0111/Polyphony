@@ -107,6 +107,7 @@ type MessageListResponse struct {
 // ModelResponse is the JSON response representation of an available LLM model.
 type ModelResponse struct {
 	ID       string `json:"id"`
+	Name     string `json:"name"`
 	Provider string `json:"provider"`
 }
 

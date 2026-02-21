@@ -34,7 +34,7 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
       setModels(
         modelData.models.map((m) => ({
           id: m.id,
-          name: m.id,
+          name: m.name,
           provider: m.provider,
         })),
       )
