@@ -60,6 +60,7 @@ pub struct Usage {
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
     pub id: String,
+    pub name: String,
     pub provider: String,
     pub owned_by: String,
 }

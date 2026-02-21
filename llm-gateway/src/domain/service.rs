@@ -117,6 +117,7 @@ mod tests {
                 .iter()
                 .map(|id| ModelInfo {
                     id: id.clone(),
+                    name: id.clone(),
                     provider: self.name.clone(),
                     owned_by: self.name.clone(),
                 })

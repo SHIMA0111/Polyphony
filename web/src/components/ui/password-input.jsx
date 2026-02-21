@@ -5,11 +5,11 @@ import {
   HStack,
   IconButton,
   Input,
-  InputGroup,
   Stack,
   mergeRefs,
   useControllableState,
 } from '@chakra-ui/react'
+import { InputGroup } from './input-group'
 import * as React from 'react'
 import { LuEye, LuEyeOff } from 'react-icons/lu'
 

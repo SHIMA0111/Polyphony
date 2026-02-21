@@ -242,8 +242,8 @@ class MockApiClient implements ApiClientInterface {
   async listModels(): Promise<ModelListResponse> {
     return {
       models: [
-        { id: "gpt-5-mini", provider: "OpenAI" },
-        { id: "gpt-5", provider: "OpenAI" },
+        { id: "gpt-5-mini", name: "gpt-5-mini", provider: "OpenAI" },
+        { id: "gpt-5", name: "gpt-5", provider: "OpenAI" },
       ],
     }
   }

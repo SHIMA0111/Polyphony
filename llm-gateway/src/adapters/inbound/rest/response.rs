@@ -80,6 +80,7 @@ pub struct ModelsResponseDto {
 #[derive(Serialize)]
 pub struct ModelInfoDto {
     pub id: String,
+    pub name: String,
     pub provider: String,
     pub owned_by: String,
 }
@@ -88,6 +89,7 @@ impl From<ModelInfo> for ModelInfoDto {
     fn from(m: ModelInfo) -> Self {
         Self {
             id: m.id,
+            name: m.name,
             provider: m.provider,
             owned_by: m.owned_by,
         }

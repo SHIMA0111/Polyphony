@@ -63,7 +63,7 @@ server/
 │   │   ├── auth/
 │   │   │   └── service.go             # AuthService interface (★ swap point)
 │   │   └── ai/
-│   │       ├── entity.go              # AIRequest, AIResponse
+│   │       ├── entity.go              # ChatMessage, CompletionRequest, CompletionResponse, ModelInfo
 │   │       ├── context_builder.go     # Context building logic
 │   │       └── gateway.go             # LLMGateway interface (★ swap point)
 │   ├── usecase/                       # Usecase layer

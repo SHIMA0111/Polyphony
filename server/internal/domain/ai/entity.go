@@ -25,5 +25,6 @@ type CompletionResponse struct {
 // ModelInfo describes an available LLM model.
 type ModelInfo struct {
 	ID       string
+	Name     string
 	Provider string
 }

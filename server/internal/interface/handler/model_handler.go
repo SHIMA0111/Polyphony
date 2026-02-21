@@ -27,7 +27,7 @@ func (h *ModelHandler) List(c echo.Context) error {
 
 	resp := make([]ModelResponse, len(models))
 	for i, m := range models {
-		resp[i] = ModelResponse{ID: m.ID, Provider: m.Provider}
+		resp[i] = ModelResponse{ID: m.ID, Name: m.Name, Provider: m.Provider}
 	}
 
 	return c.JSON(http.StatusOK, ModelListResponse{Models: resp})

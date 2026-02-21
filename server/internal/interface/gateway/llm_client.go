@@ -62,6 +62,7 @@ type usageDTO struct {
 
 type modelDTO struct {
 	ID       string `json:"id"`
+	Name     string `json:"name"`
 	Provider string `json:"provider"`
 }
 
@@ -150,7 +151,7 @@ func (c *LLMClient) ListModels(ctx context.Context) ([]ai.ModelInfo, error) {
 
 	models := make([]ai.ModelInfo, len(result.Models))
 	for i, m := range result.Models {
-		models[i] = ai.ModelInfo{ID: m.ID, Provider: m.Provider}
+		models[i] = ai.ModelInfo{ID: m.ID, Name: m.Name, Provider: m.Provider}
 	}
 	return models, nil
 }
