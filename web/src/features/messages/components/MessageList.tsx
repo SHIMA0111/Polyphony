@@ -38,9 +38,7 @@ export function MessageList({
               flexShrink={0}
               colorPalette={message.type === "ai" ? "blue" : "gray"}
             >
-              <Avatar.Fallback
-                name={message.type === "ai" ? "AI" : "You"}
-              />
+              <Avatar.Fallback name={message.type === "ai" ? "AI" : "You"} />
             </Avatar.Root>
 
             {/* Message Content */}
