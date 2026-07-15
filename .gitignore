@@ -44,6 +44,7 @@ out/
 .env
 .env.*
 !.env.example
+!.env.local.example
 *.pem
 *.key
 
@@ -69,3 +70,7 @@ htmlcov/
 # ===== Misc =====
 *.log
 tmp/
+
+# Local planning documents (working artifacts, not for the repo)
+docs/tasks/
+.ai_progress/
