@@ -103,11 +103,16 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
         h={16}
         flexShrink={0}
       >
-        <Link href="/rooms">
-          <Button variant="ghost" size="sm" p={0}>
-            <ChevronLeft size={20} />
-          </Button>
-        </Link>
+        {/* The persistent `(main)` layout's rail already provides room
+            navigation at `md`+, so this mobile-only back control (which
+            returns to the rail-as-list screen at `/rooms`) is hidden there. */}
+        <Box display={{ base: "flex", md: "none" }}>
+          <Link href="/rooms">
+            <Button variant="ghost" size="sm" p={0}>
+              <ChevronLeft size={20} />
+            </Button>
+          </Link>
+        </Box>
         <Box flex={1} minW={0}>
           <Heading size="md" truncate>
             {room?.name ?? "Chat Room"}

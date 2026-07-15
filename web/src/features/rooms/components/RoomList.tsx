@@ -1,96 +1,27 @@
 "use client"
 
 import Link from "next/link"
-import {
-  Avatar,
-  Box,
-  Button,
-  Card,
-  Flex,
-  Heading,
-  Menu,
-  Portal,
-  SimpleGrid,
-  Text,
-} from "@chakra-ui/react"
-import { MessageSquare, Users, LogOut, Settings, Pen } from "lucide-react"
+import { Box, Card, Flex, Heading, SimpleGrid, Text } from "@chakra-ui/react"
+import { MessageSquare, Users } from "lucide-react"
 import { useRooms } from "@/features/rooms/hooks/use-rooms"
-import { useLogout } from "@/features/auth/hooks/use-logout"
 import { CreateRoomForm } from "./CreateRoomForm"
 
+/**
+ * Content-pane role only: the "Your Rooms" heading, `CreateRoomForm`, and
+ * the room grid. The top bar (logo, avatar menu) that used to live here has
+ * moved to `web/src/app/(main)/layout.tsx` so it renders once and persists
+ * across all `(main)` routes instead of once per page (Step 16).
+ *
+ * `h="100%"` (rather than the pre-Step-16 `minH="100vh"`) so this component
+ * fills its layout-provided content pane instead of assuming it owns the
+ * full viewport height; the pane's own `overflowY="auto"` still scrolls a
+ * room list taller than the available height.
+ */
 export function RoomList() {
   const { data: rooms = [], isPending } = useRooms()
-  const logoutMutation = useLogout()
 
   return (
-    <Box minH="100vh" bg="bg">
-      {/* Header */}
-      <Box
-        as="header"
-        borderBottomWidth="1px"
-        bg="bg/80"
-        backdropFilter="blur(8px)"
-        position="sticky"
-        top={0}
-        zIndex={10}
-      >
-        <Flex
-          maxW="7xl"
-          mx="auto"
-          px={4}
-          h={16}
-          align="center"
-          justify="space-between"
-        >
-          <Flex align="center" gap={2}>
-            <Flex
-              h={8}
-              w={8}
-              rounded="lg"
-              bg="colorPalette.solid"
-              align="center"
-              justify="center"
-              colorPalette="blue"
-            >
-              <Pen size={18} color="white" />
-            </Flex>
-            <Heading size="lg" fontWeight="bold">
-              Polyphony
-            </Heading>
-          </Flex>
-
-          <Menu.Root>
-            <Menu.Trigger asChild>
-              <Button variant="ghost" rounded="full" p={0} h={9} w={9}>
-                <Avatar.Root size="sm" colorPalette="blue">
-                  <Avatar.Fallback name="User" />
-                </Avatar.Root>
-              </Button>
-            </Menu.Trigger>
-            <Portal>
-              <Menu.Positioner>
-                <Menu.Content w="56">
-                  <Menu.Item value="settings" gap={2}>
-                    <Settings size={16} />
-                    Settings
-                  </Menu.Item>
-                  <Menu.Separator />
-                  <Menu.Item
-                    value="logout"
-                    color="fg.error"
-                    gap={2}
-                    onClick={() => logoutMutation.mutate()}
-                  >
-                    <LogOut size={16} />
-                    Log out
-                  </Menu.Item>
-                </Menu.Content>
-              </Menu.Positioner>
-            </Portal>
-          </Menu.Root>
-        </Flex>
-      </Box>
-
+    <Box h="100%" bg="bg">
       {/* Main Content */}
       <Box as="main" maxW="7xl" mx="auto" px={4} py={8}>
         <Flex align="center" justify="space-between" mb={8}>
