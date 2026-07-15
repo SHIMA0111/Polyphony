@@ -76,7 +76,7 @@ tasks:
   # ---------------------------------------------------------------------------
   test:
     desc: Run all tests in parallel
-    deps: [test:server, test:gateway]
+    deps: [test:server, test:gateway, test:web]
 
   test:server:
     desc: Run Go tests
@@ -95,6 +95,12 @@ tasks:
     dir: llm-gateway
     cmds:
       - cargo test
+
+  test:web:
+    desc: Run web frontend tests
+    dir: web
+    cmds:
+      - bun run test
 
   # ---------------------------------------------------------------------------
   # Lint & Format
