@@ -1,8 +1,9 @@
 import { HttpResponse, http } from "msw"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import userEvent from "@testing-library/user-event"
 import { render, screen, waitFor } from "@/test/render"
 import { server } from "@/test/msw/server"
+import { makeLoginFlowUiWithError } from "@/features/auth/api/handlers"
 import { LoginForm } from "./LoginForm"
 
 const pushMock = vi.fn()
@@ -10,13 +11,27 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: pushMock }),
 }))
 
+beforeEach(() => {
+  pushMock.mockClear()
+})
+
 /**
- * Component-level tests for `LoginForm`'s `react-hook-form` + `zod`
- * rewrite: validation errors render as `role="alert"` text without hitting
- * the network, and a mutation failure (simulated via an MSW override)
- * surfaces through the toaster rather than an inline banner.
+ * Component-level tests for `LoginForm`'s Kratos-flow rewrite: the flow
+ * loads from the mocked `GET /api/kratos/self-service/login/browser`
+ * handler and renders the identifier/password fields, client-side `zod`
+ * validation still renders `role="alert"` text without hitting the
+ * network, a successful submission (the default MSW handler) redirects,
+ * and a `400` flow-validation failure (an MSW override) surfaces through
+ * the toaster.
  */
 describe("LoginForm", () => {
+  it("loads the flow and renders the identifier and password fields", async () => {
+    render(<LoginForm />)
+
+    expect(await screen.findByPlaceholderText("you@example.com")).toBeInTheDocument()
+    expect(screen.getByPlaceholderText("Enter your password")).toBeInTheDocument()
+  })
+
   it("shows a role=alert validation error and does not submit when the email is empty", async () => {
     const user = userEvent.setup()
     render(<LoginForm />)
@@ -31,21 +46,7 @@ describe("LoginForm", () => {
     expect(alerts.map((el) => el.textContent)).toContain("Email is required")
   })
 
-  it("shows a toast when the login mutation fails", async () => {
-    // A non-401 failure status is used deliberately: `apiFetch`'s shared
-    // 401 handling (`@/lib/http-client.ts`) clears the session cookie and
-    // redirects to `/login` via `window.location.assign`, which jsdom
-    // doesn't implement and would make this test about the redirect, not
-    // the toaster.
-    server.use(
-      http.post("/api/auth/login", () => {
-        return HttpResponse.json(
-          { message: "Invalid email or password" },
-          { status: 400 },
-        )
-      }),
-    )
-
+  it("redirects to /rooms on a successful submission", async () => {
     const user = userEvent.setup()
     render(<LoginForm />)
 
@@ -53,8 +54,26 @@ describe("LoginForm", () => {
     await user.type(screen.getByPlaceholderText("Enter your password"), "password123")
     await user.click(screen.getByRole("button", { name: "Sign in" }))
 
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/rooms"))
+  })
+
+  it("re-renders the flow's field/flow-level errors and shows a toast on a 400 response", async () => {
+    server.use(
+      http.post("/api/kratos/self-service/login", () => {
+        return HttpResponse.json({ ui: makeLoginFlowUiWithError() }, { status: 400 })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<LoginForm />)
+
+    await user.type(screen.getByPlaceholderText("you@example.com"), "user@example.com")
+    await user.type(screen.getByPlaceholderText("Enter your password"), "wrong-password")
+    await user.click(screen.getByRole("button", { name: "Sign in" }))
+
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Sign in failed"),
     )
+    expect(pushMock).not.toHaveBeenCalled()
   })
 })

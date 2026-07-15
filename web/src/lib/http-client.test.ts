@@ -1,15 +1,19 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
-import { apiRequest, authRequest, ApiRequestError } from "./http-client"
+import { apiRequest, ApiRequestError } from "./http-client"
 
 /**
- * Unit tests for the shared BFF fetch core (`apiFetch`, exercised indirectly
- * through `apiRequest`/`authRequest`). No real network or server is used —
+ * Unit tests for the shared BFF fetch core (`apiFetch`, exercised
+ * indirectly through `apiRequest`). No real network or server is used —
  * `global.fetch` is replaced per test.
  *
  * Originally written against Bun's built-in test runner per
  * `docs/tasks/step4.md`, using only `describe`/`it`/`expect` and assigning
  * `global.fetch` (no Bun-only mock APIs); ported to Vitest (`mock` ->
- * `vi.fn`) once Step 5 introduced the project-wide Vitest harness.
+ * `vi.fn`) once Step 5 introduced the project-wide Vitest harness; updated
+ * by `docs/tasks/step30.md`'s Kratos flip, which retired the auth-plane BFF
+ * helper this file used to also test, and changed the dead-session clearing
+ * call on `401` from the (now-deleted) BFF logout route to Kratos's own
+ * self-service logout flow.
  */
 
 const originalFetch = global.fetch
@@ -71,25 +75,18 @@ describe("http-client", () => {
     expect(capturedUrl).toBe("/api/proxy/rooms")
   })
 
-  it("authRequest prefixes paths with /api/auth", async () => {
-    let capturedUrl = ""
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
-      capturedUrl = String(input)
-      return jsonResponse(200, { ok: true })
-    })
-
-    await authRequest("/login")
-
-    expect(capturedUrl).toBe("/api/auth/login")
-  })
-
-  it("on a 401, clears the session cookie via /api/auth/logout before redirecting to /login", async () => {
+  it("on a 401, clears the Kratos session cookie via its self-service logout flow before redirecting to /login", async () => {
     const calledUrls: string[] = []
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       calledUrls.push(url)
-      if (url === "/api/auth/logout") {
-        return jsonResponse(200, { ok: true })
+      if (url === "/api/kratos/self-service/logout/browser") {
+        return jsonResponse(200, {
+          logout_url: "http://localhost:4433/self-service/logout?token=abc",
+        })
+      }
+      if (url === "/api/kratos/self-service/logout?token=abc") {
+        return jsonResponse(200, {})
       }
       return jsonResponse(401, { message: "unauthorized" })
     })
@@ -107,52 +104,16 @@ describe("http-client", () => {
     try {
       await expect(apiRequest("/rooms")).rejects.toBeInstanceOf(ApiRequestError)
 
-      // The dead cookie must be cleared (via the logout route) before the
-      // browser is redirected — otherwise middleware.ts's presence-only
-      // check would immediately bounce /login back to /rooms, producing an
-      // infinite redirect loop.
-      expect(calledUrls).toEqual(["/api/proxy/rooms", "/api/auth/logout"])
+      // The dead cookie must be cleared (via Kratos's own logout flow)
+      // before the browser is redirected — otherwise middleware.ts's
+      // presence-only check would immediately bounce /login back to
+      // /rooms, producing an infinite redirect loop.
+      expect(calledUrls).toEqual([
+        "/api/proxy/rooms",
+        "/api/kratos/self-service/logout/browser",
+        "/api/kratos/self-service/logout?token=abc",
+      ])
       expect(assign).toHaveBeenCalledWith("/login")
-    } finally {
-      Object.defineProperty(window, "location", {
-        configurable: true,
-        value: originalLocation,
-      })
-    }
-  })
-
-  it("on a 401 from an auth-plane call (e.g. wrong login credentials), propagates ApiRequestError without clearing cookies or redirecting", async () => {
-    const calledUrls: string[] = []
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      calledUrls.push(url)
-      return jsonResponse(401, { message: "invalid credentials" })
-    })
-
-    const assign = vi.fn()
-    const originalLocation = window.location
-    Object.defineProperty(window, "location", {
-      configurable: true,
-      value: { ...originalLocation, assign },
-    })
-
-    try {
-      let caught: unknown
-      try {
-        await authRequest("/login", { method: "POST" })
-      } catch (err) {
-        caught = err
-      }
-
-      expect(caught).toBeInstanceOf(ApiRequestError)
-      expect((caught as ApiRequestError).status).toBe(401)
-      expect((caught as ApiRequestError).message).toBe("invalid credentials")
-
-      // Only the login request itself should have gone out — no
-      // /api/auth/logout call, and no redirect to /login (which would wipe
-      // the form before the caller's catch block can render a toast).
-      expect(calledUrls).toEqual(["/api/auth/login"])
-      expect(assign).not.toHaveBeenCalled()
     } finally {
       Object.defineProperty(window, "location", {
         configurable: true,

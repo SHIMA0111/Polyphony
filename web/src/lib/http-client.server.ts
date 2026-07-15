@@ -10,12 +10,12 @@ import { headers } from "next/headers"
  * browser bundle.
  *
  * Deliberately re-enters the app's own `/api/proxy/*` route (Step 4's
- * `app/api/proxy/[...path]/route.ts`) rather than talking to the Go API
- * directly or re-deriving the `Authorization: Bearer` header from the
- * session cookie itself — that cookie-to-Bearer translation stays in
- * exactly one place (the proxy route handler). The incoming request's
- * `cookie` header is forwarded so the proxy can read the same session the
- * browser would have sent.
+ * `app/api/proxy/[...path]/route.ts`, rewritten by Step 30 to forward the
+ * Kratos session cookie verbatim instead of minting a bearer token) rather
+ * than talking to the Go API directly — the request-to-upstream forwarding
+ * stays in exactly one place (the proxy route handler). The incoming
+ * request's `cookie` header is forwarded so the proxy can read the same
+ * `ory_kratos_session` cookie the browser would have sent.
  */
 
 const APP_INTERNAL_URL = process.env.APP_INTERNAL_URL ?? "http://localhost:3000"

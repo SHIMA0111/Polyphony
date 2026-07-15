@@ -2,11 +2,11 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "next/navigation"
-import { logout } from "../api/logout"
+import { logout } from "../api/logout-flow"
 
 /**
- * Logs the user out, invalidates the cached `["auth", "session"]` query, and
- * navigates to `/login`.
+ * Logs the user out via Kratos's self-service logout flow, invalidates the
+ * cached `["auth", "session"]` query, and navigates to `/login`.
  */
 export function useLogout() {
   const queryClient = useQueryClient()
