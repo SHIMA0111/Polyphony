@@ -1,0 +1,80 @@
+# Ory Kratos configuration for local development (Docker Compose).
+#
+# The database connection string and both secrets are intentionally NOT
+# hardcoded here. Kratos maps environment variables to config keys by
+# uppercasing the key path and joining nested segments with underscores; the
+# `kratos`/`kratos-migrate` service blocks in docker-compose.yml set these
+# directly (sourced from the KRATOS_* variables in .env), and an env var fully
+# overrides whatever the corresponding key holds (or omits) in this file:
+#   DSN             -> dsn
+#   SECRETS_COOKIE  -> secrets.cookie[0]
+#   SECRETS_CIPHER  -> secrets.cipher[0]
+# The `dsn` and `secrets` keys are intentionally omitted below; they are only
+# ever supplied via those environment variables, never checked into git.
+#
+# See ory/README.md for how to reach the public/admin APIs and Mailslurper.
+version: v1.3.1
+
+serve:
+  public:
+    base_url: http://localhost:4433/
+    cors:
+      enabled: true
+      allowed_origins:
+        - http://localhost:3000
+  admin:
+    base_url: http://localhost:4434/
+
+selfservice:
+  # Placeholder web routes: the real pages land in Step 20 (login/registration
+  # swap) and Step 44 (social login). Only the *API* self-service flows are
+  # exercised until then, which return JSON directly and never redirect here.
+  default_browser_return_url: http://localhost:3000/
+  allowed_return_urls:
+    - http://localhost:3000/
+
+  methods:
+    password:
+      enabled: true
+
+  flows:
+    registration:
+      ui_url: http://localhost:3000/registration
+
+    login:
+      ui_url: http://localhost:3000/login
+
+    settings:
+      ui_url: http://localhost:3000/settings
+      privileged_session_max_age: 15m
+
+    recovery:
+      enabled: true
+      ui_url: http://localhost:3000/recovery
+
+    verification:
+      enabled: true
+      ui_url: http://localhost:3000/verification
+
+    logout:
+      after:
+        default_browser_return_url: http://localhost:3000/login
+
+log:
+  level: debug
+  format: text
+
+hashers:
+  algorithm: bcrypt
+  bcrypt:
+    cost: 8
+
+identity:
+  default_schema_id: default
+  schemas:
+    - id: default
+      url: file:///etc/config/kratos/identity.schema.json
+
+courier:
+  smtp:
+    connection_uri: smtps://test:test@mailslurper:1025/?skip_ssl_verify=true
