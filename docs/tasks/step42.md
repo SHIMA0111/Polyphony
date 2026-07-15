@@ -131,4 +131,4 @@ After this PR, every user has a lazily-created token balance (`token_balances`, 
 - [x] `GET /billing/balance` and `GET /billing/transactions` exist, are authenticated (any user, their own data only), and match Step 48's assumed response shape exactly.
 - [x] `task billing:topup` (backed by `server/cmd/seed-tokens`, reusing `BillingRepository.CreditAndRecord`) lets a developer credit a user's balance locally.
 - [x] All items in Scope are checked off.
-- [ ] All Verification checks pass.
+- [x] All Verification checks pass. (6–7 verified in the wave-4 integration review: fresh owner `balance: 0` → AI send 402 → `task billing:topup` credits 100000 → AI send 201 → balance debited by the gateway-reported usage (22) → `/billing/transactions` shows the `charge` and negative-`amount` `consumption` rows; `\d token_balances`/`\d token_transactions` confirm the schema.)

@@ -104,4 +104,4 @@ After this PR, `messages` has `is_deleted` and `exclude_from_ai` columns and `ro
 - [x] Soft-deleted messages are excluded from `ListByRoom`, `ListByRoomUpTo`, and AI context assembly.
 - [x] `DELETE /rooms/:roomId/messages/:messageId`, `PATCH /rooms/:roomId/messages/:messageId`, and `PATCH /rooms/:roomId/ai-context-cutoff` endpoints exist, are authorized per the documented rules (owner-or-admin delete, invoke-AI-role exclude toggle, manage-room-role cutoff), and are wired via the `internal/app` route registrars.
 - [x] All items in Scope are checked off.
-- [ ] All Verification checks pass.
+- [x] All Verification checks pass. (5–6 verified in the wave-4 integration review: exclude toggle 200, soft delete 204 + hidden from list, cutoff 403/200/clear-to-null, and `\d messages`/`\d rooms` show the new columns.)

@@ -117,4 +117,4 @@ Error mapping in `handleInvitationError` (mirror `handleRoomError` in `server/in
 - [x] All six endpoints listed above are routed and behave per the RBAC/status rules in this document.
 - [x] Privilege-escalation guard (role assigned ≤ inviter's role) and single-use-vs-reusable status semantics (username vs. link invitations) are implemented and unit-tested.
 - [x] Unit tests (usecase + handler, hand-written mocks) and testcontainers integration tests (repository) are added and pass.
-- [ ] All verification checks above pass. (1–5 pass in this worktree; 6 requires the full `task up` compose stack and is left for the post-merge integration review.)
+- [x] All verification checks above pass. (1–5 passed in the implementer worktree; 6 verified in the wave-4 integration review against the full compose stack: invite → list → accept → 409-on-repeat → room access all returned the documented statuses.)

@@ -75,4 +75,4 @@ Sending a message immediately renders it in the transcript in a "sending" visual
 - [x] Scrolling to the top of the transcript loads older messages via `next_cursor` with no scroll-position jump.
 - [x] `handleRegenerate` resolves its target human message id from `in_response_to_message_id`, with no remaining backward array scan in `useChatRoom`.
 - [x] The `["rooms", roomId, "messages"]` query key and the `onRegenerate`/`isRegenerating` prop contract are unchanged, so Step 35/38/45 can build on this step without renegotiating it.
-- [ ] All verification checks above pass. (1-4 verified locally; 5-9 require the docker compose stack — see `skippedComposeChecks`.)
+- [x] All verification checks above pass. (1-4 verified locally; 5-9 verified in the wave-4 integration review against the compose stack: optimistic send settles to the persisted bubble, a stopped-gateway AI send leaves a retryable "AI response failed" bubble whose Retry recovers to a real response, upward infinite scroll loads the older page with the scroll anchor preserved, and Regenerate's network request targets the `in_response_to_message_id`-linked human message id.)
