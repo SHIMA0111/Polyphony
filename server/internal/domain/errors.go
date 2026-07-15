@@ -65,6 +65,11 @@ var (
 	// ErrInvitationAlreadyExists indicates a pending, username-targeted
 	// invitation already exists for the same (room, invitee) pair.
 	ErrInvitationAlreadyExists = errors.New("invitation already exists")
+
+	// ErrInsufficientBalance indicates the room owner's token balance is at
+	// or below zero, so an AI invocation was rejected before calling the LLM
+	// Gateway. See usecase/billing.BillingUsecase.CheckBalance.
+	ErrInsufficientBalance = errors.New("insufficient token balance")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.

@@ -214,6 +214,9 @@ func handleMessageError(c echo.Context, err error) error {
 	if errors.Is(err, domain.ErrInvalidMessageType) {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "message must be of type human"})
 	}
+	if errors.Is(err, domain.ErrInsufficientBalance) {
+		return c.JSON(http.StatusPaymentRequired, ErrorResponse{Message: "insufficient token balance"})
+	}
 	middleware.GetLogger(c).Error("unhandled message error", "error", err)
 	return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
 }

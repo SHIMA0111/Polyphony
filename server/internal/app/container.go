@@ -19,6 +19,7 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainattachment "github.com/SHIMA0111/multi-user-ai/server/internal/domain/attachment"
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
+	domainbilling "github.com/SHIMA0111/multi-user-ai/server/internal/domain/billing"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domaininvitation "github.com/SHIMA0111/multi-user-ai/server/internal/domain/invitation"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
@@ -36,6 +37,7 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/wsticket"
 	attachmentusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/attachment"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
+	billingusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/billing"
 	invitationusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/invitation"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
 	modelusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/model"
@@ -78,6 +80,7 @@ type Container struct {
 	MsgRepo        domainmessage.MessageRepository
 	AttachmentRepo domainattachment.AttachmentRepository
 	InvitationRepo domaininvitation.InvitationRepository
+	BillingRepo    domainbilling.BalanceRepository
 
 	// Services / Gateways
 	AuthService domainauth.AuthService
@@ -99,6 +102,7 @@ type Container struct {
 	AttachmentUC *attachmentusecase.AttachmentUsecase
 	ModelUC      *modelusecase.ModelUsecase
 	InvitationUC *invitationusecase.InvitationUsecase
+	BillingUC    *billingusecase.BillingUsecase
 
 	// Handlers
 	HealthHandler     *handler.HealthHandler
@@ -111,6 +115,7 @@ type Container struct {
 	WebSocketHandler  *handler.WebSocketHandler
 	InvitationHandler *handler.InvitationHandler
 	TokenHandler      *handler.TokenHandler
+	BillingHandler    *handler.BillingHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,
@@ -134,6 +139,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	msgRepo := postgres.NewMessageRepository(pool)
 	attachmentRepo := postgres.NewAttachmentRepository(pool)
 	invitationRepo := postgres.NewInvitationRepository(pool)
+	billingRepo := postgres.NewBillingRepository(pool)
 
 	// Services / Gateways
 	//
@@ -207,7 +213,8 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
 	roomUC := roomusecase.NewRoomUsecase(roomRepo)
-	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub)
+	billingUC := billingusecase.NewBillingUsecase(billingRepo, roomRepo)
+	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub, billingUC)
 	userUC := userusecase.NewUserUsecase(userRepo)
 	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
 	modelUC := modelusecase.NewModelUsecase(llmGateway)
@@ -224,6 +231,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	wsHandler := handler.NewWebSocketHandler(roomUC, messageHub, ticketIssuer, originPatternsFromCORS(cfg.CORSOrigins))
 	invitationHandler := handler.NewInvitationHandler(invitationUC)
 	tokenHandler := handler.NewTokenHandler(llmGateway)
+	billingHandler := handler.NewBillingHandler(billingUC)
 
 	return &Container{
 		Config:      cfg,
@@ -236,6 +244,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		MsgRepo:        msgRepo,
 		AttachmentRepo: attachmentRepo,
 		InvitationRepo: invitationRepo,
+		BillingRepo:    billingRepo,
 
 		AuthService:   authService,
 		LLMGateway:    llmGateway,
@@ -249,6 +258,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		AttachmentUC: attachmentUC,
 		ModelUC:      modelUC,
 		InvitationUC: invitationUC,
+		BillingUC:    billingUC,
 
 		HealthHandler:     healthHandler,
 		AuthHandler:       authHandler,
@@ -260,6 +270,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		WebSocketHandler:  wsHandler,
 		InvitationHandler: invitationHandler,
 		TokenHandler:      tokenHandler,
+		BillingHandler:    billingHandler,
 	}, nil
 }
 

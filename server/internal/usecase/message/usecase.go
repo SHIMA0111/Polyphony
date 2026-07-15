@@ -4,6 +4,7 @@ package message
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +40,7 @@ type MessageUsecase struct {
 	llmGateway     ai.LLMGateway
 	hub            event.MessageHub
 	contextBuilder ai.ContextBuilder
+	billing        BillingGuard
 }
 
 // NewMessageUsecase creates a new MessageUsecase. hub receives a
@@ -47,12 +49,17 @@ type MessageUsecase struct {
 // implementation. contextBuilder is always initialized internally to
 // ai.NewDefaultContextBuilder(); it is not a constructor parameter so that
 // swapping the implementation (e.g. for history summarization in a later
-// phase) does not require touching every call site.
+// phase) does not require touching every call site. billing is consulted
+// before every AI invocation (SendAIMessage/RegenerateAIMessage) to reject
+// requests once the room owner's token balance is exhausted, and to record
+// usage after a successful completion; pass a *billingusecase.BillingUsecase
+// (see usecase/billing), which satisfies BillingGuard structurally.
 func NewMessageUsecase(
 	msgRepo domainmessage.MessageRepository,
 	roomRepo room.RoomRepository,
 	llmGateway ai.LLMGateway,
 	hub event.MessageHub,
+	billing BillingGuard,
 ) *MessageUsecase {
 	return &MessageUsecase{
 		msgRepo:        msgRepo,
@@ -60,6 +67,7 @@ func NewMessageUsecase(
 		llmGateway:     llmGateway,
 		hub:            hub,
 		contextBuilder: ai.NewDefaultContextBuilder(),
+		billing:        billing,
 	}
 }
 
@@ -163,6 +171,9 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
 		return nil, err
 	}
+	if err := u.billing.CheckBalance(ctx, roomID); err != nil {
+		return nil, err
+	}
 
 	rm, err := u.roomRepo.GetByID(ctx, roomID)
 	if err != nil {
@@ -240,6 +251,12 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		OccurredAt: aiNow,
 	})
 
+	// Fire-and-forget: the AI message is already durably persisted, so a
+	// usage-recording failure must never affect the returned result.
+	if err := u.billing.RecordUsage(ctx, roomID, aiMsg.ID, model, completion.PromptTokens, completion.OutputTokens); err != nil {
+		slog.Error("failed to record token usage", "error", err, "room_id", roomID, "message_id", aiMsg.ID)
+	}
+
 	return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg}, nil
 }
 
@@ -262,6 +279,9 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 		return nil, err
 	}
 	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
+		return nil, err
+	}
+	if err := u.billing.CheckBalance(ctx, roomID); err != nil {
 		return nil, err
 	}
 
@@ -318,6 +338,12 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	nextMsg.Content = completion.Content
 	nextMsg.Status = domainmessage.MessageStatusCompleted
 	nextMsg.UpdatedAt = now
+
+	// Fire-and-forget: the AI message update is already durably persisted,
+	// so a usage-recording failure must never affect the returned result.
+	if err := u.billing.RecordUsage(ctx, roomID, nextMsg.ID, model, completion.PromptTokens, completion.OutputTokens); err != nil {
+		slog.Error("failed to record token usage", "error", err, "room_id", roomID, "message_id", nextMsg.ID)
+	}
 
 	u.hub.Publish(ctx, event.RoomEvent{
 		Type:       event.EventMessageUpdated,

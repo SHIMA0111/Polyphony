@@ -312,6 +312,42 @@ type RoomMembershipResponse struct {
 	JoinedAt time.Time `json:"joined_at"`
 }
 
+// --- Billing DTOs ---
+
+// TokenBalanceResponse is the JSON response representation of a user's
+// current token balance, returned by GET /billing/balance. Field names and
+// JSON tags match Step 48's web contract (web/src/features/billing/types.ts)
+// exactly.
+type TokenBalanceResponse struct {
+	UserID    string    `json:"user_id"`
+	Balance   int64     `json:"balance"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TokenTransactionResponse is the JSON response representation of a single
+// token_transactions ledger entry. RoomID is nil for transactions not tied
+// to any room (e.g. top-ups). Type is one of "consumption", "charge", or
+// "adjustment". Amount is signed: negative for consumption, positive for
+// charge/adjustment.
+type TokenTransactionResponse struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	RoomID       *string   `json:"room_id"`
+	Type         string    `json:"type"`
+	Amount       int64     `json:"amount"`
+	BalanceAfter int64     `json:"balance_after"`
+	Description  string    `json:"description"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// TokenTransactionListResponse is the response body for a paginated list of
+// token transactions, returned by GET /billing/transactions. NextCursor is
+// nil when there are no more pages.
+type TokenTransactionListResponse struct {
+	Transactions []TokenTransactionResponse `json:"transactions"`
+	NextCursor   *string                    `json:"next_cursor"`
+}
+
 // --- Common DTOs ---
 
 // ErrorResponse is the standard error response body used across all handler
