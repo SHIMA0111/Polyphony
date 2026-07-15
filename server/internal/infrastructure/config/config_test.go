@@ -134,3 +134,28 @@ func TestLoadS3Overrides(t *testing.T) {
 		t.Errorf("expected overridden S3ForcePathStyle false, got %v", cfg.S3ForcePathStyle)
 	}
 }
+
+func TestLoadWSTicketSecretDefaultsToJWTSecret(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.WSTicketSecret != cfg.JWTSecret {
+		t.Errorf("expected WSTicketSecret to default to JWTSecret %q, got %q", cfg.JWTSecret, cfg.WSTicketSecret)
+	}
+}
+
+func TestLoadWSTicketSecretOverride(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("WS_TICKET_SECRET", "ws-ticket-secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.WSTicketSecret != "ws-ticket-secret" {
+		t.Errorf("expected WSTicketSecret override, got %q", cfg.WSTicketSecret)
+	}
+}

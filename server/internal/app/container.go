@@ -8,6 +8,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -26,6 +29,7 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/handler"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/repository/postgres"
 	ifstorage "github.com/SHIMA0111/multi-user-ai/server/internal/interface/storage"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/wsticket"
 	attachmentusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/attachment"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
@@ -33,6 +37,12 @@ import (
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
 	userusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/user"
 )
+
+// wsTicketTTL is the lifetime given to WebSocket upgrade tickets minted by
+// the wsticket.Issuer wired up below. Kept short since a ticket only needs
+// to bridge the gap between the authenticated POST /ws/ticket call and the
+// WebSocket upgrade that immediately follows it.
+const wsTicketTTL = 60 * time.Second
 
 // Container holds every dependency wired up for the API server: the loaded
 // configuration, the database connection pool, the base logger, repositories,
@@ -82,6 +92,7 @@ type Container struct {
 	ModelHandler      *handler.ModelHandler
 	UserHandler       *handler.UserHandler
 	AttachmentHandler *handler.AttachmentHandler
+	WebSocketHandler  *handler.WebSocketHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,
@@ -112,6 +123,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		cfg.S3Endpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3ForcePathStyle,
 	)
 	messageHub := event.NewInProcessHub()
+	ticketIssuer := wsticket.NewIssuer([]byte(cfg.WSTicketSecret), wsTicketTTL)
 
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
@@ -129,6 +141,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	modelHandler := handler.NewModelHandler(modelUC)
 	userHandler := handler.NewUserHandler(userUC)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentUC)
+	wsHandler := handler.NewWebSocketHandler(roomUC, messageHub, ticketIssuer, originPatternsFromCORS(cfg.CORSOrigins))
 
 	return &Container{
 		Config: cfg,
@@ -159,5 +172,24 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		ModelHandler:      modelHandler,
 		UserHandler:       userHandler,
 		AttachmentHandler: attachmentHandler,
+		WebSocketHandler:  wsHandler,
 	}, nil
+}
+
+// originPatternsFromCORS converts the server's comma-separated
+// CORS_ORIGINS configuration (full origin URLs, e.g.
+// "http://localhost:3000") into the host[:port] patterns expected by
+// websocket.AcceptOptions.OriginPatterns for the WebSocket handshake's
+// origin check. Entries that fail to parse or have no host are skipped.
+func originPatternsFromCORS(corsOrigins string) []string {
+	origins := strings.Split(corsOrigins, ",")
+	patterns := make([]string, 0, len(origins))
+	for _, origin := range origins {
+		u, err := url.Parse(strings.TrimSpace(origin))
+		if err != nil || u.Host == "" {
+			continue
+		}
+		patterns = append(patterns, u.Host)
+	}
+	return patterns
 }

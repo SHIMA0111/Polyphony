@@ -67,3 +67,45 @@ and Redis-backed fan-out work in later steps.
 - [x] `cd server && go test -tags=integration ./internal/interface/repository/postgres/... -run TestMessages_UniqueRoomSequence -v`
 - [ ] Manual smoke check via `task up` + live HTTP calls — requires the compose stack; skipped per this run's
       constraints (post-merge integration review).
+
+## Step 15: Server WebSocket endpoint + realtime delivery
+
+- [x] `github.com/coder/websocket` added as a server dependency (`go get` + `go mod tidy`)
+- [x] `server/internal/interface/wsticket/ticket.go` — `Issuer` type (`NewIssuer`, `Issue`, `Validate`): mints and
+      validates short-lived HS256 JWT tickets independent of `domain/auth.AuthService`, fully GoDoc'd (including why
+      it does not depend on `AuthService` and survives the Phase 9 Kratos swap unchanged)
+- [x] `server/internal/interface/wsticket/ticket_test.go` — round-trip issue→validate, expired-ticket rejection,
+      tampered-signature rejection, wrong-secret rejection
+- [x] `server/internal/interface/handler/websocket_handler.go` — `WebSocketHandler` (`roomUsecase`, `hub`,
+      `ticketIssuer`, `originPatterns`), `NewWebSocketHandler`, `IssueTicket` (`POST /ws/ticket`), `Handle`
+      (`GET /rooms/:roomId/ws`, public route, manual ticket + membership auth, upgrades via `coder/websocket`,
+      subscribes to `event.MessageHub`, forwards `RoomEvent`s as `wsEventFrame` JSON via `wsjson.Write` until the
+      client disconnects or the channel closes), `wsEventFrame` wire type, fully GoDoc'd
+- [x] `server/internal/interface/handler/websocket_handler_test.go` — `TestIssueTicket200`,
+      `TestHandleWS_MissingTicket401`, `TestHandleWS_InvalidTicket401`, `TestHandleWS_NonMember403`,
+      `TestHandleWS_RoomNotFound404`, and the integration-style `TestHandleWS_TwoClientsBroadcastAndTargeted`
+      (real `httptest.NewServer`, two real `coder/websocket` clients, proves both broadcast and per-user-targeted
+      delivery via a shared `event.NewInProcessHub()`)
+- [x] `Config.WSTicketSecret` added (`WS_TICKET_SECRET` env var, defaults to `JWTSecret`), with
+      `config_test.go` cases for both the default and the override
+- [x] DI wiring in `server/internal/app/container.go`: `wsticket.NewIssuer(...)` constructed with a 60s TTL, reusing
+      the same `messageHub` instance already passed into `msgusecase.NewMessageUsecase`; `handler.NewWebSocketHandler`
+      wired with CORS-origin-derived `OriginPatterns` (`originPatternsFromCORS`); exposed as `Container.WebSocketHandler`
+- [x] Route registration in `server/internal/app/routes_websocket.go` (new registrar, called from `NewRouter`):
+      `POST /ws/ticket` on the existing authenticated group, `GET /rooms/:roomId/ws` as a public route on `e`
+- [x] `.env.example` — optional, commented `WS_TICKET_SECRET` entry documented under "Go API Server"
+- [x] `docker-compose.yml` — additive `WS_TICKET_SECRET` env line added to the `api` service (E2E profile blocks
+      left untouched)
+- [x] `.ai_progress/phase2.md` updated (this section)
+
+### Verification run this step
+
+- [x] `cd server && go build ./...`
+- [x] `cd server && go vet ./... && gofmt -l .` (gofmt reports only the pre-existing, unrelated
+      `internal/interface/gateway/llm_client.go`, untouched by this step)
+- [x] `cd server && go test ./internal/interface/wsticket/... -v`
+- [x] `cd server && go test ./internal/interface/handler/... -run TestIssueTicket -v` and `-run TestHandleWS -v`
+- [x] `cd server && go test ./internal/interface/handler/... -run TestHandleWS -race -v`
+- [x] `cd server && go test ./...` (full suite, no regressions)
+- [ ] Manual end-to-end smoke check (`task up` + `curl`/`websocat` against `localhost:8080`) — requires the
+      fixed-port compose stack; skipped per this run's constraints (post-merge integration review).
