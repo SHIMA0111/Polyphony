@@ -29,18 +29,41 @@ function startOfDay(date: Date): number {
 /**
  * Human-readable day label for a day separator: `"Today"`/`"Yesterday"`
  * relative to `now`, otherwise a localized long date (e.g. "July 14, 2026").
+ *
+ * @param now - The reference "current" instant used to decide "Today" /
+ *   "Yesterday", or `null` to skip relative labels entirely and always
+ *   render a fixed-locale, fixed-`timeZone` absolute date instead.
+ *
+ *   `now: null` exists purely to avoid a React hydration mismatch: "Today"
+ *   depends on wall-clock time, and both the relative-label decision and the
+ *   `undefined`-locale absolute-date fallback read the *runtime's* local
+ *   timezone/locale — either of which can differ between the Next.js
+ *   server render and the browser. `MessageList` passes `null` for the SSR
+ *   render and the browser's pre-hydration first paint (both then produce
+ *   the exact same, deterministic string), then switches to a real
+ *   `new Date()` once mounted, trading one harmless post-hydration label
+ *   update for a first paint that is guaranteed to match.
  */
-function dayLabel(date: Date, now: Date): string {
-  const dayMs = 24 * 60 * 60 * 1000
-  const diffDays = Math.round((startOfDay(now) - startOfDay(date)) / dayMs)
+function dayLabel(date: Date, now: Date | null): string {
+  if (now) {
+    const dayMs = 24 * 60 * 60 * 1000
+    const diffDays = Math.round((startOfDay(now) - startOfDay(date)) / dayMs)
 
-  if (diffDays === 0) return "Today"
-  if (diffDays === 1) return "Yesterday"
+    if (diffDays === 0) return "Today"
+    if (diffDays === 1) return "Yesterday"
 
-  return date.toLocaleDateString(undefined, {
+    return date.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    })
+  }
+
+  return date.toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
     day: "numeric",
+    timeZone: "UTC",
   })
 }
 
@@ -58,11 +81,17 @@ function dayLabel(date: Date, now: Date): string {
  * boundary.
  *
  * @param messages - Messages in chronological (ascending `created_at`) order.
+ * @param now - Passed through to {@link dayLabel}; defaults to the real
+ *   current instant, but callers rendering during SSR/pre-hydration should
+ *   pass `null` (see {@link dayLabel}'s docstring) to avoid a hydration
+ *   mismatch on the day-separator labels.
  * @returns Day separators and message groups in display order.
  */
-export function groupMessagesForDisplay(messages: Message[]): DisplayItem[] {
+export function groupMessagesForDisplay(
+  messages: Message[],
+  now: Date | null = new Date(),
+): DisplayItem[] {
   const items: DisplayItem[] = []
-  const now = new Date()
 
   let lastDayKey: number | null = null
   let lastMessage: Message | null = null

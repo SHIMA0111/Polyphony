@@ -4,17 +4,21 @@ import { createQueryClientWrapper } from "@/test/render"
 import {
   fixtureAiMessage,
   fixtureHumanMessage,
+  fixtureMessagePage,
 } from "@/features/messages/api/handlers"
+import { flattenMessagePages } from "@/features/messages/lib/flatten-message-pages"
 import { useMessages } from "./use-messages"
 
 /**
  * MSW-backed test for `useMessages`, proving the
  * `/api/proxy/rooms/:roomId/messages` handler contract (from
- * `../api/handlers.ts`) end to end, including the descending-to-ascending
- * reversal `getMessagesQueryOptions` applies for display.
+ * `../api/handlers.ts`) end to end for the `useInfiniteQuery`-based hook:
+ * the first page lands as `data.pages[0]`, unreversed (still the API's
+ * newest-first order) — `flattenMessagePages` (exercised separately in
+ * `../lib/flatten-message-pages.test.ts`) is what reverses it for display.
  */
 describe("useMessages", () => {
-  it("resolves messages for a room, reversed to oldest-first for display", async () => {
+  it("resolves the first page of messages for a room", async () => {
     const { result } = renderHook(() => useMessages("room-1"), {
       wrapper: createQueryClientWrapper(),
     })
@@ -23,9 +27,18 @@ describe("useMessages", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    // The fixture page is descending (AI message first); the hook's cached
-    // data should be reversed to ascending (human message first).
-    expect(result.current.data).toEqual([
+    expect(result.current.data?.pages).toEqual([fixtureMessagePage])
+    expect(result.current.hasNextPage).toBe(false)
+  })
+
+  it("flattens to oldest-first display order via flattenMessagePages", async () => {
+    const { result } = renderHook(() => useMessages("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(flattenMessagePages(result.current.data?.pages ?? [])).toEqual([
       fixtureHumanMessage,
       fixtureAiMessage,
     ])

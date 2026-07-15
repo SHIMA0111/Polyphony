@@ -6,7 +6,21 @@
  */
 
 export type MessageType = "human" | "ai"
-export type MessageStatus = "completed" | "failed"
+
+/**
+ * `"completed"` and `"failed"` are persisted server statuses (see
+ * `server/internal/domain/message`'s `MessageStatus`); `"failed"` covers both
+ * a genuinely failed AI response (an LLM-call failure the server itself
+ * recorded, retryable via `RegenerateAIMessage`) and, client-side, an
+ * optimistic send that never made it to the server at all.
+ *
+ * `"sending"` is a **client-only** status: it is synthesized locally by
+ * `useSendMessage`/`useSendAIMessage`'s optimistic `onMutate` for a message
+ * that has been echoed into the transcript but not yet acknowledged by the
+ * API. The server never emits `"sending"` in any response body — do not
+ * treat it as a persisted state.
+ */
+export type MessageStatus = "completed" | "failed" | "sending"
 
 export interface Message {
   id: string
@@ -16,6 +30,14 @@ export interface Message {
   type: MessageType
   status: MessageStatus
   sequence: number
+  /**
+   * The human message this AI message was generated in response to; `null`
+   * for human messages, and set for every AI message created via
+   * `SendAIMessage` (see `server/internal/interface/handler/dto.go`'s
+   * `MessageResponse`). `handleRegenerate` resolves its target human message
+   * id from this field rather than scanning the message list by position.
+   */
+  in_response_to_message_id: string | null
   created_at: string
   updated_at: string
 }

@@ -3,7 +3,7 @@ import { HydrationBoundary, dehydrate } from "@tanstack/react-query"
 import { getQueryClient } from "@/lib/query-client"
 import { serverHttpClient } from "@/lib/http-client.server"
 import { getRoomQueryOptions } from "@/features/rooms/api/get-room"
-import { getMessagesQueryOptions } from "@/features/messages/api/get-messages"
+import { getMessagesInfiniteQueryOptions } from "@/features/messages/api/get-messages"
 import { getModelsQueryOptions } from "@/features/messages/api/get-models"
 import { ChatRoom } from "@/features/messages/components/ChatRoom"
 
@@ -34,8 +34,8 @@ export default async function ChatRoomPage({
   }
 
   await Promise.all([
-    queryClient.prefetchQuery(
-      getMessagesQueryOptions(roomId, serverHttpClient.get),
+    queryClient.prefetchInfiniteQuery(
+      getMessagesInfiniteQueryOptions(roomId, serverHttpClient.get),
     ),
     queryClient.prefetchQuery(getModelsQueryOptions(serverHttpClient.get)),
   ])
