@@ -21,7 +21,7 @@ After this PR, `docker compose up -d` brings up a fully health-gated dependency 
 - [x] `docker-compose.yml`: change `web`'s `depends_on` from the short list form (`- api`) to the map form `api: condition: service_healthy`.
 - [x] `docker-compose.yml`: leave `db`'s existing `healthcheck` (`pg_isready`) and `migrate`'s existing `depends_on: db: condition: service_healthy` untouched — they already follow the target convention.
 - [x] `docker-compose.yml`: reorder the top-level `services:` block alphabetically (`api`, `db`, `llm-gateway`, `migrate`, `web`) and note in a comment above `services:` that this ordering is a project convention — establishes the "additive alphabetical service blocks" rule later steps (10/11/12/31/44/49/55) must follow when they insert `dex`, `hydra`, `kratos`, `minio`, `redis`, etc.
-- [x] `Taskfile.yml`: add a top-level `dotenv: ['.env.local', '.env']` key (go-task gives precedence to *earlier* entries in the list, so `.env.local` must be listed first for its values to override `.env`; `.env.local` is optional and already covered by the existing `.env.*` gitignore pattern) so every task — Docker-based and host-run alike — has env vars available without manual `export`.
+- [x] `Taskfile.yml`: add a `dotenv: ['.env.local', '.env']` key scoped per-task to the host-run tasks (`dev:server`, `dev:gateway`, `dev:web`) — **not** at the top level (go-task gives precedence to *earlier* entries in the list, so `.env.local` must be listed first for its values to override `.env`; `.env.local` is optional and already covered by the existing `.env.*` gitignore pattern). Top-level scoping was tried in round 1 and reverted in round 2: it leaks `.env.local`'s host-run overrides (e.g. `DATABASE_URL` pointed at `localhost`) into the OS environment of `docker compose` invocations, and compose gives OS env precedence over its own `.env` interpolation, breaking `task up`/`task rebuild` whenever `.env.local` exists. Docker lifecycle tasks must declare no `dotenv` at all. See `docs/infra-conventions.md`.
 - [x] `Taskfile.yml`: remove `deps: [migrate:generate]` from the `up` task. `task up` becomes purely `docker compose up -d`; migration SQL generation becomes an explicit, opt-in step the developer runs deliberately (`task migrate:generate -- <name>`) when `server/schema.sql` has changed.
 - [x] `Taskfile.yml`: add a `migrate:lint` task under the "Migration" section: `dir: server`, running `atlas migrate lint --env local --latest 1` (reuses the `local` env already declared in `server/atlas.hcl`, which defines `dev = "docker://postgres/17/dev?search_path=public"` and `migration.dir = "file://migrations"`) to catch destructive/unsafe changes in the most recently generated migration before it is committed or applied.
 - [x] `Taskfile.yml`: add a `rebuild` task under the "Docker" section: `docker compose build --no-cache` followed by `docker compose up -d --force-recreate`, for when a clean image rebuild is needed (dependency bumps, Dockerfile changes) without wiping data volumes.
@@ -117,8 +117,6 @@ After this PR, `docker compose up -d` brings up a fully health-gated dependency 
   ```yaml
   version: '3'
 
-  dotenv: ['.env.local', '.env']
-
   tasks:
     up:
       desc: Start all services
@@ -136,8 +134,15 @@ After this PR, `docker compose up -d` brings up a fully health-gated dependency 
       dir: server
       cmds:
         - atlas migrate lint --env local --latest 1
+
+    dev:server:
+      desc: Run Go API server locally
+      dir: server
+      dotenv: ['../.env.local', '../.env']
+      cmds:
+        - go run ./cmd/api
   ```
-  `migrate:generate`, `migrate:apply`, `migrate:status`, `test*`, `lint*`, `fmt*`, and `dev:*` tasks stay exactly as they are today except that they now inherit the top-level `dotenv` list.
+  `migrate:generate`, `migrate:apply`, `migrate:status`, `test*`, `lint*`, `fmt*`, and Docker lifecycle tasks (`up`, `rebuild`, `down`, `down:clean`, `build`, `logs`, `ps`) stay exactly as they are today and declare **no** `dotenv`. Only `dev:server`, `dev:gateway`, and `dev:web` gain a per-task `dotenv: ['../.env.local', '../.env']` (paths relative to each task's `dir: server` / `dir: llm-gateway` / `dir: web`).
 - **Atlas conventions**: `server/atlas.hcl` already declares the `local` env (`src = "file://schema.sql"`, `dev = "docker://postgres/17/dev?search_path=public"`, `migration.dir = "file://migrations"`) reused unchanged by both `migrate:generate`, `migrate:status`, and the new `migrate:lint` task. No `atlas.hcl` changes are needed in this step.
 - **`.env.local.example` content**:
   ```
@@ -168,9 +173,11 @@ After this PR, `docker compose up -d` brings up a fully health-gated dependency 
 
 ## Completion criteria
 - [x] `docker-compose.yml` has `healthcheck` blocks on `api` and `llm-gateway`, a health-gated `depends_on` chain (`db` → `migrate` → `api` ⟷ `llm-gateway` → `web`), and services reordered alphabetically.
-- [x] `Taskfile.yml` loads `.env`/`.env.local` via top-level `dotenv`, no longer auto-runs `migrate:generate` from `up`, and has new `migrate:lint` and `rebuild` tasks.
+- [x] `Taskfile.yml` loads `.env`/`.env.local` via a per-task `dotenv` scoped to the host-run `dev:*` tasks only (Docker lifecycle tasks declare no `dotenv`), no longer auto-runs `migrate:generate` from `up`, and has new `migrate:lint` and `rebuild` tasks.
 - [x] `.env.local.example` exists and is committed; `.gitignore` allows it via `!.env.local.example` while still ignoring the real `.env.local`.
 - [x] `.env.example` has new placeholder sections for Anthropic, Gemini, Stripe, MinIO, Redis, Kratos, Hydra, and Dex.
 - [x] `docs/infra-conventions.md` exists and documents the migration and compose/Taskfile editing conventions.
 - [x] `README.md` Quick Start reflects the manual `migrate:generate` step and links to `docs/infra-conventions.md`.
 - [ ] All verification checks pass. (Wave-1 integration review round 2, 2026-07-16: checks 1–6, 9, 10, 11 all pass as shipped after the round-1 fixes — the full stack comes up healthy via `docker compose up -d --build` with the `127.0.0.1` healthchecks, `web` waits for `api` healthy, both health endpoints return 200, `docker inspect` reports `healthy` for `api` and `llm-gateway`, running `task up` twice generates no new migration file, and `task dev:server` with a fresh `.env.local` resolves `DATABASE_URL` to `localhost` (connects to the DB; the subsequent `:8080` bind error is just the port conflict with the running container). Check 7 still FAILS environmentally: Atlas v0.38.1 gates `migrate lint` behind an Atlas Pro `atlas login`; documented in Taskfile.yml and docs/infra-conventions.md. Check 8 was RUN this round and FAILS: `task rebuild`'s `docker compose build --no-cache` succeeds, but the final `docker compose up -d --force-recreate` fails when `.env.local` exists — the Taskfile's top-level `dotenv: ['.env.local', '.env']` exports `.env.local`'s host-run `DATABASE_URL` (`localhost`) into the environment of `docker compose`, OS env wins over compose's own `.env` interpolation, and the `migrate` container dials `[::1]:5432` inside itself (`connection refused`); the same breakage applies to `task up`. Reproduced and confirmed: with `.env.local` present, plain `docker compose up -d` works while `task up`/`task rebuild` fail; without `.env.local`, both work. Fix needed: scope the dotenv to host-run tasks (per-task `dotenv` on `dev:*`) instead of top-level. Check 12 was again not run (`down:clean` would wipe the developer's existing pgdata volume).)
+
+**Round 2 fix (2026-07-16, fix agent)**: Removed the top-level `dotenv: ['.env.local', '.env']` from `Taskfile.yml` and attached `dotenv: ['../.env.local', '../.env']` per-task to `dev:server`, `dev:gateway`, and `dev:web` only (paths are relative to each task's `dir:`). Docker lifecycle tasks (`up`, `rebuild`, `down`, `down:clean`, `build`, `logs`, `ps`, `migrate:apply`) now declare no `dotenv` and therefore never leak `.env.local`'s host-run overrides into `docker compose`'s environment. Verified the go-task dotenv-scoping/precedence mechanics in an isolated sandbox Taskfile (per-task `dotenv` with `.env.local` present resolves to the `.env.local` value; a task with no `dotenv` sees an empty/unset variable), confirming the fix addresses the root cause. `docs/infra-conventions.md` updated with a new "Why Docker lifecycle tasks must not load `.env.local`" section explaining the OS-env-vs-compose-`.env`-interpolation precedence issue. Did not run `docker compose`/`task up`/`task rebuild` per the fix agent's instructions (left for the re-reviewer) — checks 2 and 8 with `.env.local` present should be re-run by the next reviewer to confirm end-to-end.

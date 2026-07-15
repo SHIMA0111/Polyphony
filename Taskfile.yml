@@ -1,7 +1,5 @@
 version: '3'
 
-dotenv: ['.env.local', '.env']
-
 tasks:
   # ---------------------------------------------------------------------------
   # Docker
@@ -151,17 +149,20 @@ tasks:
   dev:server:
     desc: Run Go API server locally
     dir: server
+    dotenv: ['../.env.local', '../.env']
     cmds:
       - go run ./cmd/api
 
   dev:gateway:
     desc: Run LLM Gateway locally
     dir: llm-gateway
+    dotenv: ['../.env.local', '../.env']
     cmds:
       - cargo run
 
   dev:web:
     desc: Run web frontend dev server
     dir: web
+    dotenv: ['../.env.local', '../.env']
     cmds:
       - bun run dev
