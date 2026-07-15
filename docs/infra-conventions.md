@@ -89,13 +89,35 @@ checksums Atlas expects. Instead:
 - Do not reformat or reorder existing tasks when adding a new one — append the new task block within
   its section, leaving surrounding tasks byte-identical, so parallel PRs adding unrelated tasks don't
   collide on the same lines.
-- The top-level `dotenv: ['.env.local', '.env']` key makes every task — Docker-based and host-run
-  alike — see the same environment variables without a manual `export`. `.env.local` is optional and
-  gitignored; see the next section.
-- **Precedence note**: go-task gives precedence to *earlier* entries in the `dotenv` list — the
+- `dotenv: ['../.env.local', '../.env']` is declared **per task**, only on the host-run tasks
+  (`dev:server`, `dev:gateway`, `dev:web`), not at the Taskfile's top level. It is scoped this way
+  deliberately — see the next section for why Docker lifecycle tasks (`up`, `rebuild`, `down`,
+  `build`, `logs`, `migrate:apply`, ...) must never load `.env.local`.
+- **Precedence note**: go-task gives precedence to *earlier* entries in a `dotenv` list — the
   first file that defines a variable wins, later files do not override it. `.env.local` must
   therefore come first so its host-run overrides (`localhost` instead of Docker service hostnames)
   take effect; listing `.env` first would make `.env.local` silently unable to override anything.
+  Paths are relative to the task's `dir:`, so a task with `dir: server` uses `../.env.local` /
+  `../.env` to reach the repo-root files.
+
+## Why Docker lifecycle tasks must not load `.env.local`
+
+- `.env.local` exists so host-run processes (`go run ./cmd/api`, `cargo run`, `bun run dev`) can
+  reach Postgres/the gateway at `localhost` instead of the Docker service hostnames (`db`,
+  `llm-gateway`) that only resolve *inside* the compose network.
+- `docker compose` interpolates `${VAR}` references in `docker-compose.yml` from its own `.env`
+  file, but gives OS-environment variables **higher precedence** than that `.env` file. go-task's
+  `dotenv` key works by exporting the loaded variables into the child process environment before
+  running `cmds`. If a top-level (or `up`/`rebuild`-scoped) `dotenv: ['.env.local', '.env']` were
+  used, `task up`/`task rebuild` would export `.env.local`'s `DATABASE_URL=...@localhost:5432...`
+  into the environment `docker compose` runs in, compose would prefer that OS value over its own
+  `.env` interpolation, and the `migrate` container would receive a `localhost` `DATABASE_URL` —
+  which resolves to `[::1]:5432` *inside the container*, where nothing is listening, so `migrate`
+  fails and `api`/`web` never start.
+- The fix is scope, not removal: `dotenv` is attached only to `dev:server`, `dev:gateway`, and
+  `dev:web` (see above). Docker lifecycle tasks (`up`, `rebuild`, `down`, `down:clean`, `build`,
+  `logs`, `ps`, `migrate:apply`) declare no `dotenv` at all, so `docker compose` only ever sees
+  its own `.env` file, exactly as if invoked directly on the command line.
 
 ## Host-run dev tasks: `.env.local`
 
@@ -110,5 +132,6 @@ checksums Atlas expects. Instead:
 
   `.env.local` itself is gitignored (covered by the blanket `.env.*` rule in `.gitignore`, with an
   explicit `!.env.local.example` exception keeping the template tracked) and is loaded automatically
-  by the Taskfile's `dotenv` key, listed *before* `.env` so its values take precedence for
-  host-run tasks (see the precedence note above).
+  by the per-task `dotenv` key on `dev:server`/`dev:gateway`/`dev:web`, listed *before* `.env` so
+  its values take precedence for those tasks (see the precedence note above). It is intentionally
+  **not** loaded by any Docker lifecycle task (see previous section).
