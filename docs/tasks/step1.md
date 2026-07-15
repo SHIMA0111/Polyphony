@@ -87,4 +87,4 @@
 - [x] `pgxpool` lifetime/idle/health-check settings are configurable via `DB_MAX_CONN_LIFETIME`, `DB_MAX_CONN_IDLE_TIME`, `DB_HEALTH_CHECK_PERIOD` env vars with sensible defaults
 - [x] `docker-compose.yml`'s `api` service exposes the three new env vars additively
 - [x] All items in Scope are checked off
-- [ ] All verification checks pass
+- [x] All verification checks pass. (Verified in the wave-1 integration review, 2026-07-16: checks 1-4 pass locally (check 4 reports only the 4 documented pre-existing findings); checks 5-8 pass end to end — `/health` returns 200 with `X-Request-Id`, `/users/me` returns 200 with id/email/username/created_at and 401 without a token, and the 502 `/models` path (llm-gateway stopped) logs an ERROR line with a matching `request_id`. Note: bringing the stack up required a one-line hotfix to Step 6's `llm-gateway` healthcheck (`localhost` → `127.0.0.1`), an issue owned by Step 6, not this step.)
