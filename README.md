@@ -66,6 +66,11 @@ task up
 task logs
 ```
 
+> `task up` only starts the stack — it no longer runs `migrate:generate` implicitly. After changing
+> `server/schema.sql`, generate the migration explicitly with `task migrate:generate -- <name>`. See
+> [docs/infra-conventions.md](docs/infra-conventions.md) for the full migration and
+> compose/Taskfile-editing conventions.
+
 ### Individual Services
 
 ```bash
