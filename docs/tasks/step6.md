@@ -21,7 +21,7 @@ After this PR, `docker compose up -d` brings up a fully health-gated dependency 
 - [x] `docker-compose.yml`: change `web`'s `depends_on` from the short list form (`- api`) to the map form `api: condition: service_healthy`.
 - [x] `docker-compose.yml`: leave `db`'s existing `healthcheck` (`pg_isready`) and `migrate`'s existing `depends_on: db: condition: service_healthy` untouched — they already follow the target convention.
 - [x] `docker-compose.yml`: reorder the top-level `services:` block alphabetically (`api`, `db`, `llm-gateway`, `migrate`, `web`) and note in a comment above `services:` that this ordering is a project convention — establishes the "additive alphabetical service blocks" rule later steps (10/11/12/31/44/49/55) must follow when they insert `dex`, `hydra`, `kratos`, `minio`, `redis`, etc.
-- [x] `Taskfile.yml`: add a top-level `dotenv: ['.env', '.env.local']` key (later files override earlier ones; `.env.local` is optional and already covered by the existing `.env.*` gitignore pattern) so every task — Docker-based and host-run alike — has env vars available without manual `export`.
+- [x] `Taskfile.yml`: add a top-level `dotenv: ['.env.local', '.env']` key (go-task gives precedence to *earlier* entries in the list, so `.env.local` must be listed first for its values to override `.env`; `.env.local` is optional and already covered by the existing `.env.*` gitignore pattern) so every task — Docker-based and host-run alike — has env vars available without manual `export`.
 - [x] `Taskfile.yml`: remove `deps: [migrate:generate]` from the `up` task. `task up` becomes purely `docker compose up -d`; migration SQL generation becomes an explicit, opt-in step the developer runs deliberately (`task migrate:generate -- <name>`) when `server/schema.sql` has changed.
 - [x] `Taskfile.yml`: add a `migrate:lint` task under the "Migration" section: `dir: server`, running `atlas migrate lint --env local --latest 1` (reuses the `local` env already declared in `server/atlas.hcl`, which defines `dev = "docker://postgres/17/dev?search_path=public"` and `migration.dir = "file://migrations"`) to catch destructive/unsafe changes in the most recently generated migration before it is committed or applied.
 - [x] `Taskfile.yml`: add a `rebuild` task under the "Docker" section: `docker compose build --no-cache` followed by `docker compose up -d --force-recreate`, for when a clean image rebuild is needed (dependency bumps, Dockerfile changes) without wiping data volumes.
@@ -53,7 +53,7 @@ After this PR, `docker compose up -d` brings up a fully health-gated dependency 
 - **Files to modify**: `/Users/seigooshima/git/multi-user-ai/docker-compose.yml`, `/Users/seigooshima/git/multi-user-ai/Taskfile.yml`, `/Users/seigooshima/git/multi-user-ai/.env.example`, `/Users/seigooshima/git/multi-user-ai/.gitignore`, `/Users/seigooshima/git/multi-user-ai/README.md`.
 - **Files to create**: `/Users/seigooshima/git/multi-user-ai/.env.local.example`, `/Users/seigooshima/git/multi-user-ai/docs/infra-conventions.md`.
 - **Existing endpoints to reuse** (do not modify): `GET /health` on the API server is registered in `server/cmd/api/main.go` (`e.GET("/health", healthHandler.Health)`) and implemented in `server/internal/interface/handler/health_handler.go` (`return c.JSON(http.StatusOK, map[string]string{"status": "ok"})`). `GET /health` on the LLM Gateway is registered in `llm-gateway/src/adapters/inbound/rest/router.rs` (`.route("/health", get(health))`) and implemented in `llm-gateway/src/adapters/inbound/rest/handlers.rs`.
-- **Healthcheck command choice**: both runtime images are `FROM alpine:3.21` with only `ca-certificates tzdata` added via `apk add` (see `server/Dockerfile` and `llm-gateway/Dockerfile`) — no `curl` binary. Use the busybox `wget` applet that ships with the base Alpine image: `["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:<port>/health"]`. Do not add `apk add curl` — that would be an unnecessary image-size regression when `wget` already works.
+- **Healthcheck command choice**: both runtime images are `FROM alpine:3.21` with only `ca-certificates tzdata` added via `apk add` (see `server/Dockerfile` and `llm-gateway/Dockerfile`) — no `curl` binary. Use the busybox `wget` applet that ships with the base Alpine image: `["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:<port>/health"]`. Use `127.0.0.1`, not `localhost`: busybox `wget` resolves `localhost` to `::1` first, but both binaries bind IPv4-only (`0.0.0.0`), so a `localhost` healthcheck fails forever. Do not add `apk add curl` — that would be an unnecessary image-size regression when `wget` already works.
 - **docker-compose.yml target shape** (services reordered alphabetically; only the diffs described below change from the current file):
   ```yaml
   services:
@@ -69,7 +69,7 @@ After this PR, `docker compose up -d` brings up a fully health-gated dependency 
       ports:
         - "8080:8080"
       healthcheck:
-        test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+        test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
         interval: 5s
         timeout: 3s
         retries: 5
@@ -92,7 +92,7 @@ After this PR, `docker compose up -d` brings up a fully health-gated dependency 
       ports:
         - "8081:8081"
       healthcheck:
-        test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/health"]
+        test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8081/health"]
         interval: 5s
         timeout: 3s
         retries: 5
@@ -117,7 +117,7 @@ After this PR, `docker compose up -d` brings up a fully health-gated dependency 
   ```yaml
   version: '3'
 
-  dotenv: ['.env', '.env.local']
+  dotenv: ['.env.local', '.env']
 
   tasks:
     up:

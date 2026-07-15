@@ -1,6 +1,6 @@
 version: '3'
 
-dotenv: ['.env', '.env.local']
+dotenv: ['.env.local', '.env']
 
 tasks:
   # ---------------------------------------------------------------------------
@@ -66,7 +66,9 @@ tasks:
       - atlas migrate status --env local
 
   migrate:lint:
-    desc: Lint the latest migration for destructive/unsafe changes
+    # Requires `atlas login` (Atlas v0.38+ gates `migrate lint` behind an Atlas Pro account).
+    # See docs/infra-conventions.md for the login step and a manual-review fallback.
+    desc: Lint the latest migration for destructive/unsafe changes (requires `atlas login`)
     dir: server
     cmds:
       - atlas migrate lint --env local --latest 1
