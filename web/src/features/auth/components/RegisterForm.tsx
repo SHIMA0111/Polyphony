@@ -1,35 +1,49 @@
 "use client"
 
-import { useState } from "react"
 import Link from "next/link"
-import { Box, Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/react"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useForm, useWatch } from "react-hook-form"
+import { Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/react"
 import { Pen } from "lucide-react"
-import { PasswordInput } from "@/components/ui/password-input"
+import { PasswordInput, PasswordStrengthMeter } from "@/components/ui/password-input"
+import { toaster } from "@/components/ui/toaster"
 import { useRegister } from "@/features/auth/hooks/use-register"
+import { getPasswordStrength } from "@/features/auth/utils/password-strength"
+import { registerSchema, type RegisterFormValues } from "@/features/auth/utils/schemas"
 
 export function RegisterForm() {
-  const [email, setEmail] = useState("")
-  const [username, setUsername] = useState("")
-  const [password, setPassword] = useState("")
-  const [confirmPassword, setConfirmPassword] = useState("")
-  const [error, setError] = useState("")
   const registerMutation = useRegister()
+  const {
+    register,
+    handleSubmit,
+    control,
+    formState: { errors },
+  } = useForm<RegisterFormValues>({
+    resolver: zodResolver(registerSchema),
+    mode: "onChange",
+  })
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError("")
+  // `useWatch` (rather than the `watch()` function returned by `useForm`)
+  // subscribes only this component to `password` changes and is
+  // React-Compiler-memoizable, avoiding a `react-hooks/incompatible-library`
+  // lint warning.
+  const password = useWatch({ control, name: "password" }) ?? ""
 
-    if (password !== confirmPassword) {
-      setError("Passwords do not match")
-      return
-    }
-
+  const onSubmit = handleSubmit(async (values) => {
     try {
-      await registerMutation.mutateAsync({ email, username, password })
+      await registerMutation.mutateAsync({
+        email: values.email,
+        username: values.username,
+        password: values.password,
+      })
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration failed")
+      toaster.create({
+        type: "error",
+        title: "Registration failed",
+        description: err instanceof Error ? err.message : "Please try again.",
+      })
     }
-  }
+  })
 
   return (
     <Flex minH="100vh" align="center" justify="center" bg="bg.subtle" p={4}>
@@ -57,56 +71,63 @@ export function RegisterForm() {
           </Card.Description>
         </Card.Header>
         <Card.Body>
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={onSubmit} noValidate>
             <Flex direction="column" gap={4}>
-              {error && (
-                <Box
-                  bg="red.50"
-                  color="red.600"
-                  p={3}
-                  rounded="md"
-                  fontSize="sm"
-                >
-                  {error}
-                </Box>
-              )}
-              <Field.Root>
+              <Field.Root invalid={!!errors.email}>
                 <Field.Label>Email</Field.Label>
                 <Input
                   type="email"
                   placeholder="you@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
+                  {...register("email")}
                 />
+                {errors.email && (
+                  <Field.ErrorText role="alert">
+                    {errors.email.message}
+                  </Field.ErrorText>
+                )}
               </Field.Root>
-              <Field.Root>
+              <Field.Root invalid={!!errors.username}>
                 <Field.Label>Username</Field.Label>
                 <Input
                   type="text"
                   placeholder="johndoe"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  required
+                  {...register("username")}
                 />
+                {errors.username && (
+                  <Field.ErrorText role="alert">
+                    {errors.username.message}
+                  </Field.ErrorText>
+                )}
               </Field.Root>
-              <Field.Root>
+              <Field.Root invalid={!!errors.password}>
                 <Field.Label>Password</Field.Label>
                 <PasswordInput
                   placeholder="Create a password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
+                  {...register("password")}
                 />
+                {errors.password && (
+                  <Field.ErrorText role="alert">
+                    {errors.password.message}
+                  </Field.ErrorText>
+                )}
+                {password.length > 0 && (
+                  <PasswordStrengthMeter
+                    mt={2}
+                    value={getPasswordStrength(password)}
+                  />
+                )}
               </Field.Root>
-              <Field.Root>
+              <Field.Root invalid={!!errors.confirmPassword}>
                 <Field.Label>Confirm Password</Field.Label>
                 <PasswordInput
                   placeholder="Confirm your password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  required
+                  {...register("confirmPassword")}
                 />
+                {errors.confirmPassword && (
+                  <Field.ErrorText role="alert">
+                    {errors.confirmPassword.message}
+                  </Field.ErrorText>
+                )}
               </Field.Root>
               <Button
                 type="submit"
