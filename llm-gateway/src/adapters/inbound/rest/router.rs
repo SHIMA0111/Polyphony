@@ -1,7 +1,7 @@
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
 
-use super::handlers::{complete, health, list_models, AppState};
+use super::handlers::{AppState, complete, health, list_models};
 
 /// Builds the axum router.
 ///

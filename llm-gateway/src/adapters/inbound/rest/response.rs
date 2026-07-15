@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::domain::model::{CompletionResponse, ModelInfo, Role};
+use crate::domain::model::{CompletionResponse, ModelInfo};
 
 /// Completion response DTO for the REST API.
 #[derive(Serialize)]
@@ -34,16 +34,6 @@ pub struct UsageDto {
     pub total_tokens: u32,
 }
 
-/// Converts a domain Role to a REST API role string.
-fn role_to_api_string(role: &Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-        Role::Tool => "tool",
-    }
-}
-
 impl From<CompletionResponse> for CompletionResponseDto {
     fn from(resp: CompletionResponse) -> Self {
         Self {
@@ -55,8 +45,8 @@ impl From<CompletionResponse> for CompletionResponseDto {
                 .map(|c| ChoiceDto {
                     index: c.index,
                     message: MessageDto {
-                        role: role_to_api_string(&c.message.role).to_string(),
-                        content: c.message.content,
+                        role: c.message.role.as_str().to_string(),
+                        content: c.message.content.as_text(),
                     },
                     finish_reason: c.finish_reason,
                 })
