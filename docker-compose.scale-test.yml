@@ -2,8 +2,14 @@
 # (docs/tasks/step31.md). The base docker-compose.yml publishes a fixed
 # "8080:8080" host port mapping for `api`, which is right for normal
 # single-instance local dev but collides across replicas when scaling with
-# `--scale api=2`. This file overrides only that one key so Compose assigns a
-# distinct random host port per replica; it is never used by `task up` or a
+# `--scale api=2`. Compose list-typed keys (like `ports`) are merged, not
+# replaced, across `-f` files by default — so without the `!override` merge
+# tag below, each scaled replica would still publish the base file's
+# "8080:8080" mapping *in addition to* this file's bare "8080" entry, and
+# `--scale api=2` would fail with "Bind for 0.0.0.0:8080 failed: port is
+# already allocated". The `!override` tag makes this file's `ports` list
+# substitute the base file's list entirely, so each replica gets only a
+# single, auto-assigned host port. This file is never used by `task up` or a
 # plain `docker compose up` — only referenced explicitly with `-f`, e.g.:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.scale-test.yml \
@@ -14,5 +20,5 @@
 #   docker compose port --index=2 api 8080
 services:
   api:
-    ports:
+    ports: !override
       - "8080"

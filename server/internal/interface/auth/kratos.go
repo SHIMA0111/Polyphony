@@ -240,38 +240,60 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 	}
 
 	identity := result.Session.Identity
-	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, identity.ID)
+	localUser, err := s.ensureLocalUser(ctx, identity)
 	if err != nil {
-		if !errors.Is(err, domain.ErrNotFound) {
-			return nil, err
-		}
-
-		now := time.Now()
-		identityID := identity.ID
-		u := &user.User{
-			ID:               uuid.New().String(),
-			Email:            identity.Traits.Email,
-			Username:         identity.Traits.Username,
-			PasswordHash:     kratosManagedPasswordHash,
-			KratosIdentityID: &identityID,
-			CreatedAt:        now,
-			UpdatedAt:        now,
-		}
-		if err := s.userRepo.Create(ctx, u); err != nil {
-			return nil, err
-		}
-		if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {
-			return nil, err
-		}
-		localUser = u
+		return nil, err
 	}
 	_ = localUser // resolved for parity with the interface contract; not needed in the returned TokenPair
 
 	return &domainauth.TokenPair{AccessToken: result.SessionToken, TokenType: "Bearer"}, nil
 }
 
+// ensureLocalUser resolves identity to a local users row via
+// userRepo.GetByKratosIdentityID, self-healing a missing row from the
+// identity's traits when Kratos knows about an identity that this app's
+// database has never mirrored (e.g. an identity created directly via the
+// Kratos Admin API, or a browser-driven registration whose local mirror
+// write raced/failed independently of Kratos's own identity creation).
+// This is the single shared implementation Login and ValidateToken both
+// rely on so neither path can silently diverge from the other.
+func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identity kratosIdentityDTO) (*user.User, error) {
+	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, identity.ID)
+	if err == nil {
+		return localUser, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return nil, err
+	}
+
+	now := time.Now()
+	identityID := identity.ID
+	u := &user.User{
+		ID:               uuid.New().String(),
+		Email:            identity.Traits.Email,
+		Username:         identity.Traits.Username,
+		PasswordHash:     kratosManagedPasswordHash,
+		KratosIdentityID: &identityID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := s.userRepo.Create(ctx, u); err != nil {
+		return nil, err
+	}
+	if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
 // ValidateToken validates a token against Kratos's GET /sessions/whoami
-// endpoint and resolves the local user via userRepo.GetByKratosIdentityID.
+// endpoint and resolves the local user via ensureLocalUser, self-healing a
+// missing local row from the whoami response's identity traits exactly as
+// Login does — this is the only path the browser data-plane exercises
+// (registration/login there go straight to Kratos via /api/kratos/*, never
+// through this package's Register/Login), so without this self-heal a
+// freshly browser-registered identity would 401 forever despite holding a
+// perfectly valid Kratos session.
 //
 // token is interpreted using the following convention, which is the
 // contract that interface/middleware.JWTAuth relies on: if token has the
@@ -284,7 +306,8 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 // cookie), so the distinction only matters when AUTH_MODE=kratos.
 //
 // It returns domain.ErrInvalidToken on any non-200 whoami response or if
-// the resolved identity has no linked local user.
+// the resolved/self-healed local user lookup fails for a reason other than
+// a missing row.
 func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.publicURL+"/sessions/whoami", nil)
 	if err != nil {
@@ -314,7 +337,7 @@ func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*d
 		return nil, domain.ErrInvalidToken
 	}
 
-	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, result.Identity.ID)
+	localUser, err := s.ensureLocalUser(ctx, result.Identity)
 	if err != nil {
 		return nil, domain.ErrInvalidToken
 	}

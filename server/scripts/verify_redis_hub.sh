@@ -2,17 +2,28 @@
 # verify_redis_hub.sh — Step 31 multi-instance MessageHub smoke check
 # (docs/tasks/step31.md).
 #
-# Brings up db, migrate, redis, and llm-gateway, then scales `api` to two
-# replicas using docker-compose.scale-test.yml (so each replica gets its own
-# auto-assigned host port instead of colliding on 8080). It registers a test
-# user, opens a WebSocket connection against replica 1, sends a room message
-# via HTTP against replica 2, and asserts the message is delivered over
-# replica 1's WebSocket within a timeout — proving RedisHub fans events out
-# across API server processes rather than only within one, which InProcessHub
-# cannot do.
+# Brings up db, redis, and llm-gateway, applies migrations via the one-shot
+# `migrate` container (matching the `migrate:apply` Task), then scales `api`
+# to two replicas using docker-compose.scale-test.yml (so each replica gets
+# its own auto-assigned host port instead of colliding on 8080). It registers
+# a test user, opens a WebSocket connection against replica 1, sends a room
+# message via HTTP against replica 2, and asserts the message is delivered
+# over replica 1's WebSocket within a timeout — proving RedisHub fans events
+# out across API server processes rather than only within one, which
+# InProcessHub cannot do.
 #
 # Exits 0 on success, non-zero on any failure (missing prerequisite, replica
 # never becomes healthy, or the cross-instance delivery timing out).
+#
+# Idempotent and non-destructive by design: `--wait` is only ever applied to
+# long-running services (db, redis, llm-gateway) — never to the one-shot
+# `migrate` service, whose container legitimately exits 0 after applying
+# migrations and would otherwise make a bare `--wait db migrate redis
+# llm-gateway` fail any time a previously-exited `migrate` container from an
+# earlier run/dev session still exists in the project. The cleanup trap is
+# scoped to only the resources this script itself brought up (the scaled
+# `api` replicas) — it never runs a project-wide `docker compose down`, so it
+# will not tear down a stack the developer already had running.
 #
 # Explicitly forces AUTH_MODE=simple_jwt for this stack's own bring-up
 # (independent of whatever AUTH_MODE default docker-compose.yml ships with),
@@ -49,15 +60,19 @@ WS_WAIT_LOG="$(mktemp)"
 
 cleanup() {
   local status=$?
-  echo "==> Tearing down the scale-test stack"
-  "${COMPOSE[@]}" down >/dev/null 2>&1 || true
+  echo "==> Stopping and removing only the api replicas this script scaled up"
+  "${COMPOSE[@]}" stop api >/dev/null 2>&1 || true
+  "${COMPOSE[@]}" rm -f api >/dev/null 2>&1 || true
   rm -f "$WS_WAIT_LOG"
   exit "$status"
 }
 trap cleanup EXIT
 
-echo "==> Starting db, migrate, redis, llm-gateway"
-"${BASE_COMPOSE[@]}" up -d --wait db migrate redis llm-gateway
+echo "==> Starting db, redis, llm-gateway"
+"${BASE_COMPOSE[@]}" up -d --wait db redis llm-gateway
+
+echo "==> Applying migrations via the one-shot migrate container"
+"${BASE_COMPOSE[@]}" run --rm migrate
 
 echo "==> Scaling api to 2 replicas via docker-compose.scale-test.yml"
 "${COMPOSE[@]}" up -d --build --wait --scale api=2 api
