@@ -4,6 +4,7 @@ use llm_gateway::adapters::inbound::grpc::serve_grpc;
 use llm_gateway::adapters::inbound::rest::router::build_router;
 use llm_gateway::adapters::outbound::anthropic::AnthropicProvider;
 use llm_gateway::adapters::outbound::env_key::EnvKeyStore;
+use llm_gateway::adapters::outbound::gemini::GeminiProvider;
 use llm_gateway::adapters::outbound::openai::OpenAIProvider;
 use llm_gateway::config::Config;
 use llm_gateway::domain::service::CompletionService;
@@ -50,8 +51,24 @@ async fn main() {
         }
     };
 
+    let gemini_provider = match GeminiProvider::new(
+        key_store.clone(),
+        config.http.clone(),
+        config.gemini.clone(),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("failed to initialize GeminiProvider: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let service = CompletionService::new(
-        vec![Box::new(openai_provider), Box::new(anthropic_provider)],
+        vec![
+            Box::new(openai_provider),
+            Box::new(anthropic_provider),
+            Box::new(gemini_provider),
+        ],
         key_store,
     );
     // Coerced to the trait object once here so the exact same instance is shared by
