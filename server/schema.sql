@@ -50,3 +50,14 @@ CREATE TABLE messages (
 );
 
 CREATE INDEX idx_messages_room_sequence ON messages(room_id, sequence DESC);
+
+CREATE TABLE message_attachments (
+    id UUID PRIMARY KEY,
+    message_id UUID REFERENCES messages(id) ON DELETE CASCADE,
+    s3_key VARCHAR(512) NOT NULL,
+    mime_type VARCHAR(100) NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_message_attachments_message_id ON message_attachments(message_id);

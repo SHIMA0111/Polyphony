@@ -37,6 +37,7 @@ func NewRouter(c *Container) *echo.Echo {
 	registerRoomRoutes(authGroup, c)
 	registerMessageRoutes(authGroup, c)
 	registerUserRoutes(authGroup, c)
+	registerAttachmentRoutes(authGroup, c)
 
 	return e
 }
