@@ -13,7 +13,10 @@ use crate::ports::inbound::completion::CompletionUseCase;
 
 use super::convert::{domain_error_to_status, domain_role_to_proto, proto_role_to_domain};
 use super::pb::completion_service_server::CompletionService;
-use super::pb::{ChatMessage, Choice, CompletionRequest, CompletionResponse, Usage};
+use super::pb::{
+    ChatMessage, Choice, CompletionRequest, CompletionResponse, TokenEstimateRequest,
+    TokenEstimateResponse, Usage,
+};
 
 /// Tonic server implementation of `polyphony.llmgateway.v1.CompletionService`.
 pub struct GrpcCompletionService {
@@ -56,6 +59,45 @@ fn proto_request_to_domain(req: CompletionRequest) -> Result<domain::CompletionR
         temperature: req.temperature,
         max_tokens: req.max_tokens,
     })
+}
+
+/// Converts a proto `TokenEstimateRequest` into the domain equivalent.
+///
+/// Mirrors `proto_request_to_domain` but without the sampling parameters
+/// (`temperature`, `max_tokens`) that `TokenEstimateRequest` does not carry.
+///
+/// # Errors
+/// Returns `tonic::Status::invalid_argument` if any message carries an unrecognized
+/// `ChatRole`.
+fn proto_token_estimate_to_domain(
+    req: TokenEstimateRequest,
+) -> Result<domain::TokenEstimateRequest, Status> {
+    let messages = req
+        .messages
+        .into_iter()
+        .map(|m| {
+            let role = proto_role_to_domain(m.role).map_err(domain_error_to_status)?;
+            Ok(domain::ChatMessage {
+                role,
+                content: m.content.into(),
+            })
+        })
+        .collect::<Result<Vec<_>, Status>>()?;
+
+    Ok(domain::TokenEstimateRequest {
+        model: req.model,
+        messages,
+    })
+}
+
+/// Converts a domain `TokenEstimateResponse` into the proto equivalent.
+fn domain_token_estimate_response_to_proto(
+    resp: domain::TokenEstimateResponse,
+) -> TokenEstimateResponse {
+    TokenEstimateResponse {
+        model: resp.model,
+        estimated_tokens: resp.estimated_tokens,
+    }
 }
 
 /// Converts a domain `CompletionResponse` into the proto equivalent.
@@ -103,5 +145,23 @@ impl CompletionService for GrpcCompletionService {
             .map_err(domain_error_to_status)?;
 
         Ok(Response::new(domain_response_to_proto(resp)))
+    }
+
+    /// Returns an approximate token count for a list of chat messages.
+    ///
+    /// Delegates to the same `CompletionUseCase::estimate_tokens` heuristic the REST
+    /// `POST /tokens/estimate` handler uses (`adapters::inbound::rest::handlers::estimate_tokens`).
+    ///
+    /// # Errors
+    /// Returns `tonic::Status::invalid_argument` if any message carries an unrecognized
+    /// `ChatRole`. Unlike `complete`, an unrecognized model name never causes an error
+    /// (estimation does not require a known model — see `CompletionUseCase::estimate_tokens`).
+    async fn estimate_tokens(
+        &self,
+        request: Request<TokenEstimateRequest>,
+    ) -> Result<Response<TokenEstimateResponse>, Status> {
+        let domain_req = proto_token_estimate_to_domain(request.into_inner())?;
+        let resp = self.use_case.estimate_tokens(domain_req);
+        Ok(Response::new(domain_token_estimate_response_to_proto(resp)))
     }
 }

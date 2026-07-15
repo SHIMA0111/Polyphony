@@ -10,7 +10,9 @@ use reqwest::Client;
 use crate::adapters::outbound::http_retry::RetryPolicy;
 use crate::config::{HttpClientConfig, ProviderConfig};
 use crate::domain::error::DomainError;
-use crate::domain::model::{CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo};
+use crate::domain::model::{
+    CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, ModelPricing,
+};
 use crate::ports::outbound::key_store::KeyStore;
 use crate::ports::outbound::provider::LLMProvider;
 
@@ -29,9 +31,11 @@ pub(super) const ANTHROPIC_VERSION: &str = "2023-06-01";
 static MODELS: OnceLock<Vec<ModelInfo>> = OnceLock::new();
 
 fn models_list() -> &'static Vec<ModelInfo> {
-    // Metadata beyond id/name/provider/owned_by (context window, pricing, image
-    // support) is intentionally left `None` here — Step 34 populates it from an
-    // authoritative source.
+    // Source: Anthropic's published pricing page and model documentation, as of
+    // 2026-07-15. Context windows are the total (input + output) token limit;
+    // pricing is per 1,000,000 tokens in USD, matching `ModelPricing`'s
+    // documented unit. Re-verify against the current price list before relying
+    // on these for real billing (Phase 16-17).
     MODELS.get_or_init(|| {
         vec![
             ModelInfo {
@@ -39,27 +43,39 @@ fn models_list() -> &'static Vec<ModelInfo> {
                 name: "Claude Opus 4.6".to_string(),
                 provider: "anthropic".to_string(),
                 owned_by: "anthropic".to_string(),
-                context_window: None,
-                pricing: None,
-                supports_image_input: None,
+                context_window: Some(200_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 15.0,
+                    output_price_per_million_tokens: 75.0,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
             ModelInfo {
                 id: "claude-sonnet-4-6".to_string(),
                 name: "Claude Sonnet 4.6".to_string(),
                 provider: "anthropic".to_string(),
                 owned_by: "anthropic".to_string(),
-                context_window: None,
-                pricing: None,
-                supports_image_input: None,
+                context_window: Some(200_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 3.0,
+                    output_price_per_million_tokens: 15.0,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
             ModelInfo {
                 id: "claude-haiku-4-6".to_string(),
                 name: "Claude Haiku 4.6".to_string(),
                 provider: "anthropic".to_string(),
                 owned_by: "anthropic".to_string(),
-                context_window: None,
-                pricing: None,
-                supports_image_input: None,
+                context_window: Some(200_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 1.0,
+                    output_price_per_million_tokens: 5.0,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
         ]
     })

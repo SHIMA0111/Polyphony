@@ -129,7 +129,7 @@ impl CompletionUseCase for CompletionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::model::{ChatMessage, Choice, Role, Usage};
+    use crate::domain::model::{ChatMessage, Choice, ModelPricing, Role, Usage};
     use futures::stream::BoxStream;
 
     /// Always-succeeding `KeyStore` test double for tests that do not exercise
@@ -193,9 +193,16 @@ mod tests {
                     name: id.clone(),
                     provider: self.name.clone(),
                     owned_by: self.name.clone(),
-                    context_window: None,
-                    pricing: None,
-                    supports_image_input: None,
+                    // Non-zero fixture values so tests can assert that
+                    // `CompletionService::list_models` propagates this metadata
+                    // rather than dropping it.
+                    context_window: Some(128_000),
+                    pricing: Some(ModelPricing {
+                        input_price_per_million_tokens: 1.5,
+                        output_price_per_million_tokens: 6.0,
+                        currency: "USD".to_string(),
+                    }),
+                    supports_image_input: Some(true),
                 })
                 .collect();
             Box::pin(async move { models })
@@ -292,6 +299,18 @@ mod tests {
 
         let models = service.list_models().await;
         assert_eq!(models.len(), 3);
+
+        // `list_models` must propagate each provider's context-window/pricing
+        // metadata unchanged rather than dropping it during aggregation.
+        for model in &models {
+            assert_eq!(model.context_window, Some(128_000));
+            let pricing = model
+                .pricing
+                .as_ref()
+                .expect("pricing should be propagated");
+            assert_eq!(pricing.input_price_per_million_tokens, 1.5);
+            assert_eq!(pricing.output_price_per_million_tokens, 6.0);
+        }
     }
 
     #[test]

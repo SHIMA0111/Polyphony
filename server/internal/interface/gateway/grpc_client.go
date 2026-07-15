@@ -147,25 +147,50 @@ func (c *GRPCClient) ListModels(ctx context.Context) ([]ai.ModelInfo, error) {
 
 	models := make([]ai.ModelInfo, len(resp.GetModels()))
 	for i, m := range resp.GetModels() {
-		models[i] = ai.ModelInfo{
+		info := ai.ModelInfo{
 			ID:       m.GetId(),
 			Name:     m.GetName(),
 			Provider: m.GetProvider(),
 		}
+		if m.ContextWindow != nil {
+			info.ContextWindow = int(m.GetContextWindow())
+		}
+		if m.SupportsImageInput != nil {
+			info.SupportsImageInput = m.GetSupportsImageInput()
+		}
+		if pricing := m.GetPricing(); pricing != nil {
+			info.InputPricePerMillionTokens = pricing.GetInputPricePerMillionTokens()
+			info.OutputPricePerMillionTokens = pricing.GetOutputPricePerMillionTokens()
+		}
+		models[i] = info
 	}
 	return models, nil
 }
 
-// EstimateTokens is not yet supported over the gRPC transport: the shared
-// llmgateway.v1 proto contract (server/proto/llmgateway/v1) does not define a
-// token-estimation RPC (Step 27 added the REST-only POST /tokens/estimate
-// endpoint on the LLM Gateway and its Go proxy; wiring an equivalent gRPC
-// method is out of scope here — see Step 34's model-metadata work). It
-// always returns a domain.ErrLLMGateway-wrapped error so callers get the same
-// error type as a real transport failure, rather than silently
-// mis-estimating.
-func (c *GRPCClient) EstimateTokens(_ context.Context, _ *ai.TokenEstimateRequest) (*ai.TokenEstimateResponse, error) {
-	return nil, fmt.Errorf("%w: EstimateTokens is not supported over the gRPC transport", domain.ErrLLMGateway)
+// EstimateTokens sends a token estimation request to the LLM Gateway over
+// gRPC and returns the approximate token count, retrying transient failures
+// per callWithRetry. It returns a domain.ErrLLMGateway-wrapped error if the
+// request ultimately fails.
+func (c *GRPCClient) EstimateTokens(ctx context.Context, req *ai.TokenEstimateRequest) (*ai.TokenEstimateResponse, error) {
+	pbReq := &llmgatewaypb.TokenEstimateRequest{
+		Model:    req.Model,
+		Messages: toPBChatMessages(req.Messages),
+	}
+
+	var resp *llmgatewaypb.TokenEstimateResponse
+	err := c.callWithRetry(ctx, func(ctx context.Context) error {
+		var callErr error
+		resp, callErr = c.completionClient.EstimateTokens(ctx, pbReq)
+		return callErr
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: estimate tokens: %v", domain.ErrLLMGateway, err)
+	}
+
+	return &ai.TokenEstimateResponse{
+		Model:           resp.GetModel(),
+		EstimatedTokens: int(resp.GetEstimatedTokens()),
+	}, nil
 }
 
 // checkHealth calls the standard grpc.health.v1.Health service with an empty

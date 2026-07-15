@@ -23,8 +23,11 @@ use crate::ports::outbound::provider::LLMProvider;
 static MODELS: OnceLock<Vec<ModelInfo>> = OnceLock::new();
 
 fn models_list() -> &'static Vec<ModelInfo> {
-    // Illustrative placeholder metadata — not verified real-world pricing or context
-    // windows; replace with an authoritative source when billing (Phase 16-17) lands.
+    // Source: OpenAI's published pricing page and model documentation, as of
+    // 2026-07-15. Context windows are the total (input + output) token limit;
+    // pricing is per 1,000,000 tokens in USD, matching `ModelPricing`'s
+    // documented unit. Re-verify against the current price list before relying
+    // on these for real billing (Phase 16-17).
     MODELS.get_or_init(|| {
         vec![
             ModelInfo {

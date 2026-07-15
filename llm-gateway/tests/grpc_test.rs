@@ -26,7 +26,7 @@ use tonic::transport::Channel;
 
 use llm_gateway::adapters::inbound::grpc::pb::{
     ChatMessage, ChatRole, CompletionRequest, CompletionResponse, ListModelsRequest,
-    ListModelsResponse, ModelInfo as ProtoModelInfo,
+    ListModelsResponse, ModelInfo as ProtoModelInfo, TokenEstimateRequest, TokenEstimateResponse,
 };
 use llm_gateway::adapters::inbound::grpc::serve_grpc;
 use llm_gateway::domain::error::DomainError;
@@ -188,6 +188,23 @@ async fn call_list_models(channel: Channel) -> Result<ListModelsResponse, tonic:
         .map(|resp| resp.into_inner())
 }
 
+/// Sends a unary `CompletionService/EstimateTokens` request via the same low-level
+/// path as `call_complete`.
+async fn call_estimate_tokens(
+    channel: Channel,
+    request: TokenEstimateRequest,
+) -> Result<TokenEstimateResponse, tonic::Status> {
+    let mut grpc = tonic::client::Grpc::new(channel);
+    grpc.ready().await.expect("channel should become ready");
+    let path = http::uri::PathAndQuery::from_static(
+        "/polyphony.llmgateway.v1.CompletionService/EstimateTokens",
+    );
+    let codec = tonic_prost::ProstCodec::<TokenEstimateRequest, TokenEstimateResponse>::default();
+    grpc.unary(tonic::Request::new(request), path, codec)
+        .await
+        .map(|resp| resp.into_inner())
+}
+
 #[tokio::test]
 async fn test_grpc_completion_models_and_health_services() {
     let channel = start_test_server_and_connect().await;
@@ -247,6 +264,35 @@ async fn test_grpc_completion_models_and_health_services() {
     assert_eq!(pricing.output_price_per_million_tokens, 2.0);
     assert_eq!(pricing.currency, "USD");
     assert_eq!(model.supports_image_input, Some(true));
+
+    // --- CompletionService/EstimateTokens ---
+    let estimate_request = TokenEstimateRequest {
+        model: "stub-model".to_string(),
+        messages: vec![ChatMessage {
+            role: ChatRole::User as i32,
+            content: "hello world".to_string(),
+        }],
+    };
+    let estimate_response = call_estimate_tokens(channel.clone(), estimate_request)
+        .await
+        .expect("EstimateTokens should succeed");
+    assert_eq!(estimate_response.model, "stub-model");
+    assert!(estimate_response.estimated_tokens > 0);
+
+    // Unlike `Complete`, an unrecognized model name does not cause an error --
+    // estimation never dispatches to a provider.
+    let estimate_unknown_model = TokenEstimateRequest {
+        model: "totally-unknown-model".to_string(),
+        messages: vec![ChatMessage {
+            role: ChatRole::User as i32,
+            content: "hi".to_string(),
+        }],
+    };
+    let estimate_unknown_response = call_estimate_tokens(channel.clone(), estimate_unknown_model)
+        .await
+        .expect("EstimateTokens should succeed even for an unrecognized model");
+    assert_eq!(estimate_unknown_response.model, "totally-unknown-model");
+    assert!(estimate_unknown_response.estimated_tokens > 0);
 
     // --- grpc.health.v1.Health/Check ---
     let mut health_client = tonic_health::pb::health_client::HealthClient::new(channel);

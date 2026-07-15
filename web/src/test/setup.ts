@@ -19,6 +19,11 @@ import { server } from "./msw/server"
  *     into view.
  *   - `matchMedia`, used transitively by `next-themes`' `ThemeProvider` via
  *     `web/src/components/ui/color-mode.tsx` -> `web/src/components/ui/provider.tsx`.
+ *   - `ResizeObserver`, used by `@zag-js/popper` (via `@floating-ui/dom`'s
+ *     `autoUpdate`) to reposition any open Chakra `Popover`/`Menu`/`Select`
+ *     while its trigger's size changes -- jsdom does not implement it, and an
+ *     open popover otherwise throws an uncaught `ReferenceError` on the next
+ *     animation frame.
  * - Start/reset/stop the MSW Node server for the whole suite so fetches made
  *   by components/hooks under test are intercepted rather than hitting the
  *   network.
@@ -26,6 +31,13 @@ import { server } from "./msw/server"
 
 window.HTMLElement.prototype.scrollIntoView = vi.fn()
 window.HTMLElement.prototype.scrollTo = vi.fn()
+
+class ResizeObserverStub {
+  observe = vi.fn()
+  unobserve = vi.fn()
+  disconnect = vi.fn()
+}
+window.ResizeObserver = window.ResizeObserver ?? (ResizeObserverStub as unknown as typeof ResizeObserver)
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,

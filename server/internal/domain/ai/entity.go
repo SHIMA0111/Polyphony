@@ -30,6 +30,24 @@ type ModelInfo struct {
 	ID       string
 	Name     string
 	Provider string
+	// ContextWindow is the maximum input+output token count the model
+	// supports, as reported by the LLM Gateway. Zero means "unknown" -- the
+	// gateway did not report a context window for this model (its `pricing`
+	// field was `None`/absent on the wire) -- not that the model has no
+	// context limit.
+	ContextWindow int
+	// InputPricePerMillionTokens is the USD price per 1,000,000 input
+	// (prompt) tokens, per-1M being the project-wide canonical pricing unit
+	// (see llm-gateway's ModelPricing). Zero means "unknown", not "free".
+	InputPricePerMillionTokens float64
+	// OutputPricePerMillionTokens is the USD price per 1,000,000 output
+	// (completion) tokens. Zero means "unknown", not "free".
+	OutputPricePerMillionTokens float64
+	// SupportsImageInput reports whether the model accepts image/Vision
+	// content parts. False means either "no" or "unknown" -- the LLM Gateway
+	// collapses an absent value to false, since callers must treat an
+	// unreported capability as unsupported.
+	SupportsImageInput bool
 }
 
 // TokenEstimateRequest holds the parameters for a token estimation request:

@@ -56,8 +56,33 @@ export const fixtureAiMessageResponse: AIMessageResponse = {
 
 export const fixtureModelListResponse: ModelListResponse = {
   models: [
-    { id: "gpt-5-mini", name: "gpt-5-mini", provider: "OpenAI" },
-    { id: "gpt-5", name: "gpt-5", provider: "OpenAI" },
+    {
+      id: "gpt-5-mini",
+      name: "gpt-5-mini",
+      provider: "OpenAI",
+      context_window: 272_000,
+      input_price_per_million_tokens: 0.25,
+      output_price_per_million_tokens: 2.0,
+      supports_image_input: true,
+    },
+    {
+      id: "gpt-5",
+      name: "gpt-5",
+      provider: "OpenAI",
+      context_window: 272_000,
+      input_price_per_million_tokens: 1.25,
+      output_price_per_million_tokens: 10.0,
+      supports_image_input: true,
+    },
+    {
+      id: "claude-sonnet-4-6",
+      name: "Claude Sonnet 4.6",
+      provider: "Anthropic",
+      context_window: 200_000,
+      input_price_per_million_tokens: 3.0,
+      output_price_per_million_tokens: 15.0,
+      supports_image_input: true,
+    },
   ],
 }
 
