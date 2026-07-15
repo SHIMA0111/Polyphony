@@ -45,5 +45,11 @@ test("register, create room, and send a message", async ({ page }) => {
   await page.getByPlaceholder("Ask me anything...").fill(messageContent)
   await page.getByRole("button", { name: "Send", exact: true }).click()
 
-  await expect(page.getByText(messageContent)).toBeVisible()
+  // `.first()` (documented locator adjustment, Step 29/30): the Step-29 send
+  // pipeline keeps the message text in the (disabled) composer textarea until
+  // the server acknowledges the send, so for a moment the text exists both in
+  // the rendered message bubble and in the textarea — a bare getByText would
+  // trip Playwright's strict mode on that ambiguity. The bubble is rendered
+  // before the textarea clears, so asserting on the first match is stable.
+  await expect(page.getByText(messageContent).first()).toBeVisible()
 })
