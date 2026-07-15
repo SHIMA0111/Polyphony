@@ -1,0 +1,69 @@
+# Phase 2: Event-Driven Messaging Core
+
+**Goal**: Message creation/update flows in the Go API are event-driven and race-free, ahead of realtime (WebSocket)
+and Redis-backed fan-out work in later steps.
+
+---
+
+## Step 7: Go event-driven messaging core: MessageHub, atomic sequences, response linkage
+
+- [x] `server/internal/domain/event/hub.go` — `EventType`, `RoomEvent`, `MessageHub` port, fully GoDoc'd
+- [x] `server/internal/domain/event/inprocess_hub.go` — `InProcessHub` adapter (mutex-guarded registry, non-blocking
+      buffered `Publish`, safe-to-call-once `unsubscribe`), fully GoDoc'd
+- [x] `server/internal/domain/event/inprocess_hub_test.go` — unit tests: no-subscriber publish doesn't block/panic,
+      subscriber receives event, `TargetUserIDs` filtering, unsubscribe stops delivery and is safe to call more than
+      once, publish never blocks on a full subscriber channel
+- [x] `domain/message.MessageRepository.ReserveSequenceRange(ctx, roomID, count) (int64, error)` replaces
+      `GetNextSequence`; implemented in `postgres.MessageRepository` as a single
+      `UPDATE room_sequences ... RETURNING next_sequence - $2` statement
+- [x] `domain/message.Message.InResponseToMessageID *string` added; `postgres.MessageRepository` persists/scans
+      `in_response_to_message_id`
+- [x] `MessageUsecase` refactored:
+  - [x] `NewMessageUsecase` takes a `hub event.MessageHub` (4th argument)
+  - [x] `SendMessage` reserves 1 sequence via `ReserveSequenceRange` and publishes `EventMessageCreated` after
+        `Create` succeeds
+  - [x] `SendAIMessage` reserves 2 sequences atomically up front (`ReserveSequenceRange(ctx, roomID, 2)`), persists
+        the human message via a shared `createHumanMessage` helper, sets `AIMessage.InResponseToMessageID` to the
+        human message's ID, and publishes `EventMessageCreated` for both messages after their respective `Create`
+        calls succeed (including the failed-placeholder path)
+  - [x] `RegenerateAIMessage` publishes `EventMessageUpdated` after `UpdateAIResponse` succeeds
+  - [x] GoDoc documents fire-and-forget broadcast semantics on the type and each method
+- [x] `schema.sql`: `messages.in_response_to_message_id` (nullable, FK to `messages.id`, `ON DELETE SET NULL`) +
+      `CONSTRAINT messages_room_sequence_unique UNIQUE (room_id, sequence)`
+- [x] Atlas migration generated via `task migrate:generate -- add_message_response_link_and_sequence_unique`
+      (`server/migrations/20260715164341_add_message_response_link_and_sequence_unique.sql`), `atlas.sum` regenerated
+      by `atlas migrate diff`. `atlas migrate lint` requires Atlas Pro login (unavailable in this environment); the
+      migration was hand-reviewed instead — it only adds a nullable column, a self-referencing FK, and a unique
+      constraint, all additive/non-destructive.
+- [x] `handler.MessageResponse` + `toMessageResponse` include `in_response_to_message_id`
+- [x] DI: `server/internal/app/container.go` constructs `event.NewInProcessHub()` and wires it into
+      `msgusecase.NewMessageUsecase`; exposed as `Container.MessageHub` for later steps (e.g. Step 15's WebSocket
+      endpoint) to `Subscribe` on the same instance
+- [x] `testutil/mocks.MessageRepo` updated: `GetNextSequence` replaced with `ReserveSequenceRange`; every
+      `NewMessageUsecase(...)` call site in `usecase/message/usecase_test.go` and
+      `interface/handler/message_handler_test.go` updated to pass `event.NewInProcessHub()`
+- [x] `usecase/message/usecase_test.go`: new test asserting `SendAIMessage` produces adjacent sequences
+      (`aiMsg.Sequence == humanMsg.Sequence + 1`) and `AIMessage.InResponseToMessageID == &humanMsg.ID`
+- [x] `interface/repository/postgres/sequence_concurrency_integration_test.go` (build tag `integration`) rewritten
+      as `TestReserveSequenceRangeConcurrency`: mixed-count (1 and 2) concurrent reservations against the same room,
+      asserting zero duplicate/overlapping sequence numbers and an exact contiguous total
+- [x] `interface/repository/postgres/message_repository_integration_test.go` (new, build tag `integration`):
+      `TestMessages_UniqueRoomSequence` (duplicate `(room_id, sequence)` insert rejected with a unique-violation
+      error) and `TestMessageRepository_InResponseToMessageIDRoundTrip` (nil for human, set for AI referencing the
+      human message)
+- [x] `.ai_progress/phase2.md` created (this file)
+
+### Verification run this step
+
+- [x] `cd server && go build ./...`
+- [x] `cd server && go vet ./...`
+- [x] `cd server && go test ./...` (Docker-free; `internal/interface/repository/postgres` has no non-integration
+      test files, confirming the new tests are correctly gated behind `-tags=integration`)
+- [ ] `docker compose up -d db && task migrate:apply` — requires the fixed-port compose stack; skipped per this
+      run's constraints (post-merge integration review). Migration application was indirectly validated via
+      `testutil/postgres.New`, which applies every file under `server/migrations/` (including the new one) against
+      a fresh testcontainers PostgreSQL instance as part of every integration test run in this step.
+- [x] `cd server && go test -tags=integration ./internal/interface/repository/postgres/... -run TestReserveSequenceRange -v`
+- [x] `cd server && go test -tags=integration ./internal/interface/repository/postgres/... -run TestMessages_UniqueRoomSequence -v`
+- [ ] Manual smoke check via `task up` + live HTTP calls — requires the compose stack; skipped per this run's
+      constraints (post-merge integration review).

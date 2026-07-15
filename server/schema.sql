@@ -43,8 +43,10 @@ CREATE TABLE messages (
     type VARCHAR(20) NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'completed',
     sequence BIGINT NOT NULL,
+    in_response_to_message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT messages_room_sequence_unique UNIQUE (room_id, sequence)
 );
 
 CREATE INDEX idx_messages_room_sequence ON messages(room_id, sequence DESC);

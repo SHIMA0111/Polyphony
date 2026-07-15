@@ -33,7 +33,12 @@ type MessageRepository interface {
 	// Delete removes a message by ID. Returns ErrNotFound if not found.
 	Delete(ctx context.Context, id string) error
 
-	// GetNextSequence atomically allocates and returns the next sequence
-	// number for the given room.
-	GetNextSequence(ctx context.Context, roomID string) (int64, error)
+	// ReserveSequenceRange atomically reserves count contiguous sequence
+	// numbers for the given room and returns the first one; the caller owns
+	// the whole range [first, first+count). This lets a caller that needs to
+	// persist multiple related messages (e.g. a human message and its AI
+	// response) allocate every sequence number they need in a single atomic
+	// step, so no other message can be interleaved between them. Returns
+	// ErrNotFound if the room has no sequence counter row.
+	ReserveSequenceRange(ctx context.Context, roomID string, count int64) (int64, error)
 }

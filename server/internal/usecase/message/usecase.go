@@ -9,6 +9,7 @@ import (
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 )
@@ -24,36 +25,61 @@ type SendAIResult struct {
 }
 
 // MessageUsecase provides message-related business logic.
+//
+// Broadcasting is fire-and-forget: after each successful persist, the
+// usecase publishes a RoomEvent via hub, but hub.Publish never returns an
+// error and is never awaited for delivery, so a broadcast failure (e.g. a
+// slow subscriber) can never roll back a write or cause the surrounding HTTP
+// request to fail.
 type MessageUsecase struct {
 	msgRepo    domainmessage.MessageRepository
 	roomRepo   room.RoomRepository
 	llmGateway ai.LLMGateway
+	hub        event.MessageHub
 }
 
-// NewMessageUsecase creates a new MessageUsecase.
+// NewMessageUsecase creates a new MessageUsecase. hub receives a
+// message_created/message_updated event after every successful message
+// persist; pass event.NewInProcessHub() for the initial in-process
+// implementation.
 func NewMessageUsecase(
 	msgRepo domainmessage.MessageRepository,
 	roomRepo room.RoomRepository,
 	llmGateway ai.LLMGateway,
+	hub event.MessageHub,
 ) *MessageUsecase {
 	return &MessageUsecase{
 		msgRepo:    msgRepo,
 		roomRepo:   roomRepo,
 		llmGateway: llmGateway,
+		hub:        hub,
 	}
 }
 
-// SendMessage creates a human message in a room.
+// SendMessage creates a human message in a room. It reserves a single
+// sequence number, persists the message, and publishes EventMessageCreated
+// on the hub after the persist succeeds. Publishing is fire-and-forget: its
+// outcome never affects the returned error, and it only happens once the
+// write has already succeeded.
 func (u *MessageUsecase) SendMessage(ctx context.Context, userID, roomID, content string) (*domainmessage.Message, error) {
 	if err := u.checkMembership(ctx, roomID, userID); err != nil {
 		return nil, err
 	}
 
-	seq, err := u.msgRepo.GetNextSequence(ctx, roomID)
+	seq, err := u.msgRepo.ReserveSequenceRange(ctx, roomID, 1)
 	if err != nil {
 		return nil, err
 	}
 
+	return u.createHumanMessage(ctx, userID, roomID, content, seq)
+}
+
+// createHumanMessage builds a human message for the given (already reserved)
+// sequence number, persists it, and publishes EventMessageCreated after the
+// persist succeeds. It is shared by SendMessage (which reserves a single
+// sequence) and SendAIMessage (which reserves a paired range up front) so
+// both paths construct and persist the human message identically.
+func (u *MessageUsecase) createHumanMessage(ctx context.Context, userID, roomID, content string, seq int64) (*domainmessage.Message, error) {
 	now := time.Now()
 	msg := &domainmessage.Message{
 		ID:        uuid.New().String(),
@@ -67,9 +93,16 @@ func (u *MessageUsecase) SendMessage(ctx context.Context, userID, roomID, conten
 		UpdatedAt: now,
 	}
 
-	if err = u.msgRepo.Create(ctx, msg); err != nil {
+	if err := u.msgRepo.Create(ctx, msg); err != nil {
 		return nil, err
 	}
+
+	u.hub.Publish(ctx, event.RoomEvent{
+		Type:       event.EventMessageCreated,
+		RoomID:     roomID,
+		Message:    msg,
+		OccurredAt: now,
+	})
 
 	return msg, nil
 }
@@ -92,21 +125,34 @@ func (u *MessageUsecase) ListMessages(ctx context.Context, userID, roomID, curso
 // RegenerateAIMessage can retry later via UPDATE only.
 // The result always contains both the human and AI messages; check AIMessage.Status
 // to determine whether the LLM call succeeded.
+//
+// The human and AI sequence numbers are reserved together as a single
+// contiguous range (via ReserveSequenceRange(ctx, roomID, 2)) before either
+// row is written, so no concurrent request can allocate a sequence number
+// that lands between them — this is what guarantees the adjacency that
+// RegenerateAIMessage's GetNextInRoom lookup depends on. The AI message
+// records InResponseToMessageID pointing at the human message, and each
+// persisted message publishes EventMessageCreated on the hub after its
+// Create call succeeds; publishing never affects the returned error.
 func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, content, model string) (*SendAIResult, error) {
 	if model == "" {
 		model = defaultModel
 	}
 
-	humanMsg, err := u.SendMessage(ctx, userID, roomID, content)
-	if err != nil {
+	if err := u.checkMembership(ctx, roomID, userID); err != nil {
 		return nil, err
 	}
 
-	// Reserve sequence for the AI message immediately after the human message
-	// to guarantee adjacency. This prevents concurrent requests from inserting
-	// a message between the human and AI messages, which RegenerateAIMessage
-	// (via GetNextInRoom) relies on.
-	aiSeq, err := u.msgRepo.GetNextSequence(ctx, roomID)
+	// Reserve both sequence numbers atomically as one range before creating
+	// either row, so nothing else can be interleaved between the human
+	// message and its AI response.
+	firstSeq, err := u.msgRepo.ReserveSequenceRange(ctx, roomID, 2)
+	if err != nil {
+		return nil, err
+	}
+	humanSeq, aiSeq := firstSeq, firstSeq+1
+
+	humanMsg, err := u.createHumanMessage(ctx, userID, roomID, content, humanSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -128,13 +174,14 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 
 	aiNow := time.Now()
 	aiMsg := &domainmessage.Message{
-		ID:        uuid.New().String(),
-		RoomID:    roomID,
-		SenderID:  nil,
-		Type:      domainmessage.MessageTypeAI,
-		Sequence:  aiSeq,
-		CreatedAt: aiNow,
-		UpdatedAt: aiNow,
+		ID:                    uuid.New().String(),
+		RoomID:                roomID,
+		SenderID:              nil,
+		Type:                  domainmessage.MessageTypeAI,
+		Sequence:              aiSeq,
+		InResponseToMessageID: &humanMsg.ID,
+		CreatedAt:             aiNow,
+		UpdatedAt:             aiNow,
 	}
 
 	if llmErr != nil {
@@ -144,6 +191,12 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		if err := u.msgRepo.Create(ctx, aiMsg); err != nil {
 			return nil, err
 		}
+		u.hub.Publish(ctx, event.RoomEvent{
+			Type:       event.EventMessageCreated,
+			RoomID:     roomID,
+			Message:    aiMsg,
+			OccurredAt: aiNow,
+		})
 		return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg}, nil
 	}
 
@@ -153,6 +206,12 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	if err = u.msgRepo.Create(ctx, aiMsg); err != nil {
 		return nil, err
 	}
+	u.hub.Publish(ctx, event.RoomEvent{
+		Type:       event.EventMessageCreated,
+		RoomID:     roomID,
+		Message:    aiMsg,
+		OccurredAt: aiNow,
+	})
 
 	return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg}, nil
 }
@@ -160,7 +219,9 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 // RegenerateAIMessage regenerates the AI response for a specific human message.
 // It always updates the existing AI message (created by SendAIMessage) in place,
 // preserving sequence order. The AI message is guaranteed to exist because
-// SendAIMessage always creates a placeholder even on LLM failure.
+// SendAIMessage always creates a placeholder even on LLM failure. After the
+// update succeeds, it publishes EventMessageUpdated on the hub; publishing is
+// fire-and-forget and never affects the returned error.
 func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID, messageID, model string) (*domainmessage.Message, error) {
 	if model == "" {
 		model = defaultModel
@@ -217,6 +278,14 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	nextMsg.Content = completion.Content
 	nextMsg.Status = domainmessage.MessageStatusCompleted
 	nextMsg.UpdatedAt = now
+
+	u.hub.Publish(ctx, event.RoomEvent{
+		Type:       event.EventMessageUpdated,
+		RoomID:     roomID,
+		Message:    nextMsg,
+		OccurredAt: now,
+	})
+
 	return nextMsg, nil
 }
 

@@ -26,9 +26,9 @@ func NewMessageRepository(pool *pgxpool.Pool) *MessageRepository {
 // Create persists a new message to the database.
 func (r *MessageRepository) Create(ctx context.Context, msg *message.Message) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO messages (id, room_id, sender_id, content, type, status, sequence, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		msg.ID, msg.RoomID, msg.SenderID, msg.Content, string(msg.Type), string(msg.Status), msg.Sequence, msg.CreatedAt, msg.UpdatedAt,
+		`INSERT INTO messages (id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		msg.ID, msg.RoomID, msg.SenderID, msg.Content, string(msg.Type), string(msg.Status), msg.Sequence, msg.InResponseToMessageID, msg.CreatedAt, msg.UpdatedAt,
 	)
 	return err
 }
@@ -37,7 +37,7 @@ func (r *MessageRepository) Create(ctx context.Context, msg *message.Message) er
 func scanMessage(scanner interface{ Scan(dest ...any) error }) (*message.Message, error) {
 	var msg message.Message
 	var msgType, status string
-	err := scanner.Scan(&msg.ID, &msg.RoomID, &msg.SenderID, &msg.Content, &msgType, &status, &msg.Sequence, &msg.CreatedAt, &msg.UpdatedAt)
+	err := scanner.Scan(&msg.ID, &msg.RoomID, &msg.SenderID, &msg.Content, &msgType, &status, &msg.Sequence, &msg.InResponseToMessageID, &msg.CreatedAt, &msg.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func scanMessage(scanner interface{ Scan(dest ...any) error }) (*message.Message
 	return &msg, nil
 }
 
-const messageColumns = `id, room_id, sender_id, content, type, status, sequence, created_at, updated_at`
+const messageColumns = `id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, created_at, updated_at`
 
 // GetByID retrieves a message by its unique identifier. It returns domain.ErrNotFound if the message does not exist.
 func (r *MessageRepository) GetByID(ctx context.Context, id string) (*message.Message, error) {
@@ -198,21 +198,26 @@ func (r *MessageRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// GetNextSequence atomically allocates and returns the next sequence number for a room.
-// It returns domain.ErrNotFound if the room has no sequence counter entry.
-func (r *MessageRepository) GetNextSequence(ctx context.Context, roomID string) (int64, error) {
-	var seq int64
+// ReserveSequenceRange atomically reserves count contiguous sequence numbers
+// for a room and returns the first one; the caller owns [first, first+count).
+// It uses a single UPDATE ... RETURNING statement, so the read-modify-write
+// is performed atomically by PostgreSQL and is safe under concurrent callers
+// racing on the same room (see the row-level lock a single-statement UPDATE
+// implicitly takes). It returns domain.ErrNotFound if the room has no
+// sequence counter entry.
+func (r *MessageRepository) ReserveSequenceRange(ctx context.Context, roomID string, count int64) (int64, error) {
+	var first int64
 	err := r.pool.QueryRow(ctx,
-		`UPDATE room_sequences SET next_sequence = next_sequence + 1
+		`UPDATE room_sequences SET next_sequence = next_sequence + $2
 		 WHERE room_id = $1
-		 RETURNING next_sequence - 1`,
-		roomID,
-	).Scan(&seq)
+		 RETURNING next_sequence - $2`,
+		roomID, count,
+	).Scan(&first)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, domain.ErrNotFound
 		}
 		return 0, err
 	}
-	return seq, nil
+	return first, nil
 }

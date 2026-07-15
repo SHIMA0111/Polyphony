@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
@@ -16,7 +17,7 @@ func TestSendMessage(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
 
 	msg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -35,7 +36,7 @@ func TestSendMessageNotMember(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
 
 	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -49,7 +50,7 @@ func TestListMessages(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
 
 	_, _ = uc.SendMessage(ctx, "user-1", "room-1", "msg1")
@@ -69,7 +70,7 @@ func TestSendAIMessage(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model")
@@ -102,7 +103,7 @@ func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
 	failingGateway := &mocks.LLMGateway{ShouldErr: true}
-	uc := NewMessageUsecase(msgRepo, roomRepo, failingGateway)
+	uc := NewMessageUsecase(msgRepo, roomRepo, failingGateway, event.NewInProcessHub())
 	ctx := context.Background()
 
 	// SendAIMessage with failing LLM — returns result with failed AI placeholder
@@ -136,7 +137,7 @@ func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
 
 	// Send human message + AI response via SendAIMessage
@@ -172,7 +173,7 @@ func TestRegenerateAIMessageNotHuman(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
 
 	// Send a human message and get AI response
@@ -193,7 +194,7 @@ func TestRegenerateAIMessageNotFound(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
 
 	_, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", "nonexistent", "test-model")
@@ -208,7 +209,7 @@ func TestRegenerateAIMessageWrongRoom(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-2", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
 
 	// Send message in room-1
@@ -229,7 +230,7 @@ func TestRegenerateAIMessageNotMember(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
 
 	humanMsg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -250,7 +251,7 @@ func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
 	gw := &mocks.LLMGateway{ShouldErr: true}
-	uc := NewMessageUsecase(msgRepo, roomRepo, gw)
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub())
 	ctx := context.Background()
 
 	// First call fails — creates human + failed AI placeholder
@@ -280,7 +281,7 @@ func TestSendAIMessageLLMError(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub())
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model")
@@ -300,5 +301,37 @@ func TestSendAIMessageLLMError(t *testing.T) {
 	}
 	if result.AIMessage.Content != "" {
 		t.Fatalf("expected empty content for failed AI message, got %s", result.AIMessage.Content)
+	}
+}
+
+// TestSendAIMessageSequenceAdjacencyAndResponseLinkage asserts that the
+// human message and its AI response are allocated adjacent sequence numbers
+// (reserved atomically as a single range) and that the AI message records a
+// durable InResponseToMessageID link back to the human message it answers.
+func TestSendAIMessageSequenceAdjacencyAndResponseLinkage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+
+	humanMsg, aiMsg := result.HumanMessage, result.AIMessage
+	if aiMsg.Sequence != humanMsg.Sequence+1 {
+		t.Fatalf("expected aiMsg.Sequence == humanMsg.Sequence + 1, got human=%d ai=%d", humanMsg.Sequence, aiMsg.Sequence)
+	}
+	if aiMsg.InResponseToMessageID == nil {
+		t.Fatal("expected AIMessage.InResponseToMessageID to be set")
+	}
+	if *aiMsg.InResponseToMessageID != humanMsg.ID {
+		t.Fatalf("expected AIMessage.InResponseToMessageID == humanMsg.ID (%s), got %s", humanMsg.ID, *aiMsg.InResponseToMessageID)
+	}
+	if humanMsg.InResponseToMessageID != nil {
+		t.Fatal("expected human message InResponseToMessageID to be nil")
 	}
 }

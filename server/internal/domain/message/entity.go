@@ -26,15 +26,21 @@ const (
 
 // Message represents a single message in a chat room.
 type Message struct {
-	ID        string
-	RoomID    string
-	SenderID  *string // nil for AI messages
-	Content   string
-	Type      MessageType
-	Status    MessageStatus
-	Sequence  int64
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID       string
+	RoomID   string
+	SenderID *string // nil for AI messages
+	Content  string
+	Type     MessageType
+	Status   MessageStatus
+	Sequence int64
+	// InResponseToMessageID is set on an AI message to the ID of the human
+	// message it answers, giving a durable prompt/response link that later
+	// context-building/summarization work (Phase 5, 18) can rely on instead
+	// of inferring the pairing from adjacent sequence numbers. It is nil for
+	// human messages.
+	InResponseToMessageID *string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 // CursorPage holds a page of messages with cursor-based pagination.
