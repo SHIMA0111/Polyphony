@@ -1,6 +1,7 @@
-h1:P4f1JgkvFJyBQ+DgmsWK4AEG9qo/lHbRO+pZ/ASeCV0=
+h1:LpVpJqOSCib7gPCA12ylEWg4/4cihBRSB1aUh63PDIQ=
 20260220060722_initial.sql h1:VwlMvt76BnxphdtJZdLQHauB2X/CNIgQYsp6h0ToCUo=
 20260715164341_add_message_response_link_and_sequence_unique.sql h1:Ricf+Izs1ckG+t5ojMYi1HsEz7rUghfjndWEG6VhB+g=
 20260715180129_add_message_attachments.sql h1:wjuWkT2njWR69ebAedhRCkuI+KQTGgS0UI9SBgzRxpY=
 20260715180221_add_users_kratos_identity_id.sql h1:O5EPqDjYoaYVLx8pW9PlU5VlLDqQR/nVkjPyMGjtprY=
 20260715182548_add_room_members_role_check.sql h1:pmQORITn1e/wJUOgKAKc69NXXqUq7klJRZ0xofop0qM=
+20260715195851_add_room_invitations.sql h1:D7lgog4jdsEb8av+F5VTBt7RkbQNaqhSG9YmnBgVXJI=

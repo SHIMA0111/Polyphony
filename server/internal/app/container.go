@@ -19,6 +19,7 @@ import (
 	domainattachment "github.com/SHIMA0111/multi-user-ai/server/internal/domain/attachment"
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
+	domaininvitation "github.com/SHIMA0111/multi-user-ai/server/internal/domain/invitation"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	domainstorage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/storage"
@@ -33,6 +34,7 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/wsticket"
 	attachmentusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/attachment"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
+	invitationusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/invitation"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
 	modelusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/model"
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
@@ -64,6 +66,7 @@ type Container struct {
 	RoomRepo       domainroom.RoomRepository
 	MsgRepo        domainmessage.MessageRepository
 	AttachmentRepo domainattachment.AttachmentRepository
+	InvitationRepo domaininvitation.InvitationRepository
 
 	// Services / Gateways
 	AuthService domainauth.AuthService
@@ -84,6 +87,7 @@ type Container struct {
 	UserUC       *userusecase.UserUsecase
 	AttachmentUC *attachmentusecase.AttachmentUsecase
 	ModelUC      *modelusecase.ModelUsecase
+	InvitationUC *invitationusecase.InvitationUsecase
 
 	// Handlers
 	HealthHandler     *handler.HealthHandler
@@ -94,6 +98,7 @@ type Container struct {
 	UserHandler       *handler.UserHandler
 	AttachmentHandler *handler.AttachmentHandler
 	WebSocketHandler  *handler.WebSocketHandler
+	InvitationHandler *handler.InvitationHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,
@@ -116,6 +121,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	roomRepo := postgres.NewRoomRepository(pool)
 	msgRepo := postgres.NewMessageRepository(pool)
 	attachmentRepo := postgres.NewAttachmentRepository(pool)
+	invitationRepo := postgres.NewInvitationRepository(pool)
 
 	// Services / Gateways
 	//
@@ -145,6 +151,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	userUC := userusecase.NewUserUsecase(userRepo)
 	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
 	modelUC := modelusecase.NewModelUsecase(llmClient)
+	invitationUC := invitationusecase.NewInvitationUsecase(invitationRepo, roomRepo, userRepo)
 
 	// Handlers
 	healthHandler := handler.NewHealthHandler()
@@ -155,6 +162,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	userHandler := handler.NewUserHandler(userUC)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentUC)
 	wsHandler := handler.NewWebSocketHandler(roomUC, messageHub, ticketIssuer, originPatternsFromCORS(cfg.CORSOrigins))
+	invitationHandler := handler.NewInvitationHandler(invitationUC)
 
 	return &Container{
 		Config: cfg,
@@ -165,6 +173,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		RoomRepo:       roomRepo,
 		MsgRepo:        msgRepo,
 		AttachmentRepo: attachmentRepo,
+		InvitationRepo: invitationRepo,
 
 		AuthService:   authService,
 		LLMGateway:    llmClient,
@@ -177,6 +186,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		UserUC:       userUC,
 		AttachmentUC: attachmentUC,
 		ModelUC:      modelUC,
+		InvitationUC: invitationUC,
 
 		HealthHandler:     healthHandler,
 		AuthHandler:       authHandler,
@@ -186,6 +196,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		UserHandler:       userHandler,
 		AttachmentHandler: attachmentHandler,
 		WebSocketHandler:  wsHandler,
+		InvitationHandler: invitationHandler,
 	}, nil
 }
 

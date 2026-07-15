@@ -64,3 +64,19 @@ CREATE TABLE message_attachments (
 );
 
 CREATE INDEX idx_message_attachments_message_id ON message_attachments(message_id);
+
+CREATE TABLE room_invitations (
+    id UUID PRIMARY KEY,
+    room_id UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    inviter_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    invitee_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    invite_code VARCHAR(64) NOT NULL,
+    role VARCHAR(50) NOT NULL DEFAULT 'member',
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT room_invitations_invite_code_unique UNIQUE (invite_code)
+);
+
+CREATE INDEX idx_room_invitations_room_id ON room_invitations(room_id);
+CREATE INDEX idx_room_invitations_invitee_id ON room_invitations(invitee_id) WHERE invitee_id IS NOT NULL;
