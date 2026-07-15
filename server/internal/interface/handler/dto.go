@@ -42,18 +42,28 @@ type UpdateRoomRequest struct {
 	Description string `json:"description"`
 }
 
+// UpdateRoomAIContextCutoffRequest is the request body for
+// PATCH /rooms/:roomId/ai-context-cutoff. A JSON null or omitted
+// cutoff_at clears the room's AI context cutoff; a valid RFC3339 timestamp
+// sets it.
+type UpdateRoomAIContextCutoffRequest struct {
+	CutoffAt *time.Time `json:"cutoff_at"`
+}
+
 // RoomResponse is the response body for a room. Role is the requesting
 // user's role in this room (e.g. "reader", "guest", "member", "admin",
 // "master"), serialized as the plain string value of domainroom.Role so
-// clients can do direct string comparisons.
+// clients can do direct string comparisons. AIContextCutoffAt is nil when
+// the room has no AI context cutoff configured.
 type RoomResponse struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	OwnerID     string    `json:"owner_id"`
-	Role        string    `json:"role"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       string     `json:"description"`
+	OwnerID           string     `json:"owner_id"`
+	Role              string     `json:"role"`
+	AIContextCutoffAt *time.Time `json:"ai_context_cutoff_at"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 // MemberResponse is the JSON response representation of a single room
@@ -110,9 +120,19 @@ type RegenerateAIMessageRequest struct {
 	Model string `json:"model"`
 }
 
+// UpdateMessageExcludeRequest is the request body for
+// PATCH /rooms/:roomId/messages/:messageId.
+type UpdateMessageExcludeRequest struct {
+	ExcludeFromAI bool `json:"exclude_from_ai"`
+}
+
 // MessageResponse is the JSON response representation of a single message.
 // SenderID is nil for system-generated messages. InResponseToMessageID is
 // nil for human messages and set to the human message's ID for AI messages.
+// IsDeleted is true for a soft-deleted message (see DELETE
+// /rooms/:roomId/messages/:messageId); ExcludeFromAI is true when the
+// message has been opted out of AI context assembly (see PATCH
+// /rooms/:roomId/messages/:messageId).
 type MessageResponse struct {
 	ID                    string    `json:"id"`
 	RoomID                string    `json:"room_id"`
@@ -122,6 +142,8 @@ type MessageResponse struct {
 	Status                string    `json:"status"`
 	Sequence              int64     `json:"sequence"`
 	InResponseToMessageID *string   `json:"in_response_to_message_id"`
+	IsDeleted             bool      `json:"is_deleted"`
+	ExcludeFromAI         bool      `json:"exclude_from_ai"`
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
 }

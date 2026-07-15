@@ -34,16 +34,20 @@ type SendAIResult struct {
 // slow subscriber) can never roll back a write or cause the surrounding HTTP
 // request to fail.
 type MessageUsecase struct {
-	msgRepo    domainmessage.MessageRepository
-	roomRepo   room.RoomRepository
-	llmGateway ai.LLMGateway
-	hub        event.MessageHub
+	msgRepo        domainmessage.MessageRepository
+	roomRepo       room.RoomRepository
+	llmGateway     ai.LLMGateway
+	hub            event.MessageHub
+	contextBuilder ai.ContextBuilder
 }
 
 // NewMessageUsecase creates a new MessageUsecase. hub receives a
 // message_created/message_updated event after every successful message
 // persist; pass event.NewInProcessHub() for the initial in-process
-// implementation.
+// implementation. contextBuilder is always initialized internally to
+// ai.NewDefaultContextBuilder(); it is not a constructor parameter so that
+// swapping the implementation (e.g. for history summarization in a later
+// phase) does not require touching every call site.
 func NewMessageUsecase(
 	msgRepo domainmessage.MessageRepository,
 	roomRepo room.RoomRepository,
@@ -51,10 +55,11 @@ func NewMessageUsecase(
 	hub event.MessageHub,
 ) *MessageUsecase {
 	return &MessageUsecase{
-		msgRepo:    msgRepo,
-		roomRepo:   roomRepo,
-		llmGateway: llmGateway,
-		hub:        hub,
+		msgRepo:        msgRepo,
+		roomRepo:       roomRepo,
+		llmGateway:     llmGateway,
+		hub:            hub,
+		contextBuilder: ai.NewDefaultContextBuilder(),
 	}
 }
 
@@ -159,6 +164,11 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		return nil, err
 	}
 
+	rm, err := u.roomRepo.GetByID(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+
 	// Reserve both sequence numbers atomically as one range before creating
 	// either row, so nothing else can be interleaved between the human
 	// message and its AI response.
@@ -179,8 +189,9 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		return nil, err
 	}
 
-	// Build chat messages (reverse to chronological order)
-	chatMsgs := u.buildChatMessages(contextPage.Messages)
+	// Build chat messages (reverse to chronological order), filtering out
+	// soft-deleted, exclude_from_ai, failed, and pre-cutoff messages.
+	chatMsgs := u.contextBuilder.Build(contextPage.Messages, rm.AIContextCutoffAt)
 
 	// Call LLM Gateway
 	completion, llmErr := u.llmGateway.Complete(ctx, &ai.CompletionRequest{
@@ -254,6 +265,11 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 		return nil, err
 	}
 
+	rm, err := u.roomRepo.GetByID(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+
 	// Verify target message exists and belongs to the room
 	targetMsg, err := u.msgRepo.GetByID(ctx, messageID)
 	if err != nil {
@@ -281,8 +297,9 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 		return nil, err
 	}
 
-	// Build chat messages (reverse to chronological order)
-	chatMsgs := u.buildChatMessages(contextMsgs)
+	// Build chat messages (reverse to chronological order), filtering out
+	// soft-deleted, exclude_from_ai, failed, and pre-cutoff messages.
+	chatMsgs := u.contextBuilder.Build(contextMsgs, rm.AIContextCutoffAt)
 
 	// Call LLM Gateway
 	completion, err := u.llmGateway.Complete(ctx, &ai.CompletionRequest{
@@ -312,22 +329,77 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	return nextMsg, nil
 }
 
-// buildChatMessages converts domain messages (sequence descending) to chronological chat messages.
-// Messages with status=failed are skipped to avoid sending empty placeholders to the LLM.
-func (u *MessageUsecase) buildChatMessages(msgs []*domainmessage.Message) []ai.ChatMessage {
-	chatMsgs := make([]ai.ChatMessage, 0, len(msgs))
-	for i := len(msgs) - 1; i >= 0; i-- {
-		m := msgs[i]
-		if m.Status == domainmessage.MessageStatusFailed {
-			continue
-		}
-		role := "user"
-		if m.Type == domainmessage.MessageTypeAI {
-			role = "assistant"
-		}
-		chatMsgs = append(chatMsgs, ai.ChatMessage{Role: role, Content: m.Content})
+// DeleteMessage soft-deletes a message in roomID on behalf of userID. The
+// caller must either be the message's own sender (SenderID == userID) or
+// hold at least domainroom.RoleAdmin in the room (a moderation delete by an
+// admin or master). Any other caller — including a non-sender member below
+// admin — gets domain.ErrForbidden. It returns domain.ErrNotFound if the
+// message does not exist or does not belong to roomID. On success it
+// delegates to msgRepo.Delete, which performs the soft delete (see
+// domainmessage.MessageRepository.Delete).
+//
+// DeleteMessage intentionally does not use domainroom.Action/Allows: the
+// Action enum has no message-level delete action, so the owner-or-admin
+// rule is expressed directly via member.Role.AtLeast(domainroom.RoleAdmin)
+// combined with the sender-equality check.
+func (u *MessageUsecase) DeleteMessage(ctx context.Context, userID, roomID, messageID string) error {
+	member, err := u.getMember(ctx, roomID, userID)
+	if err != nil {
+		return err
 	}
-	return chatMsgs
+
+	msg, err := u.msgRepo.GetByID(ctx, messageID)
+	if err != nil {
+		return err
+	}
+	if msg.RoomID != roomID {
+		return domain.ErrNotFound
+	}
+
+	isOwner := msg.SenderID != nil && *msg.SenderID == userID
+	isModerator := member.Role.AtLeast(room.RoleAdmin)
+	if !isOwner && !isModerator {
+		return domain.ErrForbidden
+	}
+
+	return u.msgRepo.Delete(ctx, messageID)
+}
+
+// SetExcludeFromAI toggles whether a message is excluded from future AI
+// context assembly (ai.ContextBuilder.Build), without affecting its
+// visibility in normal room message listings. The caller must be allowed
+// domainroom.ActionInvokeAI (member or above; a reader or guest may not
+// toggle this flag) — the same role gate SendAIMessage/RegenerateAIMessage
+// use. It returns domain.ErrNotFound if the message does not exist or does
+// not belong to roomID. On success it persists the change via
+// msgRepo.UpdateExcludeFromAI and returns the mutated in-memory Message
+// (mirroring RegenerateAIMessage's pattern of returning the updated struct
+// rather than re-fetching).
+func (u *MessageUsecase) SetExcludeFromAI(ctx context.Context, userID, roomID, messageID string, exclude bool) (*domainmessage.Message, error) {
+	member, err := u.getMember(ctx, roomID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
+		return nil, err
+	}
+
+	msg, err := u.msgRepo.GetByID(ctx, messageID)
+	if err != nil {
+		return nil, err
+	}
+	if msg.RoomID != roomID {
+		return nil, domain.ErrNotFound
+	}
+
+	now := time.Now()
+	if err := u.msgRepo.UpdateExcludeFromAI(ctx, messageID, exclude, now); err != nil {
+		return nil, err
+	}
+	msg.ExcludeFromAI = exclude
+	msg.UpdatedAt = now
+
+	return msg, nil
 }
 
 // getMember loads the caller's membership in roomID, translating a missing

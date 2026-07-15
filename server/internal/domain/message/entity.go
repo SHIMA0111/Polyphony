@@ -40,8 +40,19 @@ type Message struct {
 	// of inferring the pairing from adjacent sequence numbers. It is nil for
 	// human messages.
 	InResponseToMessageID *string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	// IsDeleted marks the message as soft-deleted (see
+	// MessageRepository.Delete). A soft-deleted message is excluded from
+	// MessageRepository.ListByRoom, MessageRepository.ListByRoomUpTo, and
+	// ai.ContextBuilder.Build, but remains fetchable via
+	// MessageRepository.GetByID and is never physically removed.
+	IsDeleted bool
+	// ExcludeFromAI marks the message as excluded from AI context
+	// assembly (ai.ContextBuilder.Build) while still appearing in normal
+	// room message listings. It lets a user keep a message visible to
+	// other humans in the room without it ever being sent to the LLM.
+	ExcludeFromAI bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // CursorPage holds a page of messages with cursor-based pagination.

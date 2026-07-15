@@ -3,8 +3,10 @@ package message
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
@@ -153,6 +155,7 @@ func TestSendAIMessage(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
@@ -185,6 +188,7 @@ func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	failingGateway := &mocks.LLMGateway{ShouldErr: true}
 	uc := NewMessageUsecase(msgRepo, roomRepo, failingGateway, event.NewInProcessHub())
@@ -220,6 +224,7 @@ func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
@@ -256,6 +261,7 @@ func TestRegenerateAIMessageNotHuman(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
@@ -277,6 +283,7 @@ func TestRegenerateAIMessageNotFound(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
@@ -292,6 +299,8 @@ func TestRegenerateAIMessageWrongRoom(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-2", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	roomRepo.SeedRoom("room-2", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
@@ -333,6 +342,7 @@ func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	gw := &mocks.LLMGateway{ShouldErr: true}
 	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub())
@@ -364,6 +374,7 @@ func TestSendAIMessageLLMError(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub())
 	ctx := context.Background()
@@ -396,6 +407,7 @@ func TestSendAIMessageSequenceAdjacencyAndResponseLinkage(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	ctx := context.Background()
@@ -417,5 +429,322 @@ func TestSendAIMessageSequenceAdjacencyAndResponseLinkage(t *testing.T) {
 	}
 	if humanMsg.InResponseToMessageID != nil {
 		t.Fatal("expected human message InResponseToMessageID to be nil")
+	}
+}
+
+// --- Context filtering (Step 23: AI context control) ---
+
+// captureCompletionMessages returns an *mocks.LLMGateway whose CompleteFunc
+// records the ChatMessage slice it was called with into *captured, so a
+// test can assert on exactly what context was sent to the LLM.
+func captureCompletionMessages(captured *[]ai.ChatMessage) *mocks.LLMGateway {
+	return &mocks.LLMGateway{
+		CompleteFunc: func(_ context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+			*captured = req.Messages
+			return &ai.CompletionResponse{Content: "AI response"}, nil
+		},
+	}
+}
+
+func containsContent(msgs []ai.ChatMessage, content string) bool {
+	for _, m := range msgs {
+		if m.Content == content {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSendAIMessageContextExcludesSoftDeletedMessage asserts that a message
+// soft-deleted via DeleteMessage does not appear in the LLM context built by
+// a subsequent SendAIMessage call.
+func TestSendAIMessageContextExcludesSoftDeletedMessage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	var captured []ai.ChatMessage
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub())
+	ctx := context.Background()
+
+	toDelete, err := uc.SendMessage(ctx, "user-1", "room-1", "secret message")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+	if err := uc.DeleteMessage(ctx, "user-1", "room-1", toDelete.ID); err != nil {
+		t.Fatalf("DeleteMessage failed: %v", err)
+	}
+
+	if _, err := uc.SendAIMessage(ctx, "user-1", "room-1", "follow up", "test-model"); err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+
+	if containsContent(captured, "secret message") {
+		t.Fatal("expected soft-deleted message to be excluded from AI context")
+	}
+	if !containsContent(captured, "follow up") {
+		t.Fatal("expected the new message to be included in AI context")
+	}
+}
+
+// TestSendAIMessageContextExcludesExcludeFromAIMessage asserts that a
+// message toggled exclude_from_ai via SetExcludeFromAI does not appear in
+// the LLM context built by a subsequent SendAIMessage call, even though it
+// still exists (is not deleted).
+func TestSendAIMessageContextExcludesExcludeFromAIMessage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	var captured []ai.ChatMessage
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub())
+	ctx := context.Background()
+
+	toExclude, err := uc.SendMessage(ctx, "user-1", "room-1", "private aside")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", toExclude.ID, true); err != nil {
+		t.Fatalf("SetExcludeFromAI failed: %v", err)
+	}
+
+	if _, err := uc.SendAIMessage(ctx, "user-1", "room-1", "follow up", "test-model"); err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+
+	if containsContent(captured, "private aside") {
+		t.Fatal("expected exclude_from_ai message to be excluded from AI context")
+	}
+
+	// The message should still exist and be listable — exclude_from_ai
+	// only affects AI context, not room visibility.
+	page, err := uc.ListMessages(ctx, "user-1", "room-1", "", 20)
+	if err != nil {
+		t.Fatalf("ListMessages failed: %v", err)
+	}
+	found := false
+	for _, m := range page.Messages {
+		if m.ID == toExclude.ID {
+			found = true
+			if !m.ExcludeFromAI {
+				t.Fatal("expected ExcludeFromAI to be true on the listed message")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected excluded message to still appear in ListMessages")
+	}
+}
+
+// TestSendAIMessageContextExcludesPreCutoffMessages asserts that a message
+// created before the room's configured AIContextCutoffAt does not appear in
+// the LLM context built by SendAIMessage.
+func TestSendAIMessageContextExcludesPreCutoffMessages(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	var captured []ai.ChatMessage
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub())
+	ctx := context.Background()
+
+	oldMsg, err := uc.SendMessage(ctx, "user-1", "room-1", "ancient history")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	cutoff := time.Now()
+	// Rewind the fixture message's CreatedAt to before the cutoff. The mock
+	// stores the exact pointer SendMessage returned, so mutating it here
+	// mutates the fixture as seen by ListByRoom too.
+	oldMsg.CreatedAt = cutoff.Add(-time.Hour)
+	roomRepo.SeedRoom("room-1", &cutoff)
+
+	if _, err := uc.SendAIMessage(ctx, "user-1", "room-1", "new message after cutoff", "test-model"); err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+
+	if containsContent(captured, "ancient history") {
+		t.Fatal("expected pre-cutoff message to be excluded from AI context")
+	}
+	if !containsContent(captured, "new message after cutoff") {
+		t.Fatal("expected the new message to be included in AI context")
+	}
+}
+
+// --- DeleteMessage ---
+
+func TestDeleteMessageSenderCanDeleteOwnMessage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if err := uc.DeleteMessage(ctx, "user-1", "room-1", sent.ID); err != nil {
+		t.Fatalf("expected sender to delete own message, got error: %v", err)
+	}
+}
+
+func TestDeleteMessageNonSenderNonAdminForbidden(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedMember("room-1", "user-2", "member")
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if err := uc.DeleteMessage(ctx, "user-2", "room-1", sent.ID); err != domain.ErrForbidden {
+		t.Fatalf("expected ErrForbidden for non-sender non-admin member, got %v", err)
+	}
+}
+
+func TestDeleteMessageAdminCanDeleteAnotherMembersMessage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedMember("room-1", "user-2", string(domainroom.RoleAdmin))
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if err := uc.DeleteMessage(ctx, "user-2", "room-1", sent.ID); err != nil {
+		t.Fatalf("expected admin to delete another member's message, got error: %v", err)
+	}
+}
+
+func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedMember("room-2", "user-1", "member")
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if err := uc.DeleteMessage(ctx, "user-1", "room-2", sent.ID); err != domain.ErrNotFound {
+		t.Fatalf("expected ErrNotFound for a message from a different room, got %v", err)
+	}
+}
+
+// --- SetExcludeFromAI ---
+
+func TestSetExcludeFromAIMemberAllowed(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	updated, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", sent.ID, true)
+	if err != nil {
+		t.Fatalf("expected member to toggle exclude_from_ai, got error: %v", err)
+	}
+	if !updated.ExcludeFromAI {
+		t.Fatal("expected ExcludeFromAI to be true")
+	}
+}
+
+func TestSetExcludeFromAIAdminAllowed(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleAdmin))
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", sent.ID, true); err != nil {
+		t.Fatalf("expected admin to toggle exclude_from_ai, got error: %v", err)
+	}
+}
+
+func TestSetExcludeFromAIMasterAllowed(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleMaster))
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", sent.ID, true); err != nil {
+		t.Fatalf("expected master to toggle exclude_from_ai, got error: %v", err)
+	}
+}
+
+func TestSetExcludeFromAIGuestForbidden(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	// Directly seed a message so a guest (who cannot SendMessage-then-target
+	// their own, since guests can send but the point is the toggle check) is
+	// exercised against an existing message ID.
+	msgRepo.Messages = map[string]*domainmessage.Message{
+		"msg-1": {ID: "msg-1", RoomID: "room-1", Content: "hello"},
+	}
+
+	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", "msg-1", true); err != domain.ErrForbidden {
+		t.Fatalf("expected ErrForbidden for guest, got %v", err)
+	}
+}
+
+func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleReader))
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	msgRepo.Messages = map[string]*domainmessage.Message{
+		"msg-1": {ID: "msg-1", RoomID: "room-1", Content: "hello"},
+	}
+
+	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", "msg-1", true); err != domain.ErrForbidden {
+		t.Fatalf("expected ErrForbidden for reader, got %v", err)
 	}
 }

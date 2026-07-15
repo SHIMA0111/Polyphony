@@ -9,4 +9,6 @@ func registerMessageRoutes(g *echo.Group, c *Container) {
 	g.GET("/rooms/:roomId/messages", c.MessageHandler.List)
 	g.POST("/rooms/:roomId/messages/ai", c.MessageHandler.SendAI)
 	g.POST("/rooms/:roomId/messages/:messageId/regenerate", c.MessageHandler.RegenerateAI)
+	g.DELETE("/rooms/:roomId/messages/:messageId", c.MessageHandler.Delete)
+	g.PATCH("/rooms/:roomId/messages/:messageId", c.MessageHandler.UpdateExclude)
 }

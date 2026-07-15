@@ -112,6 +112,31 @@ func (h *RoomHandler) Update(c echo.Context) error {
 	return c.JSON(http.StatusOK, toRoomResponse(rwr))
 }
 
+// UpdateAIContextCutoff handles PATCH /rooms/:roomId/ai-context-cutoff. It
+// sets or clears the room's AI context cutoff datetime: a non-null
+// cutoff_at excludes any message created before it from future AI context
+// assembly, while a null or omitted cutoff_at clears the restriction. The
+// caller must be at least admin in the room. On success it returns HTTP 200
+// with the updated RoomResponse. It returns HTTP 400 for invalid input,
+// HTTP 403 if the caller lacks permission, and HTTP 404 if the room does
+// not exist.
+func (h *RoomHandler) UpdateAIContextCutoff(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+
+	var req UpdateRoomAIContextCutoffRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
+	}
+
+	rwr, err := h.usecase.UpdateAIContextCutoff(c.Request().Context(), userID, roomID, req.CutoffAt)
+	if err != nil {
+		return handleRoomError(c, err)
+	}
+
+	return c.JSON(http.StatusOK, toRoomResponse(rwr))
+}
+
 // Delete handles DELETE /rooms/:roomId. It deletes the specified room. Only
 // the room owner or a user with sufficient privileges may delete a room. On
 // success it returns HTTP 204 with no content. It returns HTTP 403 if the user
@@ -244,13 +269,14 @@ func toMemberResponse(m *domainroom.RoomMember) MemberResponse {
 func toRoomResponse(rwr *domainroom.RoomWithRole) RoomResponse {
 	rm := rwr.Room
 	return RoomResponse{
-		ID:          rm.ID,
-		Name:        rm.Name,
-		Description: rm.Description,
-		OwnerID:     rm.OwnerID,
-		Role:        string(rwr.Role),
-		CreatedAt:   rm.CreatedAt,
-		UpdatedAt:   rm.UpdatedAt,
+		ID:                rm.ID,
+		Name:              rm.Name,
+		Description:       rm.Description,
+		OwnerID:           rm.OwnerID,
+		Role:              string(rwr.Role),
+		AIContextCutoffAt: rm.AIContextCutoffAt,
+		CreatedAt:         rm.CreatedAt,
+		UpdatedAt:         rm.UpdatedAt,
 	}
 }
 

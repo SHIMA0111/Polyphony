@@ -11,6 +11,7 @@ package mocks
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
@@ -40,10 +41,14 @@ func (r *RoomRepo) ensureInit() {
 // SeedMember pre-populates a room membership directly, without requiring a
 // corresponding room to exist in Rooms. This lets tests that only care about
 // membership checks (e.g. message usecase tests) set up fixtures without
-// going through Create. role is a plain string (e.g. "reader", "guest",
-// "member", "admin", "master") converted to room.Role internally, so
-// existing call sites written before Role became a typed enum keep working
-// unchanged.
+// going through Create — including tests that specifically exercise the
+// "member exists but the room itself does not" case (RoomRepo.GetByID
+// returning domain.ErrNotFound after a successful membership lookup). role
+// is a plain string (e.g. "reader", "guest", "member", "admin", "master")
+// converted to room.Role internally, so existing call sites written before
+// Role became a typed enum keep working unchanged. Tests that additionally
+// need a working RoomRepo.GetByID lookup (e.g. usecases that load the room
+// to read AIContextCutoffAt) should also call SeedRoom.
 func (r *RoomRepo) SeedMember(roomID, userID, role string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -52,6 +57,20 @@ func (r *RoomRepo) SeedMember(roomID, userID, role string) {
 		r.Members[roomID] = make(map[string]*room.RoomMember)
 	}
 	r.Members[roomID][userID] = &room.RoomMember{RoomID: roomID, UserID: userID, Role: room.Role(role)}
+}
+
+// SeedRoom pre-populates a bare room (id only, no owner/name/description)
+// with the given AIContextCutoffAt directly in Rooms, without requiring a
+// corresponding membership or going through Create. This lets tests
+// exercising code paths that call RoomRepo.GetByID (e.g.
+// MessageUsecase.SendAIMessage/RegenerateAIMessage reading
+// Room.AIContextCutoffAt) set up a minimal fixture. Pass a nil cutoff for
+// "no cutoff configured".
+func (r *RoomRepo) SeedRoom(roomID string, cutoff *time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ensureInit()
+	r.Rooms[roomID] = &room.Room{ID: roomID, AIContextCutoffAt: cutoff}
 }
 
 // Create persists a new room and automatically adds its owner as a member
