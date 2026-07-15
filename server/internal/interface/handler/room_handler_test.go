@@ -8,11 +8,12 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
 )
 
 func setupRoomTest() (*echo.Echo, *RoomHandler) {
-	repo := newMockRoomRepoForHandler()
+	repo := &mocks.RoomRepo{}
 	uc := roomusecase.NewRoomUsecase(repo)
 	h := NewRoomHandler(uc)
 	e := echo.New()

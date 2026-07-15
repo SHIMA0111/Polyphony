@@ -5,38 +5,11 @@ import (
 	"testing"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
-	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
 
-type mockAuthService struct {
-	registered map[string]bool
-}
-
-func newMockAuthService() *mockAuthService {
-	return &mockAuthService{registered: make(map[string]bool)}
-}
-
-func (m *mockAuthService) Register(_ context.Context, email, _, _ string) (*domainauth.TokenPair, error) {
-	if m.registered[email] {
-		return nil, domain.ErrEmailAlreadyExists
-	}
-	m.registered[email] = true
-	return &domainauth.TokenPair{AccessToken: "tok", TokenType: "Bearer"}, nil
-}
-
-func (m *mockAuthService) Login(_ context.Context, email, password string) (*domainauth.TokenPair, error) {
-	if !m.registered[email] || password != "correct" {
-		return nil, domain.ErrInvalidCredentials
-	}
-	return &domainauth.TokenPair{AccessToken: "tok", TokenType: "Bearer"}, nil
-}
-
-func (m *mockAuthService) ValidateToken(_ context.Context, _ string) (*domainauth.Claims, error) {
-	return &domainauth.Claims{UserID: "user-1"}, nil
-}
-
 func TestAuthUsecaseRegister(t *testing.T) {
-	svc := newMockAuthService()
+	svc := &mocks.AuthService{}
 	uc := NewAuthUsecase(svc)
 	ctx := context.Background()
 
@@ -50,7 +23,7 @@ func TestAuthUsecaseRegister(t *testing.T) {
 }
 
 func TestAuthUsecaseRegisterDuplicate(t *testing.T) {
-	svc := newMockAuthService()
+	svc := &mocks.AuthService{}
 	uc := NewAuthUsecase(svc)
 	ctx := context.Background()
 
@@ -62,7 +35,7 @@ func TestAuthUsecaseRegisterDuplicate(t *testing.T) {
 }
 
 func TestAuthUsecaseLogin(t *testing.T) {
-	svc := newMockAuthService()
+	svc := &mocks.AuthService{}
 	uc := NewAuthUsecase(svc)
 	ctx := context.Background()
 

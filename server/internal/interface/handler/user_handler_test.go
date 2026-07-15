@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,57 +9,17 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	domainuser "github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 	userusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/user"
 )
 
-// mockUserRepoForHandler is a minimal in-memory UserRepository used only by
-// user_handler_test.go.
-type mockUserRepoForHandler struct {
-	users map[string]*domainuser.User
-}
-
-func newMockUserRepoForHandler() *mockUserRepoForHandler {
-	return &mockUserRepoForHandler{users: make(map[string]*domainuser.User)}
-}
-
-func (m *mockUserRepoForHandler) Create(_ context.Context, u *domainuser.User) error {
-	m.users[u.ID] = u
-	return nil
-}
-
-func (m *mockUserRepoForHandler) GetByID(_ context.Context, id string) (*domainuser.User, error) {
-	u, ok := m.users[id]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	return u, nil
-}
-
-func (m *mockUserRepoForHandler) GetByEmail(_ context.Context, _ string) (*domainuser.User, error) {
-	return nil, domain.ErrNotFound
-}
-
-func (m *mockUserRepoForHandler) GetByUsername(_ context.Context, _ string) (*domainuser.User, error) {
-	return nil, domain.ErrNotFound
-}
-
-func (m *mockUserRepoForHandler) Update(_ context.Context, u *domainuser.User) error {
-	m.users[u.ID] = u
-	return nil
-}
-
-func (m *mockUserRepoForHandler) Delete(_ context.Context, id string) error {
-	delete(m.users, id)
-	return nil
-}
-
 func TestMeHandler200NoPasswordHash(t *testing.T) {
-	repo := newMockUserRepoForHandler()
+	repo := &mocks.UserRepo{}
 	now := time.Now()
-	repo.users["user-1"] = &domainuser.User{
+	repo.Users = map[string]*domainuser.User{}
+	repo.Users["user-1"] = &domainuser.User{
 		ID:           "user-1",
 		Email:        "test@example.com",
 		Username:     "tester",
@@ -101,11 +60,11 @@ func TestMeHandler200NoPasswordHash(t *testing.T) {
 }
 
 func TestMeHandler401WithoutToken(t *testing.T) {
-	repo := newMockUserRepoForHandler()
+	repo := &mocks.UserRepo{}
 	uc := userusecase.NewUserUsecase(repo)
 	h := NewUserHandler(uc)
 
-	svc := newMockAuthService()
+	svc := &mocks.AuthService{}
 	mw := middleware.JWTAuth(svc)
 
 	e := echo.New()
