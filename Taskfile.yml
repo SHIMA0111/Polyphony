@@ -123,14 +123,16 @@ tasks:
       # *profiled* services start; every non-profiled base service (db,
       # kratos, kratos-db, kratos-migrate, mailslurper, migrate, minio,
       # minio-init, redis, api, web, ...) would also start under this
-      # project, port-colliding with a running dev stack. kratos/kratos-db/
-      # kratos-migrate (and mailslurper, which kratos's courier config talks
-      # to) are included because api-e2e points at the shared Kratos
-      # deployment and web-e2e's auth E2E specs exercise it.
+      # project, port-colliding with a running dev stack. Rather than reusing
+      # those shared dev services, api-e2e/web-e2e point at their own
+      # dedicated kratos-e2e/kratos-db-e2e/kratos-migrate-e2e/mailslurper-e2e
+      # services (also `profiles: ["test"]`, with no host `ports:` bindings)
+      # so the E2E stack never binds the dev stack's fixed 4433/4434/4436/
+      # 4437 host ports and can run fully alongside a running dev stack.
       - >-
         docker compose -p polyphony-e2e --profile test up -d --build
         db-e2e migrate-e2e llm-stub llm-gateway-e2e api-e2e web-e2e
-        kratos kratos-db kratos-migrate mailslurper
+        kratos-db-e2e kratos-migrate-e2e kratos-e2e mailslurper-e2e
 
   test:e2e:seed:
     desc: Seed the idempotent E2E fixture user + room against the running test stack
@@ -222,5 +224,15 @@ tasks:
     desc: 'Credit a user''s token balance for local dev/testing, e.g. task billing:topup -- -email user@example.com -amount 100000'
     dir: server
     dotenv: ['../.env.local', '../.env']
+    env:
+      # This CLI runs on the host against the compose-exposed 5432 port, but
+      # `../.env` sets DATABASE_URL to the compose-internal "db" hostname
+      # (for containers on the compose network) — which the dotenv above
+      # would otherwise inject here, breaking hostname resolution on the
+      # host. This task-level `env:` wins over `dotenv` (but still loses to
+      # an actual OS environment variable, e.g. `DATABASE_URL=... task
+      # billing:topup -- ...`), so the task works out of the box while
+      # staying overridable, matching cmd/seed-tokens' own localhost default.
+      DATABASE_URL: postgres://polyphony:polyphony@localhost:5432/polyphony?sslmode=disable
     cmds:
       - go run ./cmd/seed-tokens {{.CLI_ARGS}}
