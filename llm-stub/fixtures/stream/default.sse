@@ -1,0 +1,11 @@
+data: {"id":"chatcmpl-e2e-default","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-default","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"This "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-default","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"is "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-default","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"a canned SSE stub response."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-default","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
