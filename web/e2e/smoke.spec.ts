@@ -21,6 +21,19 @@ test("register, create room, and send a message", async ({ page }) => {
   const roomName = `Smoke Test Room ${runId}`
   const messageContent = `Hello from the smoke spec ${runId}`
 
+  // Regression guard for the Emotion/React-#418 hydration mismatch on
+  // `/rooms` and `/rooms/[roomId]` (wave 4 review, round 2): this spec runs
+  // against `web-e2e`'s production build (the only place the bug reproduced,
+  // since Next dev mode doesn't stream SSR the same way), and both routes
+  // below are visited during the flow, so any regression surfaces here as a
+  // "Hydration failed" / React error-decoder console.error.
+  const consoleErrors: string[] = []
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text())
+    }
+  })
+
   await page.goto("/register")
 
   await page.getByPlaceholder("you@example.com").fill(email)
@@ -52,4 +65,12 @@ test("register, create room, and send a message", async ({ page }) => {
   // trip Playwright's strict mode on that ambiguity. The bubble is rendered
   // before the textarea clears, so asserting on the first match is stable.
   await expect(page.getByText(messageContent).first()).toBeVisible()
+
+  const hydrationErrors = consoleErrors.filter(
+    (text) =>
+      text.includes("Hydration failed") ||
+      text.includes("hydration-mismatch") ||
+      /react\.dev\/errors\/41[89]/.test(text),
+  )
+  expect(hydrationErrors).toEqual([])
 })

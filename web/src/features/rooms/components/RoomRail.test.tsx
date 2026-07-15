@@ -7,6 +7,10 @@ const { useParamsMock } = vi.hoisted(() => ({ useParamsMock: vi.fn() }))
 
 vi.mock("next/navigation", () => ({
   useParams: useParamsMock,
+  // `Provider` (via `src/test/render.tsx`) now wraps every test in
+  // `EmotionRegistry`, which calls this Next.js hook to flush Emotion's
+  // SSR styles; jsdom never streams, so a no-op is all component tests need.
+  useServerInsertedHTML: vi.fn(),
 }))
 
 /**
