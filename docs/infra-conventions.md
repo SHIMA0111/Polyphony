@@ -30,6 +30,14 @@ This document records the conventions for editing database migrations, `docker-c
   declared in `server/atlas.hcl` (`dev = "docker://postgres/17/dev?search_path=public"`,
   `migration.dir = "file://migrations"`). A non-zero exit means the migration needs a follow-up
   change (e.g. a safer multi-step column rename) before it can be merged.
+
+  **Atlas Pro login required**: as of Atlas v0.38, `atlas migrate lint` requires an authenticated
+  Atlas account (`atlas login`) — it exits 1 without one, even for a clean migration. Run
+  `atlas login` once per machine (a free Atlas account is sufficient) before running
+  `task migrate:lint`. If you cannot or do not want to create an Atlas account, review the
+  generated migration SQL by hand instead (destructive statements like `DROP COLUMN`/`DROP TABLE`
+  or a `NOT NULL` addition without a default are the main things `migrate lint` would flag) and
+  skip the automated lint step for that PR.
 - `task up` never runs `migrate:generate` as a side effect. Migration generation is always a
   deliberate, explicit step a developer runs after editing `schema.sql`.
 
@@ -81,9 +89,13 @@ checksums Atlas expects. Instead:
 - Do not reformat or reorder existing tasks when adding a new one — append the new task block within
   its section, leaving surrounding tasks byte-identical, so parallel PRs adding unrelated tasks don't
   collide on the same lines.
-- The top-level `dotenv: ['.env', '.env.local']` key makes every task — Docker-based and host-run
+- The top-level `dotenv: ['.env.local', '.env']` key makes every task — Docker-based and host-run
   alike — see the same environment variables without a manual `export`. `.env.local` is optional and
   gitignored; see the next section.
+- **Precedence note**: go-task gives precedence to *earlier* entries in the `dotenv` list — the
+  first file that defines a variable wins, later files do not override it. `.env.local` must
+  therefore come first so its host-run overrides (`localhost` instead of Docker service hostnames)
+  take effect; listing `.env` first would make `.env.local` silently unable to override anything.
 
 ## Host-run dev tasks: `.env.local`
 
@@ -98,4 +110,5 @@ checksums Atlas expects. Instead:
 
   `.env.local` itself is gitignored (covered by the blanket `.env.*` rule in `.gitignore`, with an
   explicit `!.env.local.example` exception keeping the template tracked) and is loaded automatically
-  by the Taskfile's `dotenv` key, layered after `.env` so it can override values for host-run tasks.
+  by the Taskfile's `dotenv` key, listed *before* `.env` so its values take precedence for
+  host-run tasks (see the precedence note above).
