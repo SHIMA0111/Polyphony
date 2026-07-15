@@ -102,9 +102,14 @@ services:
 
   llm-gateway:
     build:
-      context: ./llm-gateway
+      # Repo root, not ./llm-gateway: build.rs compiles the shared gRPC contract from
+      # server/proto/, which must be inside the build context (see
+      # llm-gateway/Dockerfile's header comment).
+      context: .
+      dockerfile: llm-gateway/Dockerfile
     environment:
       LLM_GATEWAY_PORT: ${LLM_GATEWAY_PORT:-8081}
+      LLM_GATEWAY_GRPC_PORT: ${LLM_GATEWAY_GRPC_PORT:-50051}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       LLM_GATEWAY_CONNECT_TIMEOUT_SECS: ${LLM_GATEWAY_CONNECT_TIMEOUT_SECS:-10}
       LLM_GATEWAY_REQUEST_TIMEOUT_SECS: ${LLM_GATEWAY_REQUEST_TIMEOUT_SECS:-30}
@@ -112,6 +117,7 @@ services:
       LLM_GATEWAY_RETRY_BASE_DELAY_MS: ${LLM_GATEWAY_RETRY_BASE_DELAY_MS:-500}
     ports:
       - "8081:8081"
+      - "50051:50051"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8081/health"]
       interval: 5s
@@ -239,7 +245,10 @@ services:
 
   llm-gateway-e2e:
     build:
-      context: ./llm-gateway
+      # See the dev `llm-gateway` service above: build.rs needs server/proto/ inside
+      # the build context, so this uses the repo root too.
+      context: .
+      dockerfile: llm-gateway/Dockerfile
     environment:
       LLM_GATEWAY_PORT: 8081
       OPENAI_API_KEY: e2e-dummy-key

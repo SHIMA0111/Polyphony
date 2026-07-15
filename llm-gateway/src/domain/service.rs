@@ -178,6 +178,9 @@ mod tests {
                     name: id.clone(),
                     provider: self.name.clone(),
                     owned_by: self.name.clone(),
+                    context_window: None,
+                    pricing: None,
+                    supports_image_input: None,
                 })
                 .collect();
             Box::pin(async move { models })

@@ -5,6 +5,7 @@
 //! binaries (which run as separate crates and can only see `pub` items of this crate)
 //! can construct a real `axum::Router` and real outbound provider adapters without
 //! duplicating any wiring logic.
+
 pub mod adapters;
 pub mod config;
 pub mod domain;

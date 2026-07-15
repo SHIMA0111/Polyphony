@@ -114,6 +114,9 @@ impl CompletionUseCase for StubUseCase {
                 name: "Stub Model".to_string(),
                 provider: "stub".to_string(),
                 owned_by: "stub".to_string(),
+                context_window: None,
+                pricing: None,
+                supports_image_input: None,
             }]
         })
     }

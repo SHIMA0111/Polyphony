@@ -39,8 +39,10 @@ pub struct ProviderConfig {
 /// Provider API keys are NOT included here. Each adapter retrieves those via `KeyStore`.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Port the HTTP server listens on.
+    /// Port the HTTP (REST) server listens on.
     pub port: u16,
+    /// Port the gRPC server listens on.
+    pub grpc_port: u16,
     /// Shared HTTP client tuning (timeouts, retry policy) for all outbound adapters.
     pub http: HttpClientConfig,
     /// OpenAI-specific configuration (base URL).
@@ -51,7 +53,8 @@ impl Config {
     /// Loads configuration from environment variables.
     ///
     /// # Environment Variables
-    /// - `LLM_GATEWAY_PORT` — Listen port (default: `8081`)
+    /// - `LLM_GATEWAY_PORT` — REST listen port (default: `8081`)
+    /// - `LLM_GATEWAY_GRPC_PORT` — gRPC listen port (default: `50051`)
     /// - `LLM_GATEWAY_CONNECT_TIMEOUT_SECS` — Connect timeout in seconds (default: `10`)
     /// - `LLM_GATEWAY_REQUEST_TIMEOUT_SECS` — Total request timeout in seconds (default: `30`)
     /// - `LLM_GATEWAY_MAX_RETRIES` — Max retry attempts on `429`/`5xx` responses (default: `3`)
@@ -63,6 +66,7 @@ impl Config {
     /// variable that is unset or fails to parse.
     pub fn from_env() -> Self {
         let port = env_parsed("LLM_GATEWAY_PORT", 8081);
+        let grpc_port = env_parsed("LLM_GATEWAY_GRPC_PORT", 50051);
 
         let connect_timeout =
             Duration::from_secs(env_parsed("LLM_GATEWAY_CONNECT_TIMEOUT_SECS", 10));
@@ -77,6 +81,7 @@ impl Config {
 
         Self {
             port,
+            grpc_port,
             http: HttpClientConfig {
                 connect_timeout,
                 request_timeout,
@@ -117,6 +122,7 @@ mod tests {
     fn clear_env() {
         for key in [
             "LLM_GATEWAY_PORT",
+            "LLM_GATEWAY_GRPC_PORT",
             "LLM_GATEWAY_CONNECT_TIMEOUT_SECS",
             "LLM_GATEWAY_REQUEST_TIMEOUT_SECS",
             "LLM_GATEWAY_MAX_RETRIES",
@@ -137,6 +143,7 @@ mod tests {
         let config = Config::from_env();
 
         assert_eq!(config.port, 8081);
+        assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.http.connect_timeout, Duration::from_secs(10));
         assert_eq!(config.http.request_timeout, Duration::from_secs(30));
         assert_eq!(config.http.max_retries, 3);
@@ -153,6 +160,7 @@ mod tests {
 
         unsafe {
             std::env::set_var("LLM_GATEWAY_PORT", "9000");
+            std::env::set_var("LLM_GATEWAY_GRPC_PORT", "50052");
             std::env::set_var("LLM_GATEWAY_CONNECT_TIMEOUT_SECS", "5");
             std::env::set_var("LLM_GATEWAY_REQUEST_TIMEOUT_SECS", "60");
             std::env::set_var("LLM_GATEWAY_MAX_RETRIES", "5");
@@ -163,6 +171,7 @@ mod tests {
         let config = Config::from_env();
 
         assert_eq!(config.port, 9000);
+        assert_eq!(config.grpc_port, 50052);
         assert_eq!(config.http.connect_timeout, Duration::from_secs(5));
         assert_eq!(config.http.request_timeout, Duration::from_secs(60));
         assert_eq!(config.http.max_retries, 5);
