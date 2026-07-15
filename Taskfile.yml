@@ -84,6 +84,12 @@ tasks:
     cmds:
       - go test ./...
 
+  test:server:integration:
+    desc: Run Go integration tests against a real Postgres testcontainer (requires Docker)
+    dir: server
+    cmds:
+      - go test -tags=integration ./...
+
   test:gateway:
     desc: Run Rust tests
     dir: llm-gateway
