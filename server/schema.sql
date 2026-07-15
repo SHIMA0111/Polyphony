@@ -6,10 +6,12 @@ CREATE TABLE users (
     email VARCHAR(255) NOT NULL,
     username VARCHAR(100) NOT NULL,
     password_hash TEXT NOT NULL,
+    kratos_identity_id UUID NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT users_email_unique UNIQUE (email),
-    CONSTRAINT users_username_unique UNIQUE (username)
+    CONSTRAINT users_username_unique UNIQUE (username),
+    CONSTRAINT users_kratos_identity_id_unique UNIQUE (kratos_identity_id)
 );
 
 CREATE TABLE rooms (

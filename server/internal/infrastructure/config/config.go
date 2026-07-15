@@ -67,6 +67,23 @@ type Config struct {
 	// JWTSecret, which keeps local/dev setup zero-config while still
 	// allowing an independent secret in environments that want one.
 	WSTicketSecret string
+	// AuthMode selects which domainauth.AuthService implementation
+	// container.go wires up: "simple_jwt" (default) for SimpleJWTService, or
+	// "kratos" for KratosAuthService (env AUTH_MODE). Load returns an error
+	// for any other non-empty value.
+	AuthMode string
+	// KratosPublicURL is Ory Kratos's public API base URL, used for
+	// self-service registration/login flows and /sessions/whoami (env
+	// KRATOS_PUBLIC_URL, default "http://localhost:4433"). Only required
+	// when AuthMode is "kratos".
+	KratosPublicURL string
+	// KratosAdminURL is Ory Kratos's admin API base URL, used for identity
+	// management (env KRATOS_ADMIN_URL, default "http://localhost:4434").
+	KratosAdminURL string
+	// KratosCookieName is the name of the session cookie Ory Kratos issues,
+	// read by the auth middleware as a fallback when no Authorization
+	// header is present (env KRATOS_COOKIE_NAME, default "ory_kratos_session").
+	KratosCookieName string
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -132,6 +149,29 @@ func Load() (*Config, error) {
 		wsTicketSecret = jwtSecret
 	}
 
+	authMode := os.Getenv("AUTH_MODE")
+	if authMode == "" {
+		authMode = "simple_jwt"
+	}
+	if authMode != "simple_jwt" && authMode != "kratos" {
+		return nil, fmt.Errorf("AUTH_MODE must be %q or %q, got %q", "simple_jwt", "kratos", authMode)
+	}
+
+	kratosPublicURL := os.Getenv("KRATOS_PUBLIC_URL")
+	if kratosPublicURL == "" {
+		kratosPublicURL = "http://localhost:4433"
+	}
+
+	kratosAdminURL := os.Getenv("KRATOS_ADMIN_URL")
+	if kratosAdminURL == "" {
+		kratosAdminURL = "http://localhost:4434"
+	}
+
+	kratosCookieName := os.Getenv("KRATOS_COOKIE_NAME")
+	if kratosCookieName == "" {
+		kratosCookieName = "ory_kratos_session"
+	}
+
 	return &Config{
 		Port:                port,
 		DatabaseURL:         dbURL,
@@ -148,6 +188,10 @@ func Load() (*Config, error) {
 		S3SecretKey:         s3SecretKey,
 		S3ForcePathStyle:    s3ForcePathStyle,
 		WSTicketSecret:      wsTicketSecret,
+		AuthMode:            authMode,
+		KratosPublicURL:     kratosPublicURL,
+		KratosAdminURL:      kratosAdminURL,
+		KratosCookieName:    kratosCookieName,
 	}, nil
 }
 

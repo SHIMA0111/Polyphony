@@ -159,3 +159,55 @@ func TestLoadWSTicketSecretOverride(t *testing.T) {
 		t.Errorf("expected WSTicketSecret override, got %q", cfg.WSTicketSecret)
 	}
 }
+
+func TestLoadAuthModeDefault(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.AuthMode != "simple_jwt" {
+		t.Errorf("expected default AuthMode %q, got %q", "simple_jwt", cfg.AuthMode)
+	}
+}
+
+func TestLoadAuthModeKratos(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("AUTH_MODE", "kratos")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.AuthMode != "kratos" {
+		t.Errorf("expected AuthMode %q, got %q", "kratos", cfg.AuthMode)
+	}
+}
+
+func TestLoadAuthModeInvalidReturnsError(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("AUTH_MODE", "oidc")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to fail for an unrecognized AUTH_MODE value")
+	}
+}
+
+func TestLoadKratosDefaults(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.KratosPublicURL != "http://localhost:4433" {
+		t.Errorf("expected default KratosPublicURL, got %q", cfg.KratosPublicURL)
+	}
+	if cfg.KratosAdminURL != "http://localhost:4434" {
+		t.Errorf("expected default KratosAdminURL, got %q", cfg.KratosAdminURL)
+	}
+	if cfg.KratosCookieName != "ory_kratos_session" {
+		t.Errorf("expected default KratosCookieName, got %q", cfg.KratosCookieName)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -117,7 +118,19 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	attachmentRepo := postgres.NewAttachmentRepository(pool)
 
 	// Services / Gateways
-	authService := ifauth.NewSimpleJWTService(userRepo, cfg.JWTSecret)
+	//
+	// AuthService is the Phase 9 swap point (see CLAUDE.md's Interface Swap
+	// Points table): AUTH_MODE selects SimpleJWTService (default) or
+	// KratosAuthService, both of which satisfy domainauth.AuthService, so no
+	// downstream usecase/handler code needs to change based on this branch.
+	var authService domainauth.AuthService
+	switch cfg.AuthMode {
+	case "kratos":
+		authService = ifauth.NewKratosAuthService(userRepo, cfg.KratosPublicURL, cfg.KratosAdminURL, cfg.KratosCookieName,
+			&http.Client{Timeout: 10 * time.Second})
+	default:
+		authService = ifauth.NewSimpleJWTService(userRepo, cfg.JWTSecret)
+	}
 	llmClient := gateway.NewLLMClient(cfg.LLMGatewayURL)
 	objectStorage := ifstorage.NewS3Storage(
 		cfg.S3Endpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3ForcePathStyle,

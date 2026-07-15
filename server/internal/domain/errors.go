@@ -13,6 +13,11 @@ var (
 	// ErrUsernameAlreadyExists indicates a user with the given username already exists.
 	ErrUsernameAlreadyExists = errors.New("username already exists")
 
+	// ErrKratosIdentityAlreadyLinked indicates the given Ory Kratos identity
+	// ID is already linked to a different local user (a unique constraint
+	// violation on users.kratos_identity_id).
+	ErrKratosIdentityAlreadyLinked = errors.New("kratos identity already linked to another user")
+
 	// ErrInvalidCredentials indicates the provided credentials are invalid.
 	ErrInvalidCredentials = errors.New("invalid credentials")
 

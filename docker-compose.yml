@@ -23,6 +23,10 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:-polyphony-minio}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
       WS_TICKET_SECRET: ${WS_TICKET_SECRET:-change-me-in-production}
+      AUTH_MODE: ${AUTH_MODE:-simple_jwt}
+      KRATOS_PUBLIC_URL: ${KRATOS_PUBLIC_URL:-http://kratos:4433}
+      KRATOS_ADMIN_URL: ${KRATOS_ADMIN_URL:-http://kratos:4434}
+      KRATOS_COOKIE_NAME: ${KRATOS_COOKIE_NAME:-ory_kratos_session}
     ports:
       - "8080:8080"
     healthcheck:
