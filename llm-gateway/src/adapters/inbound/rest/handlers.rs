@@ -16,9 +16,32 @@ pub type AppState = Arc<dyn CompletionUseCase>;
 
 /// Health check endpoint.
 ///
-/// `GET /health` — Returns service liveness status.
+/// `GET /health` — Returns service liveness status. Always `200` once the process is
+/// up; unlike `GET /ready`, it does not check whether dependencies (e.g. provider API
+/// keys) are actually usable.
 pub async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status": "ok"}))
+}
+
+/// Readiness check endpoint.
+///
+/// `GET /ready` — Returns whether the gateway's dependencies are actually usable, by
+/// calling `CompletionUseCase::readiness`. Distinct from `GET /health`: a process can
+/// be alive (`/health` → `200`) while not ready to serve completions (`/ready` →
+/// `503`), e.g. when a registered provider's API key is missing.
+///
+/// # Returns
+/// `200 {"status":"ready"}` when `readiness()` succeeds, `503
+/// {"status":"not_ready","error":...}` otherwise.
+pub async fn ready(State(service): State<AppState>) -> impl IntoResponse {
+    match service.readiness() {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ready"}))).into_response(),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"status": "not_ready", "error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 /// List models endpoint.

@@ -18,38 +18,38 @@ After this PR, the gateway is shaped like a production service: all HTTP-client 
 
 ## Scope
 
-- [ ] Consolidate configuration in `llm-gateway/src/config.rs`:
-  - [ ] Add `HttpClientConfig { connect_timeout: Duration, request_timeout: Duration, max_retries: u32, retry_base_delay: Duration }`.
-  - [ ] Add `ProviderConfig { base_url: String }` (per-provider base URL only — API keys stay resolved via `KeyStore`, never via `Config`).
-  - [ ] Extend `Config` with `pub http: HttpClientConfig` and `pub openai: ProviderConfig`; load `OPENAI_BASE_URL` here (moved out of the adapter) plus new `LLM_GATEWAY_CONNECT_TIMEOUT_SECS`, `LLM_GATEWAY_REQUEST_TIMEOUT_SECS`, `LLM_GATEWAY_MAX_RETRIES`, `LLM_GATEWAY_RETRY_BASE_DELAY_MS` env vars, each with a sensible default.
-  - [ ] Add unit tests for `Config::from_env()` default values and env-var overrides (follow the existing test style already used for `EnvKeyStore` in `llm-gateway/src/adapters/outbound/env_key.rs`).
-- [ ] Add a shared retry helper `llm-gateway/src/adapters/outbound/http_retry.rs` (new module, exported from `adapters/outbound/mod.rs`) so it can be reused by future provider adapters (Steps 25/26), not just OpenAI:
-  - [ ] `RetryPolicy` struct built from `HttpClientConfig` (`max_retries`, `base_delay`).
-  - [ ] `RetryPolicy::is_retryable(status: reqwest::StatusCode) -> bool` — true for `429` and any `5xx`.
-  - [ ] `RetryPolicy::backoff_delay(attempt: u32) -> Duration` — exponential backoff (`base_delay * 2^attempt`).
-  - [ ] An async `send_with_retry` function that takes a retryable closure returning `Result<reqwest::Response, reqwest::Error>`, resends up to `max_retries` times on a retryable status, sleeping `backoff_delay` (or the response's `Retry-After` header value, if present, on `429`) between attempts, and logs each retry via `tracing::warn!`.
-  - [ ] Unit tests for `is_retryable` and `backoff_delay` (pure functions — no network needed).
-- [ ] Rewire `OpenAIProvider` (whatever module path Step 3 leaves it at, e.g. `llm-gateway/src/adapters/outbound/openai.rs` or `openai/mod.rs` if Step 3 splits it into `openai/request.rs` + `openai/stream.rs`):
-  - [ ] `OpenAIProvider::new` takes `Arc<dyn KeyStore>` (unchanged) plus the new `HttpClientConfig` and `ProviderConfig` — delete the `std::env::var("OPENAI_BASE_URL")` call from the adapter.
-  - [ ] Build the `reqwest::Client` with both `.connect_timeout(http.connect_timeout)` and `.timeout(http.request_timeout)` (today only `connect_timeout` is set; there is no total-request timeout at all).
-  - [ ] Wrap the outbound `send()` call in `send_with_retry`, mapping an exhausted-retries `429` to `DomainError::RateLimited` and an exhausted-retries `5xx` to `DomainError::ProviderError` (reuse whatever error mapping Step 3 already established for non-2xx responses; only the retry wrapping is new here).
-- [ ] Update DI wiring in `llm-gateway/src/main.rs`:
-  - [ ] Pass `config.http.clone()` and `config.openai.clone()` into `OpenAIProvider::new(...)`.
-  - [ ] Pass the `key_store` into `CompletionService::new(...)` (see readiness item below) alongside the provider list.
-  - [ ] Add graceful shutdown: `axum::serve(listener, router).with_graceful_shutdown(shutdown_signal()).await` where `shutdown_signal()` is a small async fn that `tokio::select!`s on `tokio::signal::ctrl_c()` and, on `cfg(unix)`, `tokio::signal::unix::signal(SignalKind::terminate())`, logging which signal triggered shutdown via `tracing::info!`.
-- [ ] Add readiness support:
-  - [ ] Add `fn readiness(&self) -> Result<(), DomainError>` to `CompletionUseCase` (`llm-gateway/src/ports/inbound/completion.rs`).
-  - [ ] Implement it on `CompletionService` (`llm-gateway/src/domain/service.rs`): iterate registered providers and call `key_store.get_key(provider.provider_name())` for each, returning the first `DomainError::KeyNotFound` encountered, `Ok(())` otherwise. No network calls — this only confirms credentials are resolvable, keeping `/ready` fast.
-  - [ ] Give `CompletionService` a `key_store: Arc<dyn KeyStore>` field and update its constructor accordingly (update the existing `CompletionService::new` call in `main.rs` and the existing unit tests in `llm-gateway/src/domain/service.rs` — the `MockProvider`-based tests there will need a stub `KeyStore` passed in too).
-  - [ ] Add `pub async fn ready(...)` handler in `llm-gateway/src/adapters/inbound/rest/handlers.rs` returning `200 {"status":"ready"}` when `readiness()` is `Ok`, `503 {"status":"not_ready","error":...}` otherwise.
-  - [ ] Register `GET /ready` in `llm-gateway/src/adapters/inbound/rest/router.rs` next to the existing `/health` route.
-- [ ] Add request-id + tracing middleware in `llm-gateway/src/adapters/inbound/rest/router.rs` (or a new sibling `middleware.rs` if that keeps `router.rs` readable):
-  - [ ] Add `tower`, `tower-http` (features `trace`, `request-id`) and `uuid` (feature `v4`) to `llm-gateway/Cargo.toml`.
-  - [ ] A `MakeRequestId` impl that generates a UUIDv4 per request (tower-http does not ship a UUID generator itself, to avoid a mandatory `uuid` dependency, so this project supplies its own).
-  - [ ] Compose, via `tower::ServiceBuilder`, in this order: `SetRequestIdLayer` (generates/accepts `x-request-id`) → `TraceLayer::new_for_http()` with `make_span_with` including the request id, method, and URI in the span → `PropagateRequestIdLayer` (copies the header onto the response). This is the order documented by `tower-http`'s own request-id example and is required for the trace span to see the id and for the response to carry it back.
-  - [ ] Apply the composed layer to the router in `build_router`.
-- [ ] Update `docker-compose.yml`'s `llm-gateway` service block and `.env.example`'s `# === LLM Gateway (Rust) ===` section additively with the new env vars (`LLM_GATEWAY_CONNECT_TIMEOUT_SECS`, `LLM_GATEWAY_REQUEST_TIMEOUT_SECS`, `LLM_GATEWAY_MAX_RETRIES`, `LLM_GATEWAY_RETRY_BASE_DELAY_MS`), each with the same default as the Rust-side fallback so omitting them from `.env` is safe.
-- [ ] Add/extend rustdoc (`///`) on every new/changed public item (`HttpClientConfig`, `ProviderConfig`, `RetryPolicy`, `send_with_retry`, `readiness`, the `ready` handler, `shutdown_signal`) with `# Arguments` / `# Returns` / `# Errors` sections per `CLAUDE.md` conventions.
+- [x] Consolidate configuration in `llm-gateway/src/config.rs`:
+  - [x] Add `HttpClientConfig { connect_timeout: Duration, request_timeout: Duration, max_retries: u32, retry_base_delay: Duration }`.
+  - [x] Add `ProviderConfig { base_url: String }` (per-provider base URL only — API keys stay resolved via `KeyStore`, never via `Config`).
+  - [x] Extend `Config` with `pub http: HttpClientConfig` and `pub openai: ProviderConfig`; load `OPENAI_BASE_URL` here (moved out of the adapter) plus new `LLM_GATEWAY_CONNECT_TIMEOUT_SECS`, `LLM_GATEWAY_REQUEST_TIMEOUT_SECS`, `LLM_GATEWAY_MAX_RETRIES`, `LLM_GATEWAY_RETRY_BASE_DELAY_MS` env vars, each with a sensible default.
+  - [x] Add unit tests for `Config::from_env()` default values and env-var overrides (follow the existing test style already used for `EnvKeyStore` in `llm-gateway/src/adapters/outbound/env_key.rs`).
+- [x] Add a shared retry helper `llm-gateway/src/adapters/outbound/http_retry.rs` (new module, exported from `adapters/outbound/mod.rs`) so it can be reused by future provider adapters (Steps 25/26), not just OpenAI:
+  - [x] `RetryPolicy` struct built from `HttpClientConfig` (`max_retries`, `base_delay`).
+  - [x] `RetryPolicy::is_retryable(status: reqwest::StatusCode) -> bool` — true for `429` and any `5xx`.
+  - [x] `RetryPolicy::backoff_delay(attempt: u32) -> Duration` — exponential backoff (`base_delay * 2^attempt`).
+  - [x] An async `send_with_retry` function that takes a retryable closure returning `Result<reqwest::Response, reqwest::Error>`, resends up to `max_retries` times on a retryable status, sleeping `backoff_delay` (or the response's `Retry-After` header value, if present, on `429`) between attempts, and logs each retry via `tracing::warn!`.
+  - [x] Unit tests for `is_retryable` and `backoff_delay` (pure functions — no network needed).
+- [x] Rewire `OpenAIProvider` (whatever module path Step 3 leaves it at, e.g. `llm-gateway/src/adapters/outbound/openai.rs` or `openai/mod.rs` if Step 3 splits it into `openai/request.rs` + `openai/stream.rs`):
+  - [x] `OpenAIProvider::new` takes `Arc<dyn KeyStore>` (unchanged) plus the new `HttpClientConfig` and `ProviderConfig` — delete the `std::env::var("OPENAI_BASE_URL")` call from the adapter.
+  - [x] Build the `reqwest::Client` with both `.connect_timeout(http.connect_timeout)` and `.timeout(http.request_timeout)` (today only `connect_timeout` is set; there is no total-request timeout at all).
+  - [x] Wrap the outbound `send()` call in `send_with_retry`, mapping an exhausted-retries `429` to `DomainError::RateLimited` and an exhausted-retries `5xx` to `DomainError::ProviderError` (reuse whatever error mapping Step 3 already established for non-2xx responses; only the retry wrapping is new here).
+- [x] Update DI wiring in `llm-gateway/src/main.rs`:
+  - [x] Pass `config.http.clone()` and `config.openai.clone()` into `OpenAIProvider::new(...)`.
+  - [x] Pass the `key_store` into `CompletionService::new(...)` (see readiness item below) alongside the provider list.
+  - [x] Add graceful shutdown: `axum::serve(listener, router).with_graceful_shutdown(shutdown_signal()).await` where `shutdown_signal()` is a small async fn that `tokio::select!`s on `tokio::signal::ctrl_c()` and, on `cfg(unix)`, `tokio::signal::unix::signal(SignalKind::terminate())`, logging which signal triggered shutdown via `tracing::info!`.
+- [x] Add readiness support:
+  - [x] Add `fn readiness(&self) -> Result<(), DomainError>` to `CompletionUseCase` (`llm-gateway/src/ports/inbound/completion.rs`).
+  - [x] Implement it on `CompletionService` (`llm-gateway/src/domain/service.rs`): iterate registered providers and call `key_store.get_key(provider.provider_name())` for each, returning the first `DomainError::KeyNotFound` encountered, `Ok(())` otherwise. No network calls — this only confirms credentials are resolvable, keeping `/ready` fast.
+  - [x] Give `CompletionService` a `key_store: Arc<dyn KeyStore>` field and update its constructor accordingly (update the existing `CompletionService::new` call in `main.rs` and the existing unit tests in `llm-gateway/src/domain/service.rs` — the `MockProvider`-based tests there will need a stub `KeyStore` passed in too).
+  - [x] Add `pub async fn ready(...)` handler in `llm-gateway/src/adapters/inbound/rest/handlers.rs` returning `200 {"status":"ready"}` when `readiness()` is `Ok`, `503 {"status":"not_ready","error":...}` otherwise.
+  - [x] Register `GET /ready` in `llm-gateway/src/adapters/inbound/rest/router.rs` next to the existing `/health` route.
+- [x] Add request-id + tracing middleware in `llm-gateway/src/adapters/inbound/rest/router.rs` (or a new sibling `middleware.rs` if that keeps `router.rs` readable):
+  - [x] Add `tower`, `tower-http` (features `trace`, `request-id`) and `uuid` (feature `v4`) to `llm-gateway/Cargo.toml`.
+  - [x] A `MakeRequestId` impl that generates a UUIDv4 per request (tower-http does not ship a UUID generator itself, to avoid a mandatory `uuid` dependency, so this project supplies its own).
+  - [x] Compose, via `tower::ServiceBuilder`, in this order: `SetRequestIdLayer` (generates/accepts `x-request-id`) → `TraceLayer::new_for_http()` with `make_span_with` including the request id, method, and URI in the span → `PropagateRequestIdLayer` (copies the header onto the response). This is the order documented by `tower-http`'s own request-id example and is required for the trace span to see the id and for the response to carry it back.
+  - [x] Apply the composed layer to the router in `build_router`.
+- [x] Update `docker-compose.yml`'s `llm-gateway` service block and `.env.example`'s `# === LLM Gateway (Rust) ===` section additively with the new env vars (`LLM_GATEWAY_CONNECT_TIMEOUT_SECS`, `LLM_GATEWAY_REQUEST_TIMEOUT_SECS`, `LLM_GATEWAY_MAX_RETRIES`, `LLM_GATEWAY_RETRY_BASE_DELAY_MS`), each with the same default as the Rust-side fallback so omitting them from `.env` is safe.
+- [x] Add/extend rustdoc (`///`) on every new/changed public item (`HttpClientConfig`, `ProviderConfig`, `RetryPolicy`, `send_with_retry`, `readiness`, the `ready` handler, `shutdown_signal`) with `# Arguments` / `# Returns` / `# Errors` sections per `CLAUDE.md` conventions.
 
 ## Out of scope
 
@@ -110,10 +110,10 @@ After this PR, the gateway is shaped like a production service: all HTTP-client 
 
 ## Completion criteria
 
-- [ ] `Config` is the single source of truth for HTTP timeouts, retry policy, and the OpenAI base URL; no adapter reads `std::env` directly.
-- [ ] Outbound OpenAI requests retry with bounded exponential backoff on `429`/`5xx`, honoring `Retry-After` when present, and give up after `max_retries` with a mapped `DomainError`.
-- [ ] The gateway shuts down gracefully on `Ctrl+C` and `SIGTERM`, logging which signal triggered it.
-- [ ] Every request is tagged with an `X-Request-Id` (generated if absent) that is propagated to the response and appears in the corresponding `tracing` log span.
-- [ ] `GET /ready` reports `503` when a registered provider's API key cannot be resolved via `KeyStore`, and `200` otherwise, independent of `GET /health` (which always reports `200` once the process is up).
-- [ ] All new/changed public items have rustdoc comments following `CLAUDE.md` conventions.
-- [ ] All verification checks above pass.
+- [x] `Config` is the single source of truth for HTTP timeouts, retry policy, and the OpenAI base URL; no adapter reads `std::env` directly.
+- [x] Outbound OpenAI requests retry with bounded exponential backoff on `429`/`5xx`, honoring `Retry-After` when present, and give up after `max_retries` with a mapped `DomainError`.
+- [x] The gateway shuts down gracefully on `Ctrl+C` and `SIGTERM`, logging which signal triggered it.
+- [x] Every request is tagged with an `X-Request-Id` (generated if absent) that is propagated to the response and appears in the corresponding `tracing` log span.
+- [x] `GET /ready` reports `503` when a registered provider's API key cannot be resolved via `KeyStore`, and `200` otherwise, independent of `GET /health` (which always reports `200` once the process is up).
+- [x] All new/changed public items have rustdoc comments following `CLAUDE.md` conventions.
+- [x] All verification checks above pass.

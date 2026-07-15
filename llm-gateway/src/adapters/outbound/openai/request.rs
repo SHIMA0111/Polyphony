@@ -1,6 +1,7 @@
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
+use crate::adapters::outbound::http_retry::send_with_retry;
 use crate::domain::error::DomainError;
 use crate::domain::model::{
     ChatMessage, Choice, CompletionRequest, CompletionResponse, Role, Usage,
@@ -129,12 +130,19 @@ fn from_openai_response(resp: OpenAIResponse) -> CompletionResponse {
 
 /// Executes a chat completion request against the OpenAI Chat Completions API.
 ///
+/// The outbound request is retried with bounded exponential backoff on `429`/`5xx`
+/// responses via `send_with_retry`; a `429` that persists after retries are exhausted
+/// is mapped to `DomainError::RateLimited` and a `5xx` to `DomainError::ProviderError`,
+/// same as a non-retryable failure.
+///
 /// # Arguments
-/// * `provider` — The `OpenAIProvider` holding the HTTP client, base URL, and API key.
+/// * `provider` — The `OpenAIProvider` holding the HTTP client, base URL, `KeyStore`,
+///   and retry policy.
 /// * `req` — Completion request to send.
 ///
 /// # Errors
-/// Returns `DomainError::Timeout` on a connection/request timeout,
+/// Returns `DomainError::KeyNotFound` if the API key cannot be resolved via
+/// `KeyStore`, `DomainError::Timeout` on a connection/request timeout,
 /// `DomainError::RateLimited` on an HTTP 429 response (with `Retry-After` parsed if present),
 /// and `DomainError::ProviderError` (with the original error preserved via `#[source]`
 /// where available) for any other transport or non-2xx response.
@@ -146,12 +154,18 @@ pub(super) fn complete<'a>(
     let url = format!("{}/v1/chat/completions", provider.base_url);
 
     Box::pin(async move {
-        let response = provider
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", provider.api_key))
-            .json(&openai_req)
-            .send()
+        let api_key = provider.key_store.get_key(OpenAIProvider::PROVIDER_NAME)?;
+
+        let send_request = || {
+            provider
+                .client
+                .post(&url)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .json(&openai_req)
+                .send()
+        };
+
+        let response = send_with_retry(&provider.retry_policy, send_request)
             .await
             .map_err(|e| {
                 if e.is_timeout() {

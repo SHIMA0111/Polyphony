@@ -44,4 +44,15 @@ pub trait CompletionUseCase: Send + Sync {
         &self,
         req: CompletionRequest,
     ) -> BoxFuture<'_, Result<BoxStream<'static, Result<CompletionChunk, DomainError>>, DomainError>>;
+
+    /// Checks whether the gateway's dependencies are actually usable.
+    ///
+    /// Unlike a liveness check, this confirms that every registered provider's API
+    /// key can be resolved via `KeyStore`. It makes no network calls, so it stays
+    /// fast enough to back a `GET /ready` endpoint.
+    ///
+    /// # Errors
+    /// Returns `DomainError::KeyNotFound` for the first registered provider whose API
+    /// key cannot be resolved.
+    fn readiness(&self) -> Result<(), DomainError>;
 }

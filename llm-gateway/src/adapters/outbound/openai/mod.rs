@@ -7,6 +7,8 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use reqwest::Client;
 
+use crate::adapters::outbound::http_retry::RetryPolicy;
+use crate::config::{HttpClientConfig, ProviderConfig};
 use crate::domain::error::DomainError;
 use crate::domain::model::{CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo};
 use crate::ports::outbound::key_store::KeyStore;
@@ -57,13 +59,18 @@ fn models_list() -> &'static Vec<ModelInfo> {
 
 /// OpenAI Chat Completions API adapter.
 ///
-/// API keys are retrieved via `KeyStore` and the base URL is read from the
-/// `OPENAI_BASE_URL` environment variable. Provider-specific configuration is
-/// encapsulated within this adapter and not included in the shared Config.
+/// API keys are retrieved via `KeyStore` **lazily, per request** rather than at
+/// construction time: this lets the gateway process start and serve `GET /health`
+/// even when the key is not yet resolvable, so `GET /ready` (see
+/// `CompletionService::readiness`) is the only signal that genuinely distinguishes
+/// "process is up" from "dependencies are usable". All other configuration (base URL,
+/// HTTP client timeouts, retry policy) is injected explicitly via `Config` at
+/// construction time — this adapter never reads `std::env` directly.
 pub struct OpenAIProvider {
     client: Client,
     base_url: String,
-    api_key: String,
+    key_store: Arc<dyn KeyStore>,
+    retry_policy: RetryPolicy,
 }
 
 impl OpenAIProvider {
@@ -72,18 +79,24 @@ impl OpenAIProvider {
     /// Creates a new `OpenAIProvider`.
     ///
     /// # Arguments
-    /// * `key_store` — Key store used to retrieve the API key
+    /// * `key_store` — Key store used to resolve the API key on each request (not
+    ///   eagerly here), so gateway startup never depends on the key being present.
+    /// * `http` — Shared HTTP client tuning (connect/request timeouts, retry policy).
+    /// * `provider` — OpenAI-specific configuration (base URL).
     ///
-    /// # Environment Variables
-    /// * `OPENAI_BASE_URL` — OpenAI API base URL (default: https://api.openai.com)
-    pub fn new(key_store: Arc<dyn KeyStore>) -> Result<Self, DomainError> {
-        let base_url = std::env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com".to_string());
-        let api_key = key_store.get_key(Self::PROVIDER_NAME)?;
-
+    /// # Errors
+    /// Returns `DomainError::ProviderError` if the underlying `reqwest::Client` fails
+    /// to build. Never fails due to a missing API key — that is only reported when a
+    /// request is actually made (via `complete`/`stream`) or via
+    /// `CompletionUseCase::readiness`.
+    pub fn new(
+        key_store: Arc<dyn KeyStore>,
+        http: HttpClientConfig,
+        provider: ProviderConfig,
+    ) -> Result<Self, DomainError> {
         let client = Client::builder()
-            // To avoid connection issues like misconfiguration or network failures, we set a timeout of 10 seconds
-            .connect_timeout(std::time::Duration::from_secs(10))
+            .connect_timeout(http.connect_timeout)
+            .timeout(http.request_timeout)
             .build()
             .map_err(|e| {
                 DomainError::provider_error_with_source("failed to create reqwest client", e)
@@ -91,8 +104,9 @@ impl OpenAIProvider {
 
         Ok(Self {
             client,
-            base_url,
-            api_key,
+            base_url: provider.base_url,
+            key_store,
+            retry_policy: RetryPolicy::new(&http),
         })
     }
 }
