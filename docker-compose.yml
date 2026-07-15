@@ -31,6 +31,8 @@ services:
       LLM_GATEWAY_GRPC_ADDR: ${LLM_GATEWAY_GRPC_ADDR:-llm-gateway:50051}
       LLM_GATEWAY_GRPC_MAX_RETRIES: ${LLM_GATEWAY_GRPC_MAX_RETRIES:-3}
       LLM_GATEWAY_GRPC_BASE_BACKOFF: ${LLM_GATEWAY_GRPC_BASE_BACKOFF:-100ms}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      MESSAGE_HUB_DRIVER: ${MESSAGE_HUB_DRIVER:-redis}
     ports:
       - "8080:8080"
     healthcheck:
@@ -43,6 +45,8 @@ services:
       migrate:
         condition: service_completed_successfully
       llm-gateway:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   db:
@@ -187,6 +191,14 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   web:
     build:

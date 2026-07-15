@@ -194,6 +194,56 @@ func TestLoadAuthModeInvalidReturnsError(t *testing.T) {
 	}
 }
 
+func TestLoadMessageHubDriverDefault(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.MessageHubDriver != "inprocess" {
+		t.Errorf("expected default MessageHubDriver %q, got %q", "inprocess", cfg.MessageHubDriver)
+	}
+	if cfg.RedisURL != "" {
+		t.Errorf("expected empty RedisURL when MESSAGE_HUB_DRIVER is unset, got %q", cfg.RedisURL)
+	}
+}
+
+func TestLoadMessageHubDriverRedisRequiresRedisURL(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("MESSAGE_HUB_DRIVER", "redis")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to fail when MESSAGE_HUB_DRIVER=redis and REDIS_URL is unset")
+	}
+}
+
+func TestLoadMessageHubDriverRedisWithRedisURL(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("MESSAGE_HUB_DRIVER", "redis")
+	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.MessageHubDriver != "redis" {
+		t.Errorf("expected MessageHubDriver %q, got %q", "redis", cfg.MessageHubDriver)
+	}
+	if cfg.RedisURL != "redis://localhost:6379/0" {
+		t.Errorf("expected RedisURL to be set, got %q", cfg.RedisURL)
+	}
+}
+
+func TestLoadMessageHubDriverInvalidReturnsError(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("MESSAGE_HUB_DRIVER", "kafka")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to fail for an unrecognized MESSAGE_HUB_DRIVER value")
+	}
+}
+
 func TestLoadKratosDefaults(t *testing.T) {
 	withRequiredEnv(t)
 
