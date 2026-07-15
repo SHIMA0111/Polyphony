@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
 use axum::Json;
+use axum::extract::State;
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::IntoResponse;
 
 use crate::domain::error::DomainError;
 use crate::ports::inbound::completion::CompletionUseCase;
 
 use super::request::CompletionRequestDto;
-use super::response::{CompletionResponseDto, ModelsResponseDto, ModelInfoDto};
+use super::response::{CompletionResponseDto, ModelInfoDto, ModelsResponseDto};
 
 /// Shared application state.
 pub type AppState = Arc<dyn CompletionUseCase>;
@@ -27,6 +27,7 @@ pub async fn health() -> impl IntoResponse {
 pub async fn list_models(State(service): State<AppState>) -> impl IntoResponse {
     let models = service
         .list_models()
+        .await
         .into_iter()
         .map(ModelInfoDto::from)
         .collect();
@@ -56,25 +57,55 @@ impl From<DomainError> for AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        let (status, message) = match &self.0 {
-            DomainError::InvalidRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            DomainError::ModelNotFound(model) => {
-                (StatusCode::NOT_FOUND, format!("model not found: {model}"))
-            }
-            DomainError::KeyNotFound(provider) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("API key not configured for {provider}"),
-            ),
-            DomainError::Timeout => {
-                (StatusCode::GATEWAY_TIMEOUT, "request timed out".to_string())
-            }
-            DomainError::ProviderError(msg) => {
-                (StatusCode::BAD_GATEWAY, msg.clone())
-            }
+        let status = match &self.0 {
+            DomainError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            DomainError::ModelNotFound(_) => StatusCode::NOT_FOUND,
+            DomainError::KeyNotFound(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            DomainError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+            DomainError::ProviderError { .. } => StatusCode::BAD_GATEWAY,
+            DomainError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
         };
+        let retry_after_secs = match &self.0 {
+            DomainError::RateLimited { retry_after_secs } => *retry_after_secs,
+            _ => None,
+        };
+        let message = self.0.to_string();
 
         tracing::error!(error = %self.0, "request failed");
 
-        (status, Json(serde_json::json!({"error": message}))).into_response()
+        let mut response = (status, Json(serde_json::json!({"error": message}))).into_response();
+
+        if let Some(secs) = retry_after_secs
+            && let Ok(value) = HeaderValue::from_str(&secs.to_string())
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
+
+        response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rate_limited_maps_to_429_with_retry_after_header() {
+        let err = AppError(DomainError::RateLimited {
+            retry_after_secs: Some(5),
+        });
+
+        let response = err.into_response();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .expect("Retry-After header should be set"),
+            "5"
+        );
     }
 }
