@@ -56,6 +56,39 @@ type RoomResponse struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// MemberResponse is the JSON response representation of a single room
+// membership. Username is populated on the member-list endpoint (which
+// JOINs against the users table) and left empty ("") on responses built
+// from non-JOINed lookups such as the role-change endpoint.
+type MemberResponse struct {
+	ID       string    `json:"id"`
+	RoomID   string    `json:"room_id"`
+	UserID   string    `json:"user_id"`
+	Username string    `json:"username"`
+	Role     string    `json:"role"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+// MemberListResponse is the response body for GET /rooms/:roomId/members.
+type MemberListResponse struct {
+	Members []MemberResponse `json:"members"`
+}
+
+// ChangeMemberRoleRequest is the request body for
+// PATCH /rooms/:roomId/members/:userId/role. Role must be one of "reader",
+// "guest", "member", or "admin" — granting "master" through this endpoint
+// is rejected; use the ownership-transfer endpoint instead.
+type ChangeMemberRoleRequest struct {
+	Role string `json:"role"`
+}
+
+// TransferOwnershipRequest is the request body for
+// PATCH /rooms/:roomId/owner. NewOwnerID is required and must already be a
+// member of the room.
+type TransferOwnershipRequest struct {
+	NewOwnerID string `json:"new_owner_id"`
+}
+
 // --- Message DTOs ---
 
 // SendMessageRequest is the request body for sending a message.

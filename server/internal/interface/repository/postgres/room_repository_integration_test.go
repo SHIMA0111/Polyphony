@@ -4,11 +4,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	domainuser "github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
 	testutilpg "github.com/SHIMA0111/multi-user-ai/server/internal/testutil/postgres"
@@ -135,5 +137,189 @@ func TestRoomMembersRoleCheckConstraint(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected an INSERT with role='superadmin' to violate the room_members_role_check CHECK constraint, got nil error")
+	}
+}
+
+// createTestUser is a small integration-test helper that persists a new
+// user with a random email/username and returns it.
+func createTestUser(ctx context.Context, t *testing.T, userRepo *UserRepository, label string) *domainuser.User {
+	t.Helper()
+	u := &domainuser.User{
+		ID:           uuid.New().String(),
+		Email:        label + "-" + uuid.New().String() + "@example.com",
+		Username:     label + "-" + uuid.New().String(),
+		PasswordHash: "hash",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if err := userRepo.Create(ctx, u); err != nil {
+		t.Fatalf("create %s user: %v", label, err)
+	}
+	return u
+}
+
+// TestUpdateMemberRolePersists proves that RoomRepository.UpdateMemberRole
+// persists the new role for an existing membership.
+func TestUpdateMemberRolePersists(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "role-update-owner")
+	member := createTestUser(ctx, t, userRepo, "role-update-member")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "Role Update Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if err := roomRepo.AddMember(ctx, &domainroom.RoomMember{
+		ID: uuid.New().String(), RoomID: rm.ID, UserID: member.ID, Role: domainroom.RoleMember, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+
+	if err := roomRepo.UpdateMemberRole(ctx, rm.ID, member.ID, domainroom.RoleAdmin); err != nil {
+		t.Fatalf("UpdateMemberRole failed: %v", err)
+	}
+
+	got, err := roomRepo.GetMember(ctx, rm.ID, member.ID)
+	if err != nil {
+		t.Fatalf("GetMember failed: %v", err)
+	}
+	if got.Role != domainroom.RoleAdmin {
+		t.Fatalf("expected role admin, got %s", got.Role)
+	}
+}
+
+// TestUpdateMemberRoleNotFound proves that RoomRepository.UpdateMemberRole
+// returns domain.ErrNotFound when the (roomID, userID) membership does not
+// exist.
+func TestUpdateMemberRoleNotFound(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "role-notfound-owner")
+	nonMember := createTestUser(ctx, t, userRepo, "role-notfound-nonmember")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "Role NotFound Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	err := roomRepo.UpdateMemberRole(ctx, rm.ID, nonMember.ID, domainroom.RoleAdmin)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound, got %v", err)
+	}
+}
+
+// TestTransferOwnershipAtomic proves that RoomRepository.TransferOwnership
+// updates rooms.owner_id, promotes the new owner to master, and demotes the
+// previous owner to admin, all as a single atomic transaction.
+func TestTransferOwnershipAtomic(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "transfer-owner")
+	newOwner := createTestUser(ctx, t, userRepo, "transfer-new-owner")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "Transfer Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if err := roomRepo.AddMember(ctx, &domainroom.RoomMember{
+		ID: uuid.New().String(), RoomID: rm.ID, UserID: newOwner.ID, Role: domainroom.RoleMember, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+
+	if err := roomRepo.TransferOwnership(ctx, rm.ID, owner.ID, newOwner.ID); err != nil {
+		t.Fatalf("TransferOwnership failed: %v", err)
+	}
+
+	updatedRoom, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if updatedRoom.OwnerID != newOwner.ID {
+		t.Fatalf("expected owner_id %s, got %s", newOwner.ID, updatedRoom.OwnerID)
+	}
+
+	newOwnerMember, err := roomRepo.GetMember(ctx, rm.ID, newOwner.ID)
+	if err != nil {
+		t.Fatalf("GetMember(newOwner) failed: %v", err)
+	}
+	if newOwnerMember.Role != domainroom.RoleMaster {
+		t.Fatalf("expected new owner role master, got %s", newOwnerMember.Role)
+	}
+
+	oldOwnerMember, err := roomRepo.GetMember(ctx, rm.ID, owner.ID)
+	if err != nil {
+		t.Fatalf("GetMember(oldOwner) failed: %v", err)
+	}
+	if oldOwnerMember.Role != domainroom.RoleAdmin {
+		t.Fatalf("expected old owner role admin, got %s", oldOwnerMember.Role)
+	}
+}
+
+// TestTransferOwnershipRollbackOnMissingNewOwner proves that
+// RoomRepository.TransferOwnership rolls back cleanly (no partial writes)
+// when the new-owner membership row does not exist: rooms.owner_id and the
+// previous owner's role must remain unchanged after the failed call.
+func TestTransferOwnershipRollbackOnMissingNewOwner(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "rollback-owner")
+	nonMember := createTestUser(ctx, t, userRepo, "rollback-nonmember")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "Rollback Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	err := roomRepo.TransferOwnership(ctx, rm.ID, owner.ID, nonMember.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound, got %v", err)
+	}
+
+	// Verify no partial writes: owner_id and the original owner's role must
+	// be unchanged.
+	updatedRoom, getErr := roomRepo.GetByID(ctx, rm.ID)
+	if getErr != nil {
+		t.Fatalf("GetByID failed: %v", getErr)
+	}
+	if updatedRoom.OwnerID != owner.ID {
+		t.Fatalf("expected owner_id to remain %s after rollback, got %s", owner.ID, updatedRoom.OwnerID)
+	}
+
+	ownerMember, getErr := roomRepo.GetMember(ctx, rm.ID, owner.ID)
+	if getErr != nil {
+		t.Fatalf("GetMember(owner) failed: %v", getErr)
+	}
+	if ownerMember.Role != domainroom.RoleMaster {
+		t.Fatalf("expected original owner role to remain master after rollback, got %s", ownerMember.Role)
 	}
 }

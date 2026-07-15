@@ -204,3 +204,52 @@ func (r *RoomRepo) RemoveMember(_ context.Context, roomID, userID string) error 
 	delete(members, userID)
 	return nil
 }
+
+// UpdateMemberRole updates a single membership's role. Returns
+// domain.ErrNotFound if the membership does not exist.
+func (r *RoomRepo) UpdateMemberRole(_ context.Context, roomID, userID string, role room.Role) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	members, ok := r.Members[roomID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	member, ok := members[userID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	member.Role = role
+	return nil
+}
+
+// TransferOwnership updates the fake Rooms map's OwnerID and both affected
+// memberships' roles (new owner -> master, old owner -> admin), mirroring
+// postgres.RoomRepository.TransferOwnership. Returns domain.ErrNotFound if
+// the room or either membership does not exist.
+func (r *RoomRepo) TransferOwnership(_ context.Context, roomID, oldOwnerID, newOwnerID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rm, ok := r.Rooms[roomID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	members, ok := r.Members[roomID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	newOwnerMember, ok := members[newOwnerID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	oldOwnerMember, ok := members[oldOwnerID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+
+	rm.OwnerID = newOwnerID
+	newOwnerMember.Role = room.RoleMaster
+	oldOwnerMember.Role = room.RoleAdmin
+	return nil
+}

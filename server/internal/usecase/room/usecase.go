@@ -113,6 +113,120 @@ func (u *RoomUsecase) DeleteRoom(ctx context.Context, userID, roomID string) err
 	return u.roomRepo.Delete(ctx, roomID)
 }
 
+// ListMembers returns all members of a room. Any member — including
+// domainroom.RoleReader — may list members; no domainroom.Action capability
+// is required beyond plain membership. It returns domain.ErrForbidden if
+// callerID is not a member of roomID. Each returned RoomMember carries a
+// populated Username (see domainroom.RoomMember.Username).
+func (u *RoomUsecase) ListMembers(ctx context.Context, callerID, roomID string) ([]*domainroom.RoomMember, error) {
+	if _, err := u.getMember(ctx, roomID, callerID); err != nil {
+		return nil, err
+	}
+	return u.roomRepo.ListMembers(ctx, roomID)
+}
+
+// LeaveRoom removes targetUserID from roomID's membership. This endpoint
+// only supports self-leave: it returns domain.ErrForbidden if
+// targetUserID != callerID (kicking other members is out of scope for this
+// step) or if the caller is not a member of the room. If callerID is the
+// room's current owner (domainroom.Room.OwnerID), it returns
+// domainroom.ErrOwnerRoleProtected instead of leaving — the owner must
+// transfer ownership (see TransferOwnership) before they can leave.
+func (u *RoomUsecase) LeaveRoom(ctx context.Context, callerID, roomID, targetUserID string) error {
+	if targetUserID != callerID {
+		return domain.ErrForbidden
+	}
+	if _, err := u.getMember(ctx, roomID, callerID); err != nil {
+		return err
+	}
+
+	rm, err := u.roomRepo.GetByID(ctx, roomID)
+	if err != nil {
+		return err
+	}
+	if callerID == rm.OwnerID {
+		return domainroom.ErrOwnerRoleProtected
+	}
+
+	return u.roomRepo.RemoveMember(ctx, roomID, targetUserID)
+}
+
+// ChangeMemberRole changes targetUserID's role within roomID to newRole. The
+// caller must hold domainroom.ActionManageMembers in the room (checked here
+// as defense in depth alongside the route-level middleware.RequireRole); it
+// returns domain.ErrForbidden if the caller lacks that capability. It
+// returns domainroom.ErrOwnerRoleProtected if targetUserID is the room's
+// current owner — the owner's role can only change via TransferOwnership,
+// never directly. It returns domain.ErrNotFound if targetUserID is not a
+// member of roomID. Rejecting newRole == domainroom.RoleMaster is validated
+// at the handler layer, so this method never needs to special-case it.
+func (u *RoomUsecase) ChangeMemberRole(ctx context.Context, callerID, roomID, targetUserID string, newRole domainroom.Role) (*domainroom.RoomMember, error) {
+	caller, err := u.getMember(ctx, roomID, callerID)
+	if err != nil {
+		return nil, err
+	}
+	if err := middleware.Authorize(caller.Role, domainroom.ActionManageMembers); err != nil {
+		return nil, err
+	}
+
+	rm, err := u.roomRepo.GetByID(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if targetUserID == rm.OwnerID {
+		return nil, domainroom.ErrOwnerRoleProtected
+	}
+
+	target, err := u.roomRepo.GetMember(ctx, roomID, targetUserID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := u.roomRepo.UpdateMemberRole(ctx, roomID, targetUserID, newRole); err != nil {
+		return nil, err
+	}
+	target.Role = newRole
+	return target, nil
+}
+
+// TransferOwnership transfers room ownership from its current owner
+// (roomID's rooms.owner_id) to newOwnerID, and returns the room paired with
+// the caller's post-transfer role (always domainroom.RoleAdmin, since the
+// caller must have been the previous owner to reach that point — see
+// below). Only the current owner may call this; it returns
+// domain.ErrForbidden if callerID != room.OwnerID. If newOwnerID already is
+// the current owner, it is a no-op that returns the room unchanged with no
+// error (idempotent). Otherwise it returns domain.ErrNotFound if newOwnerID
+// is not already a member of the room — ownership can only transfer to an
+// existing member — then atomically updates rooms.owner_id, promotes
+// newOwnerID to domainroom.RoleMaster, and demotes the previous owner to
+// domainroom.RoleAdmin (see roomRepo.TransferOwnership) so the room always
+// has exactly one master.
+func (u *RoomUsecase) TransferOwnership(ctx context.Context, callerID, roomID, newOwnerID string) (*domainroom.RoomWithRole, error) {
+	rm, err := u.roomRepo.GetByID(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if callerID != rm.OwnerID {
+		return nil, domain.ErrForbidden
+	}
+
+	if newOwnerID == rm.OwnerID {
+		return &domainroom.RoomWithRole{Room: rm, Role: domainroom.RoleMaster}, nil
+	}
+
+	if _, err := u.roomRepo.GetMember(ctx, roomID, newOwnerID); err != nil {
+		return nil, err
+	}
+
+	if err := u.roomRepo.TransferOwnership(ctx, roomID, rm.OwnerID, newOwnerID); err != nil {
+		return nil, err
+	}
+
+	rm.OwnerID = newOwnerID
+	return &domainroom.RoomWithRole{Room: rm, Role: domainroom.RoleAdmin}, nil
+}
+
 // getMember loads the caller's membership in roomID, translating a missing
 // membership (domain.ErrNotFound) into domain.ErrForbidden so that a
 // non-member can never distinguish "room does not exist" from "room exists
