@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -14,6 +15,16 @@ const (
 	defaultDBMaxConnLifetime   = time.Hour
 	defaultDBMaxConnIdleTime   = 30 * time.Minute
 	defaultDBHealthCheckPeriod = time.Minute
+)
+
+// Defaults applied to the gRPC LLM Gateway client's transport-selection and
+// retry/backoff tuning knobs when the corresponding environment variable is
+// unset or fails to parse.
+const (
+	defaultLLMGatewayTransport       = "rest"
+	defaultLLMGatewayGRPCAddr        = "llm-gateway:50051"
+	defaultLLMGatewayGRPCMaxRetries  = 3
+	defaultLLMGatewayGRPCBaseBackoff = 100 * time.Millisecond
 )
 
 // Config holds the application configuration loaded from environment variables.
@@ -84,6 +95,29 @@ type Config struct {
 	// read by the auth middleware as a fallback when no Authorization
 	// header is present (env KRATOS_COOKIE_NAME, default "ory_kratos_session").
 	KratosCookieName string
+
+	// LLMGatewayTransport selects which ai.LLMGateway implementation
+	// container.go wires up: "rest" (default) for the existing
+	// gateway.LLMClient, or "grpc" for gateway.GRPCClient (env
+	// LLM_GATEWAY_TRANSPORT). This is the Phase 8 swap point noted in
+	// CLAUDE.md's Interface Swap Points table. Any value other than "rest"
+	// or "grpc" falls back to "rest" with a logged warning, rather than
+	// failing Load, since this is an optional transport-selection knob.
+	LLMGatewayTransport string
+	// LLMGatewayGRPCAddr is the dial target used by gateway.NewGRPCClient
+	// when LLMGatewayTransport is "grpc" (env LLM_GATEWAY_GRPC_ADDR,
+	// default "llm-gateway:50051").
+	LLMGatewayGRPCAddr string
+	// LLMGatewayGRPCMaxRetries is the maximum number of attempts
+	// gateway.GRPCClient makes for a single RPC before giving up on
+	// transient failures (env LLM_GATEWAY_GRPC_MAX_RETRIES, default 3).
+	// Falls back to the default if unset or unparseable as an int.
+	LLMGatewayGRPCMaxRetries int
+	// LLMGatewayGRPCBaseBackoff is the initial delay in gateway.GRPCClient's
+	// exponential backoff schedule between retry attempts (env
+	// LLM_GATEWAY_GRPC_BASE_BACKOFF, default 100ms). Falls back to the
+	// default if unset or unparseable as a time.Duration.
+	LLMGatewayGRPCBaseBackoff time.Duration
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -172,6 +206,34 @@ func Load() (*Config, error) {
 		kratosCookieName = "ory_kratos_session"
 	}
 
+	llmGatewayTransport := os.Getenv("LLM_GATEWAY_TRANSPORT")
+	if llmGatewayTransport == "" {
+		llmGatewayTransport = defaultLLMGatewayTransport
+	}
+	if llmGatewayTransport != "rest" && llmGatewayTransport != "grpc" {
+		slog.Default().Warn("invalid LLM_GATEWAY_TRANSPORT, using default",
+			"value", llmGatewayTransport, "default", defaultLLMGatewayTransport)
+		llmGatewayTransport = defaultLLMGatewayTransport
+	}
+
+	llmGatewayGRPCAddr := os.Getenv("LLM_GATEWAY_GRPC_ADDR")
+	if llmGatewayGRPCAddr == "" {
+		llmGatewayGRPCAddr = defaultLLMGatewayGRPCAddr
+	}
+
+	llmGatewayGRPCMaxRetries := defaultLLMGatewayGRPCMaxRetries
+	if v := os.Getenv("LLM_GATEWAY_GRPC_MAX_RETRIES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			slog.Default().Warn("invalid LLM_GATEWAY_GRPC_MAX_RETRIES, using default",
+				"value", v, "default", defaultLLMGatewayGRPCMaxRetries, "error", err)
+		} else {
+			llmGatewayGRPCMaxRetries = n
+		}
+	}
+
+	llmGatewayGRPCBaseBackoff := parseDurationEnv("LLM_GATEWAY_GRPC_BASE_BACKOFF", defaultLLMGatewayGRPCBaseBackoff)
+
 	return &Config{
 		Port:                port,
 		DatabaseURL:         dbURL,
@@ -192,6 +254,11 @@ func Load() (*Config, error) {
 		KratosPublicURL:     kratosPublicURL,
 		KratosAdminURL:      kratosAdminURL,
 		KratosCookieName:    kratosCookieName,
+
+		LLMGatewayTransport:       llmGatewayTransport,
+		LLMGatewayGRPCAddr:        llmGatewayGRPCAddr,
+		LLMGatewayGRPCMaxRetries:  llmGatewayGRPCMaxRetries,
+		LLMGatewayGRPCBaseBackoff: llmGatewayGRPCBaseBackoff,
 	}, nil
 }
 
