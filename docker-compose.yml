@@ -79,6 +79,8 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
         NEXT_PUBLIC_MOCK_API: ${NEXT_PUBLIC_MOCK_API:-false}
+    environment:
+      API_URL: ${API_URL:-http://api:8080}
     ports:
       - "3000:3000"
     depends_on:

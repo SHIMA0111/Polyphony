@@ -1,25 +1,24 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { apiClient } from "@/lib/api"
 
+/**
+ * Thin async wrappers around `apiClient`'s auth methods that also handle
+ * post-auth navigation.
+ *
+ * The JWT now lives server-side in an httpOnly cookie (set/cleared by the
+ * `/api/auth/*` route handlers), so there is no client-visible token to
+ * derive an `isAuthenticated`/`isLoading` state from — route protection is
+ * handled by `middleware.ts` instead.
+ */
 export function useAuth() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
   const router = useRouter()
-
-  useEffect(() => {
-    const token = apiClient.getToken()
-    setIsAuthenticated(!!token)
-    setIsLoading(false)
-  }, [])
 
   const login = useCallback(
     async (email: string, password: string) => {
-      const res = await apiClient.login(email, password)
-      apiClient.setToken(res.access_token)
-      setIsAuthenticated(true)
+      await apiClient.login(email, password)
       router.push("/rooms")
     },
     [router],
@@ -27,19 +26,16 @@ export function useAuth() {
 
   const register = useCallback(
     async (email: string, username: string, password: string) => {
-      const res = await apiClient.register(email, username, password)
-      apiClient.setToken(res.access_token)
-      setIsAuthenticated(true)
+      await apiClient.register(email, username, password)
       router.push("/rooms")
     },
     [router],
   )
 
-  const logout = useCallback(() => {
-    apiClient.clearToken()
-    setIsAuthenticated(false)
+  const logout = useCallback(async () => {
+    await apiClient.logout()
     router.push("/login")
   }, [router])
 
-  return { isAuthenticated, isLoading, login, register, logout }
+  return { login, register, logout }
 }

@@ -1,10 +1,4 @@
-import type {
-  AuthResponse,
-  Room,
-  Message,
-  MessagePage,
-  AIMessageResponse,
-} from "@/types/api"
+import type { Room, Message, MessagePage, AIMessageResponse } from "@/types/api"
 
 const MOCK_USER_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -129,14 +123,16 @@ function delay(ms: number) {
 }
 
 export const mockApi = {
-  async register(): Promise<AuthResponse> {
+  async register(): Promise<void> {
     await delay(500)
-    return { access_token: "mock-token", token_type: "Bearer" }
   },
 
-  async login(): Promise<AuthResponse> {
+  async login(): Promise<void> {
     await delay(500)
-    return { access_token: "mock-token", token_type: "Bearer" }
+  },
+
+  async logout(): Promise<void> {
+    await delay(100)
   },
 
   async listRooms(): Promise<Room[]> {
