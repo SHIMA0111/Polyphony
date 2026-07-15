@@ -3,7 +3,7 @@
 import { useRef, useEffect } from "react"
 import { Avatar, Box, Button, Flex, Text } from "@chakra-ui/react"
 import { AlertTriangle, RefreshCw } from "lucide-react"
-import type { Message } from "@/types/api"
+import type { Message } from "@/features/messages/types"
 
 interface MessageListProps {
   messages: Message[]

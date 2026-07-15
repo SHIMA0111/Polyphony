@@ -5,26 +5,22 @@ import Link from "next/link"
 import { Box, Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/react"
 import { Pen } from "lucide-react"
 import { PasswordInput } from "@/components/ui/password-input"
-import { useAuth } from "@/hooks/use-auth"
+import { useLogin } from "@/features/auth/hooks/use-login"
 
 export function LoginForm() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const { login } = useAuth()
+  const loginMutation = useLogin()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
-    setIsSubmitting(true)
 
     try {
-      await login(email, password)
+      await loginMutation.mutateAsync({ email, password })
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed")
-    } finally {
-      setIsSubmitting(false)
     }
   }
 
@@ -91,7 +87,7 @@ export function LoginForm() {
                 colorPalette="blue"
                 size="lg"
                 w="full"
-                loading={isSubmitting}
+                loading={loginMutation.isPending}
                 loadingText="Signing in..."
               >
                 Sign in

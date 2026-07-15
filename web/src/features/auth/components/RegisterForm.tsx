@@ -5,7 +5,7 @@ import Link from "next/link"
 import { Box, Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/react"
 import { Pen } from "lucide-react"
 import { PasswordInput } from "@/components/ui/password-input"
-import { useAuth } from "@/hooks/use-auth"
+import { useRegister } from "@/features/auth/hooks/use-register"
 
 export function RegisterForm() {
   const [email, setEmail] = useState("")
@@ -13,8 +13,7 @@ export function RegisterForm() {
   const [password, setPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
   const [error, setError] = useState("")
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const { register } = useAuth()
+  const registerMutation = useRegister()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -25,14 +24,10 @@ export function RegisterForm() {
       return
     }
 
-    setIsSubmitting(true)
-
     try {
-      await register(email, username, password)
+      await registerMutation.mutateAsync({ email, username, password })
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed")
-    } finally {
-      setIsSubmitting(false)
     }
   }
 
@@ -118,7 +113,7 @@ export function RegisterForm() {
                 colorPalette="blue"
                 size="lg"
                 w="full"
-                loading={isSubmitting}
+                loading={registerMutation.isPending}
                 loadingText="Creating account..."
               >
                 Create account

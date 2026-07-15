@@ -1,74 +1,61 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useCallback } from "react"
 import Link from "next/link"
 import { Box, Button, Flex, Heading, Spinner } from "@chakra-ui/react"
 import { ChevronLeft, MoreVertical } from "lucide-react"
-import { apiClient } from "@/lib/api"
-import type { Message, Room } from "@/types/api"
-import type { Model } from "./ModelSelector"
+import { useRoom } from "@/features/rooms/hooks/use-room"
+import { useMessages } from "@/features/messages/hooks/use-messages"
+import { useModels } from "@/features/messages/hooks/use-models"
+import { useSendMessage } from "@/features/messages/hooks/use-send-message"
+import { useSendAIMessage } from "@/features/messages/hooks/use-send-ai-message"
+import { useRegenerateAIMessage } from "@/features/messages/hooks/use-regenerate-ai-message"
 import { MessageList } from "./MessageList"
 import { MessageInput } from "./MessageInput"
+import type { Message, ModelInfo } from "@/features/messages/types"
 
 interface ChatRoomProps {
   roomId: string
 }
 
+/** Stable identity fallbacks so `useCallback`/`useMemo` deps below don't
+ * change on every render while a query has no data yet. */
+const EMPTY_MESSAGES: Message[] = []
+const EMPTY_MODELS: ModelInfo[] = []
+
 export function ChatRoom({ roomId }: ChatRoomProps) {
-  const [room, setRoom] = useState<Room | null>(null)
-  const [messages, setMessages] = useState<Message[]>([])
-  const [models, setModels] = useState<Model[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [isRegenerating, setIsRegenerating] = useState<string | null>(null)
+  const roomQuery = useRoom(roomId)
+  const messagesQuery = useMessages(roomId)
+  const modelsQuery = useModels()
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [roomData, msgData, modelData] = await Promise.all([
-        apiClient.getRoom(roomId),
-        apiClient.listMessages(roomId, undefined, 100),
-        apiClient.listModels(),
-      ])
-      setRoom(roomData)
-      // Messages come in descending order from API, reverse for display
-      setMessages([...msgData.messages].reverse())
-      setModels(
-        modelData.models.map((m) => ({
-          id: m.id,
-          name: m.name,
-          provider: m.provider,
-        })),
-      )
-    } catch {
-      // TODO: handle error
-    } finally {
-      setIsLoading(false)
-    }
-  }, [roomId])
+  const sendMessageMutation = useSendMessage(roomId)
+  const sendAIMessageMutation = useSendAIMessage(roomId)
+  const regenerateMutation = useRegenerateAIMessage(roomId)
 
-  useEffect(() => {
-    fetchData()
-  }, [fetchData])
+  const room = roomQuery.data
+  const messages = messagesQuery.data ?? EMPTY_MESSAGES
+  const models = modelsQuery.data ?? EMPTY_MODELS
+  const isLoading =
+    roomQuery.isPending || messagesQuery.isPending || modelsQuery.isPending
 
   const handleSend = useCallback(
     async (content: string) => {
-      const msg = await apiClient.sendMessage(roomId, content)
-      setMessages((prev) => [...prev, msg])
+      await sendMessageMutation.mutateAsync(content)
     },
-    [roomId],
+    [sendMessageMutation],
   )
 
   const handleSendWithAI = useCallback(
     async (content: string, model: string) => {
-      const res = await apiClient.sendAIMessage(roomId, content, model)
-      setMessages((prev) => [...prev, res.user_message, res.ai_message])
+      await sendAIMessageMutation.mutateAsync({ content, model })
     },
-    [roomId],
+    [sendAIMessageMutation],
   )
 
   const handleRegenerate = useCallback(
-    async (messageId: string) => {
+    async (aiMessageId: string) => {
       // Find the human message that precedes this AI message
-      const msgIndex = messages.findIndex((m) => m.id === messageId)
+      const msgIndex = messages.findIndex((m) => m.id === aiMessageId)
       if (msgIndex < 0) return
 
       // Find the preceding human message
@@ -81,23 +68,18 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
       }
       if (!humanMessageId) return
 
-      setIsRegenerating(messageId)
       try {
-        const updated = await apiClient.regenerateAIMessage(
-          roomId,
-          humanMessageId,
-        )
-        setMessages((prev) =>
-          prev.map((m) => (m.id === messageId ? updated : m)),
-        )
+        await regenerateMutation.mutateAsync({ aiMessageId, humanMessageId })
       } catch {
         // TODO: handle error
-      } finally {
-        setIsRegenerating(null)
       }
     },
-    [roomId, messages],
+    [messages, regenerateMutation],
   )
+
+  const isRegenerating = regenerateMutation.isPending
+    ? (regenerateMutation.variables?.aiMessageId ?? null)
+    : null
 
   if (isLoading) {
     return (

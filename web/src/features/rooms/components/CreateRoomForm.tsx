@@ -3,33 +3,24 @@
 import { useState } from "react"
 import { Button, Dialog, Field, Flex, Input, Portal, Textarea } from "@chakra-ui/react"
 import { Plus } from "lucide-react"
-import { apiClient } from "@/lib/api"
-import type { Room } from "@/types/api"
+import { useCreateRoom } from "@/features/rooms/hooks/use-create-room"
 
-interface CreateRoomFormProps {
-  onCreated: (room: Room) => void
-}
-
-export function CreateRoomForm({ onCreated }: CreateRoomFormProps) {
+export function CreateRoomForm() {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const { mutateAsync: createRoom, isPending } = useCreateRoom()
 
   const handleSubmit = async () => {
     if (!name.trim()) return
-    setIsSubmitting(true)
 
     try {
-      const room = await apiClient.createRoom(name, description)
-      onCreated(room)
+      await createRoom({ name, description })
       setName("")
       setDescription("")
       setOpen(false)
     } catch {
       // TODO: show error toast
-    } finally {
-      setIsSubmitting(false)
     }
   }
 
@@ -79,7 +70,7 @@ export function CreateRoomForm({ onCreated }: CreateRoomFormProps) {
               <Button
                 colorPalette="blue"
                 onClick={handleSubmit}
-                loading={isSubmitting}
+                loading={isPending}
               >
                 Create room
               </Button>

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import type { Message } from "@/types/api"
+import type { Message } from "@/features/messages/types"
 import { render, screen } from "@/test/render"
 import { MessageList } from "./MessageList"
 
