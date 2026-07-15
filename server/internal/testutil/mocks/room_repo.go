@@ -40,7 +40,10 @@ func (r *RoomRepo) ensureInit() {
 // SeedMember pre-populates a room membership directly, without requiring a
 // corresponding room to exist in Rooms. This lets tests that only care about
 // membership checks (e.g. message usecase tests) set up fixtures without
-// going through Create.
+// going through Create. role is a plain string (e.g. "reader", "guest",
+// "member", "admin", "master") converted to room.Role internally, so
+// existing call sites written before Role became a typed enum keep working
+// unchanged.
 func (r *RoomRepo) SeedMember(roomID, userID, role string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -48,11 +51,11 @@ func (r *RoomRepo) SeedMember(roomID, userID, role string) {
 	if r.Members[roomID] == nil {
 		r.Members[roomID] = make(map[string]*room.RoomMember)
 	}
-	r.Members[roomID][userID] = &room.RoomMember{RoomID: roomID, UserID: userID, Role: role}
+	r.Members[roomID][userID] = &room.RoomMember{RoomID: roomID, UserID: userID, Role: room.Role(role)}
 }
 
 // Create persists a new room and automatically adds its owner as a member
-// with role "master", mirroring the production postgres.RoomRepository
+// with role.RoleMaster, mirroring the production postgres.RoomRepository
 // behavior.
 func (r *RoomRepo) Create(_ context.Context, rm *room.Room) error {
 	r.mu.Lock()
@@ -64,7 +67,7 @@ func (r *RoomRepo) Create(_ context.Context, rm *room.Room) error {
 		r.Members[rm.ID] = make(map[string]*room.RoomMember)
 	}
 	r.Members[rm.ID][rm.OwnerID] = &room.RoomMember{
-		ID: "seed-owner-membership", RoomID: rm.ID, UserID: rm.OwnerID, Role: "master",
+		ID: "seed-owner-membership", RoomID: rm.ID, UserID: rm.OwnerID, Role: room.RoleMaster,
 	}
 	return nil
 }
@@ -93,6 +96,27 @@ func (r *RoomRepo) ListByUserID(_ context.Context, userID string) ([]*room.Room,
 		}
 	}
 	return rooms, nil
+}
+
+// ListByUserIDWithRole returns all rooms the given user is a member of,
+// paired with the user's role in each room.
+func (r *RoomRepo) ListByUserIDWithRole(_ context.Context, userID string) ([]*room.RoomWithRole, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var result []*room.RoomWithRole
+	for roomID, members := range r.Members {
+		member, ok := members[userID]
+		if !ok {
+			continue
+		}
+		rm, ok := r.Rooms[roomID]
+		if !ok {
+			continue
+		}
+		result = append(result, &room.RoomWithRole{Room: rm, Role: member.Role})
+	}
+	return result, nil
 }
 
 // Update updates room fields. Returns domain.ErrNotFound if the room does

@@ -5,23 +5,25 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
+	modelusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/model"
 )
 
-// ModelHandler handles HTTP requests for LLM model listing.
+// ModelHandler handles HTTP requests for LLM model listing. It delegates
+// business logic to ModelUsecase rather than depending on ai.LLMGateway
+// directly, per Clean Architecture.
 type ModelHandler struct {
-	llmGateway ai.LLMGateway
+	usecase *modelusecase.ModelUsecase
 }
 
-// NewModelHandler creates a new ModelHandler.
-func NewModelHandler(llmGateway ai.LLMGateway) *ModelHandler {
-	return &ModelHandler{llmGateway: llmGateway}
+// NewModelHandler creates a new ModelHandler with the given ModelUsecase.
+func NewModelHandler(usecase *modelusecase.ModelUsecase) *ModelHandler {
+	return &ModelHandler{usecase: usecase}
 }
 
 // List handles GET /models. It returns the available LLM models from the gateway.
 func (h *ModelHandler) List(c echo.Context) error {
-	models, err := h.llmGateway.ListModels(c.Request().Context())
+	models, err := h.usecase.ListModels(c.Request().Context())
 	if err != nil {
 		middleware.GetLogger(c).Error("failed to fetch models from llm gateway", "error", err)
 		return c.JSON(http.StatusBadGateway, ErrorResponse{Message: "failed to fetch models"})

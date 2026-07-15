@@ -13,6 +13,7 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
 
 const defaultContextMessages = 50
@@ -57,13 +58,18 @@ func NewMessageUsecase(
 	}
 }
 
-// SendMessage creates a human message in a room. It reserves a single
-// sequence number, persists the message, and publishes EventMessageCreated
-// on the hub after the persist succeeds. Publishing is fire-and-forget: its
-// outcome never affects the returned error, and it only happens once the
-// write has already succeeded.
+// SendMessage creates a human message in a room. The caller must be allowed
+// domainroom.ActionSendMessage (guest or above; a reader may not send). It
+// reserves a single sequence number, persists the message, and publishes
+// EventMessageCreated on the hub after the persist succeeds. Publishing is
+// fire-and-forget: its outcome never affects the returned error, and it only
+// happens once the write has already succeeded.
 func (u *MessageUsecase) SendMessage(ctx context.Context, userID, roomID, content string) (*domainmessage.Message, error) {
-	if err := u.checkMembership(ctx, roomID, userID); err != nil {
+	member, err := u.getMember(ctx, roomID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := middleware.Authorize(member.Role, room.ActionSendMessage); err != nil {
 		return nil, err
 	}
 
@@ -108,9 +114,11 @@ func (u *MessageUsecase) createHumanMessage(ctx context.Context, userID, roomID,
 	return msg, nil
 }
 
-// ListMessages returns paginated messages for a room.
+// ListMessages returns paginated messages for a room. Any valid member
+// (including reader) may list messages; no domainroom.Action check beyond
+// membership is applied.
 func (u *MessageUsecase) ListMessages(ctx context.Context, userID, roomID, cursor string, limit int) (*domainmessage.CursorPage, error) {
-	if err := u.checkMembership(ctx, roomID, userID); err != nil {
+	if _, err := u.getMember(ctx, roomID, userID); err != nil {
 		return nil, err
 	}
 
@@ -135,12 +143,19 @@ func (u *MessageUsecase) ListMessages(ctx context.Context, userID, roomID, curso
 // records InResponseToMessageID pointing at the human message, and each
 // persisted message publishes EventMessageCreated on the hub after its
 // Create call succeeds; publishing never affects the returned error.
+//
+// The caller must be allowed domainroom.ActionInvokeAI (member or above; a
+// reader or guest may not invoke AI).
 func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, content, model string) (*SendAIResult, error) {
 	if model == "" {
 		model = defaultModel
 	}
 
-	if err := u.checkMembership(ctx, roomID, userID); err != nil {
+	member, err := u.getMember(ctx, roomID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
 		return nil, err
 	}
 
@@ -223,12 +238,19 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 // SendAIMessage always creates a placeholder even on LLM failure. After the
 // update succeeds, it publishes EventMessageUpdated on the hub; publishing is
 // fire-and-forget and never affects the returned error.
+//
+// The caller must be allowed domainroom.ActionInvokeAI (member or above; a
+// reader or guest may not invoke AI).
 func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID, messageID, model string) (*domainmessage.Message, error) {
 	if model == "" {
 		model = defaultModel
 	}
 
-	if err := u.checkMembership(ctx, roomID, userID); err != nil {
+	member, err := u.getMember(ctx, roomID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
 		return nil, err
 	}
 
@@ -308,13 +330,17 @@ func (u *MessageUsecase) buildChatMessages(msgs []*domainmessage.Message) []ai.C
 	return chatMsgs
 }
 
-func (u *MessageUsecase) checkMembership(ctx context.Context, roomID, userID string) error {
-	_, err := u.roomRepo.GetMember(ctx, roomID, userID)
+// getMember loads the caller's membership in roomID, translating a missing
+// membership (domain.ErrNotFound) into domain.ErrForbidden so that a
+// non-member can never distinguish "room does not exist" from "room exists
+// but I'm not a member of it" via the returned error.
+func (u *MessageUsecase) getMember(ctx context.Context, roomID, userID string) (*room.RoomMember, error) {
+	member, err := u.roomRepo.GetMember(ctx, roomID, userID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			return domain.ErrForbidden
+			return nil, domain.ErrForbidden
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return member, nil
 }

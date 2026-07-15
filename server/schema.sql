@@ -27,7 +27,8 @@ CREATE TABLE room_members (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     role VARCHAR(50) NOT NULL DEFAULT 'member',
     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(room_id, user_id)
+    UNIQUE(room_id, user_id),
+    CONSTRAINT room_members_role_check CHECK (role IN ('reader', 'guest', 'member', 'admin', 'master'))
 );
 
 CREATE TABLE room_sequences (

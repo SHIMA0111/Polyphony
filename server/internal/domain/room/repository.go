@@ -15,6 +15,12 @@ type RoomRepository interface {
 	// ListByUserID returns all rooms the given user is a member of.
 	ListByUserID(ctx context.Context, userID string) ([]*Room, error)
 
+	// ListByUserIDWithRole returns all rooms the given user is a member of,
+	// together with the user's Role in each room, as a single query (no
+	// N+1 GetMember lookups). Use this instead of ListByUserID whenever the
+	// caller's per-room role is needed (e.g. to populate RoomResponse.Role).
+	ListByUserIDWithRole(ctx context.Context, userID string) ([]*RoomWithRole, error)
+
 	// Update updates room fields. Returns ErrNotFound if not found.
 	Update(ctx context.Context, room *Room) error
 

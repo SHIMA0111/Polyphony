@@ -7,6 +7,7 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
+	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
 
@@ -42,6 +43,89 @@ func TestSendMessageNotMember(t *testing.T) {
 	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
 	if err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+// TestSendMessageReaderForbidden asserts that a reader — who may view
+// messages but not send them — gets domain.ErrForbidden from SendMessage.
+func TestSendMessageReaderForbidden(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleReader))
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
+	if err != domain.ErrForbidden {
+		t.Fatalf("expected ErrForbidden for reader sending a message, got %v", err)
+	}
+}
+
+// TestSendMessageGuestAllowed asserts that a guest — who may send messages
+// but not invoke AI — can successfully call SendMessage.
+func TestSendMessageGuestAllowed(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	msg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
+	if err != nil {
+		t.Fatalf("expected guest to send a message, got error: %v", err)
+	}
+	if msg.Content != "Hello" {
+		t.Fatalf("expected Hello, got %s", msg.Content)
+	}
+}
+
+// TestSendAIMessageGuestForbidden asserts that a guest — who may send
+// messages but not invoke AI — gets domain.ErrForbidden from SendAIMessage.
+func TestSendAIMessageGuestForbidden(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	_, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if err != domain.ErrForbidden {
+		t.Fatalf("expected ErrForbidden for guest invoking AI, got %v", err)
+	}
+}
+
+// TestRegenerateAIMessageGuestForbidden asserts that a guest gets
+// domain.ErrForbidden from RegenerateAIMessage, without ever reaching the
+// underlying message lookup.
+func TestRegenerateAIMessageGuestForbidden(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	_, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", "nonexistent-message-id", "test-model")
+	if err != domain.ErrForbidden {
+		t.Fatalf("expected ErrForbidden for guest regenerating an AI message, got %v", err)
+	}
+}
+
+// TestListMessagesReaderAllowed asserts that a reader — read-only — can
+// still list messages (ListMessages only checks membership, not any Action).
+func TestListMessagesReaderAllowed(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleReader))
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	ctx := context.Background()
+
+	if _, err := uc.ListMessages(ctx, "user-1", "room-1", "", 20); err != nil {
+		t.Fatalf("expected reader to list messages, got error: %v", err)
 	}
 }
 
