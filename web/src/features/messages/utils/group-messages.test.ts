@@ -16,6 +16,8 @@ function makeMessage(overrides: Partial<Message> & Pick<Message, "id">): Message
     status: "completed",
     sequence: 1,
     in_response_to_message_id: null,
+    is_deleted: false,
+    exclude_from_ai: false,
     created_at: "2026-01-01T12:00:00.000Z",
     updated_at: "2026-01-01T12:00:00.000Z",
     ...overrides,

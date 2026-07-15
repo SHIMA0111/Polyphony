@@ -81,6 +81,8 @@ function makeMessage(id: string, overrides: Partial<Message> = {}): Message {
     status: "completed",
     sequence: Number(id.replace(/\D/g, "")) || 1,
     in_response_to_message_id: null,
+    is_deleted: false,
+    exclude_from_ai: false,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     ...overrides,

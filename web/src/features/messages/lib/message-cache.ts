@@ -149,7 +149,9 @@ export function findMessageInPages(
  * Unlike optimistic sends (always in `pages[0]`), a regenerated AI message
  * can legitimately live in any already-loaded page once the reader has
  * scrolled up through history, so reconciling `RegenerateAIMessage`'s
- * response has to search across all of them.
+ * response has to search across all of them. Also reused by
+ * `useUpdateMessageExclude` (Step 38), since the message being toggled can
+ * likewise live in any already-loaded page.
  */
 export function replaceMessageInAnyPage(
   data: MessagesInfiniteData | undefined,
@@ -163,6 +165,31 @@ export function replaceMessageInAnyPage(
     pages: data.pages.map((page) => ({
       ...page,
       messages: page.messages.map((m) => (predicate(m) ? replacement : m)),
+    })),
+  }
+}
+
+/**
+ * Removes the message with the given `id` from every loaded page (unlike
+ * {@link removeFromNewestPage}, which only ever looks at `pages[0]`).
+ *
+ * Used by `useDeleteMessage` (Step 38): a soft-deleted message can live in
+ * any already-loaded page once the reader has scrolled up through history,
+ * so the client-side removal that mirrors the server's own exclusion of
+ * soft-deleted rows from future `GET` responses has to search across all of
+ * them, not just the newest one.
+ */
+export function removeMessageInAnyPage(
+  data: MessagesInfiniteData | undefined,
+  id: string,
+): MessagesInfiniteData | undefined {
+  if (!data) return data
+
+  return {
+    ...data,
+    pages: data.pages.map((page) => ({
+      ...page,
+      messages: page.messages.filter((m) => m.id !== id),
     })),
   }
 }

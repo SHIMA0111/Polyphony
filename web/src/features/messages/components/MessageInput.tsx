@@ -3,8 +3,14 @@
 import { useState, useRef, useCallback, useEffect } from "react"
 import { Box, Button, Flex, Separator, Spacer, Text } from "@chakra-ui/react"
 import { ArrowUp, Sparkles } from "lucide-react"
-import type { ModelInfo } from "@/features/messages/types"
+import { estimateTokens } from "@/features/messages/api/estimate-tokens"
+import type { Message, ModelInfo } from "@/features/messages/types"
 import { ModelSelector } from "./ModelSelector"
+
+/** Debounce delay, in ms, before firing a token estimate request after the
+ * draft/model/visible-messages inputs settle — matches this file's existing
+ * plain-`setTimeout` style rather than pulling in a debounce dependency. */
+const TOKEN_ESTIMATE_DEBOUNCE_MS = 400
 
 interface MessageInputProps {
   onSend: (content: string) => Promise<void>
@@ -20,7 +26,16 @@ interface MessageInputProps {
    * guest attempting AI invocation is independently rejected server-side.
    */
   canInvokeAI?: boolean
+  /**
+   * The currently-visible message transcript, used to compute the live
+   * token estimate below the composer. Optional (defaults to an empty
+   * transcript) so existing callers/tests that don't care about the meter
+   * don't need to pass anything.
+   */
+  messages?: Message[]
 }
+
+const EMPTY_MESSAGES: Message[] = []
 
 export function MessageInput({
   onSend,
@@ -28,11 +43,17 @@ export function MessageInput({
   models,
   disabled,
   canInvokeAI = true,
+  messages = EMPTY_MESSAGES,
 }: MessageInputProps) {
   const [input, setInput] = useState("")
   const [isSending, setIsSending] = useState(false)
   const [selectedModel, setSelectedModel] = useState<ModelInfo | null>(null)
+  const [estimatedTokens, setEstimatedTokens] = useState<number | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // Guards against an older, slower estimate response overwriting a newer
+  // one that already resolved (no built-in request cancellation for a plain
+  // `fetch`-backed call here).
+  const estimateRequestIdRef = useRef(0)
 
   // Set default model when models are loaded
   useEffect(() => {
@@ -50,6 +71,50 @@ export function MessageInput({
       textarea.style.height = `${newHeight}px`
     }
   }, [input])
+
+  // Debounced live token estimate: recomputed whenever the draft, selected
+  // model, or visible message list changes. Advisory only — a failed
+  // estimate is logged and swallowed rather than blocking or disabling
+  // send (see `estimateTokens`'s docstring).
+  useEffect(() => {
+    if (!selectedModel) return
+
+    const timeoutId = setTimeout(() => {
+      const requestId = ++estimateRequestIdRef.current
+
+      // Defends against any not-yet-reconciled optimistic/WS cache entry
+      // that might transiently carry `is_deleted: true` even though the
+      // server already omits soft-deleted rows from `GET
+      // /rooms/:roomId/messages` (see `message-cache.ts`'s any-page
+      // helpers).
+      const payload = messages
+        .filter((m) => !m.is_deleted && !m.exclude_from_ai)
+        .map((m) => ({
+          role: (m.type === "human" ? "user" : "assistant") as
+            | "user"
+            | "assistant",
+          content: m.content,
+        }))
+
+      const draft = input.trim()
+      if (draft) {
+        payload.push({ role: "user", content: draft })
+      }
+
+      estimateTokens(selectedModel.id, payload)
+        .then((res) => {
+          if (estimateRequestIdRef.current === requestId) {
+            setEstimatedTokens(res.estimated_tokens)
+          }
+        })
+        .catch((err: unknown) => {
+          // Advisory feature only — never blocks or disables send.
+          console.error("Failed to estimate tokens", err)
+        })
+    }, TOKEN_ESTIMATE_DEBOUNCE_MS)
+
+    return () => clearTimeout(timeoutId)
+  }, [input, selectedModel, messages])
 
   const handleSend = useCallback(async () => {
     const content = input.trim()
@@ -192,6 +257,14 @@ export function MessageInput({
         <Text textAlign="center" fontSize="xs" color="fg.muted">
           Enter to send, Shift+Enter for new line, Ctrl+Enter to send with AI
         </Text>
+
+        {/* Live, debounced token estimate (Step 38) — advisory only, never
+            blocks send. */}
+        {estimatedTokens !== null && (
+          <Text textAlign="center" fontSize="2xs" color="fg.muted">
+            ~{estimatedTokens} tokens
+          </Text>
+        )}
       </Flex>
     </Box>
   )

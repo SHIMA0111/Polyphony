@@ -14,7 +14,8 @@ export interface Room {
    * The requesting user's own 5-tier role in this room (Step 13's
    * `RoomResponse.role`) — the single source of truth for every
    * member-management/AI/send gate in `features/members`; see
-   * `features/members/lib/roles.ts`.
+   * `features/members/lib/roles.ts`. Also read directly as a plain string
+   * by `MessageBubble`'s per-message action-menu role gate (Step 38).
    */
   role: RoomRole
   created_at: string

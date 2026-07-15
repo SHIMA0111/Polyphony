@@ -38,6 +38,21 @@ export interface Message {
    * id from this field rather than scanning the message list by position.
    */
   in_response_to_message_id: string | null
+  /**
+   * `true` for a soft-deleted message (see `DELETE
+   * /rooms/:roomId/messages/:messageId`). The server already omits
+   * soft-deleted rows from `GET /rooms/:roomId/messages`, so this is only
+   * ever `true` transiently on a not-yet-reconciled local cache entry — see
+   * `../lib/message-cache.ts`'s any-page helpers.
+   */
+  is_deleted: boolean
+  /**
+   * `true` once a message has been opted out of future AI context assembly
+   * via `PATCH /rooms/:roomId/messages/:messageId` (Step 23's
+   * `SetExcludeFromAI`). Toggled from `MessageBubble`'s per-message menu;
+   * `MessageInput`'s token meter filters these out of its estimate payload.
+   */
+  exclude_from_ai: boolean
   created_at: string
   updated_at: string
 }
@@ -82,4 +97,22 @@ export interface ModelInfo {
 /** Raw response from `GET /models`. */
 export interface ModelListResponse {
   models: ModelInfo[]
+}
+
+/**
+ * A single chat turn as sent in `POST /tokens/estimate`'s `messages` array
+ * (`server/internal/interface/handler/dto.go`'s `ChatMessageDTO`). Mirrors
+ * the human/AI distinction `Message.type` already models, but re-expressed
+ * as the `"user"`/`"assistant"` role vocabulary the LLM Gateway's token
+ * estimator expects.
+ */
+export interface EstimateChatMessage {
+  role: "user" | "assistant"
+  content: string
+}
+
+/** Response body for `POST /tokens/estimate`. */
+export interface TokenEstimateResponse {
+  model: string
+  estimated_tokens: number
 }
