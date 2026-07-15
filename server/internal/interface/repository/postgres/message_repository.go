@@ -1,3 +1,4 @@
+// Package postgres implements the domain repository ports against PostgreSQL via pgx.
 package postgres
 
 import (

@@ -47,7 +47,7 @@ After this PR, `docker compose up` brings up a working Ory Kratos instance (publ
 1. `docker compose up -d kratos-db` then `docker compose ps kratos-db` — status is `healthy`.
 2. `docker compose up kratos-migrate` (or `docker compose up -d kratos-migrate` then `docker compose logs kratos-migrate`) — exits 0 and logs report the Kratos SQL schema was applied with no errors; `docker compose ps -a kratos-migrate` shows `Exited (0)`.
 3. `docker compose up -d kratos mailslurper` then `docker compose ps` — both `kratos` and `mailslurper` show as `running`/`healthy`.
-4. `curl -sf http://localhost:4433/health/ready` and `curl -sf http://localhost:4434/health/ready` — both return HTTP 200 with a JSON body indicating the service is ready.
+4. `curl -sf http://localhost:4433/health/ready` and `curl -sfL http://localhost:4434/health/ready` — both return HTTP 200 with a JSON body indicating the service is ready (the admin port 307-redirects to `/admin/health/ready`, hence `-L`).
 5. Initiate an API registration flow and register a test identity:
    ```bash
    FLOW=$(curl -s -H "Accept: application/json" http://localhost:4433/self-service/registration/api | jq -r '.id')

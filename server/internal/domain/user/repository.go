@@ -1,3 +1,4 @@
+// Package user defines the user entity and its repository port.
 package user
 
 import "context"

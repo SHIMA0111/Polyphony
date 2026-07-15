@@ -1,3 +1,4 @@
+// Package gateway implements outbound gateway ports, including the REST client for the LLM Gateway service.
 package gateway
 
 import (

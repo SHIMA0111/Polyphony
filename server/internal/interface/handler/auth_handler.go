@@ -1,3 +1,4 @@
+// Package handler implements the Echo HTTP handlers and their request/response DTOs.
 package handler
 
 import (
