@@ -5,6 +5,7 @@ import { Avatar, Box, Button, Flex, Heading, Menu, Portal } from "@chakra-ui/rea
 import { LogOut, Pen, Settings } from "lucide-react"
 import { useLogout } from "@/features/auth/hooks/use-logout"
 import { RoomRail } from "@/features/rooms/components/RoomRail"
+import { InvitationsBellButton } from "@/features/members/components/InvitationsBellButton"
 
 /**
  * Persistent shell for every route under the `(main)` route group
@@ -63,42 +64,46 @@ export default function MainLayout({
             </Heading>
           </Flex>
 
-          <Menu.Root>
-            <Menu.Trigger asChild>
-              <Button
-                aria-label="Account menu"
-                variant="ghost"
-                rounded="full"
-                p={0}
-                h={9}
-                w={9}
-              >
-                <Avatar.Root size="sm" colorPalette="blue">
-                  <Avatar.Fallback name="User" />
-                </Avatar.Root>
-              </Button>
-            </Menu.Trigger>
-            <Portal>
-              <Menu.Positioner>
-                <Menu.Content w="56">
-                  <Menu.Item value="settings" gap={2}>
-                    <Settings size={16} />
-                    Settings
-                  </Menu.Item>
-                  <Menu.Separator />
-                  <Menu.Item
-                    value="logout"
-                    color="fg.error"
-                    gap={2}
-                    onClick={() => logoutMutation.mutate()}
-                  >
-                    <LogOut size={16} />
-                    Log out
-                  </Menu.Item>
-                </Menu.Content>
-              </Menu.Positioner>
-            </Portal>
-          </Menu.Root>
+          <Flex align="center" gap={2}>
+            <InvitationsBellButton />
+
+            <Menu.Root>
+              <Menu.Trigger asChild>
+                <Button
+                  aria-label="Account menu"
+                  variant="ghost"
+                  rounded="full"
+                  p={0}
+                  h={9}
+                  w={9}
+                >
+                  <Avatar.Root size="sm" colorPalette="blue">
+                    <Avatar.Fallback name="User" />
+                  </Avatar.Root>
+                </Button>
+              </Menu.Trigger>
+              <Portal>
+                <Menu.Positioner>
+                  <Menu.Content w="56">
+                    <Menu.Item value="settings" gap={2}>
+                      <Settings size={16} />
+                      Settings
+                    </Menu.Item>
+                    <Menu.Separator />
+                    <Menu.Item
+                      value="logout"
+                      color="fg.error"
+                      gap={2}
+                      onClick={() => logoutMutation.mutate()}
+                    >
+                      <LogOut size={16} />
+                      Log out
+                    </Menu.Item>
+                  </Menu.Content>
+                </Menu.Positioner>
+              </Portal>
+            </Menu.Root>
+          </Flex>
         </Flex>
       </Box>
 

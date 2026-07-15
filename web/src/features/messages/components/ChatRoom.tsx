@@ -1,8 +1,9 @@
 "use client"
 
-import { Flex, Spinner } from "@chakra-ui/react"
+import { Flex, Spinner, Text } from "@chakra-ui/react"
 import { useChatRoom } from "@/features/messages/hooks/use-chat-room"
 import { useRoomSocket } from "@/features/messages/hooks/use-room-socket"
+import { canInvokeAI, canSendMessage } from "@/features/members/lib/roles"
 import { ChatRoomHeader } from "./ChatRoomHeader"
 import { ConnectionStatus } from "./ConnectionStatus"
 import { MessageList } from "./MessageList"
@@ -38,9 +39,15 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
     )
   }
 
+  const viewerRole = room?.role ?? "reader"
+
   return (
     <Flex h="full" flex={1} minW={0} direction="column" bg="bg">
-      <ChatRoomHeader roomName={room?.name} connectionStatus={<ConnectionStatus status={connectionStatus} />} />
+      <ChatRoomHeader
+        roomName={room?.name}
+        connectionStatus={<ConnectionStatus status={connectionStatus} />}
+        room={room}
+      />
 
       <MessageList
         messages={messages}
@@ -55,11 +62,18 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
         pageCount={pageCount}
       />
 
-      <MessageInput
-        onSend={handleSend}
-        onSendWithAI={handleSendWithAI}
-        models={models}
-      />
+      {canSendMessage(viewerRole) ? (
+        <MessageInput
+          onSend={handleSend}
+          onSendWithAI={handleSendWithAI}
+          models={models}
+          canInvokeAI={canInvokeAI(viewerRole)}
+        />
+      ) : (
+        <Text textAlign="center" fontSize="xs" color="fg.muted" py={4}>
+          You have read-only access to this room.
+        </Text>
+      )}
     </Flex>
   )
 }

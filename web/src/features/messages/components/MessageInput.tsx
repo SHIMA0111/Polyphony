@@ -11,6 +11,15 @@ interface MessageInputProps {
   onSendWithAI: (content: string, model: string) => Promise<void>
   models: ModelInfo[]
   disabled?: boolean
+  /**
+   * Whether the viewer may invoke AI in this room (Step 37's `RoomRole`
+   * gating: `guest` and below cannot). Defaults to `true` so every existing
+   * caller that doesn't pass this prop is unaffected. When `false`, the
+   * "Send with AI" button is omitted entirely rather than left visible and
+   * disabled — the control must not be visible, not just inert, since a
+   * guest attempting AI invocation is independently rejected server-side.
+   */
+  canInvokeAI?: boolean
 }
 
 export function MessageInput({
@@ -18,6 +27,7 @@ export function MessageInput({
   onSendWithAI,
   models,
   disabled,
+  canInvokeAI = true,
 }: MessageInputProps) {
   const [input, setInput] = useState("")
   const [isSending, setIsSending] = useState(false)
@@ -155,24 +165,26 @@ export function MessageInput({
               <ArrowUp size={14} />
               Send
             </Button>
-            <Button
-              size="sm"
-              onClick={handleSendWithAI}
-              disabled={isDisabled}
-              h={8}
-              px={3}
-              fontSize="xs"
-              fontWeight="medium"
-              gap={1.5}
-              rounded="lg"
-              colorPalette="blue"
-              bg="linear-gradient(to right, var(--chakra-colors-blue-500), var(--chakra-colors-blue-600))"
-              color="white"
-              _hover={{ opacity: 0.9 }}
-            >
-              <Sparkles size={14} />
-              Send with AI
-            </Button>
+            {canInvokeAI && (
+              <Button
+                size="sm"
+                onClick={handleSendWithAI}
+                disabled={isDisabled}
+                h={8}
+                px={3}
+                fontSize="xs"
+                fontWeight="medium"
+                gap={1.5}
+                rounded="lg"
+                colorPalette="blue"
+                bg="linear-gradient(to right, var(--chakra-colors-blue-500), var(--chakra-colors-blue-600))"
+                color="white"
+                _hover={{ opacity: 0.9 }}
+              >
+                <Sparkles size={14} />
+                Send with AI
+              </Button>
+            )}
           </Flex>
         </Box>
 

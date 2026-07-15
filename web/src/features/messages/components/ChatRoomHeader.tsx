@@ -4,23 +4,34 @@ import type { ReactNode } from "react"
 import Link from "next/link"
 import { Box, Button, Flex, Heading } from "@chakra-ui/react"
 import { ChevronLeft, MoreVertical } from "lucide-react"
+import { MemberAvatarStack } from "@/features/members/components/MemberAvatarStack"
+import type { Room } from "@/features/rooms/types"
 
 interface ChatRoomHeaderProps {
   roomName: string | undefined
   /** Additive slot rendered next to the "more" button — e.g. `ChatRoom.tsx`'s `<ConnectionStatus />` (Step 35). */
   connectionStatus?: ReactNode
+  /**
+   * The already-loaded room, if any (`undefined` while `ChatRoom` is still
+   * loading). Passed through to `MemberAvatarStack` so it and the panel it
+   * opens can read the viewer's own `room.role` without a second
+   * round-trip; the heading itself keeps using `roomName` directly since it
+   * only needs the display name.
+   */
+  room: Room | undefined
 }
 
 /**
- * The chat room page header: back-to-rooms button, truncated room name, and
- * the "more" action button. Extracted verbatim out of `ChatRoom.tsx`'s
- * header `Flex` — no new menu behavior is added here.
+ * The chat room page header: back-to-rooms button, truncated room name, the
+ * member avatar stack, and the "more" action button. Extracted verbatim out
+ * of `ChatRoom.tsx`'s header `Flex` — no new menu behavior is added here
+ * beyond `MemberAvatarStack` (Step 37).
  *
  * The back button is hidden on desktop widths (`md` and up), where the room
  * rail provides room navigation, and only shown on mobile widths where the
  * rail is collapsed.
  */
-export function ChatRoomHeader({ roomName, connectionStatus }: ChatRoomHeaderProps) {
+export function ChatRoomHeader({ roomName, connectionStatus, room }: ChatRoomHeaderProps) {
   return (
     <Flex
       as="header"
@@ -48,6 +59,7 @@ export function ChatRoomHeader({ roomName, connectionStatus }: ChatRoomHeaderPro
           {roomName ?? "Chat Room"}
         </Heading>
       </Box>
+      {room && <MemberAvatarStack room={room} />}
       {connectionStatus}
       <Button variant="ghost" size="sm" p={0}>
         <MoreVertical size={20} />

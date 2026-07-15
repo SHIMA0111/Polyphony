@@ -16,6 +16,7 @@ export const fixtureRoom: Room = {
   name: "General",
   description: "General discussion room",
   owner_id: "user-1",
+  role: "master",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 }
@@ -27,6 +28,7 @@ export const fixtureRooms: Room[] = [
     name: "Random",
     description: "Off-topic chatter",
     owner_id: "user-1",
+    role: "master",
     created_at: "2026-01-02T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
   },
