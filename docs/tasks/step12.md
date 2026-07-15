@@ -76,19 +76,19 @@ After this PR, `docker compose up` starts a `minio` service plus a one-shot boot
 ## Verification
 1. [x] `cd server && go build ./... && go vet ./...` — builds and vets cleanly. Also ran `golangci-lint run ./...` (0 issues) and `go build -tags=integration ./...` / `go vet -tags=integration ./...`.
 2. [x] `task test:server` (`go test ./...`) — all unit tests pass, including the new `usecase/attachment` and `handler` attachment tests. Also ran `task test:server:integration` (`go test -tags=integration ./...`), which passes including the testcontainers-backed `attachment_repository_integration_test.go`.
-3. [x]/[ ] `task migrate:generate -- add_message_attachments` ran successfully (against Atlas's Docker dev-database) and produced a clean migration; `task migrate:status` **skipped** — the `local` Atlas env has no `url` target beyond the ephemeral dev-db used for diffing, so `migrate:status` requires the compose `db` service, which this worktree does not start (see Rule 4/5 in the task briefing).
-4. [ ] `docker compose up -d db migrate minio minio-init api llm-gateway` then `docker compose ps` — **skipped** (full compose stack on fixed ports; ran `docker compose config -q` instead to validate the compose file parses).
-5. [ ] Register/login/create-room curl flow — **skipped** (requires the running compose stack).
-6. [ ] Presigned upload-url curl — **skipped** (requires the running compose stack).
-7. [ ] PUT to presigned URL curl — **skipped** (requires the running compose stack).
-8. [ ] Attach-to-message curl — **skipped** (requires the running compose stack).
-9. [ ] List-attachments + download + diff curl — **skipped** (requires the running compose stack).
-10. [ ] Unsupported-MIME-type / oversized 400 curl checks — **skipped** against the live stack, but equivalent behavior is covered by `TestRequestUploadHandler400UnsupportedMimeType` / `TestRequestUploadHandler400TooLarge` in `attachment_handler_test.go` and `TestRequestUpload_UnsupportedMimeType` / `TestRequestUpload_TooLarge` in `usecase_test.go`.
+3. [x] `task migrate:generate -- add_message_attachments` ran successfully (against Atlas's Docker dev-database) and produced a clean migration; migration state against the real DB verified in the Wave 3 integration review via the compose `migrate` service (`atlas migrate apply`), which exited 0 and applied all migrations cleanly.
+4. [x] `docker compose up -d --build` (full stack, Wave 3 integration review) — `docker compose ps` shows `minio` healthy and `minio-init` exited 0 (bucket created); `api`/`llm-gateway`/`db` all healthy. (MinIO host ports were remapped to 19000/19001 via a local gitignored override because another local project held 9000/9001; `S3_ENDPOINT=http://localhost:19000` accordingly.)
+5. [x] Register/login/create-room curl flow — register returned 201 with a JWT; `POST /rooms` returned the new room (including `"role":"master"`).
+6. [x] Presigned upload-url curl — `POST /rooms/:roomId/attachments/upload-url` returned 201 with `attachment_id`/`s3_key`/`upload_url`/`expires_at` (15-min expiry).
+7. [x] PUT to presigned URL curl — HTTP 200 uploading a real PNG directly to MinIO with `content-type: image/png`.
+8. [x] Attach-to-message curl — HTTP 200, response shows the attachment linked to the message ID.
+9. [x] List-attachments + download + diff curl — list returned `view_url` (1-hour presigned GET); downloading it and diffing against the uploaded file showed identical bytes.
+10. [x] Unsupported-MIME-type (`application/pdf`) and oversized (`99999999` bytes) requests both returned 400 with `unsupported mime type` / `attachment too large` messages against the live stack.
 
 ## Completion criteria
-- [ ] `minio` and `minio-init` services run in `docker compose up` and the bucket is created automatically. (Compose file authored and `docker compose config -q` validated; not run against a live stack in this worktree — see skipped verification items above.)
+- [x] `minio` and `minio-init` services run in `docker compose up` and the bucket is created automatically. (Verified against the live stack in the Wave 3 integration review: `minio` healthy, `minio-init` exited 0, presigned upload/view round-trip succeeded against the auto-created bucket.)
 - [x] `Config`, `ObjectStorage` port, `S3Storage` adapter, `AttachmentRepository`, `AttachmentUsecase`, `AttachmentHandler`, and the three routes exist and are wired in the `internal/app` `Container`/`NewRouter` (per the planner briefing, wiring lives in `container.go`/`router.go`, not `main.go`, which Step 1 already shrank).
 - [x] `message_attachments` table exists via an Atlas migration and only adds new schema (no edits to `messages`).
 - [x] All new exported Go symbols have GoDoc comments.
 - [x] All items in Scope are checked off.
-- [ ] All verification checks above pass. (All checks runnable without the full compose stack pass; compose-stack-dependent checks are left for the post-merge integration review — see skipped items above.)
+- [x] All verification checks above pass. (Compose-stack-dependent checks completed in the Wave 3 integration review — see items 3-10 above.)
