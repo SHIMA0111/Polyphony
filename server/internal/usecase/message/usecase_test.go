@@ -21,7 +21,7 @@ func TestSendMessage(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	msg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -40,7 +40,7 @@ func TestSendMessageNotMember(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -56,7 +56,7 @@ func TestSendMessageReaderForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleReader))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -72,7 +72,7 @@ func TestSendMessageGuestAllowed(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	msg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -91,7 +91,7 @@ func TestSendAIMessageGuestForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model")
@@ -108,7 +108,7 @@ func TestRegenerateAIMessageGuestForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", "nonexistent-message-id", "test-model")
@@ -124,7 +124,7 @@ func TestListMessagesReaderAllowed(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleReader))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	if _, err := uc.ListMessages(ctx, "user-1", "room-1", "", 20); err != nil {
@@ -137,7 +137,7 @@ func TestListMessages(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, _ = uc.SendMessage(ctx, "user-1", "room-1", "msg1")
@@ -158,7 +158,7 @@ func TestSendAIMessage(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model")
@@ -185,6 +185,36 @@ func TestSendAIMessage(t *testing.T) {
 	}
 }
 
+// TestSendAIMessageHonorsRoomConfiguredModel asserts that, when the request
+// omits a model, SendAIMessage resolves to the room's configured
+// Room.AIModel (set via RoomUsecase.UpdateSettings) rather than the
+// deployment-wide default — the room tier of resolveModel's precedence.
+func TestSendAIMessageHonorsRoomConfiguredModel(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	roomRepo.Rooms["room-1"].AIModel = strPtr("room-configured-model")
+
+	var usedModel string
+	gw := &mocks.LLMGateway{
+		CompleteFunc: func(_ context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+			usedModel = req.Model
+			return &ai.CompletionResponse{Content: "AI response", Model: req.Model, PromptTokens: 1, OutputTokens: 1}, nil
+		},
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, "global-default-model")
+	ctx := context.Background()
+
+	// Request omits model entirely.
+	if _, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", ""); err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+	if usedModel != "room-configured-model" {
+		t.Fatalf("expected room-configured model to be used, got %q", usedModel)
+	}
+}
+
 func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -192,7 +222,7 @@ func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	failingGateway := &mocks.LLMGateway{ShouldErr: true}
-	uc := NewMessageUsecase(msgRepo, roomRepo, failingGateway, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, failingGateway, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// SendAIMessage with failing LLM — returns result with failed AI placeholder
@@ -227,7 +257,7 @@ func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// Send human message + AI response via SendAIMessage
@@ -258,13 +288,51 @@ func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 	}
 }
 
+// TestRegenerateAIMessageHonorsRoomConfiguredModel asserts that, when the
+// request omits a model, RegenerateAIMessage resolves to the room's
+// configured Room.AIModel rather than the deployment-wide default.
+func TestRegenerateAIMessageHonorsRoomConfiguredModel(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "global-default-model")
+	ctx := context.Background()
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+
+	// Configure the room's default model only after the initial send, then
+	// regenerate with an omitted model.
+	roomRepo.Rooms["room-1"].AIModel = strPtr("room-configured-model")
+
+	var usedModel string
+	gw := &mocks.LLMGateway{
+		CompleteFunc: func(_ context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+			usedModel = req.Model
+			return &ai.CompletionResponse{Content: "regenerated", Model: req.Model, PromptTokens: 1, OutputTokens: 1}, nil
+		},
+	}
+	uc2 := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, "global-default-model")
+
+	if _, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, ""); err != nil {
+		t.Fatalf("RegenerateAIMessage failed: %v", err)
+	}
+	if usedModel != "room-configured-model" {
+		t.Fatalf("expected room-configured model to be used, got %q", usedModel)
+	}
+}
+
 func TestRegenerateAIMessageNotHuman(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// Send a human message and get AI response
@@ -286,7 +354,7 @@ func TestRegenerateAIMessageNotFound(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", "nonexistent", "test-model")
@@ -303,7 +371,7 @@ func TestRegenerateAIMessageWrongRoom(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 	roomRepo.SeedRoom("room-2", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// Send message in room-1
@@ -324,7 +392,7 @@ func TestRegenerateAIMessageNotMember(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	humanMsg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -346,7 +414,7 @@ func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	gw := &mocks.LLMGateway{ShouldErr: true}
-	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// First call fails — creates human + failed AI placeholder
@@ -377,7 +445,7 @@ func TestSendAIMessageLLMError(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model")
@@ -410,7 +478,7 @@ func TestSendAIMessageSequenceAdjacencyAndResponseLinkage(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model")
@@ -466,7 +534,7 @@ func TestSendAIMessageContextExcludesSoftDeletedMessage(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	var captured []ai.ChatMessage
-	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	toDelete, err := uc.SendMessage(ctx, "user-1", "room-1", "secret message")
@@ -500,7 +568,7 @@ func TestSendAIMessageContextExcludesExcludeFromAIMessage(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	var captured []ai.ChatMessage
-	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	toExclude, err := uc.SendMessage(ctx, "user-1", "room-1", "private aside")
@@ -549,7 +617,7 @@ func TestSendAIMessageContextExcludesPreCutoffMessages(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	var captured []ai.ChatMessage
-	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	oldMsg, err := uc.SendMessage(ctx, "user-1", "room-1", "ancient history")
@@ -583,7 +651,7 @@ func TestDeleteMessageSenderCanDeleteOwnMessage(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -602,7 +670,7 @@ func TestDeleteMessageNonSenderNonAdminForbidden(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-1", "user-2", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -621,7 +689,7 @@ func TestDeleteMessageAdminCanDeleteAnotherMembersMessage(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-1", "user-2", string(domainroom.RoleAdmin))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -640,7 +708,7 @@ func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-2", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -660,7 +728,7 @@ func TestSetExcludeFromAIMemberAllowed(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -682,7 +750,7 @@ func TestSetExcludeFromAIAdminAllowed(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleAdmin))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -700,7 +768,7 @@ func TestSetExcludeFromAIMasterAllowed(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleMaster))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -718,7 +786,7 @@ func TestSetExcludeFromAIGuestForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// Directly seed a message so a guest (who cannot SendMessage-then-target
@@ -738,7 +806,7 @@ func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleReader))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	msgRepo.Messages = map[string]*domainmessage.Message{
@@ -762,7 +830,7 @@ func TestSendAIMessageInsufficientBalance(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
 	guard := &mocks.BillingGuard{CheckBalanceErr: domain.ErrInsufficientBalance}
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard)
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model")
@@ -784,7 +852,7 @@ func TestSendAIMessageRecordsUsage(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	guard := &mocks.BillingGuard{}
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard)
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model")
@@ -817,7 +885,7 @@ func TestSendAIMessageRecordUsageErrorSwallowed(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	guard := &mocks.BillingGuard{RecordUsageErr: fmt.Errorf("db unavailable")}
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard)
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model")
@@ -838,7 +906,7 @@ func TestRegenerateAIMessageInsufficientBalance(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model")
@@ -847,7 +915,7 @@ func TestRegenerateAIMessageInsufficientBalance(t *testing.T) {
 	}
 
 	guard := &mocks.BillingGuard{CheckBalanceErr: domain.ErrInsufficientBalance}
-	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard)
+	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, "gpt-5-mini")
 
 	_, err = uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
 	if err != domain.ErrInsufficientBalance {
@@ -865,7 +933,7 @@ func TestRegenerateAIMessageRecordsUsage(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	setupGuard := &mocks.BillingGuard{}
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), setupGuard)
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), setupGuard, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model")
@@ -874,7 +942,7 @@ func TestRegenerateAIMessageRecordsUsage(t *testing.T) {
 	}
 
 	guard := &mocks.BillingGuard{}
-	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard)
+	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, "gpt-5-mini")
 
 	regenerated, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "regen-model")
 	if err != nil {
@@ -903,7 +971,7 @@ func TestRegenerateAIMessageRecordUsageErrorSwallowed(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	setupGuard := &mocks.BillingGuard{}
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), setupGuard)
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), setupGuard, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model")
@@ -912,7 +980,7 @@ func TestRegenerateAIMessageRecordUsageErrorSwallowed(t *testing.T) {
 	}
 
 	guard := &mocks.BillingGuard{RecordUsageErr: fmt.Errorf("db unavailable")}
-	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard)
+	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, "gpt-5-mini")
 
 	regenerated, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
 	if err != nil {

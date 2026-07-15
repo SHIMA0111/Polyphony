@@ -20,6 +20,8 @@ CREATE TABLE rooms (
     description TEXT NOT NULL DEFAULT '',
     owner_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     ai_context_cutoff_at TIMESTAMPTZ,
+    ai_provider VARCHAR(50) NULL,
+    ai_model VARCHAR(100) NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

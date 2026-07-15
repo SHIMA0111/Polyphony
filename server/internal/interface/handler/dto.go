@@ -50,11 +50,27 @@ type UpdateRoomAIContextCutoffRequest struct {
 	CutoffAt *time.Time `json:"cutoff_at"`
 }
 
+// UpdateRoomSettingsRequest is the request body for
+// PATCH /rooms/:roomId/settings. Both fields are optional and each
+// independently follows RoomUsecase.UpdateSettings's nil/empty-string
+// convention: a field omitted from the JSON body (or explicit JSON null,
+// which decodes identically for a *string field) leaves the corresponding
+// stored value unchanged; an explicit empty string ("") clears it back to
+// NULL; any other value sets it.
+type UpdateRoomSettingsRequest struct {
+	AIProvider *string `json:"ai_provider"`
+	AIModel    *string `json:"ai_model"`
+}
+
 // RoomResponse is the response body for a room. Role is the requesting
 // user's role in this room (e.g. "reader", "guest", "member", "admin",
 // "master"), serialized as the plain string value of domainroom.Role so
 // clients can do direct string comparisons. AIContextCutoffAt is nil when
-// the room has no AI context cutoff configured.
+// the room has no AI context cutoff configured. AIProvider/AIModel are nil
+// when the room has no per-room AI default configured (see
+// UpdateRoomSettingsRequest / PATCH /rooms/:roomId/settings), in which case
+// AI requests fall through to the deployment-wide default
+// (Config.DefaultAIModel).
 type RoomResponse struct {
 	ID                string     `json:"id"`
 	Name              string     `json:"name"`
@@ -62,6 +78,8 @@ type RoomResponse struct {
 	OwnerID           string     `json:"owner_id"`
 	Role              string     `json:"role"`
 	AIContextCutoffAt *time.Time `json:"ai_context_cutoff_at"`
+	AIProvider        *string    `json:"ai_provider"`
+	AIModel           *string    `json:"ai_model"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 }

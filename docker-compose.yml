@@ -33,6 +33,7 @@ services:
       LLM_GATEWAY_GRPC_BASE_BACKOFF: ${LLM_GATEWAY_GRPC_BASE_BACKOFF:-100ms}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       MESSAGE_HUB_DRIVER: ${MESSAGE_HUB_DRIVER:-redis}
+      DEFAULT_AI_MODEL: ${DEFAULT_AI_MODEL:-gpt-5-mini}
     ports:
       - "8080:8080"
     healthcheck:

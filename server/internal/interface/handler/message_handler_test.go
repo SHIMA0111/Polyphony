@@ -23,7 +23,7 @@ func setupMessageTest(isMember bool) (*echo.Echo, *MessageHandler) {
 		roomRepo.SeedMember("room-1", "user-1", "member")
 		roomRepo.SeedRoom("room-1", nil)
 	}
-	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	return echo.New(), NewMessageHandler(uc)
 }
 
@@ -142,7 +142,7 @@ func TestSendAIHandlerLLMFailure201(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
-	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub(), &mocks.BillingGuard{})
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 	e := echo.New()
 	h := NewMessageHandler(uc)
 
@@ -215,7 +215,7 @@ func TestMessageHandlerDelete(t *testing.T) {
 		roomRepo := &mocks.RoomRepo{}
 		roomRepo.SeedMember("room-1", "user-1", "member")
 		roomRepo.SeedMember("room-1", "user-2", "member")
-		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 		e := echo.New()
 		h := NewMessageHandler(uc)
 
@@ -244,7 +244,7 @@ func TestMessageHandlerDelete(t *testing.T) {
 		roomRepo := &mocks.RoomRepo{}
 		roomRepo.SeedMember("room-1", "user-1", "member")
 		roomRepo.SeedMember("room-2", "user-1", "member")
-		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 		e := echo.New()
 		h := NewMessageHandler(uc)
 
@@ -277,7 +277,7 @@ func TestMessageHandlerUpdateExclude(t *testing.T) {
 		msgRepo := &mocks.MessageRepo{}
 		roomRepo := &mocks.RoomRepo{}
 		roomRepo.SeedMember("room-1", "user-1", "member")
-		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, "gpt-5-mini")
 		e := echo.New()
 		h := NewMessageHandler(uc)
 
@@ -340,7 +340,7 @@ func TestSendAIHandlerInsufficientBalance402(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	guard := &mocks.BillingGuard{CheckBalanceErr: domain.ErrInsufficientBalance}
-	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard)
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, "gpt-5-mini")
 	e := echo.New()
 	h := NewMessageHandler(uc)
 

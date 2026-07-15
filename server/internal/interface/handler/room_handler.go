@@ -275,6 +275,8 @@ func toRoomResponse(rwr *domainroom.RoomWithRole) RoomResponse {
 		OwnerID:           rm.OwnerID,
 		Role:              string(rwr.Role),
 		AIContextCutoffAt: rm.AIContextCutoffAt,
+		AIProvider:        rm.AIProvider,
+		AIModel:           rm.AIModel,
 		CreatedAt:         rm.CreatedAt,
 		UpdatedAt:         rm.UpdatedAt,
 	}

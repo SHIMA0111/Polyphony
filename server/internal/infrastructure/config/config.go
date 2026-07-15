@@ -27,6 +27,13 @@ const (
 	defaultLLMGatewayGRPCBaseBackoff = 100 * time.Millisecond
 )
 
+// defaultDefaultAIModel is the deployment-wide fallback model string used
+// when DEFAULT_AI_MODEL is unset. It matches the literal that used to be
+// hardcoded as usecase/message's package-level `defaultModel` constant
+// before that constant moved into Config so it's configurable per
+// deployment.
+const defaultDefaultAIModel = "gpt-5-mini"
+
 // Config holds the application configuration loaded from environment variables.
 type Config struct {
 	// Port is the HTTP server listen port (default "8080").
@@ -132,6 +139,13 @@ type Config struct {
 	// MESSAGE_HUB_DRIVER). Load returns an error for any other non-empty
 	// value, and for "redis" without REDIS_URL also set.
 	MessageHubDriver string
+
+	// DefaultAIModel is the deployment-wide fallback model string used by
+	// usecase/message.resolveModel whenever an AI request omits an explicit
+	// model and the target room has no configured
+	// domainroom.Room.AIModel (see PATCH /rooms/:roomId/settings). Read
+	// from env DEFAULT_AI_MODEL, defaulting to "gpt-5-mini" when unset.
+	DefaultAIModel string
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -261,6 +275,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("REDIS_URL is required when MESSAGE_HUB_DRIVER=redis")
 	}
 
+	defaultAIModel := os.Getenv("DEFAULT_AI_MODEL")
+	if defaultAIModel == "" {
+		defaultAIModel = defaultDefaultAIModel
+	}
+
 	return &Config{
 		Port:                port,
 		DatabaseURL:         dbURL,
@@ -289,6 +308,8 @@ func Load() (*Config, error) {
 
 		RedisURL:         redisURL,
 		MessageHubDriver: hubDriver,
+
+		DefaultAIModel: defaultAIModel,
 	}, nil
 }
 

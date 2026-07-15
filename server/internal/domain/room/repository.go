@@ -21,7 +21,10 @@ type RoomRepository interface {
 	// caller's per-room role is needed (e.g. to populate RoomResponse.Role).
 	ListByUserIDWithRole(ctx context.Context, userID string) ([]*RoomWithRole, error)
 
-	// Update updates room fields. Returns ErrNotFound if not found.
+	// Update updates room fields, including AIProvider and AIModel (persisted
+	// as part of a normal update alongside name/description/
+	// ai_context_cutoff_at — there is no separate settings-only persistence
+	// method). Returns ErrNotFound if not found.
 	Update(ctx context.Context, room *Room) error
 
 	// Delete removes a room by ID. Returns ErrNotFound if not found.
