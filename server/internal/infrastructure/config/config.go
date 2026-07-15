@@ -34,6 +34,17 @@ const (
 // deployment.
 const defaultDefaultAIModel = "gpt-5-mini"
 
+// Defaults applied to the Redis-backed rate limiter and Kratos whoami-cache
+// tuning knobs (Step 33) when the corresponding environment variable is
+// unset or fails to parse. These are operational tuning knobs, not required
+// credentials, so an invalid value falls back to the default with a logged
+// warning rather than failing Load.
+const (
+	defaultRateLimitLoginPerMinute    = 10
+	defaultRateLimitAIInvokePerMinute = 20
+	defaultWhoamiCacheTTL             = 30 * time.Second
+)
+
 // Config holds the application configuration loaded from environment variables.
 type Config struct {
 	// Port is the HTTP server listen port (default "8080").
@@ -146,6 +157,24 @@ type Config struct {
 	// domainroom.Room.AIModel (see PATCH /rooms/:roomId/settings). Read
 	// from env DEFAULT_AI_MODEL, defaulting to "gpt-5-mini" when unset.
 	DefaultAIModel string
+
+	// RateLimitLoginPerMinute is the per-client-IP token-bucket rate limit
+	// applied to POST /auth/register and POST /auth/login (env
+	// RATE_LIMIT_LOGIN_PER_MINUTE, default 10). Falls back to the default if
+	// unset or unparseable as an int.
+	RateLimitLoginPerMinute int
+	// RateLimitAIInvokePerMinute is the per-authenticated-user token-bucket
+	// rate limit applied to POST /rooms/:roomId/messages/ai and POST
+	// /rooms/:roomId/messages/:messageId/regenerate (env
+	// RATE_LIMIT_AI_INVOKE_PER_MINUTE, default 20). Falls back to the
+	// default if unset or unparseable as an int.
+	RateLimitAIInvokePerMinute int
+	// WhoamiCacheTTL is the lifetime given to a cached KratosAuthService
+	// ValidateToken result by interface/auth.CachedAuthService (env
+	// WHOAMI_CACHE_TTL, default 30s). Falls back to the default if unset or
+	// unparseable as a time.Duration. Unused when AuthMode is "simple_jwt",
+	// since SimpleJWTService is never wrapped by CachedAuthService.
+	WhoamiCacheTTL time.Duration
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -280,6 +309,30 @@ func Load() (*Config, error) {
 		defaultAIModel = defaultDefaultAIModel
 	}
 
+	rateLimitLoginPerMinute := defaultRateLimitLoginPerMinute
+	if v := os.Getenv("RATE_LIMIT_LOGIN_PER_MINUTE"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			slog.Default().Warn("invalid RATE_LIMIT_LOGIN_PER_MINUTE, using default",
+				"value", v, "default", defaultRateLimitLoginPerMinute, "error", err)
+		} else {
+			rateLimitLoginPerMinute = n
+		}
+	}
+
+	rateLimitAIInvokePerMinute := defaultRateLimitAIInvokePerMinute
+	if v := os.Getenv("RATE_LIMIT_AI_INVOKE_PER_MINUTE"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			slog.Default().Warn("invalid RATE_LIMIT_AI_INVOKE_PER_MINUTE, using default",
+				"value", v, "default", defaultRateLimitAIInvokePerMinute, "error", err)
+		} else {
+			rateLimitAIInvokePerMinute = n
+		}
+	}
+
+	whoamiCacheTTL := parseDurationEnv("WHOAMI_CACHE_TTL", defaultWhoamiCacheTTL)
+
 	return &Config{
 		Port:                port,
 		DatabaseURL:         dbURL,
@@ -310,6 +363,10 @@ func Load() (*Config, error) {
 		MessageHubDriver: hubDriver,
 
 		DefaultAIModel: defaultAIModel,
+
+		RateLimitLoginPerMinute:    rateLimitLoginPerMinute,
+		RateLimitAIInvokePerMinute: rateLimitAIInvokePerMinute,
+		WhoamiCacheTTL:             whoamiCacheTTL,
 	}, nil
 }
 

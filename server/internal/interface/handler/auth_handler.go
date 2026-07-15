@@ -86,3 +86,23 @@ func (h *AuthHandler) Login(c echo.Context) error {
 		TokenType:   pair.TokenType,
 	})
 }
+
+// Logout handles POST /auth/logout. It is only reachable behind
+// middleware.JWTAuth, so middleware.GetToken(c) always returns the caller's
+// authenticated credential when this runs. It delegates to
+// AuthUsecase.Logout — for a backend with server-side session revocation
+// (AUTH_MODE=kratos), this immediately invalidates the session; for a
+// backend without one (AUTH_MODE=simple_jwt), Logout is a documented no-op.
+// Either way, it returns HTTP 200 with an empty JSON object on success, and
+// HTTP 500 (logged via middleware.GetLogger) if Logout returns an unexpected
+// error.
+func (h *AuthHandler) Logout(c echo.Context) error {
+	token := middleware.GetToken(c)
+
+	if err := h.usecase.Logout(c.Request().Context(), token); err != nil {
+		middleware.GetLogger(c).Error("failed to log out user", "error", err)
+		return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{})
+}

@@ -12,6 +12,12 @@ import (
 
 const userIDKey = "user_id"
 
+// tokenKey is the Echo context key JWTAuth stores the exact credential
+// string passed to TokenValidator.ValidateToken under (see GetToken). It is
+// unexported like userIDKey since only this package's GetToken accessor
+// should read it.
+const tokenKey = "auth_token"
+
 // cookieTokenPrefix marks a token value extracted from a session cookie
 // (rather than an Authorization header) before it is passed to
 // TokenValidator.ValidateToken. This mirrors (and must stay in sync with)
@@ -61,6 +67,7 @@ func JWTAuth(tokenValidator auth.TokenValidator, cookieName string) echo.Middlew
 			}
 
 			c.Set(userIDKey, claims.UserID)
+			c.Set(tokenKey, token)
 			return next(c)
 		}
 	}
@@ -95,4 +102,16 @@ func extractCredential(c echo.Context, cookieName string) (string, bool) {
 func GetUserID(c echo.Context) string {
 	id, _ := c.Get(userIDKey).(string)
 	return id
+}
+
+// GetToken extracts the exact credential string JWTAuth passed to
+// TokenValidator.ValidateToken for the current request — the raw bearer
+// token from an Authorization header, or the "cookie:"-prefixed cookie value
+// documented on KratosAuthService.ValidateToken. It mirrors GetUserID and is
+// used by handler.AuthHandler.Logout to identify which cached/server-side
+// session to revoke. It returns an empty string if unset, which indicates
+// that JWTAuth was not applied to this request.
+func GetToken(c echo.Context) string {
+	token, _ := c.Get(tokenKey).(string)
+	return token
 }

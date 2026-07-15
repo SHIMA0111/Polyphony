@@ -54,3 +54,43 @@ func TestAuthUsecaseLogin(t *testing.T) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
 }
+
+// TestAuthUsecaseLogoutDelegatesToRevoker proves that Logout calls the
+// wrapped AuthService's Revoke with the exact token given, when the service
+// implements domainauth.Revoker.
+func TestAuthUsecaseLogoutDelegatesToRevoker(t *testing.T) {
+	var revokedToken string
+	var called bool
+	svc := &mocks.AuthService{
+		RevokeFunc: func(_ context.Context, token string) error {
+			called = true
+			revokedToken = token
+			return nil
+		},
+	}
+	uc := NewAuthUsecase(svc)
+	ctx := context.Background()
+
+	if err := uc.Logout(ctx, "some-token"); err != nil {
+		t.Fatalf("Logout returned unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected Revoke to be called")
+	}
+	if revokedToken != "some-token" {
+		t.Fatalf("expected Revoke to be called with %q, got %q", "some-token", revokedToken)
+	}
+}
+
+// TestAuthUsecaseLogoutNoOpWithoutRevoker proves that Logout returns nil for
+// an AuthService with no RevokeFunc configured (the documented no-op
+// behavior for a backend without server-side session revocation).
+func TestAuthUsecaseLogoutNoOpWithoutRevoker(t *testing.T) {
+	svc := &mocks.AuthService{}
+	uc := NewAuthUsecase(svc)
+	ctx := context.Background()
+
+	if err := uc.Logout(ctx, "some-token"); err != nil {
+		t.Fatalf("expected Logout to be a no-op returning nil, got %v", err)
+	}
+}

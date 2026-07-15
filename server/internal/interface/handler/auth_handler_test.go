@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
 )
@@ -111,5 +112,30 @@ func TestLoginHandler401(t *testing.T) {
 	}
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+// TestAuthHandlerLogout proves that a request routed through a real
+// middleware.JWTAuth instance (which populates middleware.GetToken) and then
+// into AuthHandler.Logout returns HTTP 200.
+func TestAuthHandlerLogout(t *testing.T) {
+	svc := &mocks.AuthService{}
+	uc := authusecase.NewAuthUsecase(svc)
+	h := NewAuthHandler(uc)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	req.Header.Set("Authorization", "Bearer some-token")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	mw := middleware.JWTAuth(svc, "ory_kratos_session")
+	handler := mw(h.Logout)
+
+	if err := handler(c); err != nil {
+		t.Fatalf("Logout handler error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 }

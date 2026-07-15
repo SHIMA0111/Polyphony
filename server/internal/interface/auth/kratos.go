@@ -345,6 +345,73 @@ func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*d
 	return &domainauth.Claims{UserID: localUser.ID}, nil
 }
 
+// Revoke implements domainauth.Revoker by calling Kratos's session-revocation
+// endpoint, DELETE {publicURL}/self-service/logout/api, so a logged-out
+// session is rejected by ValidateToken/GET /sessions/whoami immediately,
+// rather than only after CachedAuthService's whoami-cache TTL elapses.
+//
+// token is interpreted using the same "cookie:"-prefix convention documented
+// on ValidateToken: if token has the cookieTokenPrefix prefix, the remainder
+// is sent as a Cookie header (Cookie: <cookieName>=<value>) — matching
+// Kratos's browser-facing logout flow, which identifies the session from its
+// cookie; otherwise token is treated as an opaque native/API session token
+// and sent via the same kratosHTTPHeaderSessionToken header ValidateToken
+// uses. Per Ory Kratos v1.3.1's self-service logout API
+// (https://www.ory.sh/docs/kratos/session-management/logout), the API
+// variant accepts a JSON body of {"session_token": "<token>"}; this method
+// sends that body alongside the header for the non-cookie case so the
+// request is valid regardless of which credential-presentation Kratos
+// inspects.
+//
+// A 200 or 204 response is treated as success. A 401 or 404 response (the
+// session is already gone, e.g. a double logout or a session that already
+// expired) is also treated as success: logout is inherently idempotent, and
+// callers (CachedAuthService.Revoke, AuthUsecase.Logout) must not surface an
+// error just because the session no longer exists server-side. Any other
+// status, or a transport-level error, is returned as an error.
+func (s *KratosAuthService) Revoke(ctx context.Context, token string) error {
+	url := s.publicURL + "/self-service/logout/api"
+
+	var req *http.Request
+	var err error
+	if strings.HasPrefix(token, cookieTokenPrefix) {
+		req, err = http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+		if err != nil {
+			return fmt.Errorf("create logout request: %w", err)
+		}
+		cookieValue := strings.TrimPrefix(token, cookieTokenPrefix)
+		req.Header.Set("Cookie", fmt.Sprintf("%s=%s", s.cookieName, cookieValue))
+	} else {
+		data, marshalErr := json.Marshal(struct {
+			SessionToken string `json:"session_token"`
+		}{SessionToken: token})
+		if marshalErr != nil {
+			return fmt.Errorf("marshal logout request body: %w", marshalErr)
+		}
+		req, err = http.NewRequestWithContext(ctx, http.MethodDelete, url, bytes.NewReader(data))
+		if err != nil {
+			return fmt.Errorf("create logout request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(kratosHTTPHeaderSessionToken, token)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send logout request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusNoContent, http.StatusUnauthorized, http.StatusNotFound:
+		return nil
+	default:
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("kratos logout failed: status %d: %s", resp.StatusCode, string(respBody))
+	}
+}
+
 // fetchFlowID performs the GET .../self-service/{registration,login}/api
 // request that initializes a native/API self-service flow, and returns the
 // flow ID to submit with the follow-up POST.

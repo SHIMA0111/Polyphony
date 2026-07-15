@@ -35,11 +35,11 @@ func NewRouter(c *Container) *echo.Echo {
 
 	registerHealthRoutes(e, c)
 	registerModelRoutes(e, c)
-	registerAuthRoutes(e, c)
 
 	// Shared authenticated route group, used by every registrar below that
 	// needs the caller's identity.
 	authGroup := e.Group("", middleware.JWTAuth(c.AuthUC, c.Config.KratosCookieName))
+	registerAuthRoutes(e, authGroup, c)
 	registerRoomRoutes(authGroup, c)
 	registerMessageRoutes(authGroup, c)
 	registerUserRoutes(authGroup, c)

@@ -47,6 +47,9 @@ func TestJWTAuthValidToken(t *testing.T) {
 		if uid != "user-1" {
 			t.Fatalf("expected user-1, got %s", uid)
 		}
+		if tok := GetToken(c); tok != "valid-token" {
+			t.Fatalf("expected GetToken to return the exact bearer token %q, got %q", "valid-token", tok)
+		}
 		return c.String(http.StatusOK, "ok")
 	})
 
@@ -148,6 +151,10 @@ func TestJWTAuthValidCookie(t *testing.T) {
 		if uid != "user-1" {
 			t.Fatalf("expected user-1, got %s", uid)
 		}
+		if tok := GetToken(c); tok != "cookie:valid-cookie-value" {
+			t.Fatalf("expected GetToken to return the exact cookie-prefixed value %q, got %q",
+				"cookie:valid-cookie-value", tok)
+		}
 		return c.String(http.StatusOK, "ok")
 	})
 
@@ -156,6 +163,20 @@ func TestJWTAuthValidCookie(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+// TestGetTokenUnsetReturnsEmpty proves GetToken returns an empty string when
+// JWTAuth has not been applied to the request (no tokenKey set on the
+// context), mirroring GetUserID's equivalent behavior.
+func TestGetTokenUnsetReturnsEmpty(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	if tok := GetToken(c); tok != "" {
+		t.Fatalf("expected empty token, got %q", tok)
 	}
 }
 
