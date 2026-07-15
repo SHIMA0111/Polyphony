@@ -101,7 +101,7 @@ tasks:
     desc: Lint Go code
     dir: server
     cmds:
-      - go vet ./...
+      - golangci-lint run ./...
 
   lint:gateway:
     desc: Lint Rust code

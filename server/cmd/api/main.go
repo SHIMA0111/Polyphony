@@ -8,23 +8,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/labstack/echo/v4"
-	echomw "github.com/labstack/echo/v4/middleware"
-
+	"github.com/SHIMA0111/multi-user-ai/server/internal/app"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/infrastructure/config"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/infrastructure/database"
-	ifauth "github.com/SHIMA0111/multi-user-ai/server/internal/interface/auth"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/gateway"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/handler"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/repository/postgres"
-	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
-	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
-	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
 )
 
 func main() {
@@ -39,66 +27,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Database connection pool
+	// Build the DI container (database pool, repositories, services, use
+	// cases, and handlers).
 	ctx := context.Background()
-	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
+	container, err := app.NewContainer(ctx, cfg)
 	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
+		slog.Error("failed to build container", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	defer container.Pool.Close()
 
-	slog.Info("connected to database")
-
-	// Repositories
-	userRepo := postgres.NewUserRepository(pool)
-	roomRepo := postgres.NewRoomRepository(pool)
-	msgRepo := postgres.NewMessageRepository(pool)
-
-	// Services / Gateways
-	authService := ifauth.NewSimpleJWTService(userRepo, cfg.JWTSecret)
-	llmClient := gateway.NewLLMClient(cfg.LLMGatewayURL)
-
-	// Usecases
-	authUC := authusecase.NewAuthUsecase(authService)
-	roomUC := roomusecase.NewRoomUsecase(roomRepo)
-	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmClient)
-
-	// Handlers
-	healthHandler := handler.NewHealthHandler()
-	authHandler := handler.NewAuthHandler(authUC)
-	roomHandler := handler.NewRoomHandler(roomUC)
-	msgHandler := handler.NewMessageHandler(msgUC)
-	modelHandler := handler.NewModelHandler(llmClient)
-
-	// Echo setup
-	e := echo.New()
-	e.HideBanner = true
-	e.Use(echomw.Recover())
-	e.Use(echomw.RequestID())
-	e.Use(echomw.CORSWithConfig(echomw.CORSConfig{
-		AllowOrigins: strings.Split(cfg.CORSOrigins, ","),
-		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
-		AllowHeaders: []string{echo.HeaderContentType, echo.HeaderAuthorization},
-	}))
-
-	// Public routes
-	e.GET("/health", healthHandler.Health)
-	e.GET("/models", modelHandler.List)
-	e.POST("/auth/register", authHandler.Register)
-	e.POST("/auth/login", authHandler.Login)
-
-	// Authenticated routes
-	auth := e.Group("", middleware.JWTAuth(authUC))
-	auth.POST("/rooms", roomHandler.Create)
-	auth.GET("/rooms", roomHandler.List)
-	auth.GET("/rooms/:roomId", roomHandler.Get)
-	auth.PUT("/rooms/:roomId", roomHandler.Update)
-	auth.DELETE("/rooms/:roomId", roomHandler.Delete)
-	auth.POST("/rooms/:roomId/messages", msgHandler.Send)
-	auth.GET("/rooms/:roomId/messages", msgHandler.List)
-	auth.POST("/rooms/:roomId/messages/ai", msgHandler.SendAI)
-	auth.POST("/rooms/:roomId/messages/:messageId/regenerate", msgHandler.RegenerateAI)
+	// Build the Echo router.
+	e := app.NewRouter(container)
 
 	// Start server
 	addr := fmt.Sprintf(":%s", cfg.Port)
