@@ -4,7 +4,11 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 
 use crate::domain::error::DomainError;
-use crate::domain::model::{CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo};
+use crate::domain::model::{
+    CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, TokenEstimateRequest,
+    TokenEstimateResponse,
+};
+use crate::domain::token_estimator;
 use crate::ports::inbound::completion::CompletionUseCase;
 use crate::ports::outbound::key_store::KeyStore;
 use crate::ports::outbound::provider::LLMProvider;
@@ -108,6 +112,17 @@ impl CompletionUseCase for CompletionService {
             self.key_store.get_key(provider.provider_name())?;
         }
         Ok(())
+    }
+
+    fn estimate_tokens(&self, req: TokenEstimateRequest) -> TokenEstimateResponse {
+        // No provider dispatch, no `find_provider` involvement: estimation is a pure
+        // function of the message content, so it never fails with `ModelNotFound`
+        // even for an unrecognized model name.
+        let estimated_tokens = token_estimator::estimate_tokens(&req.messages);
+        TokenEstimateResponse {
+            model: req.model,
+            estimated_tokens,
+        }
     }
 }
 
@@ -307,5 +322,52 @@ mod tests {
             service.readiness(),
             Err(DomainError::KeyNotFound(_))
         ));
+    }
+
+    #[test]
+    fn test_estimate_tokens_matches_token_estimator_directly() {
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
+
+        let messages = vec![ChatMessage {
+            role: Role::User,
+            content: "hello world".to_string().into(),
+        }];
+        let req = TokenEstimateRequest {
+            model: "gpt-5.2".to_string(),
+            messages: messages.clone(),
+        };
+
+        let resp = service.estimate_tokens(req);
+
+        assert_eq!(resp.model, "gpt-5.2");
+        assert_eq!(
+            resp.estimated_tokens,
+            crate::domain::token_estimator::estimate_tokens(&messages)
+        );
+    }
+
+    /// Confirms estimation never involves provider dispatch: an unrecognized model
+    /// name still succeeds (unlike `complete`, which would return `ModelNotFound`).
+    #[test]
+    fn test_estimate_tokens_does_not_require_known_model() {
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
+
+        let req = TokenEstimateRequest {
+            model: "totally-unknown-model".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: "hi".to_string().into(),
+            }],
+        };
+
+        let resp = service.estimate_tokens(req);
+        assert_eq!(resp.model, "totally-unknown-model");
+        assert!(resp.estimated_tokens > 0);
     }
 }

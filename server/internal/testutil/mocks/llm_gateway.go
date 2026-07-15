@@ -26,11 +26,16 @@ type LLMGateway struct {
 	CompletionResponse *ai.CompletionResponse
 	// Models, if non-nil, overrides the default (empty) ListModels result.
 	Models []ai.ModelInfo
+	// TokenEstimateResponse, if non-nil, overrides the default canned
+	// response returned by EstimateTokens.
+	TokenEstimateResponse *ai.TokenEstimateResponse
 
 	// CompleteFunc, if set, overrides Complete entirely.
 	CompleteFunc func(ctx context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error)
 	// ListModelsFunc, if set, overrides ListModels entirely.
 	ListModelsFunc func(ctx context.Context) ([]ai.ModelInfo, error)
+	// EstimateTokensFunc, if set, overrides EstimateTokens entirely.
+	EstimateTokensFunc func(ctx context.Context, req *ai.TokenEstimateRequest) (*ai.TokenEstimateResponse, error)
 }
 
 // Complete sends a completion request and returns the response. See the
@@ -61,4 +66,20 @@ func (g *LLMGateway) ListModels(ctx context.Context) ([]ai.ModelInfo, error) {
 		return g.ListModelsFunc(ctx)
 	}
 	return g.Models, nil
+}
+
+// EstimateTokens returns an approximate token count for the given messages.
+// See the LLMGateway doc comment for how ShouldErr, TokenEstimateResponse,
+// and EstimateTokensFunc interact.
+func (g *LLMGateway) EstimateTokens(ctx context.Context, req *ai.TokenEstimateRequest) (*ai.TokenEstimateResponse, error) {
+	if g.EstimateTokensFunc != nil {
+		return g.EstimateTokensFunc(ctx, req)
+	}
+	if g.ShouldErr {
+		return nil, fmt.Errorf("%w: mock error", domain.ErrLLMGateway)
+	}
+	if g.TokenEstimateResponse != nil {
+		return g.TokenEstimateResponse, nil
+	}
+	return &ai.TokenEstimateResponse{}, nil
 }

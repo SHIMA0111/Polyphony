@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::domain::model::{CompletionResponse, ModelInfo, ModelPricing};
+use crate::domain::model::{CompletionResponse, ModelInfo, ModelPricing, TokenEstimateResponse};
 
 /// Completion response DTO for the REST API.
 #[derive(Serialize)]
@@ -115,6 +115,25 @@ impl From<ModelInfo> for ModelInfoDto {
             context_window: m.context_window,
             pricing: m.pricing.map(ModelPricingDto::from),
             supports_image_input: m.supports_image_input,
+        }
+    }
+}
+
+/// Token estimation response DTO for the REST API.
+///
+/// `estimated_tokens` is an approximation — see `domain::model::TokenEstimateResponse`
+/// and `domain::token_estimator` for the heuristic used to compute it.
+#[derive(Serialize)]
+pub struct TokenEstimateResponseDto {
+    pub model: String,
+    pub estimated_tokens: u32,
+}
+
+impl From<TokenEstimateResponse> for TokenEstimateResponseDto {
+    fn from(resp: TokenEstimateResponse) -> Self {
+        Self {
+            model: resp.model,
+            estimated_tokens: resp.estimated_tokens,
         }
     }
 }

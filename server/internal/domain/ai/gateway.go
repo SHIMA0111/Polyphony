@@ -11,4 +11,10 @@ type LLMGateway interface {
 
 	// ListModels returns the available LLM models.
 	ListModels(ctx context.Context) ([]ModelInfo, error)
+
+	// EstimateTokens returns an approximate token count for the given
+	// messages, computed by the LLM Gateway's character-based heuristic (not
+	// an exact tokenizer count). Returns ErrLLMGateway-wrapped errors on
+	// communication or decode failures, matching Complete/ListModels.
+	EstimateTokens(ctx context.Context, req *TokenEstimateRequest) (*TokenEstimateResponse, error)
 }
