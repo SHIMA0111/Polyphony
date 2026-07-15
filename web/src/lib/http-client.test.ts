@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, mock } from "bun:test"
+import { describe, it, expect, afterEach, vi } from "vitest"
 import { apiRequest, authRequest, ApiRequestError } from "./http-client"
 
 /**
@@ -6,10 +6,10 @@ import { apiRequest, authRequest, ApiRequestError } from "./http-client"
  * through `apiRequest`/`authRequest`). No real network or server is used —
  * `global.fetch` is replaced per test.
  *
- * Written against Bun's built-in test runner per `docs/tasks/step4.md`.
- * Only `describe`/`it`/`expect` and assigning `global.fetch` are used (no
- * Bun-only mock APIs) so this file can be ported to Vitest by swapping the
- * first import line once Step 5 introduces a project-wide test harness.
+ * Originally written against Bun's built-in test runner per
+ * `docs/tasks/step4.md`, using only `describe`/`it`/`expect` and assigning
+ * `global.fetch` (no Bun-only mock APIs); ported to Vitest (`mock` ->
+ * `vi.fn`) once Step 5 introduced the project-wide Vitest harness.
  */
 
 const originalFetch = global.fetch
@@ -27,7 +27,7 @@ describe("http-client", () => {
   })
 
   it("returns a decoded JSON response on success", async () => {
-    global.fetch = mock(async () => jsonResponse(200, { hello: "world" }))
+    global.fetch = vi.fn(async () => jsonResponse(200, { hello: "world" }))
 
     const result = await apiRequest<{ hello: string }>("/rooms")
 
@@ -35,7 +35,7 @@ describe("http-client", () => {
   })
 
   it("throws ApiRequestError with status and parsed body on a non-OK response", async () => {
-    global.fetch = mock(async () => jsonResponse(400, { message: "bad request" }))
+    global.fetch = vi.fn(async () => jsonResponse(400, { message: "bad request" }))
 
     let caught: unknown
     try {
@@ -52,7 +52,7 @@ describe("http-client", () => {
   })
 
   it("resolves undefined for a 204 response", async () => {
-    global.fetch = mock(async () => new Response(null, { status: 204 }))
+    global.fetch = vi.fn(async () => new Response(null, { status: 204 }))
 
     const result = await apiRequest<undefined>("/rooms/room-1")
 
@@ -61,7 +61,7 @@ describe("http-client", () => {
 
   it("apiRequest prefixes paths with /api/proxy", async () => {
     let capturedUrl = ""
-    global.fetch = mock(async (input: RequestInfo | URL) => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
       capturedUrl = String(input)
       return jsonResponse(200, [])
     })
@@ -73,7 +73,7 @@ describe("http-client", () => {
 
   it("authRequest prefixes paths with /api/auth", async () => {
     let capturedUrl = ""
-    global.fetch = mock(async (input: RequestInfo | URL) => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
       capturedUrl = String(input)
       return jsonResponse(200, { ok: true })
     })
