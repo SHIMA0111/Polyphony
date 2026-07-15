@@ -120,4 +120,44 @@ describe("http-client", () => {
       })
     }
   })
+
+  it("on a 401 from an auth-plane call (e.g. wrong login credentials), propagates ApiRequestError without clearing cookies or redirecting", async () => {
+    const calledUrls: string[] = []
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      calledUrls.push(url)
+      return jsonResponse(401, { message: "invalid credentials" })
+    })
+
+    const assign = vi.fn()
+    const originalLocation = window.location
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, assign },
+    })
+
+    try {
+      let caught: unknown
+      try {
+        await authRequest("/login", { method: "POST" })
+      } catch (err) {
+        caught = err
+      }
+
+      expect(caught).toBeInstanceOf(ApiRequestError)
+      expect((caught as ApiRequestError).status).toBe(401)
+      expect((caught as ApiRequestError).message).toBe("invalid credentials")
+
+      // Only the login request itself should have gone out — no
+      // /api/auth/logout call, and no redirect to /login (which would wipe
+      // the form before the caller's catch block can render a toast).
+      expect(calledUrls).toEqual(["/api/auth/login"])
+      expect(assign).not.toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      })
+    }
+  })
 })

@@ -24,14 +24,14 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
 
   if (isLoading) {
     return (
-      <Flex h="100vh" align="center" justify="center">
+      <Flex h="full" flex={1} minW={0} align="center" justify="center">
         <Spinner size="xl" colorPalette="blue" />
       </Flex>
     )
   }
 
   return (
-    <Flex h="100vh" direction="column" bg="bg">
+    <Flex h="full" flex={1} minW={0} direction="column" bg="bg">
       <ChatRoomHeader roomName={room?.name} />
 
       <MessageList

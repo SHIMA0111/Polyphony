@@ -55,19 +55,28 @@ function extractMessage(body: unknown, status: number): string {
  * - throws {@link ApiRequestError} on any non-2xx response, parsing the JSON
  *   error body (falling back to `{ message: "Unknown error" }` if the body
  *   isn't valid JSON);
- * - on a `401` response, clears the (dead) session cookie via
- *   `POST /api/auth/logout` and then redirects the browser to `/login`
- *   (guarded by `typeof window !== "undefined"` so this is a no-op during
- *   SSR), since a 401 means the session cookie is missing, expired, or
- *   otherwise invalid. Clearing the cookie first matters: `middleware.ts`
- *   only checks cookie *presence*, so leaving a dead-but-present cookie in
- *   place would make the middleware redirect straight back out of `/login`
- *   (present cookie -> assumed logged in), producing an infinite
- *   401 -> redirect -> bounce-back loop instead of landing on the login page;
+ * - on a `401` response, *unless* `skipAuthRedirect` is set, clears the
+ *   (dead) session cookie via `POST /api/auth/logout` and then redirects the
+ *   browser to `/login` (guarded by `typeof window !== "undefined"` so this
+ *   is a no-op during SSR), since a 401 means the session cookie is missing,
+ *   expired, or otherwise invalid. Clearing the cookie first matters:
+ *   `middleware.ts` only checks cookie *presence*, so leaving a
+ *   dead-but-present cookie in place would make the middleware redirect
+ *   straight back out of `/login` (present cookie -> assumed logged in),
+ *   producing an infinite 401 -> redirect -> bounce-back loop instead of
+ *   landing on the login page. `skipAuthRedirect` is set by
+ *   {@link authRequest}, because a 401 from `/api/auth/login` itself means
+ *   "wrong credentials", not "dead session" — there is no session cookie yet
+ *   to be dead, and redirecting would wipe the login form before its `catch`
+ *   can render a "Sign in failed" toast;
  * - resolves `undefined` for a `204 No Content` response;
  * - otherwise resolves the decoded JSON body.
  */
-async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
+async function apiFetch<T>(
+  url: string,
+  options: RequestInit = {},
+  { skipAuthRedirect = false }: { skipAuthRedirect?: boolean } = {},
+): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...((options.headers as Record<string, string>) ?? {}),
@@ -78,7 +87,7 @@ async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({ message: "Unknown error" }))
 
-    if (res.status === 401 && typeof window !== "undefined") {
+    if (res.status === 401 && !skipAuthRedirect && typeof window !== "undefined") {
       await fetch("/api/auth/logout", { method: "POST" }).catch(() => {
         // Best-effort: even if clearing the cookie fails, still redirect —
         // worst case the middleware bounce-back loop resumes, which is no
@@ -111,7 +120,13 @@ export function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
  * (`login`/`register`/`logout`), which exchange credentials with the Go API
  * and manage the httpOnly session cookie without ever exposing the token to
  * client JavaScript.
+ *
+ * A `401` from these routes (wrong credentials on login, or a downstream
+ * auth failure) is never treated as a dead session — there is no session
+ * cookie to have gone dead yet — so the dead-session logout+redirect in
+ * {@link apiFetch} is skipped and the `ApiRequestError` propagates to the
+ * caller (e.g. so `LoginForm` can render a "Sign in failed" toast).
  */
 export function authRequest<T>(path: string, options?: RequestInit): Promise<T> {
-  return apiFetch<T>(`/api/auth${path}`, options)
+  return apiFetch<T>(`/api/auth${path}`, options, { skipAuthRedirect: true })
 }

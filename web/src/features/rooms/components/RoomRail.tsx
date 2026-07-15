@@ -40,7 +40,7 @@ export function RoomRail({ display }: RoomRailProps) {
       as="nav"
       aria-label="Rooms"
       direction="column"
-      w="280px"
+      w={{ base: "full", md: "280px" }}
       flexShrink={0}
       h="full"
       overflowY="auto"

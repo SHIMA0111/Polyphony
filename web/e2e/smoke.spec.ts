@@ -11,9 +11,12 @@ import { expect, test } from "@playwright/test"
  * ordering and can run standalone.
  */
 test("register, create room, and send a message", async ({ page }) => {
-  const runId = `${Date.now()}-${Math.floor(Math.random() * 100_000)}`
+  const runId = `${Date.now()}_${Math.floor(Math.random() * 100_000)}`
   const email = `smoke-${runId}@polyphony.test`
-  const username = `smoke-${runId}`
+  // Underscores only: registerSchema's username regex (`/^[a-zA-Z0-9_]+$/`)
+  // rejects hyphens, which would otherwise block registration client-side
+  // before the request is even sent.
+  const username = `smoke_${runId}`
   const password = "smoke-test-password-123"
   const roomName = `Smoke Test Room ${runId}`
   const messageContent = `Hello from the smoke spec ${runId}`
