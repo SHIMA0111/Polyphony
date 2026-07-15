@@ -1,5 +1,7 @@
 import { QueryClient, isServer } from "@tanstack/react-query"
 
+import { ApiRequestError } from "@/lib/http-client"
+
 /**
  * Shared `QueryClient` factory/accessor for the TanStack Query cache used
  * across Server Components (RSC prefetch), Client Components, and the
@@ -15,6 +17,13 @@ import { QueryClient, isServer } from "@tanstack/react-query"
  * `staleTime: 60_000` keeps data RSC-prefetched via `prefetchQuery` from
  * being immediately refetched the moment a client component mounts and
  * calls the matching `useQuery` hook.
+ *
+ * `retry` skips TanStack Query's default retry-with-backoff behavior for
+ * `401` responses: {@link apiFetch} already redirects to `/login` on a 401
+ * (after clearing the dead session cookie), so retrying it would only
+ * hammer the API with requests that are guaranteed to fail identically
+ * while the redirect is in flight. Every other error still gets the
+ * default-ish 3 retries.
  */
 
 function makeQueryClient(): QueryClient {
@@ -22,6 +31,9 @@ function makeQueryClient(): QueryClient {
     defaultOptions: {
       queries: {
         staleTime: 60 * 1000,
+        retry: (failureCount, error) =>
+          !(error instanceof ApiRequestError && error.status === 401) &&
+          failureCount < 3,
       },
     },
   })

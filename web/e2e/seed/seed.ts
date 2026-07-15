@@ -132,27 +132,16 @@ async function ensureFixtureRoom(accessToken: string): Promise<void> {
  * teardown in between).
  *
  * Exported as the default export so Playwright can use it directly as
- * `globalSetup` (see `playwright.config.ts`); also runnable standalone via
- * `bun run e2e/seed/seed.ts` (see the entrypoint guard below and the
- * `test:e2e:seed` Taskfile task).
+ * `globalSetup` (see `playwright.config.ts`). This module intentionally has
+ * no standalone CLI entrypoint of its own: Playwright's Node-based loader
+ * transpiles `globalSetup` modules to CJS (`web/package.json` has no
+ * `"type": "module"`), where Bun's `import.meta.main` guard is a
+ * `SyntaxError`. The standalone `bun run` entrypoint lives in `./cli.ts`
+ * instead (see the `test:e2e:seed` Taskfile task), which only ever runs
+ * directly under Bun and is never imported by Playwright.
  */
 export default async function globalSetup(): Promise<void> {
   await waitForHealth()
   const accessToken = await ensureFixtureUser()
   await ensureFixtureRoom(accessToken)
-}
-
-// `bun run e2e/seed/seed.ts` entrypoint: Bun sets `import.meta.main` on the
-// module that was executed directly (as opposed to imported), so this branch
-// only runs for the standalone `test:e2e:seed` Taskfile invocation, not when
-// Playwright imports this file as `globalSetup`.
-if (import.meta.main) {
-  globalSetup()
-    .then(() => {
-      console.log("E2E seed complete.")
-    })
-    .catch((err) => {
-      console.error("E2E seed failed:", err)
-      process.exit(1)
-    })
 }
