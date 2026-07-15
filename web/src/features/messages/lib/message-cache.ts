@@ -120,6 +120,29 @@ export function removeFromNewestPage(
 }
 
 /**
+ * Finds the message with the given `id` across every loaded page, or
+ * `undefined` if it is not present anywhere in the cache yet.
+ *
+ * Used by `../lib/merge-message-event.ts` to decide whether an inbound WS
+ * `message_created` event is a genuinely new message (append it) or a
+ * duplicate/echo of something already reconciled into the cache by the
+ * optimistic-send path, a REST response, or a previously-merged WS event
+ * (reconcile in place instead of appending a second copy).
+ */
+export function findMessageInPages(
+  data: MessagesInfiniteData | undefined,
+  id: string,
+): Message | undefined {
+  if (!data) return undefined
+
+  for (const page of data.pages) {
+    const found = page.messages.find((m) => m.id === id)
+    if (found) return found
+  }
+  return undefined
+}
+
+/**
  * Replaces the first message matching `predicate` with `replacement`,
  * searching *every* loaded page rather than just the newest one.
  *

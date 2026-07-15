@@ -2,7 +2,9 @@
 
 import { Flex, Spinner } from "@chakra-ui/react"
 import { useChatRoom } from "@/features/messages/hooks/use-chat-room"
+import { useRoomSocket } from "@/features/messages/hooks/use-room-socket"
 import { ChatRoomHeader } from "./ChatRoomHeader"
+import { ConnectionStatus } from "./ConnectionStatus"
 import { MessageList } from "./MessageList"
 import { MessageInput } from "./MessageInput"
 
@@ -26,6 +28,7 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
     handleRegenerate,
     handleRetry,
   } = useChatRoom(roomId)
+  const connectionStatus = useRoomSocket(roomId)
 
   if (isLoading) {
     return (
@@ -37,7 +40,7 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
 
   return (
     <Flex h="full" flex={1} minW={0} direction="column" bg="bg">
-      <ChatRoomHeader roomName={room?.name} />
+      <ChatRoomHeader roomName={room?.name} connectionStatus={<ConnectionStatus status={connectionStatus} />} />
 
       <MessageList
         messages={messages}

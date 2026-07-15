@@ -15,22 +15,22 @@ Phase 2 of `phases.md` requires messages to be delivered to all room members in 
 A `useRoomSocket` hook (or equivalently named feature hook) opens a ticket-authenticated WebSocket connection per room, automatically reconnects with exponential backoff on drop, and merges every inbound room/message event into the TanStack Query cache using `queryClient.setQueryData`, de-duplicating against messages already present from the optimistic-send/REST/infinite-scroll paths introduced in Step 29. A small connection-status indicator is rendered in the chat room header. The hook is a complete no-op (does not attempt a real socket connection) when the app is running in MSW mock mode, so mock-mode dev/tests are unaffected. `ChatRoom.tsx` is touched only to mount the hook and render the indicator — one line each.
 
 ## Scope
-- [ ] Add `useRoomSocket(roomId: string)` hook in `web/src/features/messages/hooks/use-room-socket.ts`:
-  - [ ] Fetches a short-lived WS ticket from the authenticated endpoint Step 15 exposes (inspect `server/internal/interface/handler/websocket_handler.go` — Step 15's `POST /ws/ticket` endpoint — and its route registration — likely reached through the Next.js BFF proxy at `web/src/app/api/proxy/[...path]/route.ts` — for the exact path/response shape) before opening the socket; never sends the JWT/session cookie directly on the WS URL.
-  - [ ] Opens a native `WebSocket` to the gateway's WS upgrade path (again per Step 15's actual route), passing the ticket as a query param.
-  - [ ] Implements reconnect with exponential backoff + jitter (e.g. base 500ms, doubling, capped at ~30s), restarting the backoff counter on a successful `onopen`.
-  - [ ] Cleans up (closes socket, clears timers) on unmount or `roomId` change.
-  - [ ] Exposes a connection status (`"connecting" | "connected" | "reconnecting" | "offline"`) for the indicator to render.
-  - [ ] Is fully inert (does not construct a `WebSocket` at all, returns a static `"offline"`/disabled status) when the app is running under MSW/mock mode — reuse whatever mock-mode flag exists at this point (the old `IS_MOCK`/`NEXT_PUBLIC_MOCK_API` runtime mock was deleted by Step 9; if no MSW-era env flag such as `NEXT_PUBLIC_API_MOCKING` exists by this wave, add a small `isMockMode()` helper in `web/src/config/env.ts` reading such a flag and use it here).
-- [ ] Add a cache-merge utility, e.g. `web/src/features/messages/lib/merge-message-event.ts`, that:
-  - [ ] Parses/validates the inbound WS event payload against the shape Step 15 actually emits (inspect Step 15's `wsEventFrame` in `server/internal/interface/handler/websocket_handler.go` and the `EventType` constants in `server/internal/domain/event/hub.go` for the JSON contract — `{"type": "message_created"|"message_updated", "room_id": ..., "message": {...}}` frames).
-  - [ ] Calls `queryClient.setQueryData` on the exact messages query key Step 29 established for the room (inspect the `useMessages`/infinite-query hook Step 29 added under `web/src/features/messages/` for the query key shape, e.g. `["rooms", roomId, "messages"]`).
-  - [ ] De-dupes by message `id` against everything already in the cached pages (optimistic entries already reconciled by Step 29, REST-fetched pages, previously-merged WS events) — on a `created` event for an id already present, no-op or reconcile status only; on `updated`, patch the existing entry in place; never append a second copy of the same id.
-  - [ ] Preserves page/sequence ordering (append new messages to the newest page only; never re-sort the whole cache).
-- [ ] Add a minimal connection-status indicator component, e.g. `web/src/features/messages/components/ConnectionStatus.tsx`, built from `@chakra-ui/react` primitives per `.claude/rules/chakra-ui.md` (e.g. a small `Badge`/dot + `Tooltip` — reuse the existing `web/src/components/ui/tooltip.tsx` snippet, do not add a new one), showing connected/reconnecting/offline states; hidden or shown as inert in mock mode.
-- [ ] Mount the hook and indicator in `web/src/features/messages/components/ChatRoom.tsx` with a one-line hook call and a one-line indicator render in the existing header `Flex` — no other changes to `ChatRoom.tsx`'s send/regenerate logic.
-- [ ] Unit tests for `use-room-socket.ts` (e.g. `web/src/features/messages/hooks/use-room-socket.test.ts`) using a hand-rolled fake `WebSocket`/`vi.stubGlobal` (or `mock-socket` if a WS-mocking dependency is already present in `web/package.json`; do not add a new heavyweight dependency for this alone) covering: successful connect, message-event merge/dedupe, reconnect-with-backoff after an abnormal close, no-op behavior in mock mode.
-- [ ] Unit tests for `merge-message-event.ts` covering create/update/duplicate/out-of-order-arrival cases against a seeded query cache.
+- [x] Add `useRoomSocket(roomId: string)` hook in `web/src/features/messages/hooks/use-room-socket.ts`:
+  - [x] Fetches a short-lived WS ticket from the authenticated endpoint Step 15 exposes (inspect `server/internal/interface/handler/websocket_handler.go` — Step 15's `POST /ws/ticket` endpoint — and its route registration — likely reached through the Next.js BFF proxy at `web/src/app/api/proxy/[...path]/route.ts` — for the exact path/response shape) before opening the socket; never sends the JWT/session cookie directly on the WS URL.
+  - [x] Opens a native `WebSocket` to the gateway's WS upgrade path (again per Step 15's actual route), passing the ticket as a query param.
+  - [x] Implements reconnect with exponential backoff + jitter (e.g. base 500ms, doubling, capped at ~30s), restarting the backoff counter on a successful `onopen`.
+  - [x] Cleans up (closes socket, clears timers) on unmount or `roomId` change.
+  - [x] Exposes a connection status (`"connecting" | "connected" | "reconnecting" | "offline"`) for the indicator to render.
+  - [x] Is fully inert (does not construct a `WebSocket` at all, returns a static `"offline"`/disabled status) when the app is running under MSW/mock mode — reuse whatever mock-mode flag exists at this point (the old `IS_MOCK`/`NEXT_PUBLIC_MOCK_API` runtime mock was deleted by Step 9; if no MSW-era env flag such as `NEXT_PUBLIC_API_MOCKING` exists by this wave, add a small `isMockMode()` helper in `web/src/config/env.ts` reading such a flag and use it here).
+- [x] Add a cache-merge utility, e.g. `web/src/features/messages/lib/merge-message-event.ts`, that:
+  - [x] Parses/validates the inbound WS event payload against the shape Step 15 actually emits (inspect Step 15's `wsEventFrame` in `server/internal/interface/handler/websocket_handler.go` and the `EventType` constants in `server/internal/domain/event/hub.go` for the JSON contract — `{"type": "message_created"|"message_updated", "room_id": ..., "message": {...}}` frames).
+  - [x] Calls `queryClient.setQueryData` on the exact messages query key Step 29 established for the room (inspect the `useMessages`/infinite-query hook Step 29 added under `web/src/features/messages/` for the query key shape, e.g. `["rooms", roomId, "messages"]`).
+  - [x] De-dupes by message `id` against everything already in the cached pages (optimistic entries already reconciled by Step 29, REST-fetched pages, previously-merged WS events) — on a `created` event for an id already present, no-op or reconcile status only; on `updated`, patch the existing entry in place; never append a second copy of the same id.
+  - [x] Preserves page/sequence ordering (append new messages to the newest page only; never re-sort the whole cache).
+- [x] Add a minimal connection-status indicator component, e.g. `web/src/features/messages/components/ConnectionStatus.tsx`, built from `@chakra-ui/react` primitives per `.claude/rules/chakra-ui.md` (e.g. a small `Badge`/dot + `Tooltip` — reuse the existing `web/src/components/ui/tooltip.tsx` snippet, do not add a new one), showing connected/reconnecting/offline states; hidden or shown as inert in mock mode.
+- [x] Mount the hook and indicator in `web/src/features/messages/components/ChatRoom.tsx` with a one-line hook call and a one-line indicator render in the existing header `Flex` — no other changes to `ChatRoom.tsx`'s send/regenerate logic.
+- [x] Unit tests for `use-room-socket.ts` (e.g. `web/src/features/messages/hooks/use-room-socket.test.ts`) using a hand-rolled fake `WebSocket`/`vi.stubGlobal` (or `mock-socket` if a WS-mocking dependency is already present in `web/package.json`; do not add a new heavyweight dependency for this alone) covering: successful connect, message-event merge/dedupe, reconnect-with-backoff after an abnormal close, no-op behavior in mock mode.
+- [x] Unit tests for `merge-message-event.ts` covering create/update/duplicate/out-of-order-arrival cases against a seeded query cache.
 
 ## Out of scope
 - Server-side WebSocket endpoint, ticket issuance, and broadcast/hub logic (Step 15).
@@ -51,8 +51,8 @@ A `useRoomSocket` hook (or equivalently named feature hook) opens a ticket-authe
 - **GoDoc/rustdoc**: not applicable (TypeScript). Follow the existing code style in `web/src/features/messages/` (no barrel files, direct imports, `"use client"` at top of client components/hooks that use browser APIs).
 
 ## Verification
-1. `cd web && bun install && bun run lint` — passes with no new lint errors.
-2. `cd web && bun run test` (or the project's configured Vitest command, e.g. `bunx vitest run`) — new tests for `use-room-socket.ts` and `merge-message-event.ts` pass, and no existing test is broken.
+1. [x] `cd web && bun install && bun run lint` — passes with no new lint errors.
+2. [x] `cd web && bun run test` (or the project's configured Vitest command, e.g. `bunx vitest run`) — new tests for `use-room-socket.ts` and `merge-message-event.ts` pass, and no existing test is broken.
 3. `docker compose up -d db migrate api llm-gateway web` (from repo root) — stack starts cleanly.
 4. Manual two-client real-time check: log in as two different users (or two browser profiles) in the same room via `http://localhost:3000`; send a message from client A and confirm it appears in client B's chat within a couple of seconds with no page reload, and the connection indicator on both clients shows "connected".
 5. Reconnect check: `docker compose stop api`, observe the indicator transition to "reconnecting" within the backoff window on both clients (no uncaught console errors); `docker compose start api` and confirm the indicator returns to "connected" and subsequently sent messages are delivered again without a manual page refresh.
@@ -60,10 +60,10 @@ A `useRoomSocket` hook (or equivalently named feature hook) opens a ticket-authe
 7. Mock-mode check: run the web app with mock mode enabled (`NEXT_PUBLIC_MOCK_API=true` or whatever flag this wave's MSW migration uses) and confirm no WebSocket connection attempt is made (no network tab WS entry, no console errors) and the connection indicator renders its inert/mock state.
 
 ## Completion criteria
-- [ ] `use-room-socket.ts` hook implemented with ticket-auth connect, exponential-backoff reconnect, and typed event handling.
-- [ ] `merge-message-event.ts` cache-merge utility implemented with id-based dedupe and update-in-place semantics, targeting the exact query key Step 29 defined.
-- [ ] Connection status indicator component implemented with Chakra v3 primitives and mounted in `ChatRoom.tsx` via a one-line change.
-- [ ] Hook is verifiably inert under MSW/mock mode.
-- [ ] Unit tests added for both the hook and the merge utility and passing.
-- [ ] `ChatRoom.tsx` diff is limited to the hook mount + indicator render (no send/regenerate logic changes).
-- [ ] All verification checks above pass.
+- [x] `use-room-socket.ts` hook implemented with ticket-auth connect, exponential-backoff reconnect, and typed event handling.
+- [x] `merge-message-event.ts` cache-merge utility implemented with id-based dedupe and update-in-place semantics, targeting the exact query key Step 29 defined.
+- [x] Connection status indicator component implemented with Chakra v3 primitives and mounted in `ChatRoom.tsx` via a one-line change.
+- [x] Hook is verifiably inert under MSW/mock mode.
+- [x] Unit tests added for both the hook and the merge utility and passing.
+- [x] `ChatRoom.tsx` diff is limited to the hook mount + indicator render (no send/regenerate logic changes).
+- [ ] All verification checks above pass. (1-2 ran and pass; 3-7 require the full docker compose stack — skipped per run constraints, left for the merge/integration review agent.)

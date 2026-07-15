@@ -1,11 +1,14 @@
 "use client"
 
+import type { ReactNode } from "react"
 import Link from "next/link"
 import { Box, Button, Flex, Heading } from "@chakra-ui/react"
 import { ChevronLeft, MoreVertical } from "lucide-react"
 
 interface ChatRoomHeaderProps {
   roomName: string | undefined
+  /** Additive slot rendered next to the "more" button — e.g. `ChatRoom.tsx`'s `<ConnectionStatus />` (Step 35). */
+  connectionStatus?: ReactNode
 }
 
 /**
@@ -17,7 +20,7 @@ interface ChatRoomHeaderProps {
  * rail provides room navigation, and only shown on mobile widths where the
  * rail is collapsed.
  */
-export function ChatRoomHeader({ roomName }: ChatRoomHeaderProps) {
+export function ChatRoomHeader({ roomName, connectionStatus }: ChatRoomHeaderProps) {
   return (
     <Flex
       as="header"
@@ -45,6 +48,7 @@ export function ChatRoomHeader({ roomName }: ChatRoomHeaderProps) {
           {roomName ?? "Chat Room"}
         </Heading>
       </Box>
+      {connectionStatus}
       <Button variant="ghost" size="sm" p={0}>
         <MoreVertical size={20} />
       </Button>
