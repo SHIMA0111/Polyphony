@@ -18,44 +18,44 @@ After this PR, `llm-gateway` has a second working `LLMProvider` adapter, `Anthro
 
 ## Scope
 
-- [ ] Create the `llm-gateway/src/adapters/outbound/anthropic/` module, mirroring the per-provider `request.rs`/`stream.rs` submodule split Step 3 established for the OpenAI adapter (check `llm-gateway/src/adapters/outbound/openai.rs` — or `openai/mod.rs` + `openai/request.rs` + `openai/stream.rs` if Step 3 already split it — and copy that exact file layout, do not invent a different shape):
-  - [ ] `anthropic/mod.rs` — `AnthropicProvider` struct (client, base URL, API key resolved via `KeyStore`, `HttpClientConfig`/`ProviderConfig` injected per Step 8's config-injection pattern — no `std::env::var` calls inside the adapter), its constructor, and the `LLMProvider` trait impl (`complete`, `models`, `provider_name`, plus whatever `stream`-related method Step 3 added to the trait — see the stream.rs note below).
-  - [ ] `anthropic/request.rs` — Anthropic-specific DTOs (`AnthropicRequest`, `AnthropicMessage`, `AnthropicContentBlock`, `AnthropicResponse`, `AnthropicUsage`, `AnthropicErrorResponse`) and the `to_anthropic_request` / `from_anthropic_response` mapping functions, plus role-mapping helpers.
-  - [ ] `anthropic/stream.rs` — a minimal placeholder satisfying whatever streaming port Step 3 added to `LLMProvider` (`ports/outbound/provider.rs`) so the trait impl compiles; return a clearly-labeled "not implemented" `DomainError` rather than attempting real SSE parsing (that is Step 43's scope) — confirm the exact trait method signature in `llm-gateway/src/ports/outbound/provider.rs` before writing this and match it exactly.
-  - [ ] Register the new module: add `pub mod anthropic;` to `llm-gateway/src/adapters/outbound/mod.rs`.
-- [ ] Implement request mapping in `anthropic/request.rs`:
-  - [ ] Partition `CompletionRequest.messages` by `Role`: messages with `Role::System` are concatenated (joined with `"\n\n"` if there is more than one) into the Anthropic request's top-level `system: Option<String>` field and excluded from the `messages` array entirely — Anthropic's Messages API does not accept a `system`-role message inside `messages`.
-  - [ ] Map `Role::User` → `"user"`, `Role::Assistant` → `"assistant"`. Map `Role::Tool` to `"user"` as a documented best-effort fallback (rustdoc must state this is a known limitation — full Anthropic tool-use/tool-result content-block support is not implemented here).
-  - [ ] `max_tokens` is required by Anthropic's API (unlike OpenAI's optional field). Add a documented `DEFAULT_MAX_TOKENS` constant (e.g. `4096`) used whenever `CompletionRequest.max_tokens` is `None`, with a rustdoc `# Errors`/note explaining Anthropic returns `400 invalid_request_error` if `max_tokens` is omitted.
-  - [ ] Pass `temperature` through unchanged when present (`Option<f32>`, same as OpenAI).
-  - [ ] Anthropic's response `content` is an array of blocks (`{"type": "text", "text": "..."}`); concatenate all `text`-type blocks into a single string for the domain `Choice.message.content` (there is exactly one `Choice`, `index: 0`, since Anthropic's Messages API is not multi-choice).
-  - [ ] Map Anthropic's `stop_reason` (`"end_turn"`, `"max_tokens"`, `"stop_sequence"`, `"tool_use"`) straight through as the domain `Choice.finish_reason: String` (no need to re-encode as an enum — `finish_reason` is already a plain `String` in `domain::model::Choice`).
-  - [ ] Map `usage.input_tokens` → `Usage.prompt_tokens`, `usage.output_tokens` → `Usage.completion_tokens`, and `Usage.total_tokens = input_tokens + output_tokens` (Anthropic's usage object has no `total_tokens` field, unlike OpenAI's).
-- [ ] Implement error/usage mapping to domain `DomainError` in `anthropic/mod.rs`'s `complete()` (reusing Step 8's `http_retry::send_with_retry`/`RetryPolicy` exactly as `OpenAIProvider` does — do not reimplement retry logic):
-  - [ ] `401`/`403` → `DomainError::ProviderError` with Anthropic's `error.message` surfaced in the text (parse the response body as `AnthropicErrorResponse { type: String, error: { type: String, message: String } }`, falling back to the raw body if it doesn't parse).
-  - [ ] `429` (with `Retry-After` header, same pattern as the OpenAI adapter/Step 8) → `DomainError::RateLimited` after retries are exhausted.
-  - [ ] `500`–`599` (including Anthropic's `529 overloaded_error`, which falls within the `RetryPolicy::is_retryable` 5xx range already implemented in Step 8 — no special-casing needed) → `DomainError::ProviderError` after retries are exhausted.
-  - [ ] Network timeout → `DomainError::Timeout` (reuse the existing `reqwest::Error::is_timeout()` check already used in `openai.rs`).
-  - [ ] A `200 OK` response whose body doesn't deserialize into `AnthropicResponse` → `DomainError::ProviderError` (parse failure) without panicking.
-- [ ] Wire up `ANTHROPIC_API_KEY` and DI registration:
-  - [ ] `AnthropicProvider::new` resolves its key via `key_store.get_key("anthropic")` (the existing `KeyStore` port and `EnvKeyStore`'s `{PROVIDER}_API_KEY` convention already produce `ANTHROPIC_API_KEY` for provider name `"anthropic"` — no `KeyStore`/`EnvKeyStore` changes needed).
-  - [ ] Extend `Config` (`llm-gateway/src/config.rs`) with `pub anthropic: ProviderConfig`, loading `ANTHROPIC_BASE_URL` (default `"https://api.anthropic.com"`) the same way Step 8 loads `OPENAI_BASE_URL` into `config.openai`.
-  - [ ] Register `AnthropicProvider` in `llm-gateway/src/main.rs` with one additive block analogous to the existing `OpenAIProvider` construction, then push it into the `providers` vec passed to `CompletionService::new(...)` alongside `OpenAIProvider` — this is the only change to `main.rs`.
-  - [ ] Implement `models()` returning at least `claude-opus-4-6`, `claude-sonnet-4-6`, and `claude-haiku-4-6` (`ModelInfo { id, name, provider: "anthropic", owned_by: "anthropic" }`) — reuse the `claude-opus-4-6` id already referenced by the existing `MockProvider`-based tests in `llm-gateway/src/domain/service.rs` (`test_routes_to_correct_provider`, `test_list_models_aggregates_all_providers`) for consistency.
-  - [ ] `provider_name()` returns `"anthropic"`.
-- [ ] Add the Anthropic API's required headers to every outbound request: `x-api-key: <resolved key>`, `anthropic-version: 2023-06-01`, `content-type: application/json` (Anthropic does not use `Authorization: Bearer`, unlike OpenAI).
-- [ ] Add unit tests in `anthropic/request.rs` (same style as the existing `#[cfg(test)] mod tests` in `openai.rs`) for: system-message hoisting (single and multiple system messages), `max_tokens` defaulting when `None`, role mapping (`Role::User`/`Role::Assistant`/`Role::Tool`), and response mapping (`content` block concatenation, `usage` field mapping).
-- [ ] Add a new wiremock integration test file `llm-gateway/tests/anthropic_provider_test.rs`, following the exact pattern established by Step 14's `llm-gateway/tests/openai_provider_test.rs` (construct the provider via config injection pointed at `wiremock::MockServer::start().await`'s URI — never `std::env::set_var`), covering:
-  - [ ] `200 OK` success response (a realistic Anthropic Messages API JSON fixture) → asserts mapped `CompletionResponse` fields (id, model, concatenated content, `stop_reason` as `finish_reason`, `usage.prompt_tokens`/`completion_tokens`/`total_tokens`).
-  - [ ] Request-shape assertion: the JSON body wiremock receives has a top-level `system` field and no `system`-role entry inside `messages`, and always has `max_tokens` present even when the domain `CompletionRequest.max_tokens` is `None`.
-  - [ ] `401 Unauthorized` → `DomainError::ProviderError` with the Anthropic error message surfaced.
-  - [ ] `429 Too Many Requests` (with a `Retry-After` header) → `DomainError::RateLimited` after retries.
-  - [ ] `500 Internal Server Error` → `DomainError::ProviderError` after retries.
-  - [ ] A `200 OK` response with a body that doesn't match `AnthropicResponse`'s shape → `DomainError::ProviderError` (parse failure), no panic.
-  - [ ] A wiremock response delayed longer than the provider's configured client timeout → `DomainError::Timeout`.
-- [ ] Add/extend a `/models` case (or extend Step 14's `router_test.rs` `GET /models` case) so it can be manually verified that `claude-opus-4-6` etc. appear in the aggregated model list once `AnthropicProvider` is registered (a full new router-test case is optional — the existing `StubUseCase`-based router tests are provider-agnostic; this is primarily a manual verification item, see Verification).
-- [ ] Additive env/config plumbing: add `ANTHROPIC_API_KEY` to `docker-compose.yml`'s `llm-gateway` service `environment:` block and to `.env.example`'s `# === LLM Gateway (Rust) ===` section, following the existing `OPENAI_API_KEY` line exactly (append, do not reorder existing lines — Step 26 will add its own analogous `GEMINI_API_KEY` line in the same wave).
-- [ ] Add rustdoc (`///`) on every new public item (`AnthropicProvider`, its constructor, DTOs, mapping functions, `DEFAULT_MAX_TOKENS`) with `# Arguments`/`# Errors` sections per `CLAUDE.md` conventions.
+- [x] Create the `llm-gateway/src/adapters/outbound/anthropic/` module, mirroring the per-provider `request.rs`/`stream.rs` submodule split Step 3 established for the OpenAI adapter (check `llm-gateway/src/adapters/outbound/openai.rs` — or `openai/mod.rs` + `openai/request.rs` + `openai/stream.rs` if Step 3 already split it — and copy that exact file layout, do not invent a different shape):
+  - [x] `anthropic/mod.rs` — `AnthropicProvider` struct (client, base URL, API key resolved via `KeyStore`, `HttpClientConfig`/`ProviderConfig` injected per Step 8's config-injection pattern — no `std::env::var` calls inside the adapter), its constructor, and the `LLMProvider` trait impl (`complete`, `models`, `provider_name`, plus whatever `stream`-related method Step 3 added to the trait — see the stream.rs note below).
+  - [x] `anthropic/request.rs` — Anthropic-specific DTOs (`AnthropicRequest`, `AnthropicMessage`, `AnthropicContentBlock`, `AnthropicResponse`, `AnthropicUsage`, `AnthropicErrorResponse`) and the `to_anthropic_request` / `from_anthropic_response` mapping functions, plus role-mapping helpers.
+  - [x] `anthropic/stream.rs` — a minimal placeholder satisfying whatever streaming port Step 3 added to `LLMProvider` (`ports/outbound/provider.rs`) so the trait impl compiles; return a clearly-labeled "not implemented" `DomainError` rather than attempting real SSE parsing (that is Step 43's scope) — confirm the exact trait method signature in `llm-gateway/src/ports/outbound/provider.rs` before writing this and match it exactly.
+  - [x] Register the new module: add `pub mod anthropic;` to `llm-gateway/src/adapters/outbound/mod.rs`.
+- [x] Implement request mapping in `anthropic/request.rs`:
+  - [x] Partition `CompletionRequest.messages` by `Role`: messages with `Role::System` are concatenated (joined with `"\n\n"` if there is more than one) into the Anthropic request's top-level `system: Option<String>` field and excluded from the `messages` array entirely — Anthropic's Messages API does not accept a `system`-role message inside `messages`.
+  - [x] Map `Role::User` → `"user"`, `Role::Assistant` → `"assistant"`. Map `Role::Tool` to `"user"` as a documented best-effort fallback (rustdoc must state this is a known limitation — full Anthropic tool-use/tool-result content-block support is not implemented here).
+  - [x] `max_tokens` is required by Anthropic's API (unlike OpenAI's optional field). Add a documented `DEFAULT_MAX_TOKENS` constant (e.g. `4096`) used whenever `CompletionRequest.max_tokens` is `None`, with a rustdoc `# Errors`/note explaining Anthropic returns `400 invalid_request_error` if `max_tokens` is omitted.
+  - [x] Pass `temperature` through unchanged when present (`Option<f32>`, same as OpenAI).
+  - [x] Anthropic's response `content` is an array of blocks (`{"type": "text", "text": "..."}`); concatenate all `text`-type blocks into a single string for the domain `Choice.message.content` (there is exactly one `Choice`, `index: 0`, since Anthropic's Messages API is not multi-choice).
+  - [x] Map Anthropic's `stop_reason` (`"end_turn"`, `"max_tokens"`, `"stop_sequence"`, `"tool_use"`) straight through as the domain `Choice.finish_reason: String` (no need to re-encode as an enum — `finish_reason` is already a plain `String` in `domain::model::Choice`).
+  - [x] Map `usage.input_tokens` → `Usage.prompt_tokens`, `usage.output_tokens` → `Usage.completion_tokens`, and `Usage.total_tokens = input_tokens + output_tokens` (Anthropic's usage object has no `total_tokens` field, unlike OpenAI's).
+- [x] Implement error/usage mapping to domain `DomainError` in `anthropic/mod.rs`'s `complete()` (reusing Step 8's `http_retry::send_with_retry`/`RetryPolicy` exactly as `OpenAIProvider` does — do not reimplement retry logic):
+  - [x] `401`/`403` → `DomainError::ProviderError` with Anthropic's `error.message` surfaced in the text (parse the response body as `AnthropicErrorResponse { type: String, error: { type: String, message: String } }`, falling back to the raw body if it doesn't parse).
+  - [x] `429` (with `Retry-After` header, same pattern as the OpenAI adapter/Step 8) → `DomainError::RateLimited` after retries are exhausted.
+  - [x] `500`–`599` (including Anthropic's `529 overloaded_error`, which falls within the `RetryPolicy::is_retryable` 5xx range already implemented in Step 8 — no special-casing needed) → `DomainError::ProviderError` after retries are exhausted.
+  - [x] Network timeout → `DomainError::Timeout` (reuse the existing `reqwest::Error::is_timeout()` check already used in `openai.rs`).
+  - [x] A `200 OK` response whose body doesn't deserialize into `AnthropicResponse` → `DomainError::ProviderError` (parse failure) without panicking.
+- [x] Wire up `ANTHROPIC_API_KEY` and DI registration:
+  - [x] `AnthropicProvider::new` resolves its key via `key_store.get_key("anthropic")` (the existing `KeyStore` port and `EnvKeyStore`'s `{PROVIDER}_API_KEY` convention already produce `ANTHROPIC_API_KEY` for provider name `"anthropic"` — no `KeyStore`/`EnvKeyStore` changes needed).
+  - [x] Extend `Config` (`llm-gateway/src/config.rs`) with `pub anthropic: ProviderConfig`, loading `ANTHROPIC_BASE_URL` (default `"https://api.anthropic.com"`) the same way Step 8 loads `OPENAI_BASE_URL` into `config.openai`.
+  - [x] Register `AnthropicProvider` in `llm-gateway/src/main.rs` with one additive block analogous to the existing `OpenAIProvider` construction, then push it into the `providers` vec passed to `CompletionService::new(...)` alongside `OpenAIProvider` — this is the only change to `main.rs`.
+  - [x] Implement `models()` returning at least `claude-opus-4-6`, `claude-sonnet-4-6`, and `claude-haiku-4-6` (`ModelInfo { id, name, provider: "anthropic", owned_by: "anthropic" }`) — reuse the `claude-opus-4-6` id already referenced by the existing `MockProvider`-based tests in `llm-gateway/src/domain/service.rs` (`test_routes_to_correct_provider`, `test_list_models_aggregates_all_providers`) for consistency.
+  - [x] `provider_name()` returns `"anthropic"`.
+- [x] Add the Anthropic API's required headers to every outbound request: `x-api-key: <resolved key>`, `anthropic-version: 2023-06-01`, `content-type: application/json` (Anthropic does not use `Authorization: Bearer`, unlike OpenAI).
+- [x] Add unit tests in `anthropic/request.rs` (same style as the existing `#[cfg(test)] mod tests` in `openai.rs`) for: system-message hoisting (single and multiple system messages), `max_tokens` defaulting when `None`, role mapping (`Role::User`/`Role::Assistant`/`Role::Tool`), and response mapping (`content` block concatenation, `usage` field mapping).
+- [x] Add a new wiremock integration test file `llm-gateway/tests/anthropic_provider_test.rs`, following the exact pattern established by Step 14's `llm-gateway/tests/openai_provider_test.rs` (construct the provider via config injection pointed at `wiremock::MockServer::start().await`'s URI — never `std::env::set_var`), covering:
+  - [x] `200 OK` success response (a realistic Anthropic Messages API JSON fixture) → asserts mapped `CompletionResponse` fields (id, model, concatenated content, `stop_reason` as `finish_reason`, `usage.prompt_tokens`/`completion_tokens`/`total_tokens`).
+  - [x] Request-shape assertion: the JSON body wiremock receives has a top-level `system` field and no `system`-role entry inside `messages`, and always has `max_tokens` present even when the domain `CompletionRequest.max_tokens` is `None`.
+  - [x] `401 Unauthorized` → `DomainError::ProviderError` with the Anthropic error message surfaced.
+  - [x] `429 Too Many Requests` (with a `Retry-After` header) → `DomainError::RateLimited` after retries.
+  - [x] `500 Internal Server Error` → `DomainError::ProviderError` after retries.
+  - [x] A `200 OK` response with a body that doesn't match `AnthropicResponse`'s shape → `DomainError::ProviderError` (parse failure), no panic.
+  - [x] A wiremock response delayed longer than the provider's configured client timeout → `DomainError::Timeout`.
+- [x] Add/extend a `/models` case (or extend Step 14's `router_test.rs` `GET /models` case) so it can be manually verified that `claude-opus-4-6` etc. appear in the aggregated model list once `AnthropicProvider` is registered (a full new router-test case is optional — the existing `StubUseCase`-based router tests are provider-agnostic; this is primarily a manual verification item, see Verification).
+- [x] Additive env/config plumbing: add `ANTHROPIC_API_KEY` to `docker-compose.yml`'s `llm-gateway` service `environment:` block and to `.env.example`'s `# === LLM Gateway (Rust) ===` section, following the existing `OPENAI_API_KEY` line exactly (append, do not reorder existing lines — Step 26 will add its own analogous `GEMINI_API_KEY` line in the same wave).
+- [x] Add rustdoc (`///`) on every new public item (`AnthropicProvider`, its constructor, DTOs, mapping functions, `DEFAULT_MAX_TOKENS`) with `# Arguments`/`# Errors` sections per `CLAUDE.md` conventions.
 
 ## Out of scope
 
@@ -103,12 +103,12 @@ After this PR, `llm-gateway` has a second working `LLMProvider` adapter, `Anthro
 
 ## Completion criteria
 
-- [ ] `AnthropicProvider` implements `LLMProvider` and is registered in `main.rs` alongside `OpenAIProvider` with one additive block.
-- [ ] System-role messages are hoisted into Anthropic's top-level `system` field and never sent inside the `messages` array.
-- [ ] `max_tokens` is always present in outbound Anthropic requests, defaulting to a documented constant when the domain request omits it.
-- [ ] Anthropic responses (`content` blocks, `stop_reason`, `usage.input_tokens`/`output_tokens`) are correctly mapped to the shared `CompletionResponse`/`Choice`/`Usage` domain types.
-- [ ] Anthropic error statuses (401/403, 429, 5xx/529, timeout, malformed body) map to the existing `DomainError` variants, reusing Step 8's retry/backoff helper.
-- [ ] `ANTHROPIC_API_KEY` resolves via the existing `KeyStore` port with no adapter-side `std::env` reads.
-- [ ] `llm-gateway/tests/anthropic_provider_test.rs` covers success, request-shape, 401, 429, 500, malformed-body, and timeout scenarios against a `wiremock::MockServer`.
-- [ ] All new public items have rustdoc comments following `CLAUDE.md` conventions.
-- [ ] All verification checks above pass.
+- [x] `AnthropicProvider` implements `LLMProvider` and is registered in `main.rs` alongside `OpenAIProvider` with one additive block.
+- [x] System-role messages are hoisted into Anthropic's top-level `system` field and never sent inside the `messages` array.
+- [x] `max_tokens` is always present in outbound Anthropic requests, defaulting to a documented constant when the domain request omits it.
+- [x] Anthropic responses (`content` blocks, `stop_reason`, `usage.input_tokens`/`output_tokens`) are correctly mapped to the shared `CompletionResponse`/`Choice`/`Usage` domain types.
+- [x] Anthropic error statuses (401/403, 429, 5xx/529, timeout, malformed body) map to the existing `DomainError` variants, reusing Step 8's retry/backoff helper.
+- [x] `ANTHROPIC_API_KEY` resolves via the existing `KeyStore` port with no adapter-side `std::env` reads.
+- [x] `llm-gateway/tests/anthropic_provider_test.rs` covers success, request-shape, 401, 429, 500, malformed-body, and timeout scenarios against a `wiremock::MockServer`.
+- [x] All new public items have rustdoc comments following `CLAUDE.md` conventions.
+- [x] All verification checks above pass.
