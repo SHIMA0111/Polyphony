@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
 )
 
@@ -45,6 +46,7 @@ func (h *AuthHandler) Register(c echo.Context) error {
 		if errors.Is(err, domain.ErrUsernameAlreadyExists) {
 			return c.JSON(http.StatusConflict, ErrorResponse{Message: "username already exists"})
 		}
+		middleware.GetLogger(c).Error("failed to register user", "error", err)
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
 	}
 
@@ -74,6 +76,7 @@ func (h *AuthHandler) Login(c echo.Context) error {
 		if errors.Is(err, domain.ErrInvalidCredentials) {
 			return c.JSON(http.StatusUnauthorized, ErrorResponse{Message: "invalid credentials"})
 		}
+		middleware.GetLogger(c).Error("failed to log in user", "error", err)
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
 	}
 

@@ -42,6 +42,7 @@ func (h *RoomHandler) Create(c echo.Context) error {
 
 	rm, err := h.usecase.CreateRoom(c.Request().Context(), userID, req.Name, req.Description)
 	if err != nil {
+		middleware.GetLogger(c).Error("failed to create room", "error", err)
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
 	}
 
@@ -86,6 +87,7 @@ func (h *RoomHandler) List(c echo.Context) error {
 
 	rooms, err := h.usecase.ListRooms(c.Request().Context(), userID)
 	if err != nil {
+		middleware.GetLogger(c).Error("failed to list rooms", "error", err)
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
 	}
 
@@ -159,5 +161,6 @@ func handleRoomError(c echo.Context, err error) error {
 	if errors.Is(err, domain.ErrForbidden) {
 		return c.JSON(http.StatusForbidden, ErrorResponse{Message: "forbidden"})
 	}
+	middleware.GetLogger(c).Error("unhandled room error", "error", err)
 	return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
 }

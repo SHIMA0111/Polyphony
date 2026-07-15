@@ -13,6 +13,9 @@ services:
       PORT: ${PORT:-8080}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://llm-gateway:8081}
+      DB_MAX_CONN_LIFETIME: ${DB_MAX_CONN_LIFETIME:-1h}
+      DB_MAX_CONN_IDLE_TIME: ${DB_MAX_CONN_IDLE_TIME:-30m}
+      DB_HEALTH_CHECK_PERIOD: ${DB_HEALTH_CHECK_PERIOD:-1m}
     ports:
       - "8080:8080"
     healthcheck:
