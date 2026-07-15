@@ -1,15 +1,10 @@
-mod adapters;
-mod config;
-mod domain;
-mod ports;
-
 use std::sync::Arc;
 
-use adapters::inbound::rest::router::build_router;
-use adapters::outbound::env_key::EnvKeyStore;
-use adapters::outbound::openai::OpenAIProvider;
-use config::Config;
-use domain::service::CompletionService;
+use llm_gateway::adapters::inbound::rest::router::build_router;
+use llm_gateway::adapters::outbound::env_key::EnvKeyStore;
+use llm_gateway::adapters::outbound::openai::OpenAIProvider;
+use llm_gateway::config::Config;
+use llm_gateway::domain::service::CompletionService;
 
 #[tokio::main]
 async fn main() {
