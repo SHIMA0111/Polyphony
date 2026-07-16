@@ -11,7 +11,7 @@
 //! step 43 streaming) should extend this file with new cases in this same style rather
 //! than inventing a new mocking approach.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::Body;
@@ -43,6 +43,22 @@ const PROVIDER_ERROR_MODEL: &str = "providererror-model";
 /// Sentinel model name that makes `StubUseCase::complete` return `DomainError::RateLimited`.
 const RATE_LIMITED_MODEL: &str = "ratelimited-model";
 
+/// Scripted outcome for `StubUseCase::stream`, set via
+/// `StubUseCase::with_stream_error`/`with_stream_chunks`.
+///
+/// Wrapped in a `Mutex<Option<_>>` (rather than stored directly) so `StreamScript` need
+/// not be `Clone` — each test drives the router's `/completions/stream` endpoint at
+/// most once, so a single `Option::take()` per `StubUseCase` is sufficient.
+enum StreamScript {
+    /// `CompletionUseCase::stream` itself returns this error before any chunk is
+    /// produced (e.g. `DomainError::ModelNotFound`), proving a pre-stream failure still
+    /// surfaces as a normal non-SSE HTTP error response.
+    Fails(DomainError),
+    /// `CompletionUseCase::stream` succeeds, yielding exactly this scripted sequence of
+    /// chunks/errors (mirroring what a real provider's stream would produce).
+    Yields(Vec<Result<CompletionChunk, DomainError>>),
+}
+
 /// Test double for `CompletionUseCase`, exercised through real HTTP via `oneshot`.
 ///
 /// Unlike `domain::service::CompletionService`'s `MockProvider` (used by pure unit
@@ -52,17 +68,38 @@ const RATE_LIMITED_MODEL: &str = "ratelimited-model";
 struct StubUseCase {
     /// Controls the `GET /ready` response: `Ok(())` reports ready, `Err` reports not ready.
     ready: Result<(), ()>,
+    /// Scripted outcome for `stream()`. Defaults to a fixed provider error (mirroring
+    /// the pre-Step-43 stub behavior) for tests that never call `/completions/stream`.
+    stream_script: Mutex<Option<StreamScript>>,
 }
 
 impl StubUseCase {
     /// Builds a `StubUseCase` that reports ready (`GET /ready` → `200`).
     fn new() -> Self {
-        Self { ready: Ok(()) }
+        Self {
+            ready: Ok(()),
+            stream_script: Mutex::new(None),
+        }
     }
 
     /// Builds a `StubUseCase` that reports not ready (`GET /ready` → `503`).
     fn not_ready() -> Self {
-        Self { ready: Err(()) }
+        Self {
+            ready: Err(()),
+            stream_script: Mutex::new(None),
+        }
+    }
+
+    /// Configures `stream()` to fail outright with `err`, before any chunk is produced.
+    fn with_stream_error(self, err: DomainError) -> Self {
+        *self.stream_script.lock().unwrap() = Some(StreamScript::Fails(err));
+        self
+    }
+
+    /// Configures `stream()` to succeed and yield exactly `chunks`.
+    fn with_stream_chunks(self, chunks: Vec<Result<CompletionChunk, DomainError>>) -> Self {
+        *self.stream_script.lock().unwrap() = Some(StreamScript::Yields(chunks));
+        self
     }
 }
 
@@ -126,7 +163,15 @@ impl CompletionUseCase for StubUseCase {
         _req: CompletionRequest,
     ) -> BoxFuture<'_, Result<BoxStream<'static, Result<CompletionChunk, DomainError>>, DomainError>>
     {
-        Box::pin(async move { Err(DomainError::provider_error("streaming not exercised here")) })
+        let script = self.stream_script.lock().unwrap().take();
+        Box::pin(async move {
+            match script {
+                Some(StreamScript::Fails(err)) => Err(err),
+                Some(StreamScript::Yields(chunks)) => Ok(Box::pin(futures::stream::iter(chunks))
+                    as BoxStream<'static, Result<CompletionChunk, DomainError>>),
+                None => Err(DomainError::provider_error("streaming not exercised here")),
+            }
+        })
     }
 
     fn readiness(&self) -> Result<(), DomainError> {
@@ -426,4 +471,149 @@ async fn test_tokens_estimate_unknown_role_returns_bad_request() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Builds a `POST /completions/stream` request with a JSON body for the given model
+/// and message.
+fn stream_request(model: &str, message: &str) -> Request<Body> {
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": message}],
+    });
+    Request::builder()
+        .method("POST")
+        .uri("/completions/stream")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// Drains a response body into a UTF-8 string.
+async fn body_text(response: axum::response::Response) -> String {
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8(bytes.to_vec()).expect("SSE body should be valid UTF-8")
+}
+
+/// Builds a minimal `CompletionChunk` for use in a scripted `StubUseCase` stream.
+fn make_chunk(delta: &str) -> CompletionChunk {
+    CompletionChunk {
+        id: "stub-chunk-id".to_string(),
+        model: KNOWN_MODEL.to_string(),
+        delta: Some(delta.to_string()),
+        finish_reason: None,
+        usage: None,
+    }
+}
+
+#[tokio::test]
+async fn test_completions_stream_happy_path_returns_sse_body_with_done_sentinel() {
+    let stub = StubUseCase::new()
+        .with_stream_chunks(vec![Ok(make_chunk("Hi")), Ok(make_chunk(" there!"))]);
+    let router = test_router(stub);
+
+    let response = router
+        .oneshot(stream_request(KNOWN_MODEL, "hello"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/event-stream")
+    );
+
+    let body = body_text(response).await;
+    let first_data_pos = body
+        .find("data:")
+        .expect("body should contain at least one data: frame");
+    let second_data_pos = body[first_data_pos + 1..]
+        .find("data:")
+        .map(|i| i + first_data_pos + 1)
+        .expect("body should contain a second data: frame");
+
+    assert!(
+        body[first_data_pos..second_data_pos].contains("\"delta\":\"Hi\""),
+        "expected the first chunk's delta in the body, got: {body}"
+    );
+    assert!(
+        body.contains("\"delta\":\" there!\""),
+        "expected the second chunk's delta in the body, got: {body}"
+    );
+    assert!(
+        body.trim_end().ends_with("data: [DONE]"),
+        "expected the body to end with the [DONE] sentinel, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_completions_stream_pre_stream_error_returns_non_sse_not_found() {
+    // `StubUseCase::stream` returns `Err` before any chunk is produced when the model
+    // is unrecognized — reusing `no-such-model` (not `KNOWN_MODEL`) is enough on its
+    // own via the default `stream_script` fallback, but this test is explicit about
+    // the intended failure so it stays correct even if that default ever changes.
+    let stub = StubUseCase::new()
+        .with_stream_error(DomainError::ModelNotFound("no-such-model".to_string()));
+    let router = test_router(stub);
+
+    let response = router
+        .oneshot(stream_request("no-such-model", "hello"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_ne!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/event-stream"),
+        "a pre-stream error should not produce an SSE response"
+    );
+
+    let body = body_json(response).await;
+    assert!(body["error"].is_string());
+}
+
+#[tokio::test]
+async fn test_completions_stream_mid_stream_error_yields_error_frame_but_overall_200() {
+    let stub = StubUseCase::new().with_stream_chunks(vec![
+        Ok(make_chunk("partial")),
+        Err(DomainError::provider_error("upstream stream failed")),
+    ]);
+    let router = test_router(stub);
+
+    let response = router
+        .oneshot(stream_request(KNOWN_MODEL, "hello"))
+        .await
+        .unwrap();
+
+    // Status/headers are committed before the mid-stream error occurs, so the overall
+    // response is still 200 even though the body carries an error frame.
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_text(response).await;
+    assert!(
+        body.contains("\"delta\":\"partial\""),
+        "expected the successful first chunk in the body, got: {body}"
+    );
+    assert!(
+        body.contains("event: error"),
+        "expected an `event: error` frame for the mid-stream failure, got: {body}"
+    );
+    assert!(
+        body.contains("upstream stream failed"),
+        "expected the error message in the error frame, got: {body}"
+    );
+
+    let error_frame_pos = body.find("event: error").unwrap();
+    let done_pos = body
+        .find("data: [DONE]")
+        .expect("body should still end with the [DONE] sentinel after a mid-stream error");
+    assert!(
+        error_frame_pos < done_pos,
+        "the error frame should appear before the trailing [DONE] sentinel"
+    );
 }

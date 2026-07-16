@@ -8,6 +8,7 @@ use tracing::Level;
 
 use super::handlers::{AppState, complete, estimate_tokens, health, list_models, ready};
 use super::middleware::UuidRequestId;
+use super::stream_handler::complete_stream;
 
 /// HTTP header used to correlate a request across logs and the response.
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -55,6 +56,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ready", get(ready))
         .route("/models", get(list_models))
         .route("/completions", post(complete))
+        .route("/completions/stream", post(complete_stream))
         .route("/tokens/estimate", post(estimate_tokens))
         .layer(middleware)
         .with_state(state)

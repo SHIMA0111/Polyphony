@@ -13,7 +13,7 @@ use super::OpenAIProvider;
 // --- OpenAI-specific DTOs ---
 
 #[derive(Serialize)]
-struct OpenAIRequest {
+pub(super) struct OpenAIRequest {
     model: String,
     messages: Vec<OpenAIRequestMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -119,7 +119,7 @@ fn role_to_openai_str(role: &Role) -> &'static str {
     }
 }
 
-fn to_openai_request(req: &CompletionRequest) -> OpenAIRequest {
+pub(super) fn to_openai_request(req: &CompletionRequest) -> OpenAIRequest {
     OpenAIRequest {
         model: req.model.clone(),
         messages: req

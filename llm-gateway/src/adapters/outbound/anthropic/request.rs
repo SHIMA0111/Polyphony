@@ -21,7 +21,7 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 // --- Anthropic-specific DTOs ---
 
 #[derive(Serialize)]
-struct AnthropicRequest {
+pub(super) struct AnthropicRequest {
     model: String,
     max_tokens: u32,
     messages: Vec<AnthropicMessage>,
@@ -145,7 +145,7 @@ fn role_to_anthropic_str(role: &Role) -> &'static str {
 /// top-level `system` field, matching Anthropic's Messages API shape. `max_tokens`
 /// is defaulted to [`DEFAULT_MAX_TOKENS`] when the domain request does not specify
 /// one, since Anthropic requires it on every request.
-fn to_anthropic_request(req: &CompletionRequest) -> AnthropicRequest {
+pub(super) fn to_anthropic_request(req: &CompletionRequest) -> AnthropicRequest {
     let mut system_parts = Vec::new();
     let mut messages = Vec::new();
 

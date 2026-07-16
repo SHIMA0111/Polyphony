@@ -14,7 +14,7 @@ use super::GeminiProvider;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiRequest {
+pub(super) struct GeminiRequest {
     contents: Vec<GeminiRequestContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system_instruction: Option<GeminiRequestContent>,
@@ -251,7 +251,7 @@ fn to_gemini_part(part: &ContentPart) -> GeminiPartDto {
 /// All `Role::System` messages are joined (with `"\n"`) into a single top-level
 /// `system_instruction`, since Gemini does not accept a `"system"` role inside
 /// `contents`; all other messages become `contents` entries in original order.
-fn to_gemini_request(req: &CompletionRequest) -> GeminiRequest {
+pub(super) fn to_gemini_request(req: &CompletionRequest) -> GeminiRequest {
     let mut system_texts = Vec::new();
     let mut contents = Vec::new();
 
