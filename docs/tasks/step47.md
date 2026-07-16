@@ -50,10 +50,10 @@ After this PR, the AI controls in the message composer expose a private-mode tog
 ## Verification
 1. [x] `cd web && bun install && bun run lint` — passes with no new lint errors. (0 errors, 5 pre-existing warnings in unrelated files unchanged by this step.)
 2. [x] `cd web && bun run test` (or the project's configured Vitest command) — new/updated tests for `MessageInput`, `MessageList`, and `merge-message-event.ts` pass; no existing test regresses. (Ran via `bunx vitest run`: 41 test files, 176 tests, all passing.)
-3. [ ] `task test:e2e:up` (per Step 10's harness) then `task test:e2e` — Playwright reports `private-mode.spec.ts` passing alongside the existing suite. **Skipped in this worktree**: requires the full Docker Compose `test` profile stack on fixed ports, which this isolated agent run does not start. `private-mode.spec.ts` was written and type-checks cleanly (`bunx tsc --noEmit`) but has not been executed against a live stack — left for the post-merge integration review.
-4. [ ] Manual check against the running local stack (`task up`) — **skipped**, requires the full compose stack.
-5. [ ] Manual two-client check against the full compose stack — **skipped**, requires the full compose stack.
-6. [ ] `task test:e2e:down` — **skipped**, no stack was started.
+3. [x] `task test:e2e:up` (per Step 10's harness) then `task test:e2e` — Playwright reports `private-mode.spec.ts` passing alongside the existing suite. (Verified by the wave-7 integration review against the live compose test stack; required a web-e2e build-arg fix — `NEXT_PUBLIC_API_URL` pointed the browser's WebSocket at the dev API's port 8080 instead of api-e2e's 8090 — plus spec-level deflakes, see the wave-7 verification-fix commits.)
+4. [x] Manual check against the running local stack (`task up`) — covered by the two-browser-context `private-mode.spec.ts` run against the live compose stack (same behavior surface: toggle, badge, reset, sender-only delivery).
+5. [x] Manual two-client check against the full compose stack — covered by `private-mode.spec.ts`'s two independent browser contexts (second user never observes the private exchange live or after reload; ordinary messages still deliver over WS).
+6. [x] `task test:e2e:down` — stack tears down cleanly (verified by the wave-7 integration review).
 
 ## Completion criteria
 - [x] Private-mode toggle implemented in the AI controls row, wired through to the AI-send call with a reset-per-message state.
@@ -61,6 +61,6 @@ After this PR, the AI controls in the message composer expose a private-mode tog
 - [x] Private badge/border styling renders in the message list for `visibility === "private"` messages, including optimistic entries.
 - [x] `ws-events.ts`/`merge-message-event.ts` correctly type and pass through `visibility`, with the defensive sender-mismatch guard in place.
 - [x] Unit tests added for the toggle, the badge rendering, and the merge-utility cases; all passing.
-- [ ] `private-mode.spec.ts` Playwright spec added and passing, proving a private exchange is invisible to a second room member while ordinary messages still deliver. (Spec added; "passing" not yet verified — requires the full compose stack, not run in this worktree.)
+- [x] `private-mode.spec.ts` Playwright spec added and passing, proving a private exchange is invisible to a second room member while ordinary messages still deliver. (Verified live by the wave-7 integration review.)
 - [x] `MessageInput.tsx`/`MessageList.tsx` diffs stay disjoint from Step 45's attachment-control changes per the conflict notes.
-- [ ] All verification checks above pass. (Items 1-2 pass; items 3-6 require the compose stack and are left for the post-merge integration review.)
+- [x] All verification checks above pass. (Items 1-2 in the implementing worktree; items 3-6 by the wave-7 integration review against the live compose stack.)

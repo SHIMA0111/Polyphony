@@ -70,7 +70,7 @@ When a user sends a message that triggers an AI response, the AI's message bubbl
 - [x] The AI bubble in `MessageList.tsx` visually distinguishes thinking / live-streaming / finalized states without remounting the bubble.
 - [x] The finalize/completed event replaces the in-flight streamed content with the authoritative final message, and is idempotent against a racing non-streaming mutation response.
 - [x] The non-streaming fallback path still fully works when no chunk events are observed.
-- [ ] New Playwright spec using the Step 10 LLM stub's SSE fixtures passes reliably (incremental render + finalization).
+- [x] New Playwright spec using the Step 10 LLM stub's SSE fixtures passes reliably (incremental render + finalization). (Verified live by the wave-7 integration review across multiple consecutive full-suite runs; required two integration fixes — the web-e2e image was built with the browser's WS URL pointing at the dev API's port instead of api-e2e's, and the stub served its whole canned SSE body in one write, faster than the client's batched cache notifications could produce a single intermediate render, so `llm-stub/server.ts` now paces SSE events ~25ms apart, `STREAM_EVENT_DELAY_MS`-overridable.)
 - [x] New component/unit tests for the cache-merge logic pass.
 - [x] No unrelated changes to Step 47's privacy-badge/toggle regions of `MessageList.tsx`.
-- [ ] All verification checks above pass.
+- [x] All verification checks above pass. (Compose-dependent items verified by the wave-7 integration review; the non-streaming fallback path is additionally exercised live by `private-mode.spec.ts` and the attachment flow, both of which route through the non-streaming endpoint.)

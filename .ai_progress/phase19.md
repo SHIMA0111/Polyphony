@@ -81,17 +81,25 @@ back gracefully to the non-streaming path when no chunk events arrive.
       unaffected (this step makes no server changes); all pass.
 - [x] `bun test` in `llm-stub/` — 11/11 pass (new fixture files don't
       affect the stub's own unit tests, which don't enumerate fixtures).
-- [ ] `docker compose up -d` / `task up` + `bunx playwright test streaming`
-      against the full compose test-profile stack (requires fixed ports —
-      left for post-merge integration verification).
-- [ ] Manual fallback exercise (disconnect the WS client against the
-      running compose stack and confirm the non-streaming path still
-      resolves) — requires the full stack, left for post-merge
-      verification.
-- [ ] Re-run the full Playwright suite (`bunx playwright test`) for
-      regressions across specs sharing `MessageBubble.tsx`/`MessageList.tsx`
-      (e.g. Step 47's private-mode badges) — requires the full stack, left
-      for post-merge verification.
+- [x] `task test:e2e:up` + `bunx playwright test streaming.spec.ts`
+      against the full compose test-profile stack — passes (wave-7
+      integration review). Two integration fixes were required: web-e2e's
+      `NEXT_PUBLIC_API_URL` build arg pointed the browser's WebSocket at
+      the dev API's host port (8080) instead of api-e2e's (8090), and the
+      LLM stub now paces its canned SSE events ~25ms apart
+      (`STREAM_EVENT_DELAY_MS`) so intermediate streamed renders are
+      actually observable.
+- [x] Fallback exercise — the non-streaming path is exercised live by
+      `private-mode.spec.ts` (private sends route through
+      `POST /messages/ai`) and the attachment flow (`attachments.spec.ts`),
+      which now also opts out of streaming (`SendAIMessageInput.stream:
+      false`) so its immediate regenerate never races a still-in-flight
+      stream's finalize (a clobbering race the wave-7 integration run
+      caught live).
+- [x] Full Playwright suite (`bunx playwright test`) green across
+      consecutive runs against the compose test stack, including Step 47's
+      private-mode badges sharing `MessageBubble.tsx` (wave-7 integration
+      review).
 
 ## Out of scope (per step54.md)
 
