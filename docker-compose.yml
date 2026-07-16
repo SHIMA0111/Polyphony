@@ -93,7 +93,7 @@ services:
     image: oryd/hydra:v2.2.0
     environment:
       DSN: ${HYDRA_DSN:-postgres://hydra:hydra@hydra-db:5432/hydra?sslmode=disable}
-      SECRETS_SYSTEM: ${HYDRA_SYSTEM_SECRET:-change-me-32-byte-system-secret}
+      SECRETS_SYSTEM: ${HYDRA_SYSTEM_SECRET:-change-me-32-byte-system-secret!}
       URLS_SELF_ISSUER: ${HYDRA_PUBLIC_URL:-http://localhost:4444}/
       # 127.0.0.1, not localhost: avoids IPv6 localhost shadowing when
       # something else on the host is already listening on [::1]:3000 (see
