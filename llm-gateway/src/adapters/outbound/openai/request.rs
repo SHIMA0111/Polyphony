@@ -18,7 +18,13 @@ pub(super) struct OpenAIRequest {
     messages: Vec<OpenAIRequestMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Serialized as `max_completion_tokens`, the field name required by newer
+    /// Chat Completions models (e.g. `o3`, `o4-mini`), which reject the legacy
+    /// `max_tokens` name. OpenAI accepts this name for all current chat models.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "max_completion_tokens"
+    )]
     max_tokens: Option<u32>,
 }
 
@@ -307,6 +313,29 @@ mod tests {
         assert_eq!(openai_req.messages[1].role, "user");
         assert_eq!(openai_req.temperature, Some(0.7));
         assert_eq!(openai_req.max_tokens, Some(1000));
+    }
+
+    /// The token limit must serialize on the wire as `max_completion_tokens`, not the
+    /// legacy `max_tokens` name — `o3`/`o4-mini` and other modern Chat Completions
+    /// models reject `max_tokens` outright.
+    #[test]
+    fn test_to_openai_request_serializes_max_completion_tokens() {
+        let req = CompletionRequest {
+            model: "o4-mini".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: "Hello".to_string().into(),
+            }],
+            temperature: None,
+            max_tokens: Some(500),
+        };
+
+        let json = serde_json::to_value(to_openai_request(&req)).unwrap();
+        assert_eq!(json["max_completion_tokens"], serde_json::json!(500));
+        assert!(
+            json.get("max_tokens").is_none(),
+            "expected no legacy `max_tokens` key, got: {json}"
+        );
     }
 
     /// `MessageContent::Text` keeps serializing as a bare JSON string, not a

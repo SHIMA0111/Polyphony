@@ -298,6 +298,54 @@ async fn test_complete_with_image_content_sends_openai_multimodal_body() {
     assert_eq!(resp.choices[0].message.content.as_text(), "It's a cat.");
 }
 
+/// The token limit must be sent on the wire as `max_completion_tokens`, not the legacy
+/// `max_tokens` name — newer Chat Completions models (`o3`, `o4-mini`) reject requests
+/// carrying `max_tokens`. The mock only matches (and responds 200) if the outbound body
+/// contains `max_completion_tokens`, so a successful `complete()` call is itself the
+/// assertion.
+#[tokio::test]
+async fn test_complete_sends_max_completion_tokens_not_max_tokens() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(
+            serde_json::json!({"max_completion_tokens": 256}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "chatcmpl-abc123",
+            "model": "o4-mini",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Hi there!"},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let mut req = make_request("o4-mini");
+    req.max_tokens = Some(256);
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let resp = provider.complete(&req).await.expect(
+        "complete should succeed once the mock's max_completion_tokens matcher accepts the request",
+    );
+
+    assert_eq!(resp.choices[0].message.content.as_text(), "Hi there!");
+
+    let received = mock_server
+        .received_requests()
+        .await
+        .expect("request recording should be enabled by default");
+    let body: serde_json::Value =
+        serde_json::from_slice(&received[0].body).expect("request body should be valid JSON");
+    assert!(
+        body.get("max_tokens").is_none(),
+        "expected no legacy `max_tokens` key in the outbound body, got: {body}"
+    );
+}
+
 /// Canned OpenAI streaming Chat Completions SSE body: two content-delta chunks
 /// followed by a final chunk carrying `finish_reason`/`usage`, terminated by the
 /// literal `data: [DONE]` sentinel line.
