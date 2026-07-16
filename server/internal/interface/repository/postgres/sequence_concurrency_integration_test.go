@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -15,13 +16,15 @@ import (
 	testutilpg "github.com/SHIMA0111/multi-user-ai/server/internal/testutil/postgres"
 )
 
-// TestMessageRepositoryGetNextSequenceConcurrency proves that
-// MessageRepository.GetNextSequence's `UPDATE room_sequences ... RETURNING
-// next_sequence - 1` pattern atomically allocates sequence numbers under
-// concurrent access: N goroutines racing on the same room must each receive
-// a distinct sequence number, and the resulting set must be a contiguous
-// run with no gaps or duplicates.
-func TestMessageRepositoryGetNextSequenceConcurrency(t *testing.T) {
+// TestReserveSequenceRangeConcurrency proves that
+// MessageRepository.ReserveSequenceRange's `UPDATE room_sequences ...
+// RETURNING next_sequence - $2` pattern atomically allocates sequence
+// *ranges* under concurrent access, even when goroutines request different
+// range sizes (mirroring SendMessage reserving 1 and SendAIMessage reserving
+// 2): every goroutine must receive a range disjoint from every other
+// goroutine's range, the union of all reserved sequence numbers must have
+// zero duplicates, and its size must equal the sum of every requested count.
+func TestReserveSequenceRangeConcurrency(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
 
@@ -55,44 +58,69 @@ func TestMessageRepositoryGetNextSequenceConcurrency(t *testing.T) {
 
 	const goroutines = 50
 
+	// Mixed counts: alternate between reserving 1 (SendMessage's usage) and
+	// 2 (SendAIMessage's usage) contiguous sequence numbers.
+	counts := make([]int64, goroutines)
+	var wantTotal int64
+	for i := range counts {
+		if i%2 == 0 {
+			counts[i] = 1
+		} else {
+			counts[i] = 2
+		}
+		wantTotal += counts[i]
+	}
+	// Shuffle so goroutine start order doesn't correlate with count.
+	rand.Shuffle(len(counts), func(i, j int) { counts[i], counts[j] = counts[j], counts[i] })
+
+	type reservation struct {
+		first int64
+		count int64
+	}
+
 	var wg sync.WaitGroup
-	seqCh := make(chan int64, goroutines)
+	resCh := make(chan reservation, goroutines)
 	errCh := make(chan error, goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for _, count := range counts {
 		wg.Add(1)
-		go func() {
+		go func(count int64) {
 			defer wg.Done()
-			seq, err := msgRepo.GetNextSequence(ctx, rm.ID)
+			first, err := msgRepo.ReserveSequenceRange(ctx, rm.ID, count)
 			if err != nil {
 				errCh <- err
 				return
 			}
-			seqCh <- seq
-		}()
+			resCh <- reservation{first: first, count: count}
+		}(count)
 	}
 	wg.Wait()
-	close(seqCh)
+	close(resCh)
 	close(errCh)
 
 	for err := range errCh {
-		t.Fatalf("GetNextSequence returned an error under concurrency: %v", err)
+		t.Fatalf("ReserveSequenceRange returned an error under concurrency: %v", err)
 	}
 
-	seen := make(map[int64]bool, goroutines)
-	for seq := range seqCh {
-		if seen[seq] {
-			t.Fatalf("GetNextSequence allocated duplicate sequence number %d", seq)
+	seen := make(map[int64]bool, wantTotal)
+	var gotTotal int64
+	for res := range resCh {
+		for seq := res.first; seq < res.first+res.count; seq++ {
+			if seen[seq] {
+				t.Fatalf("ReserveSequenceRange allocated duplicate/overlapping sequence number %d", seq)
+			}
+			seen[seq] = true
+			gotTotal++
 		}
-		seen[seq] = true
 	}
-	if len(seen) != goroutines {
-		t.Fatalf("expected %d unique sequence numbers, got %d", goroutines, len(seen))
+
+	if gotTotal != wantTotal {
+		t.Fatalf("expected %d total reserved sequence numbers, got %d", wantTotal, gotTotal)
 	}
 
 	// The room starts with next_sequence=1, so goroutines concurrently
-	// draining it must produce exactly the contiguous run [1, goroutines].
-	for i := int64(1); i <= goroutines; i++ {
+	// draining it must produce exactly the contiguous run [1, wantTotal].
+	for i := int64(1); i <= wantTotal; i++ {
 		if !seen[i] {
 			t.Fatalf("sequence %d missing from allocated set: gap detected (non-atomic allocation)", i)
 		}

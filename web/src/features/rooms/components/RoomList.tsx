@@ -1,6 +1,5 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
 import Link from "next/link"
 import {
   Avatar,
@@ -14,35 +13,21 @@ import {
   SimpleGrid,
   Text,
 } from "@chakra-ui/react"
-import { MessageSquare, Users, LogOut, Settings, Pen } from "lucide-react"
-import { apiClient } from "@/lib/api"
-import { useAuth } from "@/hooks/use-auth"
-import type { Room } from "@/types/api"
+import {
+  AlertCircle,
+  MessageSquare,
+  Users,
+  LogOut,
+  Settings,
+  Pen,
+} from "lucide-react"
+import { useRooms } from "@/features/rooms/hooks/use-rooms"
+import { useLogout } from "@/features/auth/hooks/use-logout"
 import { CreateRoomForm } from "./CreateRoomForm"
 
 export function RoomList() {
-  const [rooms, setRooms] = useState<Room[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const { logout } = useAuth()
-
-  const fetchRooms = useCallback(async () => {
-    try {
-      const data = await apiClient.listRooms()
-      setRooms(data)
-    } catch {
-      // TODO: handle error
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    fetchRooms()
-  }, [fetchRooms])
-
-  const handleRoomCreated = (room: Room) => {
-    setRooms((prev) => [room, ...prev])
-  }
+  const { data: rooms = [], isPending, isError, error, refetch } = useRooms()
+  const logoutMutation = useLogout()
 
   return (
     <Box minH="100vh" bg="bg">
@@ -101,7 +86,7 @@ export function RoomList() {
                     value="logout"
                     color="fg.error"
                     gap={2}
-                    onClick={logout}
+                    onClick={() => logoutMutation.mutate()}
                   >
                     <LogOut size={16} />
                     Log out
@@ -124,10 +109,10 @@ export function RoomList() {
               Collaborate with your team using AI
             </Text>
           </Box>
-          <CreateRoomForm onCreated={handleRoomCreated} />
+          <CreateRoomForm />
         </Flex>
 
-        {isLoading ? (
+        {isPending ? (
           <SimpleGrid columns={{ base: 1, md: 2 }} gap={4}>
             {[1, 2, 3, 4].map((i) => (
               <Card.Root key={i} h="160px" opacity={0.5}>
@@ -135,6 +120,41 @@ export function RoomList() {
               </Card.Root>
             ))}
           </SimpleGrid>
+        ) : isError ? (
+          <Card.Root borderStyle="dashed">
+            <Card.Body>
+              <Flex
+                direction="column"
+                align="center"
+                justify="center"
+                py={16}
+                textAlign="center"
+              >
+                <Flex
+                  h={16}
+                  w={16}
+                  rounded="full"
+                  bg="bg.subtle"
+                  align="center"
+                  justify="center"
+                  mb={4}
+                >
+                  <AlertCircle size={32} color="var(--chakra-colors-fg-error)" />
+                </Flex>
+                <Heading size="md" mb={2}>
+                  Couldn&apos;t load your rooms
+                </Heading>
+                <Text color="fg.muted" mb={6} maxW="sm">
+                  {error instanceof Error
+                    ? error.message
+                    : "Something went wrong while fetching your rooms."}
+                </Text>
+                <Button onClick={() => refetch()} colorPalette="blue">
+                  Try again
+                </Button>
+              </Flex>
+            </Card.Body>
+          </Card.Root>
         ) : rooms.length > 0 ? (
           <SimpleGrid columns={{ base: 1, md: 2 }} gap={4}>
             {rooms.map((room) => (
@@ -207,7 +227,7 @@ export function RoomList() {
                   Create your first room to start collaborating with your team
                   using AI
                 </Text>
-                <CreateRoomForm onCreated={handleRoomCreated} />
+                <CreateRoomForm />
               </Flex>
             </Card.Body>
           </Card.Root>

@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
 )
@@ -18,7 +19,7 @@ func setupMessageTest(isMember bool) (*echo.Echo, *MessageHandler) {
 	if isMember {
 		roomRepo.SeedMember("room-1", "user-1", "member")
 	}
-	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
 	return echo.New(), NewMessageHandler(uc)
 }
 
@@ -136,7 +137,7 @@ func TestSendAIHandlerLLMFailure201(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
-	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true})
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub())
 	e := echo.New()
 	h := NewMessageHandler(uc)
 

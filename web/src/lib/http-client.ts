@@ -47,6 +47,15 @@ function extractMessage(body: unknown, status: number): string {
 }
 
 /**
+ * Upper bound, in milliseconds, on the best-effort `POST /api/auth/logout`
+ * call made from {@link apiFetch}'s 401 handling. Without this, a stalled
+ * network request (rather than a clean failure) could hang indefinitely and
+ * delay the `/login` redirect that must follow it regardless of whether the
+ * clear succeeded.
+ */
+const CLEAR_SESSION_FETCH_TIMEOUT_MS = 3000
+
+/**
  * Core fetch wrapper shared by {@link apiRequest} and {@link authRequest}.
  *
  * Sets `Content-Type: application/json` by default (callers may override via
@@ -55,9 +64,20 @@ function extractMessage(body: unknown, status: number): string {
  * - throws {@link ApiRequestError} on any non-2xx response, parsing the JSON
  *   error body (falling back to `{ message: "Unknown error" }` if the body
  *   isn't valid JSON);
- * - on a `401` response, redirects the browser to `/login` (guarded by
- *   `typeof window !== "undefined"` so this is a no-op during SSR) before
- *   throwing, since a 401 means the session cookie is missing or expired;
+ * - on a `401` response, clears the (dead) session cookie via
+ *   `POST /api/auth/logout` (bounded by {@link CLEAR_SESSION_FETCH_TIMEOUT_MS}
+ *   via `AbortSignal.timeout` so a stalled request can't hang this
+ *   indefinitely) and then redirects the browser to `/login` regardless of
+ *   whether that call succeeded, failed, or timed out (guarded by
+ *   `typeof window !== "undefined"` so this is a no-op during SSR), since a
+ *   401 means the session cookie is missing, expired, or otherwise invalid.
+ *   Clearing the cookie first matters: `middleware.ts` only checks cookie
+ *   *presence*, so leaving a dead-but-present cookie in place would make the
+ *   middleware redirect straight back out of `/login` (present cookie ->
+ *   assumed logged in), producing an infinite 401 -> redirect -> bounce-back
+ *   loop instead of landing on the login page. The redirect must never be
+ *   skipped based on the clear's outcome — worst case, a stale-but-present
+ *   cookie causes one extra bounce before it expires naturally;
  * - resolves `undefined` for a `204 No Content` response;
  * - otherwise resolves the decoded JSON body.
  */
@@ -73,6 +93,14 @@ async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
     const body = await res.json().catch(() => ({ message: "Unknown error" }))
 
     if (res.status === 401 && typeof window !== "undefined") {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        signal: AbortSignal.timeout(CLEAR_SESSION_FETCH_TIMEOUT_MS),
+      }).catch(() => {
+        // Best-effort: even if clearing the cookie fails or times out, still
+        // redirect — worst case the middleware bounce-back loop resumes,
+        // which is no worse than not attempting the clear at all.
+      })
       window.location.assign("/login")
     }
 

@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 
 use crate::domain::error::DomainError;
 use crate::domain::model::{CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo};
 use crate::ports::inbound::completion::CompletionUseCase;
+use crate::ports::outbound::key_store::KeyStore;
 use crate::ports::outbound::provider::LLMProvider;
 
 /// Completion domain service.
@@ -12,15 +15,25 @@ use crate::ports::outbound::provider::LLMProvider;
 /// to the appropriate provider based on the requested model name.
 pub struct CompletionService {
     providers: Vec<Box<dyn LLMProvider>>,
+    key_store: Arc<dyn KeyStore>,
 }
 
 impl CompletionService {
     /// Creates a new `CompletionService`.
     ///
     /// # Arguments
-    /// * `providers` — List of available LLM providers
-    pub fn new(providers: Vec<Box<dyn LLMProvider>>) -> Self {
-        Self { providers }
+    /// * `providers` — List of available LLM providers.
+    /// * `key_store` — Key store used by `readiness()` to confirm every registered
+    ///   provider's API key is resolvable, without making any network calls.
+    ///
+    /// # Returns
+    /// A `CompletionService` holding `providers` and `key_store`, ready to serve
+    /// `complete`/`list_models`/`readiness` calls.
+    pub fn new(providers: Vec<Box<dyn LLMProvider>>, key_store: Arc<dyn KeyStore>) -> Self {
+        Self {
+            providers,
+            key_store,
+        }
     }
 
     /// Finds a provider that supports the given model ID.
@@ -99,6 +112,13 @@ impl CompletionUseCase for CompletionService {
             provider.stream(&req).await
         })
     }
+
+    fn readiness(&self) -> Result<(), DomainError> {
+        for provider in &self.providers {
+            self.key_store.get_key(provider.provider_name())?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -106,6 +126,16 @@ mod tests {
     use super::*;
     use crate::domain::model::{ChatMessage, Choice, Role, Usage};
     use futures::stream::BoxStream;
+
+    /// Always-succeeding `KeyStore` test double for tests that do not exercise
+    /// `readiness()` failure paths.
+    struct StubKeyStore;
+
+    impl KeyStore for StubKeyStore {
+        fn get_key(&self, _provider: &str) -> Result<String, DomainError> {
+            Ok("test-key".to_string())
+        }
+    }
 
     /// Mock provider for testing.
     struct MockProvider {
@@ -196,10 +226,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_routes_to_correct_provider() {
-        let service = CompletionService::new(vec![
-            Box::new(MockProvider::new("openai", vec!["gpt-5.2", "gpt-5-mini"])),
-            Box::new(MockProvider::new("anthropic", vec!["claude-opus-4-6"])),
-        ]);
+        let service = CompletionService::new(
+            vec![
+                Box::new(MockProvider::new("openai", vec!["gpt-5.2", "gpt-5-mini"])),
+                Box::new(MockProvider::new("anthropic", vec!["claude-opus-4-6"])),
+            ],
+            Arc::new(StubKeyStore),
+        );
 
         let resp = service.complete(make_request("gpt-5.2")).await.unwrap();
         assert_eq!(resp.model, "gpt-5.2");
@@ -213,8 +246,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_not_found() {
-        let service =
-            CompletionService::new(vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))]);
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
 
         let result = service.complete(make_request("nonexistent")).await;
         assert!(matches!(result, Err(DomainError::ModelNotFound(_))));
@@ -222,8 +257,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_messages_rejected() {
-        let service =
-            CompletionService::new(vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))]);
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
 
         let req = CompletionRequest {
             model: "gpt-5.2".to_string(),
@@ -237,8 +274,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_empty_messages_rejected() {
-        let service =
-            CompletionService::new(vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))]);
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
 
         let req = CompletionRequest {
             model: "gpt-5.2".to_string(),
@@ -252,12 +291,45 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_models_aggregates_all_providers() {
-        let service = CompletionService::new(vec![
-            Box::new(MockProvider::new("openai", vec!["gpt-5.2", "gpt-5-mini"])),
-            Box::new(MockProvider::new("anthropic", vec!["claude-opus-4-6"])),
-        ]);
+        let service = CompletionService::new(
+            vec![
+                Box::new(MockProvider::new("openai", vec!["gpt-5.2", "gpt-5-mini"])),
+                Box::new(MockProvider::new("anthropic", vec!["claude-opus-4-6"])),
+            ],
+            Arc::new(StubKeyStore),
+        );
 
         let models = service.list_models().await;
         assert_eq!(models.len(), 3);
+    }
+
+    #[test]
+    fn test_readiness_ok_when_all_keys_resolve() {
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
+
+        assert!(service.readiness().is_ok());
+    }
+
+    #[test]
+    fn test_readiness_fails_when_key_missing() {
+        struct MissingKeyStore;
+        impl KeyStore for MissingKeyStore {
+            fn get_key(&self, provider: &str) -> Result<String, DomainError> {
+                Err(DomainError::KeyNotFound(provider.to_string()))
+            }
+        }
+
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(MissingKeyStore),
+        );
+
+        assert!(matches!(
+            service.readiness(),
+            Err(DomainError::KeyNotFound(_))
+        ));
     }
 }

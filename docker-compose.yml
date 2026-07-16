@@ -46,16 +46,79 @@ services:
       timeout: 3s
       retries: 5
 
+  kratos:
+    image: oryd/kratos:v1.3.1
+    environment:
+      DSN: ${KRATOS_DSN:-postgres://kratos:kratos@kratos-db:5432/kratos?sslmode=disable}
+      SECRETS_COOKIE: ${KRATOS_COOKIE_SECRET:-dev-32-byte-kratos-cookie-secret}
+      SECRETS_CIPHER: ${KRATOS_CIPHER_SECRET:-dev-32-byte-kratos-cipher-secret}
+    command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
+    volumes:
+      - ./ory/kratos:/etc/config/kratos:ro
+    ports:
+      - "4433:4433"
+      - "4434:4434"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4434/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      kratos-migrate:
+        condition: service_completed_successfully
+
+  kratos-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${KRATOS_DB_USER:-kratos}
+      POSTGRES_PASSWORD: ${KRATOS_DB_PASSWORD:-kratos}
+      POSTGRES_DB: ${KRATOS_DB_NAME:-kratos}
+    volumes:
+      - kratos_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KRATOS_DB_USER:-kratos}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  kratos-migrate:
+    image: oryd/kratos:v1.3.1
+    environment:
+      DSN: ${KRATOS_DSN:-postgres://kratos:kratos@kratos-db:5432/kratos?sslmode=disable}
+    command: migrate sql -e --yes
+    volumes:
+      - ./ory/kratos:/etc/config/kratos:ro
+    depends_on:
+      kratos-db:
+        condition: service_healthy
+
   llm-gateway:
     build:
       context: ./llm-gateway
     environment:
       LLM_GATEWAY_PORT: ${LLM_GATEWAY_PORT:-8081}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_GATEWAY_CONNECT_TIMEOUT_SECS: ${LLM_GATEWAY_CONNECT_TIMEOUT_SECS:-10}
+      LLM_GATEWAY_REQUEST_TIMEOUT_SECS: ${LLM_GATEWAY_REQUEST_TIMEOUT_SECS:-600}
+      LLM_GATEWAY_MAX_RETRIES: ${LLM_GATEWAY_MAX_RETRIES:-3}
+      LLM_GATEWAY_RETRY_BASE_DELAY_MS: ${LLM_GATEWAY_RETRY_BASE_DELAY_MS:-500}
     ports:
       - "8081:8081"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  mailslurper:
+    image: oryd/mailslurper:latest-smtps
+    ports:
+      - "4436:4436"
+      - "4437:4437"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4436/"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -87,5 +150,119 @@ services:
       api:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # E2E test profile (docs/tasks/step10.md): an isolated copy of the stack on
+  # alternate host ports (5433, 8090, 8091, 8092, 3001), plus a canned
+  # OpenAI-compatible LLM stub, for Playwright specs. Disabled by default;
+  # only started with `--profile test` (see the `test:e2e:*` Taskfile tasks).
+  # Kept as one contiguous, alphabetized-among-itself group rather than
+  # interleaved into the dev-service alphabet above, to keep this step's diff
+  # disjoint from other steps that also touch this file. See
+  # docs/infra-conventions.md.
+  # ---------------------------------------------------------------------------
+  api-e2e:
+    build:
+      context: ./server
+    environment:
+      DATABASE_URL: postgres://polyphony:polyphony@db-e2e:5432/polyphony?sslmode=disable
+      JWT_SECRET: e2e-test-secret
+      PORT: 8080
+      CORS_ORIGINS: http://localhost:3001
+      LLM_GATEWAY_URL: http://llm-gateway-e2e:8081
+    ports:
+      - "8090:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    profiles: ["test"]
+    depends_on:
+      migrate-e2e:
+        condition: service_completed_successfully
+      llm-gateway-e2e:
+        condition: service_healthy
+
+  db-e2e:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: polyphony
+      POSTGRES_PASSWORD: polyphony
+      POSTGRES_DB: polyphony
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata-e2e:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polyphony"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["test"]
+
+  llm-gateway-e2e:
+    build:
+      context: ./llm-gateway
+    environment:
+      LLM_GATEWAY_PORT: 8081
+      OPENAI_API_KEY: e2e-dummy-key
+      OPENAI_BASE_URL: http://llm-stub:8092
+    ports:
+      - "8091:8081"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    profiles: ["test"]
+    depends_on:
+      llm-stub:
+        condition: service_healthy
+
+  llm-stub:
+    build:
+      context: ./llm-stub
+    ports:
+      - "8092:8092"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8092/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    profiles: ["test"]
+
+  migrate-e2e:
+    image: arigaio/atlas:latest
+    command: >
+      migrate apply
+      --url "postgres://polyphony:polyphony@db-e2e:5432/polyphony?sslmode=disable"
+      --dir "file://migrations"
+    volumes:
+      - ./server/migrations:/migrations:ro
+    profiles: ["test"]
+    depends_on:
+      db-e2e:
+        condition: service_healthy
+
+  web-e2e:
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+        NEXT_PUBLIC_MOCK_API: ${NEXT_PUBLIC_MOCK_API:-false}
+    environment:
+      API_URL: http://api-e2e:8080
+    ports:
+      - "3001:3000"
+    profiles: ["test"]
+    depends_on:
+      api-e2e:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  pgdata-e2e:
+  kratos_pgdata:

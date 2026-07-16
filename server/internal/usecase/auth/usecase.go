@@ -1,3 +1,7 @@
+// Package auth implements the authentication use cases (AuthUsecase):
+// registration, login, and token validation, delegating the actual password
+// hashing and JWT issuance/validation to a domain/auth.AuthService
+// implementation.
 package auth
 
 import (

@@ -1,6 +1,6 @@
 import type { Metadata } from "next"
 import { Provider } from "@/components/ui/provider"
-import { MockBadge } from "@/components/mock-badge"
+import { QueryProvider } from "./query-provider"
 
 export const metadata: Metadata = {
   title: "Polyphony - Team AI Chat",
@@ -15,10 +15,9 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
-        <Provider>
-          {children}
-          <MockBadge />
-        </Provider>
+        <QueryProvider>
+          <Provider>{children}</Provider>
+        </QueryProvider>
       </body>
     </html>
   )

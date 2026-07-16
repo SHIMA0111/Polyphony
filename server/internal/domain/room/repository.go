@@ -1,3 +1,4 @@
+// Package room defines the room and membership entities and their repository port.
 package room
 
 import "context"

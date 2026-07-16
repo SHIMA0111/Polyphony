@@ -143,15 +143,16 @@ func (h *MessageHandler) RegenerateAI(c echo.Context) error {
 
 func toMessageResponse(msg *domainmessage.Message) MessageResponse {
 	return MessageResponse{
-		ID:        msg.ID,
-		RoomID:    msg.RoomID,
-		SenderID:  msg.SenderID,
-		Content:   msg.Content,
-		Type:      string(msg.Type),
-		Status:    string(msg.Status),
-		Sequence:  msg.Sequence,
-		CreatedAt: msg.CreatedAt,
-		UpdatedAt: msg.UpdatedAt,
+		ID:                    msg.ID,
+		RoomID:                msg.RoomID,
+		SenderID:              msg.SenderID,
+		Content:               msg.Content,
+		Type:                  string(msg.Type),
+		Status:                string(msg.Status),
+		Sequence:              msg.Sequence,
+		InResponseToMessageID: msg.InResponseToMessageID,
+		CreatedAt:             msg.CreatedAt,
+		UpdatedAt:             msg.UpdatedAt,
 	}
 }
 

@@ -1,3 +1,4 @@
+// Package domain defines shared domain-level sentinel errors used across entities and use cases.
 package domain
 
 import "errors"

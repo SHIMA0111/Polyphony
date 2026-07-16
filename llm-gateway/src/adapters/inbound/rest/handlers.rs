@@ -16,14 +16,42 @@ pub type AppState = Arc<dyn CompletionUseCase>;
 
 /// Health check endpoint.
 ///
-/// `GET /health` — Returns service liveness status.
+/// `GET /health` — Returns service liveness status. Always `200` once the process is
+/// up; unlike `GET /ready`, it does not check whether dependencies (e.g. provider API
+/// keys) are actually usable.
 pub async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status": "ok"}))
+}
+
+/// Readiness check endpoint.
+///
+/// `GET /ready` — Returns whether the gateway's dependencies are actually usable, by
+/// calling `CompletionUseCase::readiness`. Distinct from `GET /health`: a process can
+/// be alive (`/health` → `200`) while not ready to serve completions (`/ready` →
+/// `503`), e.g. when a registered provider's API key is missing.
+///
+/// # Returns
+/// `200 {"status":"ready"}` when `readiness()` succeeds, `503
+/// {"status":"not_ready","error":...}` otherwise.
+pub async fn ready(State(service): State<AppState>) -> impl IntoResponse {
+    match service.readiness() {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ready"}))).into_response(),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"status": "not_ready", "error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 /// List models endpoint.
 ///
 /// `GET /models` — Returns available models from all providers.
+///
+/// # Returns
+/// `200` with a `ModelsResponseDto` listing every model reported by
+/// `CompletionUseCase::list_models`, converted via `ModelInfoDto::from`. Always `200`
+/// — an empty `models` list (e.g. no providers configured) is not an error.
 pub async fn list_models(State(service): State<AppState>) -> impl IntoResponse {
     let models = service
         .list_models()
@@ -37,6 +65,16 @@ pub async fn list_models(State(service): State<AppState>) -> impl IntoResponse {
 /// Chat completion endpoint.
 ///
 /// `POST /completions` — Sends a chat completion request to an LLM provider.
+///
+/// # Returns
+/// `200` with a `CompletionResponseDto` on success.
+///
+/// # Errors
+/// Returns `AppError` (via `?` on `dto.into_domain()` and `service.complete`), which
+/// maps each `DomainError` variant to an HTTP status: `InvalidRequest` → `400`,
+/// `ModelNotFound` → `404`, `KeyNotFound` → `500`, `Timeout` → `504`, `ProviderError`
+/// → `502`, `RateLimited` → `429` (with a `Retry-After` header when
+/// `retry_after_secs` is set). See `AppError::into_response`.
 pub async fn complete(
     State(service): State<AppState>,
     Json(dto): Json<CompletionRequestDto>,

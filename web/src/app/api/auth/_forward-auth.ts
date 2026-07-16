@@ -5,10 +5,20 @@ import {
   ACCESS_TOKEN_COOKIE,
   ACCESS_TOKEN_MAX_AGE_SECONDS,
 } from "@/lib/auth-cookie"
-import type { AuthResponse } from "@/types/api"
 
 /** Base URL of the Go API, read server-side only (never inlined into the client bundle). */
 const API_URL = process.env.API_URL ?? "http://localhost:8080"
+
+/**
+ * Shape of the Go API's `TokenResponse` (`server/internal/interface/handler/dto.go`),
+ * parsed here only to extract `access_token` for the session cookie — never
+ * forwarded to the browser. Defined inline (rather than imported from a
+ * shared types module) since this is the only consumer of this exact shape.
+ */
+interface AuthResponse {
+  access_token: string
+  token_type: string
+}
 
 /**
  * Shared implementation for the `POST /api/auth/login` and

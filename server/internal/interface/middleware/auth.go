@@ -1,3 +1,4 @@
+// Package middleware provides Echo middleware: JWT authentication and request-scoped structured logging.
 package middleware
 
 import (

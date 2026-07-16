@@ -13,6 +13,7 @@ import (
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	domainuser "github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
@@ -50,6 +51,11 @@ type Container struct {
 	// Services / Gateways
 	AuthService domainauth.AuthService
 	LLMGateway  ai.LLMGateway
+	// MessageHub is the event.MessageHub used by MsgUC to broadcast
+	// message_created/message_updated events. It is exposed on the
+	// Container (rather than kept private) so later steps (e.g. Step 15's
+	// WebSocket endpoint) can call Subscribe on the same instance.
+	MessageHub event.MessageHub
 
 	// Use cases
 	AuthUC *authusecase.AuthUsecase
@@ -89,11 +95,12 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	// Services / Gateways
 	authService := ifauth.NewSimpleJWTService(userRepo, cfg.JWTSecret)
 	llmClient := gateway.NewLLMClient(cfg.LLMGatewayURL)
+	messageHub := event.NewInProcessHub()
 
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
 	roomUC := roomusecase.NewRoomUsecase(roomRepo)
-	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmClient)
+	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmClient, messageHub)
 	userUC := userusecase.NewUserUsecase(userRepo)
 
 	// Handlers
@@ -115,6 +122,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 
 		AuthService: authService,
 		LLMGateway:  llmClient,
+		MessageHub:  messageHub,
 
 		AuthUC: authUC,
 		RoomUC: roomUC,

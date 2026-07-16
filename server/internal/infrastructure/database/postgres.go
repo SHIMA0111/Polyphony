@@ -1,3 +1,4 @@
+// Package database manages the PostgreSQL connection pool used by the repository layer.
 package database
 
 import (

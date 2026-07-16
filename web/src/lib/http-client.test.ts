@@ -82,4 +82,109 @@ describe("http-client", () => {
 
     expect(capturedUrl).toBe("/api/auth/login")
   })
+
+  it("on a 401, clears the session cookie via /api/auth/logout before redirecting to /login", async () => {
+    const calledUrls: string[] = []
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      calledUrls.push(url)
+      if (url === "/api/auth/logout") {
+        return jsonResponse(200, { ok: true })
+      }
+      return jsonResponse(401, { message: "unauthorized" })
+    })
+
+    const assign = vi.fn()
+    const originalLocation = window.location
+    // jsdom does not implement real navigation, and `window.location` is
+    // non-configurable in some environments, so replace it wholesale for
+    // this test only.
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, assign },
+    })
+
+    try {
+      await expect(apiRequest("/rooms")).rejects.toBeInstanceOf(ApiRequestError)
+
+      // The dead cookie must be cleared (via the logout route) before the
+      // browser is redirected — otherwise middleware.ts's presence-only
+      // check would immediately bounce /login back to /rooms, producing an
+      // infinite redirect loop.
+      expect(calledUrls).toEqual(["/api/proxy/rooms", "/api/auth/logout"])
+      expect(assign).toHaveBeenCalledWith("/login")
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      })
+    }
+  })
+
+  it("on a 401, still redirects to /login even if the /api/auth/logout call fails outright", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === "/api/auth/logout") {
+        throw new Error("network error")
+      }
+      return jsonResponse(401, { message: "unauthorized" })
+    })
+
+    const assign = vi.fn()
+    const originalLocation = window.location
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, assign },
+    })
+
+    try {
+      await expect(apiRequest("/rooms")).rejects.toBeInstanceOf(ApiRequestError)
+
+      // The best-effort clear failing outright must not prevent the redirect.
+      expect(assign).toHaveBeenCalledWith("/login")
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      })
+    }
+  })
+
+  it("on a 401, still redirects to /login even if the /api/auth/logout call is aborted (simulating a timeout)", async () => {
+    let capturedSignal: AbortSignal | undefined
+    global.fetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url === "/api/auth/logout") {
+          // Assert the call is actually bounded by an AbortSignal (i.e. it
+          // passes `signal: AbortSignal.timeout(...)`), then simulate that
+          // signal firing — production `AbortSignal.timeout` rejects the
+          // fetch with an AbortError, which apiFetch's `.catch()` must
+          // swallow before still redirecting.
+          capturedSignal = init?.signal ?? undefined
+          throw new DOMException("The operation was aborted.", "AbortError")
+        }
+        return jsonResponse(401, { message: "unauthorized" })
+      },
+    )
+
+    const assign = vi.fn()
+    const originalLocation = window.location
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, assign },
+    })
+
+    try {
+      await expect(apiRequest("/rooms")).rejects.toBeInstanceOf(ApiRequestError)
+
+      expect(capturedSignal).toBeInstanceOf(AbortSignal)
+      expect(assign).toHaveBeenCalledWith("/login")
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      })
+    }
+  })
 })

@@ -1,3 +1,6 @@
+// Package ai defines the domain model for AI completions: chat messages,
+// completion requests/responses, model metadata, and the LLMGateway port
+// implemented by the interface layer.
 package ai
 
 // ChatMessage represents a single message in a conversation context sent to the LLM.
