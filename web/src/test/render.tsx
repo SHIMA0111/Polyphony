@@ -2,6 +2,7 @@ import type { ReactElement, ReactNode } from "react"
 import { render, type RenderOptions } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { Provider } from "@/components/ui/provider"
+import { Toaster } from "@/components/ui/toaster"
 
 /**
  * Custom React Testing Library `render` that wraps `ui` in the app's real
@@ -10,6 +11,11 @@ import { Provider } from "@/components/ui/provider"
  * `QueryClientProvider`, so components under test get the same Chakra
  * style/token context and TanStack Query cache they get at runtime without
  * each test hand-rolling a wrapper.
+ *
+ * Also mounts `<Toaster />` alongside `ui` (mirroring `app/layout.tsx`,
+ * which mounts it once globally) so tests can assert on `toaster.create(...)`
+ * calls the same way a user would see them — `screen.getByRole("status")` —
+ * instead of every form test needing to remember to render it itself.
  *
  * Re-exports everything else from `@testing-library/react` so this module can
  * be used as a drop-in replacement: `import { renderWithProviders as render, screen } from "@/test/render"`.
@@ -69,6 +75,7 @@ function renderWithProviders(
       <Provider>
         <QueryClientProvider client={queryClient}>
           {children}
+          <Toaster />
         </QueryClientProvider>
       </Provider>
     )

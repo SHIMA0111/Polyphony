@@ -1,3 +1,4 @@
+import { notFound } from "next/navigation"
 import { HydrationBoundary, dehydrate } from "@tanstack/react-query"
 import { getQueryClient } from "@/lib/query-client"
 import { serverHttpClient } from "@/lib/http-client.server"
@@ -12,6 +13,11 @@ import { ChatRoom } from "@/features/messages/components/ChatRoom"
  * dehydrated cache to `ChatRoom` via `HydrationBoundary` — avoiding the
  * client-side loading spinner flash the pre-migration `useEffect` fetch had
  * on first navigation into a room.
+ *
+ * The room itself is fetched with `fetchQuery` (not `prefetchQuery`, which
+ * swallows query errors by design) inside a `try/catch` so a 404/failed
+ * fetch can trigger `notFound()`, rendering this route's `not-found.tsx`
+ * instead of a chat UI with no room to show.
  */
 export default async function ChatRoomPage({
   params,
@@ -21,8 +27,13 @@ export default async function ChatRoomPage({
   const { roomId } = await params
   const queryClient = getQueryClient()
 
+  try {
+    await queryClient.fetchQuery(getRoomQueryOptions(roomId, serverHttpClient.get))
+  } catch {
+    notFound()
+  }
+
   await Promise.all([
-    queryClient.prefetchQuery(getRoomQueryOptions(roomId, serverHttpClient.get)),
     queryClient.prefetchQuery(
       getMessagesQueryOptions(roomId, serverHttpClient.get),
     ),

@@ -1,28 +1,37 @@
 "use client"
 
-import { useState } from "react"
 import Link from "next/link"
-import { Box, Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/react"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useForm } from "react-hook-form"
+import { Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/react"
 import { Pen } from "lucide-react"
 import { PasswordInput } from "@/components/ui/password-input"
+import { toaster } from "@/components/ui/toaster"
 import { useLogin } from "@/features/auth/hooks/use-login"
+import { loginSchema, type LoginFormValues } from "@/features/auth/utils/schemas"
 
 export function LoginForm() {
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
-  const [error, setError] = useState("")
   const loginMutation = useLogin()
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<LoginFormValues>({
+    resolver: zodResolver(loginSchema),
+    mode: "onBlur",
+  })
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError("")
-
+  const onSubmit = handleSubmit(async (values) => {
     try {
-      await loginMutation.mutateAsync({ email, password })
+      await loginMutation.mutateAsync(values)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed")
+      toaster.create({
+        type: "error",
+        title: "Sign in failed",
+        description: err instanceof Error ? err.message : "Please try again.",
+      })
     }
-  }
+  })
 
   return (
     <Flex minH="100vh" align="center" justify="center" bg="bg.subtle" p={4}>
@@ -50,37 +59,32 @@ export function LoginForm() {
           </Card.Description>
         </Card.Header>
         <Card.Body>
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={onSubmit} noValidate>
             <Flex direction="column" gap={4}>
-              {error && (
-                <Box
-                  bg="red.50"
-                  color="red.600"
-                  p={3}
-                  rounded="md"
-                  fontSize="sm"
-                >
-                  {error}
-                </Box>
-              )}
-              <Field.Root>
+              <Field.Root invalid={!!errors.email}>
                 <Field.Label>Email</Field.Label>
                 <Input
                   type="email"
                   placeholder="you@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
+                  {...register("email")}
                 />
+                {errors.email && (
+                  <Field.ErrorText role="alert">
+                    {errors.email.message}
+                  </Field.ErrorText>
+                )}
               </Field.Root>
-              <Field.Root>
+              <Field.Root invalid={!!errors.password}>
                 <Field.Label>Password</Field.Label>
                 <PasswordInput
                   placeholder="Enter your password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
+                  {...register("password")}
                 />
+                {errors.password && (
+                  <Field.ErrorText role="alert">
+                    {errors.password.message}
+                  </Field.ErrorText>
+                )}
               </Field.Root>
               <Button
                 type="submit"
