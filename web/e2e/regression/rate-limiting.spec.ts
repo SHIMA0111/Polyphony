@@ -114,7 +114,11 @@ async function registerUserAndRoom(
   runId: string,
 ): Promise<{ email: string }> {
   const email = `rate-limit-${runId}@polyphony.test`
-  const username = `rate_limit_${runId}`
+  // Short "rl_" prefix: registerSchema caps usernames at 32 characters, and
+  // `rate_limit_${runId}` (with runId's 13-digit-ms timestamp + random
+  // suffix + case tag) is 33 -- registration could never succeed (caught
+  // live by the wave-7 integration run).
+  const username = `rl_${runId}`
   const password = "rate-limit-test-password-123"
   const roomName = `Rate Limit Test Room ${runId}`
 
@@ -124,7 +128,10 @@ async function registerUserAndRoom(
   await page.getByPlaceholder("Create a password").fill(password)
   await page.getByPlaceholder("Confirm your password").fill(password)
   await page.getByRole("button", { name: "Create account" }).click()
-  await expect(page).toHaveURL(/\/rooms$/)
+  // Longer timeout (wave-7 deflake, same as members/groups/rooms'
+  // registerUser carryover fix): under full-suite parallelism this
+  // post-auth navigation can exceed Playwright's default 5s.
+  await expect(page).toHaveURL(/\/rooms$/, { timeout: 15_000 })
 
   creditTokenBalance(email, 1_000_000)
 
@@ -181,8 +188,11 @@ test.describe("rate limiting", () => {
     // A handful of AI sends (falls back to the `default` fixture -- no
     // marker needed), still well under the relaxed default.
     for (let i = 0; i < 3; i++) {
-      await expect(sendWithAIButton).toBeEnabled()
+      // Fill *before* asserting enabled: the button is disabled while the
+      // composer is empty, and every send clears the composer (caught live
+      // by the wave-7 integration run).
       await composer.fill(`AI burst message ${i} ${runId}`)
+      await expect(sendWithAIButton).toBeEnabled()
       await sendWithAIButton.click()
       await expect(page.getByText(`AI burst message ${i} ${runId}`).first()).toBeVisible()
     }
@@ -222,8 +232,11 @@ test.describe("rate limiting", () => {
       const MAX_ATTEMPTS = 8
 
       for (let i = 0; i < MAX_ATTEMPTS && !limitedResponse; i++) {
-        await expect(sendWithAIButton).toBeEnabled()
+        // Fill *before* asserting enabled: the button is disabled while the
+        // composer is empty, and every send clears the composer (caught
+        // live by the wave-7 integration run, same as Case 1).
         await composer.fill(`Tightened limit probe ${i} ${runId}`)
+        await expect(sendWithAIButton).toBeEnabled()
 
         const [response] = await Promise.all([
           page.waitForResponse(

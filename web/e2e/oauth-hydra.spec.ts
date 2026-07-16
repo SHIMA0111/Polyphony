@@ -1,3 +1,4 @@
+import { createServer, type Server } from "node:http"
 import { expect, test } from "@playwright/test"
 import { HYDRA_DEMO_FIXTURE_USER } from "./support/fixtures"
 
@@ -60,13 +61,18 @@ const DEMO_CLIENT_ID = "e2e-oauth-hydra-demo-client"
 const DEMO_CLIENT_SECRET = "e2e-oauth-hydra-demo-client-secret"
 
 /**
- * Registered redirect URI for the demo client. No server ever needs to
- * listen here -- `page.route` below intercepts and stubs any request to
- * this origin, matching `ory/hydra/test-oauth-flow.ts`'s identical
- * `http://localhost:9999/callback` convention (the flow is verified by
- * observing the navigated-to URL, not by actually serving the callback).
+ * Registered redirect URI for the demo client, matching
+ * `ory/hydra/test-oauth-flow.ts`'s identical `http://localhost:9999/callback`
+ * convention. A minimal local stub server (see `beforeAll` below) actually
+ * listens here for the duration of the spec: Hydra's final hop to this URI
+ * is a *server-side redirect* within one browser navigation, and Playwright's
+ * `page.route`/`route.fulfill` cannot fulfill a redirected request -- the
+ * browser genuinely connects to this port, so something real must answer
+ * (caught live by the wave-7 integration run: with only a `page.route` stub
+ * the navigation dies with `net::ERR_CONNECTION_REFUSED`).
  */
 const REDIRECT_URI = "http://localhost:9999/callback"
+const REDIRECT_PORT = 9999
 
 /**
  * Idempotently registers the fixed demo OAuth2 client against `hydra-e2e`'s
@@ -101,8 +107,27 @@ async function ensureDemoClient(): Promise<void> {
 }
 
 test.describe("Hydra OAuth2/OIDC authorization-code flow (Step 55, browser-level regression)", () => {
+  let callbackServer: Server
+
   test.beforeAll(async () => {
     await ensureDemoClient()
+    // See REDIRECT_URI's doc comment: a real listener is required because
+    // the browser is server-redirected here and route interception cannot
+    // fulfill a redirect hop.
+    callbackServer = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/html" })
+      res.end("<html><body>oauth-hydra.spec.ts callback stub</body></html>")
+    })
+    await new Promise<void>((resolve, reject) => {
+      callbackServer.once("error", reject)
+      callbackServer.listen(REDIRECT_PORT, resolve)
+    })
+  })
+
+  test.afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      callbackServer?.close(() => resolve())
+    })
   })
 
   test("logs in, completes the authorization-code round trip, and exchanges the code for tokens", async ({
@@ -119,17 +144,6 @@ test.describe("Hydra OAuth2/OIDC authorization-code flow (Step 55, browser-level
     await page.getByRole("button", { name: "Sign in" }).click()
     await expect(page).toHaveURL(/\/rooms$/)
 
-    // The callback URL is never actually served; intercept it and fulfill a
-    // stub page so the final redirect navigation succeeds instead of
-    // failing to connect, then read the code/state off the request URL.
-    await page.route(`${REDIRECT_URI}**`, async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "text/html",
-        body: "<html><body>oauth-hydra.spec.ts callback stub</body></html>",
-      })
-    })
-
     const state = `e2e-state-${Date.now()}`
     const authorizeUrl = new URL(`${HYDRA_E2E_PUBLIC_URL}/oauth2/auth`)
     authorizeUrl.searchParams.set("client_id", DEMO_CLIENT_ID)
@@ -141,7 +155,7 @@ test.describe("Hydra OAuth2/OIDC authorization-code flow (Step 55, browser-level
     // Drives the full hop chain in one navigation: Hydra -> this app's
     // `/oauth/login` (accepts immediately -- a Kratos session already
     // exists) -> Hydra -> this app's `/oauth/consent` (auto-grants, no
-    // consent UI page) -> Hydra -> the intercepted callback URL.
+    // consent UI page) -> Hydra -> the stub callback server above.
     await page.goto(authorizeUrl.toString())
     expect(page.url().startsWith(REDIRECT_URI)).toBe(true)
 

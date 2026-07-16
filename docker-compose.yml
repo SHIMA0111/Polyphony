@@ -706,7 +706,17 @@ services:
     build:
       context: ./web
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+        # api-e2e's *host-published* origin (8090:8080 above), NOT the dev
+        # api's 8080: NEXT_PUBLIC_API_URL is what the browser itself dials
+        # directly for the WebSocket upgrade (`getWsBaseUrl()` in
+        # web/src/config/env.ts -- the BFF proxy cannot upgrade a WS
+        # handshake). Built with the dev-stack default 8080, every live-WS
+        # spec (two-client-realtime, streaming, private-mode) dials a port
+        # this stack does not own and no realtime event is ever delivered
+        # (caught live by the wave-7 integration run). Kept as its own
+        # variable so a plain `NEXT_PUBLIC_API_URL` in .env cannot silently
+        # repoint the e2e web build at the dev API again.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL_E2E:-http://localhost:8090}
         NEXT_PUBLIC_MOCK_API: ${NEXT_PUBLIC_MOCK_API:-false}
     environment:
       API_URL: http://api-e2e:8080

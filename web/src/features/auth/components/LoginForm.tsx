@@ -159,6 +159,12 @@ export function LoginForm() {
                 colorPalette="blue"
                 size="lg"
                 w="full"
+                // Disabled until the Kratos login flow has loaded: onSubmit
+                // silently no-ops while `flow` is null, so a click in that
+                // window would otherwise be dropped without any feedback
+                // (caught live by the wave-7 integration run as a stuck
+                // login under load).
+                disabled={!flow}
                 loading={loginMutation.isPending}
                 loadingText="Signing in..."
               >

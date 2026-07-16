@@ -61,7 +61,10 @@ async function registerUser(page: Page, prefix: string): Promise<RegisteredUser>
   await page.getByPlaceholder("Create a password").fill(user.password)
   await page.getByPlaceholder("Confirm your password").fill(user.password)
   await page.getByRole("button", { name: "Create account" }).click()
-  await expect(page).toHaveURL(/\/rooms$/)
+  // Longer timeout (wave-7 deflake, same as members/groups/rooms'
+  // registerUser carryover fix): under full-suite parallelism this
+  // post-auth navigation can exceed Playwright's default 5s.
+  await expect(page).toHaveURL(/\/rooms$/, { timeout: 15_000 })
 
   return user
 }
@@ -183,13 +186,27 @@ test.describe("Private AI mode", () => {
 
     // (g) A subsequent ordinary (non-private) message from Alice still
     // delivers to Bob promptly -- the WS connection and normal delivery are
-    // otherwise unaffected by private mode.
+    // otherwise unaffected by private mode. Bob's socket must be connected
+    // *before* Alice sends: the reload above tore down Bob's WebSocket, a
+    // live-delivered message has no refetch fallback, and a send landing
+    // during Bob's reconnect window is silently missed (caught flaking live
+    // by the wave-7 integration run; same ordering rule as
+    // `regression/two-client-realtime.spec.ts`).
+    await expect(
+      bobPage.locator('[aria-label="Connection status: Connected"]'),
+    ).toBeVisible()
     await alicePage.getByPlaceholder("Ask me anything...").fill(publicContent)
     await alicePage
       .getByRole("button", { name: "Send", exact: true })
       .click()
     await expect(alicePage.getByText(publicContent).first()).toBeVisible()
-    await expect(bobPage.getByText(publicContent).first()).toBeVisible()
+    // Longer timeout (wave-7 deflake): Bob's copy arrives over a live WS
+    // broadcast, which can exceed the default 5s under full-suite
+    // parallelism (two browser contexts + Kratos registrations competing
+    // for CPU) even though delivery itself is otherwise prompt.
+    await expect(bobPage.getByText(publicContent).first()).toBeVisible({
+      timeout: 15_000,
+    })
 
     await bobContext.close()
   })

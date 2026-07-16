@@ -189,12 +189,17 @@ tasks:
     dir: web
     deps: [test:e2e:up]
     cmds:
+      # rate-limiting runs as its own, second invocation: its Case 2
+      # recreates api-e2e with a tightened AI-invoke limit, which must never
+      # overlap another spec's AI sends (see playwright.config.ts's
+      # `rate-limiting` project). `--no-deps` skips that project's chromium
+      # dependency, which would otherwise re-run the full suite here.
       - >-
         bunx playwright test
         e2e/regression/ai-send-model-select.spec.ts
         e2e/regression/two-client-realtime.spec.ts
         e2e/regression/context-controls-ai-effect.spec.ts
-        e2e/regression/rate-limiting.spec.ts
+      - bunx playwright test e2e/regression/rate-limiting.spec.ts --no-deps
 
   # ---------------------------------------------------------------------------
   # Lint & Format

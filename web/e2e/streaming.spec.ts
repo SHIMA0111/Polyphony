@@ -92,7 +92,10 @@ test("AI reply renders incrementally via token_chunk WS frames and settles on th
   await page.getByPlaceholder("Confirm your password").fill(password)
   await page.getByRole("button", { name: "Create account" }).click()
 
-  await expect(page).toHaveURL(/\/rooms$/)
+  // Longer timeout (wave-7 deflake, same as members/groups/rooms'
+  // registerUser carryover fix): under full-suite parallelism this
+  // post-auth navigation can exceed Playwright's default 5s.
+  await expect(page).toHaveURL(/\/rooms$/, { timeout: 15_000 })
 
   creditTokenBalance(email, 1_000_000)
 

@@ -63,7 +63,10 @@ test("exclude, delete, and an AI context cutoff all still allow a subsequent AI 
   await page.getByPlaceholder("you@example.com").fill(FIXTURE_USER.email)
   await page.getByPlaceholder("Enter your password").fill(FIXTURE_USER.password)
   await page.getByRole("button", { name: "Sign in" }).click()
-  await expect(page).toHaveURL(/\/rooms$/)
+  // Longer timeout (wave-7 deflake, same as members/groups/rooms'
+  // registerUser carryover fix): under full-suite parallelism this
+  // post-auth navigation can exceed Playwright's default 5s.
+  await expect(page).toHaveURL(/\/rooms$/, { timeout: 15_000 })
 
   await page.getByRole("button", { name: "New Room" }).first().click()
   await page.getByPlaceholder("e.g., Product Strategy").fill(roomName)
@@ -99,7 +102,15 @@ test("exclude, delete, and an AI context cutoff all still allow a subsequent AI 
   const secondMessageBubble = page.locator("div", { hasText: secondMessage }).last()
   await secondMessageBubble.hover()
   await page.getByRole("button", { name: "Message actions" }).nth(1).click()
-  await page.getByRole("menuitem", { name: "Delete message" }).click()
+  // Scoped to the currently-open menu (`data-state="open"`): the first
+  // message's already-used menu stays mounted in its own portal (and can
+  // still be mid-close-animation, i.e. transiently "visible"), so an
+  // unscoped `getByRole("menuitem")` resolves to two "Delete message" items
+  // and trips strict mode (caught live by the wave-7 integration run).
+  await page
+    .locator('[data-scope="menu"][data-part="content"][data-state="open"]')
+    .getByRole("menuitem", { name: "Delete message" })
+    .click()
   await page.getByRole("button", { name: "Delete", exact: true }).click()
   await expect(page.getByText(secondMessage)).toHaveCount(0)
 
@@ -112,7 +123,10 @@ test("exclude, delete, and an AI context cutoff all still allow a subsequent AI 
   await page.getByRole("button", { name: "Set cutoff to now" }).click()
   await expect(page.getByText("No cutoff set")).toHaveCount(0)
 
-  await page.getByRole("button", { name: "Close" }).click()
+  // `exact: true`: the drawer also has an icon close-trigger whose
+  // accessible name is "Close room settings", which non-exact (substring)
+  // role matching would also hit, tripping strict mode.
+  await page.getByRole("button", { name: "Close", exact: true }).click()
   await expect(page.getByRole("heading", { name: "Room settings" })).toHaveCount(0)
 
   // (d) Send a further plain message after the cutoff, then send an AI

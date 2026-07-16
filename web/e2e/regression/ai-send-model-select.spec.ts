@@ -45,7 +45,10 @@ async function loginAsFixtureUser(page: import("@playwright/test").Page): Promis
   await page.getByPlaceholder("you@example.com").fill(FIXTURE_USER.email)
   await page.getByPlaceholder("Enter your password").fill(FIXTURE_USER.password)
   await page.getByRole("button", { name: "Sign in" }).click()
-  await expect(page).toHaveURL(/\/rooms$/)
+  // Longer timeout (wave-7 deflake, same as members/groups/rooms'
+  // registerUser carryover fix): under full-suite parallelism this
+  // post-auth navigation can exceed Playwright's default 5s.
+  await expect(page).toHaveURL(/\/rooms$/, { timeout: 15_000 })
 }
 
 /**
@@ -113,11 +116,18 @@ test("selecting a specific OpenAI model and sending with AI reaches the matching
   // step-10 stub via the selected model, not some other provider's model
   // being silently substituted (which would instead 404 against a
   // fixture-less provider or return the unrelated `default` text).
+  // `.first()` + a longer timeout: the shared fixture room accumulates one
+  // identical canned reply per run of this spec against a long-lived stack
+  // (strict mode would otherwise fail on the second run), and the reply now
+  // arrives via the streaming pipeline (Step 54) whose paced chunk delivery
+  // can exceed the default 5s under full-suite parallelism.
   await expect(
-    page.getByText(
-      "This canned reply confirms the explicitly selected OpenAI model reached the E2E stub.",
-    ),
-  ).toBeVisible()
+    page
+      .getByText(
+        "This canned reply confirms the explicitly selected OpenAI model reached the E2E stub.",
+      )
+      .first(),
+  ).toBeVisible({ timeout: 15_000 })
 
   // No silent substitution: the selector still shows the explicitly chosen
   // model after the send completes (nothing in `MessageInput`/`ModelSelector`

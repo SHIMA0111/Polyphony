@@ -207,6 +207,12 @@ export function RegisterForm() {
                 colorPalette="blue"
                 size="lg"
                 w="full"
+                // Disabled until the Kratos registration flow has loaded:
+                // onSubmit silently no-ops while `flow` is null, so a click
+                // in that window would otherwise be dropped without any
+                // feedback (caught live by the wave-7 integration run as
+                // registrations stuck on /register under load).
+                disabled={!flow}
                 loading={registerMutation.isPending}
                 loadingText="Creating account..."
               >
