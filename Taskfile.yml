@@ -126,13 +126,25 @@ tasks:
       # project, port-colliding with a running dev stack. Rather than reusing
       # those shared dev services, api-e2e/web-e2e point at their own
       # dedicated kratos-e2e/kratos-db-e2e/kratos-migrate-e2e/mailslurper-e2e
-      # services (also `profiles: ["test"]`, with no host `ports:` bindings)
-      # so the E2E stack never binds the dev stack's fixed 4433/4434/4436/
-      # 4437 host ports and can run fully alongside a running dev stack.
+      # services (also `profiles: ["test"]`) so the E2E stack never binds the
+      # dev stack's fixed 4433/4434/4436/4437 host ports and can run fully
+      # alongside a running dev stack. `kratos-e2e` is the one exception: it
+      # publishes its own dedicated 8093/8094 host ports (still distinct from
+      # the dev `kratos` service's 4433/4434) purely so dex's OIDC callback
+      # redirect — issued directly to the browser, not through the
+      # `/api/kratos/*` proxy — can reach it (Step 44; see docker-compose.yml's
+      # `kratos-e2e` block and ory/dex/config.yaml).
+      #
+      # `dex` itself (Step 44) is *not* `profiles: ["test"]` — it is one of
+      # the few services shared verbatim between the dev and E2E stacks (see
+      # docker-compose.yml's top-of-file convention comment) — so it must be
+      # listed explicitly here too, exactly like every other service above;
+      # otherwise this explicit list (rather than `--profile test` alone)
+      # would leave it out of the `polyphony-e2e` project entirely.
       - >-
         docker compose -p polyphony-e2e --profile test up -d --build
         db-e2e migrate-e2e llm-stub llm-gateway-e2e api-e2e web-e2e
-        kratos-db-e2e kratos-migrate-e2e kratos-e2e mailslurper-e2e redis-e2e
+        kratos-db-e2e kratos-migrate-e2e kratos-e2e mailslurper-e2e redis-e2e dex
 
   test:e2e:seed:
     desc: Seed the idempotent E2E fixture user + room against the running test stack

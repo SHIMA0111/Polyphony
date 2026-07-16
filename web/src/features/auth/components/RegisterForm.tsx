@@ -11,6 +11,7 @@ import { PasswordInput, PasswordStrengthMeter } from "@/components/ui/password-i
 import { toaster } from "@/components/ui/toaster"
 import { useRegister } from "@/features/auth/hooks/use-register"
 import { getRegistrationFlow } from "@/features/auth/api/registration-flow"
+import { SocialLoginButtons } from "@/features/auth/components/SocialLoginButtons"
 import { getPasswordStrength } from "@/features/auth/utils/password-strength"
 import {
   getFormMessages,
@@ -213,6 +214,7 @@ export function RegisterForm() {
               </Button>
             </Flex>
           </form>
+          {flow && <SocialLoginButtons flow={flow} />}
           <Text mt={6} textAlign="center" fontSize="sm" color="fg.muted">
             Already have an account?{" "}
             <Link href="/login">

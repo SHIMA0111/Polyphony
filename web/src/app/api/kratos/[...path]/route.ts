@@ -13,31 +13,60 @@ interface RouteContext {
 /**
  * Shared implementation for the `GET`/`POST` methods this catch-all proxy
  * forwards to Kratos's public API (self-service login/registration/logout
- * flows and `sessions/whoami`).
+ * flows, `sessions/whoami`, and — since Step 44 — the OIDC method's
+ * provider-redirect and callback legs).
  *
  * Forwards the incoming request's raw `Cookie` header verbatim (the Kratos
- * session cookie, and the flow's CSRF cookie set by the preceding `GET
- * .../browser` call, both round-trip through this same-origin proxy so the
- * browser attaches them automatically) and the request body verbatim on
- * `POST`. Sets `Accept: application/json` on the upstream request — Kratos's
- * AJAX/SPA contract: without it, `self-service/{login,registration}/browser`
- * and flow submission endpoints respond with `302`/`303` HTML redirects
- * intended for full-page browser navigation instead of returning the
- * flow/session JSON this proxy's callers expect.
+ * session cookie, and the flow's CSRF/continuity cookies set by preceding
+ * calls, all round-trip through this same-origin proxy so the browser
+ * attaches them automatically) and the request body verbatim on `POST`.
+ *
+ * The incoming request's own `Accept` header is forwarded as-is (defaulting
+ * to `application/json` only when the caller sent none), rather than always
+ * being forced to `application/json` — Kratos's content negotiation on flow
+ * submission is genuinely bimodal:
+ *   - With `Accept: application/json` (this app's JS-driven `fetch` calls in
+ *     `features/auth/api/*.ts`, all of which set it explicitly), Kratos
+ *     returns flow/session JSON directly, or — for the `oidc` method
+ *     specifically — a `422 browser_location_change_required` body carrying
+ *     a `redirect_browser_to` URL instead of a real HTTP redirect (since a
+ *     JS `fetch` caller must decide for itself whether/how to navigate).
+ *   - Without that header (a real, full-page HTML `<form>` POST — see
+ *     `SocialLoginButtons.tsx`, which must submit via genuine browser
+ *     navigation, not `fetch`, for exactly this reason), Kratos instead
+ *     issues a genuine `302`/`303` redirect straight to the OIDC provider.
+ * Forcing `application/json` unconditionally would turn that second case
+ * into the first, leaving a real browser navigation stuck rendering a raw
+ * `422` JSON body instead of continuing to the provider.
+ *
+ * The upstream `fetch` uses `redirect: "manual"` so any `3xx` upstream
+ * response (the case above, and Kratos's own callback-completion redirect)
+ * is returned to the browser as a real redirect rather than being followed
+ * server-side and collapsed into a `200` — the caller (a real browser
+ * navigation) must see and follow the redirect itself, since the next hop
+ * is frequently a different origin entirely (the OIDC provider). Node's
+ * `fetch` (unlike a browser's) still exposes the real status/`Location`
+ * header in `manual` mode (no opaque-redirect filtering applies server-side).
  *
  * Every upstream `Set-Cookie` header is copied onto the outgoing
- * `NextResponse` — Kratos may set more than one (e.g. session + CSRF
- * cookies), and `Headers.get("set-cookie")` only ever returns one, so
- * `getSetCookie()` is used and each value is appended individually.
+ * `NextResponse` — Kratos may set more than one (e.g. session + CSRF/
+ * continuity cookies), and `Headers.get("set-cookie")` only ever returns
+ * one, so `getSetCookie()` is used and each value is appended individually.
+ * This applies whether the upstream response is a normal body or a
+ * redirect: Kratos sets its continuity cookie on the very `302`/`303` that
+ * kicks off the OIDC provider redirect (see the module doc above), so it
+ * must be preserved on redirect responses too, not just `200`s.
  *
- * The upstream body is streamed back unchanged, but only `Content-Type` is
- * copied from the upstream response's other headers — `Content-Encoding`/
- * `Transfer-Encoding` are intentionally dropped since the body was already
- * read and decoded here (mirrors `app/api/proxy/[...path]/route.ts`).
+ * The upstream body is streamed back unchanged for non-redirect responses,
+ * but only `Content-Type` is copied from the upstream response's other
+ * headers — `Content-Encoding`/`Transfer-Encoding` are intentionally
+ * dropped since the body was already read and decoded here (mirrors
+ * `app/api/proxy/[...path]/route.ts`).
  *
  * @param request - The incoming Next.js request.
  * @param context - Route context carrying the (Next 16 async) dynamic `path` segments.
- * @returns A `NextResponse` mirroring the upstream status, body, and `Set-Cookie` headers.
+ * @returns A `NextResponse` mirroring the upstream status, headers
+ *   (`Location`/`Content-Type`), body, and `Set-Cookie` headers.
  */
 async function proxy(
   request: NextRequest,
@@ -47,7 +76,7 @@ async function proxy(
   const upstreamUrl = `${KRATOS_PUBLIC_URL}/${path.join("/")}${request.nextUrl.search}`
 
   const headers: Record<string, string> = {
-    Accept: "application/json",
+    Accept: request.headers.get("Accept") ?? "application/json",
   }
   const contentType = request.headers.get("Content-Type")
   if (contentType) {
@@ -64,16 +93,29 @@ async function proxy(
     method: request.method,
     headers,
     body: hasBody ? await request.arrayBuffer() : undefined,
+    redirect: "manual",
   })
 
-  const responseBody = await upstreamRes.arrayBuffer()
   const responseHeaders = new Headers()
+  for (const cookieValue of upstreamRes.headers.getSetCookie()) {
+    responseHeaders.append("Set-Cookie", cookieValue)
+  }
+
+  if (upstreamRes.status >= 300 && upstreamRes.status < 400) {
+    const location = upstreamRes.headers.get("Location")
+    if (location) {
+      responseHeaders.set("Location", location)
+    }
+    return new NextResponse(null, {
+      status: upstreamRes.status,
+      headers: responseHeaders,
+    })
+  }
+
+  const responseBody = await upstreamRes.arrayBuffer()
   const upstreamContentType = upstreamRes.headers.get("Content-Type")
   if (upstreamContentType) {
     responseHeaders.set("Content-Type", upstreamContentType)
-  }
-  for (const cookieValue of upstreamRes.headers.getSetCookie()) {
-    responseHeaders.append("Set-Cookie", cookieValue)
   }
 
   return new NextResponse(responseBody, {
