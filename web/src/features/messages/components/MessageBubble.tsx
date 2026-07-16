@@ -20,6 +20,7 @@ import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useDeleteMessage } from "@/features/messages/hooks/use-delete-message"
 import { useUpdateMessageExclude } from "@/features/messages/hooks/use-update-message-exclude"
 import { MarkdownContent } from "./MarkdownContent"
+import { MessageAttachments } from "./MessageAttachments"
 import { ThinkingBubble } from "./ThinkingBubble"
 
 interface MessageBubbleProps {
@@ -208,6 +209,10 @@ export function MessageBubble({
           <Text fontSize="15px" lineHeight="relaxed" whiteSpace="pre-wrap">
             {message.content || "(No response)"}
           </Text>
+        )}
+
+        {message.type === "human" && !isSending && (
+          <MessageAttachments message={message} />
         )}
       </Box>
 

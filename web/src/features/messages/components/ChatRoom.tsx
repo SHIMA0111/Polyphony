@@ -75,6 +75,7 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
 
       {canSendMessage(viewerRole) ? (
         <MessageInput
+          roomId={roomId}
           onSend={handleSend}
           onSendWithAI={handleSendWithAI}
           models={models}

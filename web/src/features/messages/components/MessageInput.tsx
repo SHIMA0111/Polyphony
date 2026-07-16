@@ -2,11 +2,13 @@
 
 import { useState, useRef, useCallback, useEffect } from "react"
 import Link from "next/link"
-import { Box, Button, Flex, Separator, Spacer, Text } from "@chakra-ui/react"
-import { ArrowUp, Sparkles } from "lucide-react"
-import { Tooltip } from "@/components/ui/tooltip"
+import { Box, Button, Flex, IconButton, Separator, Spacer, Text } from "@chakra-ui/react"
+import { ArrowUp, ImagePlus, Sparkles } from "lucide-react"
 import { estimateTokens } from "@/features/messages/api/estimate-tokens"
 import type { Message, ModelInfo } from "@/features/messages/types"
+import { useAttachmentStaging } from "@/features/messages/hooks/use-attachment-staging"
+import { Tooltip } from "@/components/ui/tooltip"
+import { AttachmentChip } from "./AttachmentChip"
 import { ModelSelector } from "./ModelSelector"
 
 /** Debounce delay, in ms, before firing a token estimate request after the
@@ -14,9 +16,26 @@ import { ModelSelector } from "./ModelSelector"
  * plain-`setTimeout` style rather than pulling in a debounce dependency. */
 const TOKEN_ESTIMATE_DEBOUNCE_MS = 400
 
+/** Copy shown when "Send with AI" is disabled because images are staged but
+ * the selected model can't see them. */
+const VISION_UNSUPPORTED_MESSAGE =
+  "The selected model can't see images — pick a vision-capable model"
+
+/** `<input type="file" accept="...">`'s accept list, matching
+ * `use-attachment-staging.ts`'s `ALLOWED_ATTACHMENT_MIME_TYPES`. */
+const ACCEPTED_IMAGE_MIME_TYPES = "image/png,image/jpeg,image/webp,image/gif"
+
 interface MessageInputProps {
-  onSend: (content: string) => Promise<void>
-  onSendWithAI: (content: string, model: string) => Promise<void>
+  /** The room attachments are uploaded into (`POST
+   * /rooms/:roomId/attachments/upload-url`); also used to scope the staging
+   * hook's state to this room. */
+  roomId: string
+  onSend: (content: string, attachmentIds: string[]) => Promise<void>
+  onSendWithAI: (
+    content: string,
+    model: string,
+    attachmentIds: string[],
+  ) => Promise<void>
   models: ModelInfo[]
   disabled?: boolean
   /**
@@ -48,6 +67,7 @@ interface MessageInputProps {
 const EMPTY_MESSAGES: Message[] = []
 
 export function MessageInput({
+  roomId,
   onSend,
   onSendWithAI,
   models,
@@ -58,18 +78,37 @@ export function MessageInput({
 }: MessageInputProps) {
   const [input, setInput] = useState("")
   const [isSending, setIsSending] = useState(false)
-  const [selectedModel, setSelectedModel] = useState<ModelInfo | null>(null)
+  // Only ever set by the user explicitly picking a model in `ModelSelector`;
+  // the *effective* model (derived below) falls back to the first available
+  // model without needing a mount-time effect to seed this state.
+  const [explicitModel, setExplicitModel] = useState<ModelInfo | null>(null)
   const [estimatedTokens, setEstimatedTokens] = useState<number | null>(null)
+  const [isDropActive, setIsDropActive] = useState(false)
   // Locally dismisses the `aiError` prop once the user starts typing again
   // or attempts another send, so a resolved error doesn't linger on screen
   // even though `useChatRoom` only clears its own `aiError` state at the
   // *start* of the next `handleSendWithAI` call.
   const [aiErrorDismissed, setAiErrorDismissed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   // Guards against an older, slower estimate response overwriting a newer
   // one that already resolved (no built-in request cancellation for a plain
   // `fetch`-backed call here).
   const estimateRequestIdRef = useRef(0)
+
+  const {
+    attachments,
+    addFiles,
+    remove: removeAttachment,
+    reset: resetAttachments,
+    retry: retryAttachment,
+  } = useAttachmentStaging(roomId)
+
+  // Derived, not stored: falls back to the first available model the
+  // instant `models` loads, without a "set default model when models are
+  // loaded" mount effect (which would otherwise trip
+  // react-hooks/set-state-in-effect).
+  const effectiveModel = explicitModel ?? models[0] ?? null
 
   // A new (truthy) `aiError` always un-dismisses — it represents a fresh
   // rejection, not the one just dismissed.
@@ -85,13 +124,6 @@ export function MessageInput({
     setInput(value)
     setAiErrorDismissed(true)
   }, [])
-
-  // Set default model when models are loaded
-  useEffect(() => {
-    if (models.length > 0 && !selectedModel) {
-      setSelectedModel(models[0])
-    }
-  }, [models, selectedModel])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -118,7 +150,7 @@ export function MessageInput({
     estimateRequestIdRef.current++
     setEstimatedTokens(null)
 
-    if (!selectedModel || !canInvokeAI) return
+    if (!effectiveModel || !canInvokeAI) return
 
     const timeoutId = setTimeout(() => {
       const requestId = ++estimateRequestIdRef.current
@@ -146,7 +178,7 @@ export function MessageInput({
         payload.push({ role: "user", content: draft })
       }
 
-      estimateTokens(selectedModel.id, payload)
+      estimateTokens(effectiveModel.id, payload)
         .then((res) => {
           if (estimateRequestIdRef.current === requestId) {
             setEstimatedTokens(res.estimated_tokens)
@@ -159,35 +191,57 @@ export function MessageInput({
     }, TOKEN_ESTIMATE_DEBOUNCE_MS)
 
     return () => clearTimeout(timeoutId)
-  }, [input, selectedModel, messages, canInvokeAI])
+  }, [input, effectiveModel, messages, canInvokeAI])
+
+  const doneAttachmentIds = attachments
+    .filter((a) => a.status === "done" && a.attachmentId)
+    .map((a) => a.attachmentId as string)
+  const hasUploadingAttachment = attachments.some((a) => a.status === "uploading")
+  // "Images staged" for vision-gating purposes means real (non-rejected)
+  // staged files, not entries that failed client-side validation and were
+  // never even sent to the server.
+  const hasStagedImages = attachments.some((a) => a.status !== "error")
+  const modelSupportsImages = effectiveModel?.supports_image_input ?? false
+  const visionGated = hasStagedImages && !modelSupportsImages
 
   const handleSend = useCallback(async () => {
     const content = input.trim()
-    if (!content || isSending) return
+    if (!content || isSending || hasUploadingAttachment) return
     setAiErrorDismissed(true)
     setIsSending(true)
     try {
-      await onSend(content)
+      await onSend(content, doneAttachmentIds)
       setInput("")
+      resetAttachments()
     } catch {
       // The mutation's own `onError` already appended a retryable "failed"
       // bubble to the transcript and surfaced a failure toast — restore the
       // typed content here so it isn't lost, rather than letting the
-      // rejection go uncaught.
+      // rejection go uncaught. Staged attachments are left in place too, so
+      // retrying the send doesn't require re-uploading them.
       setInput(content)
     } finally {
       setIsSending(false)
     }
-  }, [input, isSending, onSend])
+  }, [input, isSending, hasUploadingAttachment, doneAttachmentIds, onSend, resetAttachments])
 
   const handleSendWithAI = useCallback(async () => {
     const content = input.trim()
-    if (!content || isSending || !selectedModel) return
+    if (
+      !content ||
+      isSending ||
+      !effectiveModel ||
+      hasUploadingAttachment ||
+      visionGated
+    ) {
+      return
+    }
     setAiErrorDismissed(true)
     setIsSending(true)
     try {
-      await onSendWithAI(content, selectedModel.id)
+      await onSendWithAI(content, effectiveModel.id, doneAttachmentIds)
       setInput("")
+      resetAttachments()
     } catch {
       // See `handleSend`'s catch above: restore the content instead of
       // losing it, the toast/failed-bubble is already handled by the
@@ -196,7 +250,16 @@ export function MessageInput({
     } finally {
       setIsSending(false)
     }
-  }, [input, isSending, selectedModel, onSendWithAI])
+  }, [
+    input,
+    isSending,
+    effectiveModel,
+    hasUploadingAttachment,
+    visionGated,
+    doneAttachmentIds,
+    onSendWithAI,
+    resetAttachments,
+  ])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
@@ -210,13 +273,47 @@ export function MessageInput({
     }
   }
 
-  const isDisabled = !input.trim() || isSending || disabled
-  // The AI send button has its own, stricter disabled condition: sending
-  // with AI additionally requires a selected model (handleSendWithAI itself
-  // no-ops without one), so the button must reflect that -- otherwise it
-  // renders as clickable while a click would silently do nothing whenever
-  // `models` hasn't loaded a selection yet.
-  const isAISendDisabled = isDisabled || !selectedModel
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    const imageFiles: File[] = []
+    for (const item of items) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const file = item.getAsFile()
+        if (file) imageFiles.push(file)
+      }
+    }
+    // Plain text paste is untouched: no `preventDefault()` here, and no
+    // image files means nothing further to do.
+    if (imageFiles.length > 0) {
+      addFiles(imageFiles)
+    }
+  }
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setIsDropActive(false)
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length > 0) addFiles(files)
+  }
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      addFiles(Array.from(e.target.files))
+    }
+    // Reset so selecting the exact same file again still fires onChange.
+    e.target.value = ""
+  }
+
+  const isDisabled = !input.trim() || isSending || disabled || hasUploadingAttachment
+  // Unlike the plain-send button, the AI-send button also needs a model to
+  // invoke — `isDisabled` alone doesn't check for one, since plain send has
+  // no such requirement. Without this, a room with no models configured (or
+  // between mount and `models` loading) would render the AI-send button
+  // clickable and let `handleSendWithAI` above silently no-op on its own
+  // `!effectiveModel` early return.
+  const isSendWithAIDisabled = isDisabled || visionGated || !effectiveModel
 
   return (
     <Box bg="bg/80" backdropFilter="blur(8px)" pb={4} pt={2}>
@@ -225,11 +322,30 @@ export function MessageInput({
         <Box
           bg="bg"
           borderWidth="1px"
-          borderColor="border"
+          borderColor={isDropActive ? "blue.400" : "border"}
           rounded="2xl"
           shadow="lg"
           overflow="hidden"
+          onDragOver={(e) => {
+            e.preventDefault()
+            setIsDropActive(true)
+          }}
+          onDragLeave={() => setIsDropActive(false)}
+          onDrop={handleDrop}
         >
+          {attachments.length > 0 && (
+            <Flex gap={2} px={4} pt={4} overflowX="auto">
+              {attachments.map((attachment) => (
+                <AttachmentChip
+                  key={attachment.id}
+                  attachment={attachment}
+                  onRemove={removeAttachment}
+                  onRetry={retryAttachment}
+                />
+              ))}
+            </Flex>
+          )}
+
           {/* Textarea area */}
           <Box px={4} pt={4} pb={3}>
             <textarea
@@ -237,6 +353,7 @@ export function MessageInput({
               value={input}
               onChange={(e) => handleInputChange(e.target.value)}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               placeholder="Ask me anything..."
               disabled={disabled || isSending}
               rows={1}
@@ -259,11 +376,34 @@ export function MessageInput({
 
           {/* Button row */}
           <Flex px={3} py={2} align="center" gap={2}>
-            {selectedModel && models.length > 0 && (
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPTED_IMAGE_MIME_TYPES}
+              multiple
+              hidden
+              onChange={handleFileInputChange}
+            />
+            <Tooltip content="Attach image">
+              <IconButton
+                aria-label="Attach image"
+                variant="ghost"
+                size="sm"
+                h={8}
+                minW={8}
+                rounded="lg"
+                disabled={disabled || isSending}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <ImagePlus size={16} />
+              </IconButton>
+            </Tooltip>
+
+            {effectiveModel && models.length > 0 && (
               <ModelSelector
                 models={models}
-                selectedModel={selectedModel}
-                onModelSelect={setSelectedModel}
+                selectedModel={effectiveModel}
+                onModelSelect={setExplicitModel}
               />
             )}
             <Spacer />
@@ -284,25 +424,22 @@ export function MessageInput({
               Send
             </Button>
             {canInvokeAI && (
-              <Tooltip
-                content="Select a model to send with AI"
-                disabled={!!selectedModel}
-              >
+              <Tooltip content={VISION_UNSUPPORTED_MESSAGE} disabled={!visionGated}>
                 {/*
                   A `disabled` native button doesn't fire pointer or focus
                   events in most browsers, so a Tooltip wrapping it directly
                   would never trigger — not on mouse hover, and not on
                   keyboard focus (Tab). Wrapping the Button in a focusable
                   (`tabIndex={0}`) `span` gives the tooltip an always-
-                  interactive element to anchor to, so "Select a model to send
-                  with AI" is reachable both by hovering and by tabbing to it,
+                  interactive element to anchor to, so the vision-unsupported
+                  message is reachable both by hovering and by tabbing to it,
                   even while the button itself is disabled.
                 */}
                 <Box as="span" display="inline-flex" tabIndex={0}>
                   <Button
                     size="sm"
                     onClick={handleSendWithAI}
-                    disabled={isAISendDisabled}
+                    disabled={isSendWithAIDisabled}
                     h={8}
                     px={3}
                     fontSize="xs"

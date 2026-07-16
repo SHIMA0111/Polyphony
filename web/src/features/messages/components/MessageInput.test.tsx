@@ -72,6 +72,7 @@ describe("MessageInput token meter", () => {
 
     render(
       <MessageInput
+        roomId="room-1"
         {...noopHandlers}
         models={models}
         messages={[humanMessage]}
@@ -104,6 +105,7 @@ describe("MessageInput token meter", () => {
 
     render(
       <MessageInput
+        roomId="room-1"
         {...noopHandlers}
         models={models}
         messages={[humanMessage, excludedMessage, deletedMessage]}
@@ -128,7 +130,12 @@ describe("MessageInput token meter", () => {
 describe("MessageInput aiError", () => {
   it("renders no inline error by default", () => {
     render(
-      <MessageInput onSend={vi.fn()} onSendWithAI={vi.fn()} models={models} />,
+      <MessageInput
+        roomId="room-1"
+        onSend={vi.fn()}
+        onSendWithAI={vi.fn()}
+        models={models}
+      />,
     )
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
@@ -137,6 +144,7 @@ describe("MessageInput aiError", () => {
   it("renders the inline error with a link to /billing/usage when aiError is set", () => {
     render(
       <MessageInput
+        roomId="room-1"
         onSend={vi.fn()}
         onSendWithAI={vi.fn()}
         models={models}
@@ -156,6 +164,7 @@ describe("MessageInput aiError", () => {
     const user = userEvent.setup()
     render(
       <MessageInput
+        roomId="room-1"
         onSend={vi.fn()}
         onSendWithAI={vi.fn()}
         models={models}

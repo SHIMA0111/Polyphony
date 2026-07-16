@@ -116,3 +116,49 @@ export interface TokenEstimateResponse {
   model: string
   estimated_tokens: number
 }
+
+/**
+ * Response body for `POST /rooms/:roomId/attachments/upload-url` (Step 12's
+ * `attachment_handler.go`'s `PresignUploadResponse`). `upload_url` is a
+ * presigned S3 `PUT` URL valid until `expires_at`; the browser uploads the
+ * raw file bytes directly to it (see `../lib/upload-attachment.ts`), never
+ * through the Go API itself.
+ */
+export interface UploadTicket {
+  attachment_id: string
+  s3_key: string
+  upload_url: string
+  expires_at: string
+}
+
+/**
+ * The JSON representation of a single attachment without a view URL,
+ * returned by `POST /rooms/:roomId/messages/:messageId/attachments` (Step
+ * 12's `AttachmentResponse` DTO) once an already-uploaded object has been
+ * linked to a message. `message_id` mirrors the Go DTO's nullable
+ * `*string` verbatim, even though it is always non-null in the responses
+ * this step's client ever reads (both the attach and list endpoints always
+ * key on a real message id).
+ *
+ * Unlike {@link AttachmentWithUrl}, there is no `view_url` here -- the attach
+ * endpoint doesn't mint a presigned read URL, only `GET
+ * /rooms/:roomId/messages/:messageId/attachments` does.
+ */
+export interface AttachmentResponse {
+  id: string
+  message_id: string | null
+  s3_key: string
+  mime_type: string
+  size_bytes: number
+  created_at: string
+}
+
+/**
+ * An attachment as returned by `GET
+ * /rooms/:roomId/messages/:messageId/attachments` (Step 12's
+ * `AttachmentViewResponse` DTO): every field of {@link AttachmentResponse}
+ * plus a freshly-presigned `view_url`, ready to hand straight to an `<img>`.
+ */
+export interface AttachmentWithUrl extends AttachmentResponse {
+  view_url: string
+}

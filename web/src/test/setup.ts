@@ -24,6 +24,9 @@ import { server } from "./msw/server"
  *     while its trigger's size changes -- jsdom does not implement it, and an
  *     open popover otherwise throws an uncaught `ReferenceError` on the next
  *     animation frame.
+ *   - `URL.createObjectURL`/`URL.revokeObjectURL`, used by
+ *     `use-attachment-staging.ts` to generate/clean up a staged attachment's
+ *     preview thumbnail -- jsdom does not implement either.
  * - Start/reset/stop the MSW Node server for the whole suite so fetches made
  *   by components/hooks under test are intercepted rather than hitting the
  *   network.
@@ -38,6 +41,11 @@ class ResizeObserverStub {
   disconnect = vi.fn()
 }
 window.ResizeObserver = window.ResizeObserver ?? (ResizeObserverStub as unknown as typeof ResizeObserver)
+
+let mockObjectUrlCounter = 0
+window.URL.createObjectURL =
+  window.URL.createObjectURL ?? vi.fn(() => `blob:mock-preview-url-${mockObjectUrlCounter++}`)
+window.URL.revokeObjectURL = window.URL.revokeObjectURL ?? vi.fn()
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
