@@ -1,3 +1,4 @@
+// Package auth defines the authentication service port (token issuance and validation).
 package auth
 
 import (

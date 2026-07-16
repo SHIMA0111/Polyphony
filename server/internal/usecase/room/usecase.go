@@ -1,3 +1,5 @@
+// Package room implements the room use cases: creating, listing, reading,
+// updating, and deleting chat rooms on behalf of an authenticated user.
 package room
 
 import (

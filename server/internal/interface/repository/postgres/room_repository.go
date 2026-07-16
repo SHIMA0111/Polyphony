@@ -30,7 +30,8 @@ func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO rooms (id, name, description, owner_id, created_at, updated_at)

@@ -1,3 +1,4 @@
+// Package message defines the chat message entity, its repository port, and cursor pagination types.
 package message
 
 import (
