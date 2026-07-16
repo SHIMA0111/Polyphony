@@ -163,10 +163,12 @@ func handleMessageError(c echo.Context, err error) error {
 		return c.JSON(http.StatusNotFound, ErrorResponse{Message: "not found"})
 	}
 	if errors.Is(err, domain.ErrLLMGateway) {
+		middleware.GetLogger(c).Error("llm gateway error", "error", err)
 		return c.JSON(http.StatusBadGateway, ErrorResponse{Message: "ai service error"})
 	}
 	if errors.Is(err, domain.ErrInvalidMessageType) {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "message must be of type human"})
 	}
+	middleware.GetLogger(c).Error("unhandled message error", "error", err)
 	return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
 }

@@ -10,29 +10,26 @@ import (
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
 
-type mockAuthService struct {
-	validToken string
-}
-
-func (m *mockAuthService) Register(_ context.Context, _, _, _ string) (*domainauth.TokenPair, error) {
-	return nil, nil
-}
-
-func (m *mockAuthService) Login(_ context.Context, _, _ string) (*domainauth.TokenPair, error) {
-	return nil, nil
-}
-
-func (m *mockAuthService) ValidateToken(_ context.Context, token string) (*domainauth.Claims, error) {
-	if token == m.validToken {
-		return &domainauth.Claims{UserID: "user-1"}, nil
+// newFixedTokenAuthService returns a mocks.AuthService whose ValidateToken
+// only accepts validToken, mirroring the middleware's need for a
+// deterministic valid/invalid token check independent of the default
+// registered-email bookkeeping.
+func newFixedTokenAuthService(validToken string) *mocks.AuthService {
+	return &mocks.AuthService{
+		ValidateTokenFunc: func(_ context.Context, token string) (*domainauth.Claims, error) {
+			if token == validToken {
+				return &domainauth.Claims{UserID: "user-1"}, nil
+			}
+			return nil, domain.ErrInvalidToken
+		},
 	}
-	return nil, domain.ErrInvalidToken
 }
 
 func TestJWTAuthValidToken(t *testing.T) {
-	svc := &mockAuthService{validToken: "valid-token"}
+	svc := newFixedTokenAuthService("valid-token")
 	mw := JWTAuth(svc)
 
 	e := echo.New()
@@ -58,7 +55,7 @@ func TestJWTAuthValidToken(t *testing.T) {
 }
 
 func TestJWTAuthMissingHeader(t *testing.T) {
-	svc := &mockAuthService{validToken: "valid-token"}
+	svc := newFixedTokenAuthService("valid-token")
 	mw := JWTAuth(svc)
 
 	e := echo.New()
@@ -79,7 +76,7 @@ func TestJWTAuthMissingHeader(t *testing.T) {
 }
 
 func TestJWTAuthInvalidToken(t *testing.T) {
-	svc := &mockAuthService{validToken: "valid-token"}
+	svc := newFixedTokenAuthService("valid-token")
 	mw := JWTAuth(svc)
 
 	e := echo.New()
@@ -101,7 +98,7 @@ func TestJWTAuthInvalidToken(t *testing.T) {
 }
 
 func TestJWTAuthInvalidFormat(t *testing.T) {
-	svc := &mockAuthService{validToken: "valid-token"}
+	svc := newFixedTokenAuthService("valid-token")
 	mw := JWTAuth(svc)
 
 	e := echo.New()

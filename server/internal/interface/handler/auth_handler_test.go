@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,40 +8,12 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
-	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
 )
 
-type mockAuthService struct {
-	registered map[string]bool
-}
-
-func newMockAuthService() *mockAuthService {
-	return &mockAuthService{registered: make(map[string]bool)}
-}
-
-func (m *mockAuthService) Register(_ context.Context, email, _, _ string) (*domainauth.TokenPair, error) {
-	if m.registered[email] {
-		return nil, domain.ErrEmailAlreadyExists
-	}
-	m.registered[email] = true
-	return &domainauth.TokenPair{AccessToken: "tok", TokenType: "Bearer"}, nil
-}
-
-func (m *mockAuthService) Login(_ context.Context, email, password string) (*domainauth.TokenPair, error) {
-	if !m.registered[email] || password != "correct" {
-		return nil, domain.ErrInvalidCredentials
-	}
-	return &domainauth.TokenPair{AccessToken: "tok", TokenType: "Bearer"}, nil
-}
-
-func (m *mockAuthService) ValidateToken(_ context.Context, _ string) (*domainauth.Claims, error) {
-	return &domainauth.Claims{UserID: "user-1"}, nil
-}
-
 func TestRegisterHandler201(t *testing.T) {
-	svc := newMockAuthService()
+	svc := &mocks.AuthService{}
 	uc := authusecase.NewAuthUsecase(svc)
 	h := NewAuthHandler(uc)
 
@@ -62,7 +33,7 @@ func TestRegisterHandler201(t *testing.T) {
 }
 
 func TestRegisterHandler400(t *testing.T) {
-	svc := newMockAuthService()
+	svc := &mocks.AuthService{}
 	uc := authusecase.NewAuthUsecase(svc)
 	h := NewAuthHandler(uc)
 
@@ -82,8 +53,8 @@ func TestRegisterHandler400(t *testing.T) {
 }
 
 func TestRegisterHandler409(t *testing.T) {
-	svc := newMockAuthService()
-	svc.registered["dup@example.com"] = true
+	svc := &mocks.AuthService{}
+	svc.SeedRegistered("dup@example.com")
 	uc := authusecase.NewAuthUsecase(svc)
 	h := NewAuthHandler(uc)
 
@@ -103,8 +74,8 @@ func TestRegisterHandler409(t *testing.T) {
 }
 
 func TestLoginHandler200(t *testing.T) {
-	svc := newMockAuthService()
-	svc.registered["test@example.com"] = true
+	svc := &mocks.AuthService{}
+	svc.SeedRegistered("test@example.com")
 	uc := authusecase.NewAuthUsecase(svc)
 	h := NewAuthHandler(uc)
 
@@ -124,7 +95,7 @@ func TestLoginHandler200(t *testing.T) {
 }
 
 func TestLoginHandler401(t *testing.T) {
-	svc := newMockAuthService()
+	svc := &mocks.AuthService{}
 	uc := authusecase.NewAuthUsecase(svc)
 	h := NewAuthHandler(uc)
 

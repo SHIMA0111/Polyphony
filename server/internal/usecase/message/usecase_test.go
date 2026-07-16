@@ -2,180 +2,22 @@ package message
 
 import (
 	"context"
-	"fmt"
-	"sort"
 	"testing"
-	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
-	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
-
-// --- Mock implementations ---
-
-type mockMsgRepo struct {
-	messages map[string]*domainmessage.Message
-	seqs     map[string]int64
-}
-
-func newMockMsgRepo() *mockMsgRepo {
-	return &mockMsgRepo{
-		messages: make(map[string]*domainmessage.Message),
-		seqs:     make(map[string]int64),
-	}
-}
-
-func (m *mockMsgRepo) Create(_ context.Context, msg *domainmessage.Message) error {
-	m.messages[msg.ID] = msg
-	return nil
-}
-
-func (m *mockMsgRepo) GetByID(_ context.Context, id string) (*domainmessage.Message, error) {
-	msg, ok := m.messages[id]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	return msg, nil
-}
-
-func (m *mockMsgRepo) ListByRoom(_ context.Context, roomID, _ string, limit int) (*domainmessage.CursorPage, error) {
-	var msgs []*domainmessage.Message
-	for _, msg := range m.messages {
-		if msg.RoomID == roomID {
-			msgs = append(msgs, msg)
-		}
-	}
-	if len(msgs) > limit {
-		msgs = msgs[:limit]
-	}
-	return &domainmessage.CursorPage{Messages: msgs}, nil
-}
-
-func (m *mockMsgRepo) ListByRoomUpTo(_ context.Context, roomID string, maxSequence int64, limit int) ([]*domainmessage.Message, error) {
-	var msgs []*domainmessage.Message
-	for _, msg := range m.messages {
-		if msg.RoomID == roomID && msg.Sequence <= maxSequence {
-			msgs = append(msgs, msg)
-		}
-	}
-	if len(msgs) > limit {
-		msgs = msgs[:limit]
-	}
-	return msgs, nil
-}
-
-func (m *mockMsgRepo) GetNextInRoom(_ context.Context, roomID string, afterSequence int64) (*domainmessage.Message, error) {
-	var candidates []*domainmessage.Message
-	for _, msg := range m.messages {
-		if msg.RoomID == roomID && msg.Sequence > afterSequence {
-			candidates = append(candidates, msg)
-		}
-	}
-	if len(candidates) == 0 {
-		return nil, domain.ErrNotFound
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Sequence < candidates[j].Sequence
-	})
-	return candidates[0], nil
-}
-
-func (m *mockMsgRepo) UpdateAIResponse(_ context.Context, id string, content string, status domainmessage.MessageStatus, updatedAt time.Time) error {
-	msg, ok := m.messages[id]
-	if !ok {
-		return domain.ErrNotFound
-	}
-	msg.Content = content
-	msg.Status = status
-	msg.UpdatedAt = updatedAt
-	return nil
-}
-
-func (m *mockMsgRepo) Delete(_ context.Context, id string) error {
-	if _, ok := m.messages[id]; !ok {
-		return domain.ErrNotFound
-	}
-	delete(m.messages, id)
-	return nil
-}
-
-func (m *mockMsgRepo) GetNextSequence(_ context.Context, roomID string) (int64, error) {
-	seq := m.seqs[roomID]
-	if seq == 0 {
-		seq = 1
-	}
-	m.seqs[roomID] = seq + 1
-	return seq, nil
-}
-
-type mockRoomRepo struct {
-	members map[string]map[string]bool // roomID -> userID -> exists
-}
-
-func newMockRoomRepo() *mockRoomRepo {
-	return &mockRoomRepo{members: make(map[string]map[string]bool)}
-}
-
-func (m *mockRoomRepo) addMember(roomID, userID string) {
-	if m.members[roomID] == nil {
-		m.members[roomID] = make(map[string]bool)
-	}
-	m.members[roomID][userID] = true
-}
-
-func (m *mockRoomRepo) Create(_ context.Context, _ *domainroom.Room) error { return nil }
-func (m *mockRoomRepo) GetByID(_ context.Context, _ string) (*domainroom.Room, error) {
-	return nil, domain.ErrNotFound
-}
-func (m *mockRoomRepo) ListByUserID(_ context.Context, _ string) ([]*domainroom.Room, error) {
-	return nil, nil
-}
-func (m *mockRoomRepo) Update(_ context.Context, _ *domainroom.Room) error { return nil }
-func (m *mockRoomRepo) Delete(_ context.Context, _ string) error           { return nil }
-func (m *mockRoomRepo) AddMember(_ context.Context, _ *domainroom.RoomMember) error {
-	return nil
-}
-func (m *mockRoomRepo) GetMember(_ context.Context, roomID, userID string) (*domainroom.RoomMember, error) {
-	if m.members[roomID] != nil && m.members[roomID][userID] {
-		return &domainroom.RoomMember{RoomID: roomID, UserID: userID}, nil
-	}
-	return nil, domain.ErrNotFound
-}
-func (m *mockRoomRepo) ListMembers(_ context.Context, _ string) ([]*domainroom.RoomMember, error) {
-	return nil, nil
-}
-func (m *mockRoomRepo) RemoveMember(_ context.Context, _, _ string) error { return nil }
-
-type mockLLMGateway struct {
-	shouldErr bool
-}
-
-func (m *mockLLMGateway) Complete(_ context.Context, _ *ai.CompletionRequest) (*ai.CompletionResponse, error) {
-	if m.shouldErr {
-		return nil, fmt.Errorf("%w: mock error", domain.ErrLLMGateway)
-	}
-	return &ai.CompletionResponse{
-		Content:      "AI response",
-		Model:        "test-model",
-		PromptTokens: 10,
-		OutputTokens: 5,
-	}, nil
-}
-
-func (m *mockLLMGateway) ListModels(_ context.Context) ([]ai.ModelInfo, error) {
-	return []ai.ModelInfo{{ID: "test-model", Provider: "test"}}, nil
-}
 
 // --- Tests ---
 
 func TestSendMessage(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mockLLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
 	ctx := context.Background()
 
 	msg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -191,10 +33,10 @@ func TestSendMessage(t *testing.T) {
 }
 
 func TestSendMessageNotMember(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mockLLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
 	ctx := context.Background()
 
 	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -204,11 +46,11 @@ func TestSendMessageNotMember(t *testing.T) {
 }
 
 func TestListMessages(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mockLLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
 	ctx := context.Background()
 
 	_, _ = uc.SendMessage(ctx, "user-1", "room-1", "msg1")
@@ -224,11 +66,11 @@ func TestListMessages(t *testing.T) {
 }
 
 func TestSendAIMessage(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mockLLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model")
@@ -256,11 +98,11 @@ func TestSendAIMessage(t *testing.T) {
 }
 
 func TestRegenerateAIMessageAfterFailure(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	failingGateway := &mockLLMGateway{shouldErr: true}
+	failingGateway := &mocks.LLMGateway{ShouldErr: true}
 	uc := NewMessageUsecase(msgRepo, roomRepo, failingGateway)
 	ctx := context.Background()
 
@@ -274,7 +116,7 @@ func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 	}
 
 	// Switch to working LLM and regenerate
-	failingGateway.shouldErr = false
+	failingGateway.ShouldErr = false
 	aiMsg, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
 	if err != nil {
 		t.Fatalf("RegenerateAIMessage failed: %v", err)
@@ -291,11 +133,11 @@ func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 }
 
 func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mockLLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
 	ctx := context.Background()
 
 	// Send human message + AI response via SendAIMessage
@@ -304,7 +146,7 @@ func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 		t.Fatalf("SendAIMessage failed: %v", err)
 	}
 	originalSeq := result.AIMessage.Sequence
-	msgCountBefore := len(msgRepo.messages)
+	msgCountBefore := len(msgRepo.Messages)
 
 	// Regenerate — should overwrite the existing AI message, not create a new one
 	regenerated, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
@@ -321,17 +163,17 @@ func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 	}
 
 	// No new messages should have been created
-	if len(msgRepo.messages) != msgCountBefore {
-		t.Fatalf("expected %d messages (no new), got %d", msgCountBefore, len(msgRepo.messages))
+	if len(msgRepo.Messages) != msgCountBefore {
+		t.Fatalf("expected %d messages (no new), got %d", msgCountBefore, len(msgRepo.Messages))
 	}
 }
 
 func TestRegenerateAIMessageNotHuman(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mockLLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
 	ctx := context.Background()
 
 	// Send a human message and get AI response
@@ -348,11 +190,11 @@ func TestRegenerateAIMessageNotHuman(t *testing.T) {
 }
 
 func TestRegenerateAIMessageNotFound(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mockLLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
 	ctx := context.Background()
 
 	_, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", "nonexistent", "test-model")
@@ -362,12 +204,12 @@ func TestRegenerateAIMessageNotFound(t *testing.T) {
 }
 
 func TestRegenerateAIMessageWrongRoom(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
-	roomRepo.addMember("room-2", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedMember("room-2", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mockLLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
 	ctx := context.Background()
 
 	// Send message in room-1
@@ -384,11 +226,11 @@ func TestRegenerateAIMessageWrongRoom(t *testing.T) {
 }
 
 func TestRegenerateAIMessageNotMember(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mockLLMGateway{})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{})
 	ctx := context.Background()
 
 	humanMsg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -404,11 +246,11 @@ func TestRegenerateAIMessageNotMember(t *testing.T) {
 }
 
 func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	gw := &mockLLMGateway{shouldErr: true}
+	gw := &mocks.LLMGateway{ShouldErr: true}
 	uc := NewMessageUsecase(msgRepo, roomRepo, gw)
 	ctx := context.Background()
 
@@ -421,8 +263,15 @@ func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
 		t.Fatalf("expected failed status, got %s", result.AIMessage.Status)
 	}
 
-	// Second call succeeds — failed placeholder should not appear in LLM context
-	gw.shouldErr = false
+	// Second call succeeds — capture the request sent to the LLM Gateway and
+	// verify the failed AI placeholder (an empty-content assistant message)
+	// from the first call is not present in its context.
+	gw.ShouldErr = false
+	var capturedReq *ai.CompletionRequest
+	gw.CompleteFunc = func(_ context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+		capturedReq = req
+		return &ai.CompletionResponse{Content: "AI response", Model: "test-model"}, nil
+	}
 	result2, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model")
 	if err != nil {
 		t.Fatalf("SendAIMessage failed: %v", err)
@@ -430,16 +279,22 @@ func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
 	if result2.AIMessage.Content != "AI response" {
 		t.Fatalf("expected AI response, got %s", result2.AIMessage.Content)
 	}
-	// The fact that the LLM call succeeds confirms the context was valid
-	// (no empty assistant message that could confuse the LLM)
+	if capturedReq == nil {
+		t.Fatal("expected CompleteFunc to have been called")
+	}
+	for _, m := range capturedReq.Messages {
+		if m.Role == "assistant" && m.Content == "" {
+			t.Fatalf("context sent to LLM Gateway contains the failed AI placeholder: %+v", capturedReq.Messages)
+		}
+	}
 }
 
 func TestSendAIMessageLLMError(t *testing.T) {
-	msgRepo := newMockMsgRepo()
-	roomRepo := newMockRoomRepo()
-	roomRepo.addMember("room-1", "user-1")
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mockLLMGateway{shouldErr: true})
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true})
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model")

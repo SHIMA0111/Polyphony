@@ -5,10 +5,15 @@ tasks:
   # Docker
   # ---------------------------------------------------------------------------
   up:
-    desc: Generate latest migration and start all services
-    deps: [migrate:generate]
+    desc: Start all services
     cmds:
       - docker compose up -d
+
+  rebuild:
+    desc: Rebuild all Docker images from scratch and restart the stack
+    cmds:
+      - docker compose build --no-cache
+      - docker compose up -d --force-recreate
 
   down:
     desc: Stop all services
@@ -58,12 +63,20 @@ tasks:
     cmds:
       - atlas migrate status --env local
 
+  migrate:lint:
+    # Requires `atlas login` (Atlas v0.38+ gates `migrate lint` behind an Atlas Pro account).
+    # See docs/infra-conventions.md for the login step and a manual-review fallback.
+    desc: Lint the latest migration for destructive/unsafe changes (requires `atlas login`)
+    dir: server
+    cmds:
+      - atlas migrate lint --env local --latest 1
+
   # ---------------------------------------------------------------------------
   # Test
   # ---------------------------------------------------------------------------
   test:
     desc: Run all tests in parallel
-    deps: [test:server, test:gateway]
+    deps: [test:server, test:gateway, test:web]
 
   test:server:
     desc: Run Go tests
@@ -71,11 +84,23 @@ tasks:
     cmds:
       - go test ./...
 
+  test:server:integration:
+    desc: Run Go integration tests against a real Postgres testcontainer (requires Docker)
+    dir: server
+    cmds:
+      - go test -tags=integration ./...
+
   test:gateway:
     desc: Run Rust tests
     dir: llm-gateway
     cmds:
       - cargo test
+
+  test:web:
+    desc: Run web frontend tests
+    dir: web
+    cmds:
+      - bun run test
 
   # ---------------------------------------------------------------------------
   # Lint & Format
@@ -88,7 +113,7 @@ tasks:
     desc: Lint Go code
     dir: server
     cmds:
-      - go vet ./...
+      - golangci-lint run ./...
 
   lint:gateway:
     desc: Lint Rust code
@@ -124,17 +149,20 @@ tasks:
   dev:server:
     desc: Run Go API server locally
     dir: server
+    dotenv: ['../.env.local', '../.env']
     cmds:
       - go run ./cmd/api
 
   dev:gateway:
     desc: Run LLM Gateway locally
     dir: llm-gateway
+    dotenv: ['../.env.local', '../.env']
     cmds:
       - cargo run
 
   dev:web:
     desc: Run web frontend dev server
     dir: web
+    dotenv: ['../.env.local', '../.env']
     cmds:
       - bun run dev

@@ -1,8 +1,8 @@
-use std::future::Future;
-use std::pin::Pin;
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 
 use crate::domain::error::DomainError;
-use crate::domain::model::{CompletionRequest, CompletionResponse, ModelInfo};
+use crate::domain::model::{CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo};
 
 /// LLM provider port.
 ///
@@ -14,15 +14,46 @@ pub trait LLMProvider: Send + Sync {
     /// # Arguments
     /// * `req` — Completion request
     ///
+    /// # Returns
+    /// A future resolving to the provider's completion response.
+    ///
     /// # Errors
     /// Returns `DomainError` on provider errors, timeouts, etc.
     fn complete(
         &self,
         req: &CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<CompletionResponse, DomainError>> + Send + '_>>;
+    ) -> BoxFuture<'_, Result<CompletionResponse, DomainError>>;
 
     /// Returns the list of models provided by this provider.
-    fn models(&self) -> Vec<ModelInfo>;
+    ///
+    /// # Arguments
+    /// None.
+    ///
+    /// # Returns
+    /// A future resolving to the models available from this provider.
+    ///
+    /// # Errors
+    /// None.
+    fn models(&self) -> BoxFuture<'_, Vec<ModelInfo>>;
+
+    /// Executes a streaming chat completion request.
+    ///
+    /// # Arguments
+    /// * `req` — Completion request
+    ///
+    /// # Returns
+    /// A future resolving to a stream of `CompletionChunk`s as the provider produces them.
+    ///
+    /// # Errors
+    /// Returns `DomainError` if the stream cannot be established (e.g. provider errors,
+    /// timeouts) or is not supported by this provider.
+    // Not yet called from any inbound adapter — a later step wires a real streaming
+    // HTTP endpoint on top of this port. Kept here so provider adapters can implement it now.
+    #[allow(dead_code)]
+    fn stream(
+        &self,
+        req: &CompletionRequest,
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<CompletionChunk, DomainError>>, DomainError>>;
 
     /// Returns the provider name (e.g. "openai").
     fn provider_name(&self) -> &str;

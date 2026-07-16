@@ -1,8 +1,8 @@
-use std::future::Future;
-use std::pin::Pin;
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 
 use crate::domain::error::DomainError;
-use crate::domain::model::{CompletionRequest, CompletionResponse, ModelInfo};
+use crate::domain::model::{CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo};
 use crate::ports::inbound::completion::CompletionUseCase;
 use crate::ports::outbound::provider::LLMProvider;
 
@@ -24,11 +24,20 @@ impl CompletionService {
     }
 
     /// Finds a provider that supports the given model ID.
-    fn find_provider(&self, model: &str) -> Option<&dyn LLMProvider> {
-        self.providers
-            .iter()
-            .find(|p| p.models().iter().any(|m| m.id == model))
-            .map(|p| p.as_ref())
+    ///
+    /// # Arguments
+    /// * `model` — Model ID to look up.
+    ///
+    /// # Returns
+    /// The first provider (in registration order) whose `models()` list contains
+    /// `model`, or `None` if no provider offers it.
+    async fn find_provider(&self, model: &str) -> Option<&dyn LLMProvider> {
+        for p in &self.providers {
+            if p.models().await.iter().any(|m| m.id == model) {
+                return Some(p.as_ref());
+            }
+        }
+        None
     }
 }
 
@@ -36,7 +45,7 @@ impl CompletionUseCase for CompletionService {
     fn complete(
         &self,
         req: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<CompletionResponse, DomainError>> + Send + '_>> {
+    ) -> BoxFuture<'_, Result<CompletionResponse, DomainError>> {
         Box::pin(async move {
             if req.messages.is_empty() {
                 return Err(DomainError::InvalidRequest(
@@ -46,6 +55,7 @@ impl CompletionUseCase for CompletionService {
 
             let provider = self
                 .find_provider(&req.model)
+                .await
                 .ok_or_else(|| DomainError::ModelNotFound(req.model.clone()))?;
 
             tracing::info!(
@@ -59,8 +69,35 @@ impl CompletionUseCase for CompletionService {
         })
     }
 
-    fn list_models(&self) -> Vec<ModelInfo> {
-        self.providers.iter().flat_map(|p| p.models()).collect()
+    fn list_models(&self) -> BoxFuture<'_, Vec<ModelInfo>> {
+        Box::pin(async move {
+            let mut models = Vec::new();
+            for p in &self.providers {
+                models.extend(p.models().await);
+            }
+            models
+        })
+    }
+
+    fn stream(
+        &self,
+        req: CompletionRequest,
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<CompletionChunk, DomainError>>, DomainError>>
+    {
+        Box::pin(async move {
+            if req.messages.is_empty() {
+                return Err(DomainError::InvalidRequest(
+                    "messages must not be empty".to_string(),
+                ));
+            }
+
+            let provider = self
+                .find_provider(&req.model)
+                .await
+                .ok_or_else(|| DomainError::ModelNotFound(req.model.clone()))?;
+
+            provider.stream(&req).await
+        })
     }
 }
 
@@ -68,6 +105,7 @@ impl CompletionUseCase for CompletionService {
 mod tests {
     use super::*;
     use crate::domain::model::{ChatMessage, Choice, Role, Usage};
+    use futures::stream::BoxStream;
 
     /// Mock provider for testing.
     struct MockProvider {
@@ -88,8 +126,7 @@ mod tests {
         fn complete(
             &self,
             req: &CompletionRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<CompletionResponse, DomainError>> + Send + '_>>
-        {
+        ) -> BoxFuture<'_, Result<CompletionResponse, DomainError>> {
             let model = req.model.clone();
             Box::pin(async move {
                 Ok(CompletionResponse {
@@ -99,7 +136,7 @@ mod tests {
                         index: 0,
                         message: ChatMessage {
                             role: Role::Assistant,
-                            content: "mock response".to_string(),
+                            content: "mock response".to_string().into(),
                         },
                         finish_reason: "stop".to_string(),
                     }],
@@ -112,8 +149,9 @@ mod tests {
             })
         }
 
-        fn models(&self) -> Vec<ModelInfo> {
-            self.model_ids
+        fn models(&self) -> BoxFuture<'_, Vec<ModelInfo>> {
+            let models = self
+                .model_ids
                 .iter()
                 .map(|id| ModelInfo {
                     id: id.clone(),
@@ -121,7 +159,22 @@ mod tests {
                     provider: self.name.clone(),
                     owned_by: self.name.clone(),
                 })
-                .collect()
+                .collect();
+            Box::pin(async move { models })
+        }
+
+        fn stream(
+            &self,
+            _req: &CompletionRequest,
+        ) -> BoxFuture<
+            '_,
+            Result<BoxStream<'static, Result<CompletionChunk, DomainError>>, DomainError>,
+        > {
+            Box::pin(async move {
+                Err(DomainError::provider_error(
+                    "streaming not supported by mock provider",
+                ))
+            })
         }
 
         fn provider_name(&self) -> &str {
@@ -134,7 +187,7 @@ mod tests {
             model: model.to_string(),
             messages: vec![ChatMessage {
                 role: Role::User,
-                content: "hello".to_string(),
+                content: "hello".to_string().into(),
             }],
             temperature: None,
             max_tokens: None,
@@ -160,10 +213,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_not_found() {
-        let service = CompletionService::new(vec![Box::new(MockProvider::new(
-            "openai",
-            vec!["gpt-5.2"],
-        ))]);
+        let service =
+            CompletionService::new(vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))]);
 
         let result = service.complete(make_request("nonexistent")).await;
         assert!(matches!(result, Err(DomainError::ModelNotFound(_))));
@@ -171,10 +222,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_messages_rejected() {
-        let service = CompletionService::new(vec![Box::new(MockProvider::new(
-            "openai",
-            vec!["gpt-5.2"],
-        ))]);
+        let service =
+            CompletionService::new(vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))]);
 
         let req = CompletionRequest {
             model: "gpt-5.2".to_string(),
@@ -186,14 +235,29 @@ mod tests {
         assert!(matches!(result, Err(DomainError::InvalidRequest(_))));
     }
 
-    #[test]
-    fn test_list_models_aggregates_all_providers() {
+    #[tokio::test]
+    async fn test_stream_empty_messages_rejected() {
+        let service =
+            CompletionService::new(vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))]);
+
+        let req = CompletionRequest {
+            model: "gpt-5.2".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+        };
+        let result = service.stream(req).await;
+        assert!(matches!(result, Err(DomainError::InvalidRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn test_list_models_aggregates_all_providers() {
         let service = CompletionService::new(vec![
             Box::new(MockProvider::new("openai", vec!["gpt-5.2", "gpt-5-mini"])),
             Box::new(MockProvider::new("anthropic", vec!["claude-opus-4-6"])),
         ]);
 
-        let models = service.list_models();
+        let models = service.list_models().await;
         assert_eq!(models.len(), 3);
     }
 }

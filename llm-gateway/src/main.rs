@@ -47,7 +47,5 @@ async fn main() {
 
     tracing::info!(port = config.port, "LLM Gateway listening");
 
-    axum::serve(listener, router)
-        .await
-        .expect("server error");
+    axum::serve(listener, router).await.expect("server error");
 }

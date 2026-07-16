@@ -1,0 +1,162 @@
+package mocks
+
+import (
+	"context"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
+)
+
+// MessageRepo is an in-memory, map-backed fake implementing
+// message.MessageRepository, with a per-room sequence counter mirroring the
+// atomic allocation behavior of postgres.MessageRepository.GetNextSequence.
+// The zero value (mocks.MessageRepo{}) is ready to use; all maps are
+// initialized lazily on first write.
+//
+// MessageRepo is safe for concurrent use.
+type MessageRepo struct {
+	mu sync.Mutex
+	// Messages is the backing store of messages, keyed by message ID;
+	// access only while holding mu.
+	Messages map[string]*message.Message
+	// Seqs is the per-room next-sequence counter, keyed by room ID; access
+	// only while holding mu.
+	Seqs map[string]int64 // roomID -> next sequence to allocate
+}
+
+func (m *MessageRepo) ensureInit() {
+	if m.Messages == nil {
+		m.Messages = make(map[string]*message.Message)
+	}
+	if m.Seqs == nil {
+		m.Seqs = make(map[string]int64)
+	}
+}
+
+// Create persists a new message.
+func (m *MessageRepo) Create(_ context.Context, msg *message.Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	m.Messages[msg.ID] = msg
+	return nil
+}
+
+// GetByID retrieves a message by ID. Returns domain.ErrNotFound if not
+// present.
+func (m *MessageRepo) GetByID(_ context.Context, id string) (*message.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	msg, ok := m.Messages[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return msg, nil
+}
+
+// ListByRoom returns messages in a room, ignoring the cursor (this fake does
+// not implement true cursor-based pagination), truncated to limit entries.
+func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int) (*message.CursorPage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var msgs []*message.Message
+	for _, msg := range m.Messages {
+		if msg.RoomID == roomID {
+			msgs = append(msgs, msg)
+		}
+	}
+	if len(msgs) > limit {
+		msgs = msgs[:limit]
+	}
+	return &message.CursorPage{Messages: msgs}, nil
+}
+
+// ListByRoomUpTo returns up to limit messages in a room with sequence
+// <= maxSequence.
+func (m *MessageRepo) ListByRoomUpTo(_ context.Context, roomID string, maxSequence int64, limit int) ([]*message.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var msgs []*message.Message
+	for _, msg := range m.Messages {
+		if msg.RoomID == roomID && msg.Sequence <= maxSequence {
+			msgs = append(msgs, msg)
+		}
+	}
+	if len(msgs) > limit {
+		msgs = msgs[:limit]
+	}
+	return msgs, nil
+}
+
+// GetNextInRoom returns the message with the smallest sequence greater than
+// afterSequence in the given room. Returns domain.ErrNotFound if no such
+// message exists.
+func (m *MessageRepo) GetNextInRoom(_ context.Context, roomID string, afterSequence int64) (*message.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var candidates []*message.Message
+	for _, msg := range m.Messages {
+		if msg.RoomID == roomID && msg.Sequence > afterSequence {
+			candidates = append(candidates, msg)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, domain.ErrNotFound
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Sequence < candidates[j].Sequence
+	})
+	return candidates[0], nil
+}
+
+// UpdateAIResponse updates the content, status, and updated_at of an AI
+// message. Returns domain.ErrNotFound if the message does not exist.
+func (m *MessageRepo) UpdateAIResponse(_ context.Context, id string, content string, status message.MessageStatus, updatedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	msg, ok := m.Messages[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	msg.Content = content
+	msg.Status = status
+	msg.UpdatedAt = updatedAt
+	return nil
+}
+
+// Delete removes a message by ID. Returns domain.ErrNotFound if the message
+// does not exist.
+func (m *MessageRepo) Delete(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.Messages[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(m.Messages, id)
+	return nil
+}
+
+// GetNextSequence atomically allocates and returns the next sequence number
+// for the given room, starting at 1.
+func (m *MessageRepo) GetNextSequence(_ context.Context, roomID string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	seq := m.Seqs[roomID]
+	if seq == 0 {
+		seq = 1
+	}
+	m.Seqs[roomID] = seq + 1
+	return seq, nil
+}

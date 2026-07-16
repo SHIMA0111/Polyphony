@@ -2,7 +2,17 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"time"
+)
+
+// Default durations applied to the pgxpool connection pool when the
+// corresponding environment variable is unset or fails to parse.
+const (
+	defaultDBMaxConnLifetime   = time.Hour
+	defaultDBMaxConnIdleTime   = 30 * time.Minute
+	defaultDBHealthCheckPeriod = time.Minute
 )
 
 // Config holds the application configuration loaded from environment variables.
@@ -17,6 +27,15 @@ type Config struct {
 	LLMGatewayURL string
 	// CORSOrigins is a comma-separated list of allowed CORS origins (default "http://localhost:3000").
 	CORSOrigins string
+	// DBMaxConnLifetime is the maximum amount of time a pgxpool connection may
+	// be reused before being closed (env DB_MAX_CONN_LIFETIME, default 1h).
+	DBMaxConnLifetime time.Duration
+	// DBMaxConnIdleTime is the maximum amount of time a pgxpool connection may
+	// sit idle before being closed (env DB_MAX_CONN_IDLE_TIME, default 30m).
+	DBMaxConnIdleTime time.Duration
+	// DBHealthCheckPeriod is the interval at which pgxpool runs a background
+	// health check on idle connections (env DB_HEALTH_CHECK_PERIOD, default 1m).
+	DBHealthCheckPeriod time.Duration
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -48,11 +67,46 @@ func Load() (*Config, error) {
 		corsOrigins = "http://localhost:3000"
 	}
 
+	dbMaxConnLifetime := parseDurationEnv("DB_MAX_CONN_LIFETIME", defaultDBMaxConnLifetime)
+	dbMaxConnIdleTime := parseDurationEnv("DB_MAX_CONN_IDLE_TIME", defaultDBMaxConnIdleTime)
+	dbHealthCheckPeriod := parseDurationEnv("DB_HEALTH_CHECK_PERIOD", defaultDBHealthCheckPeriod)
+
 	return &Config{
-		Port:          port,
-		DatabaseURL:   dbURL,
-		JWTSecret:     jwtSecret,
-		LLMGatewayURL: llmURL,
-		CORSOrigins:   corsOrigins,
+		Port:                port,
+		DatabaseURL:         dbURL,
+		JWTSecret:           jwtSecret,
+		LLMGatewayURL:       llmURL,
+		CORSOrigins:         corsOrigins,
+		DBMaxConnLifetime:   dbMaxConnLifetime,
+		DBMaxConnIdleTime:   dbMaxConnIdleTime,
+		DBHealthCheckPeriod: dbHealthCheckPeriod,
 	}, nil
+}
+
+// parseDurationEnv reads the given environment variable and parses it as a
+// time.Duration. If the variable is unset, it returns fallback. If the
+// variable is set but fails to parse, or parses to a non-positive duration
+// (which is not a meaningful pool tuning value), it logs a warning via
+// slog.Default() and returns fallback rather than propagating an error,
+// since these settings are optional tuning knobs, not required configuration.
+func parseDurationEnv(key string, fallback time.Duration) time.Duration {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback
+	}
+
+	d, err := time.ParseDuration(val)
+	if err != nil {
+		slog.Default().Warn("invalid duration for env var, using default",
+			"env", key, "value", val, "default", fallback, "error", err)
+		return fallback
+	}
+
+	if d <= 0 {
+		slog.Default().Warn("non-positive duration for env var, using default",
+			"env", key, "value", val, "default", fallback)
+		return fallback
+	}
+
+	return d
 }

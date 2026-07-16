@@ -116,6 +116,22 @@ type ModelListResponse struct {
 	Models []ModelResponse `json:"models"`
 }
 
+// --- User DTOs ---
+
+// UserResponse is the JSON response representation of the authenticated
+// caller's own user identity (GET /users/me). It deliberately excludes the
+// password hash and any other sensitive credential material.
+type UserResponse struct {
+	// ID is the user's unique identifier.
+	ID string `json:"id"`
+	// Email is the user's email address.
+	Email string `json:"email"`
+	// Username is the user's display/login name.
+	Username string `json:"username"`
+	// CreatedAt is when the user account was created.
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // --- Common DTOs ---
 
 // ErrorResponse is the standard error response body used across all handler

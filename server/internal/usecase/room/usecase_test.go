@@ -6,109 +6,13 @@ import (
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
 
-type mockRoomRepo struct {
-	rooms   map[string]*domainroom.Room
-	members map[string]map[string]*domainroom.RoomMember // roomID -> userID -> member
-}
-
-func newMockRoomRepo() *mockRoomRepo {
-	return &mockRoomRepo{
-		rooms:   make(map[string]*domainroom.Room),
-		members: make(map[string]map[string]*domainroom.RoomMember),
-	}
-}
-
-func (m *mockRoomRepo) Create(_ context.Context, rm *domainroom.Room) error {
-	m.rooms[rm.ID] = rm
-	if m.members[rm.ID] == nil {
-		m.members[rm.ID] = make(map[string]*domainroom.RoomMember)
-	}
-	m.members[rm.ID][rm.OwnerID] = &domainroom.RoomMember{
-		ID: "member-1", RoomID: rm.ID, UserID: rm.OwnerID, Role: "owner",
-	}
-	return nil
-}
-
-func (m *mockRoomRepo) GetByID(_ context.Context, id string) (*domainroom.Room, error) {
-	rm, ok := m.rooms[id]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	return rm, nil
-}
-
-func (m *mockRoomRepo) ListByUserID(_ context.Context, userID string) ([]*domainroom.Room, error) {
-	var rooms []*domainroom.Room
-	for roomID, members := range m.members {
-		if _, ok := members[userID]; ok {
-			rooms = append(rooms, m.rooms[roomID])
-		}
-	}
-	return rooms, nil
-}
-
-func (m *mockRoomRepo) Update(_ context.Context, rm *domainroom.Room) error {
-	if _, ok := m.rooms[rm.ID]; !ok {
-		return domain.ErrNotFound
-	}
-	m.rooms[rm.ID] = rm
-	return nil
-}
-
-func (m *mockRoomRepo) Delete(_ context.Context, id string) error {
-	if _, ok := m.rooms[id]; !ok {
-		return domain.ErrNotFound
-	}
-	delete(m.rooms, id)
-	delete(m.members, id)
-	return nil
-}
-
-func (m *mockRoomRepo) AddMember(_ context.Context, member *domainroom.RoomMember) error {
-	if m.members[member.RoomID] == nil {
-		m.members[member.RoomID] = make(map[string]*domainroom.RoomMember)
-	}
-	m.members[member.RoomID][member.UserID] = member
-	return nil
-}
-
-func (m *mockRoomRepo) GetMember(_ context.Context, roomID, userID string) (*domainroom.RoomMember, error) {
-	members, ok := m.members[roomID]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	member, ok := members[userID]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	return member, nil
-}
-
-func (m *mockRoomRepo) ListMembers(_ context.Context, roomID string) ([]*domainroom.RoomMember, error) {
-	members := m.members[roomID]
-	var result []*domainroom.RoomMember
-	for _, member := range members {
-		result = append(result, member)
-	}
-	return result, nil
-}
-
-func (m *mockRoomRepo) RemoveMember(_ context.Context, roomID, userID string) error {
-	members, ok := m.members[roomID]
-	if !ok {
-		return domain.ErrNotFound
-	}
-	if _, ok := members[userID]; !ok {
-		return domain.ErrNotFound
-	}
-	delete(members, userID)
-	return nil
-}
-
+// TestCreateRoom verifies CreateRoom persists a room with the given name
+// and owner.
 func TestCreateRoom(t *testing.T) {
-	repo := newMockRoomRepo()
+	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
 	ctx := context.Background()
 
@@ -124,8 +28,10 @@ func TestCreateRoom(t *testing.T) {
 	}
 }
 
+// TestGetRoomNotMember verifies GetRoom returns domain.ErrForbidden when the
+// requesting user is not a member of the room.
 func TestGetRoomNotMember(t *testing.T) {
-	repo := newMockRoomRepo()
+	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
 	ctx := context.Background()
 
@@ -137,8 +43,10 @@ func TestGetRoomNotMember(t *testing.T) {
 	}
 }
 
+// TestUpdateRoomNotOwner verifies UpdateRoom returns domain.ErrForbidden
+// when a non-owner member attempts to update the room.
 func TestUpdateRoomNotOwner(t *testing.T) {
-	repo := newMockRoomRepo()
+	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
 	ctx := context.Background()
 
@@ -155,8 +63,10 @@ func TestUpdateRoomNotOwner(t *testing.T) {
 	}
 }
 
+// TestDeleteRoom verifies DeleteRoom removes the room so a subsequent
+// GetRoom fails.
 func TestDeleteRoom(t *testing.T) {
-	repo := newMockRoomRepo()
+	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
 	ctx := context.Background()
 
@@ -173,8 +83,10 @@ func TestDeleteRoom(t *testing.T) {
 	}
 }
 
+// TestListRoomsEmpty verifies ListRooms returns an empty slice (not an
+// error) for a user who is not a member of any room.
 func TestListRoomsEmpty(t *testing.T) {
-	repo := newMockRoomRepo()
+	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
 	ctx := context.Background()
 

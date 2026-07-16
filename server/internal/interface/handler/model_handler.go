@@ -6,6 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
 
 // ModelHandler handles HTTP requests for LLM model listing.
@@ -22,6 +23,7 @@ func NewModelHandler(llmGateway ai.LLMGateway) *ModelHandler {
 func (h *ModelHandler) List(c echo.Context) error {
 	models, err := h.llmGateway.ListModels(c.Request().Context())
 	if err != nil {
+		middleware.GetLogger(c).Error("failed to fetch models from llm gateway", "error", err)
 		return c.JSON(http.StatusBadGateway, ErrorResponse{Message: "failed to fetch models"})
 	}
 
