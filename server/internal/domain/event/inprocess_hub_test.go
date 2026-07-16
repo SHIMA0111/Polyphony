@@ -157,34 +157,59 @@ func TestInProcessHubUnsubscribeStopsDeliveryAndIsSafeToCallOnce(t *testing.T) {
 // concurrent Publish and unsubscribe calls hammering the same room/subscriber
 // must never panic ("send on closed channel") and must never data-race on
 // the shared subscriber list. Run with -race to catch either failure mode.
+//
+// Publishers run continuously in the background, coordinated by a stop
+// channel that is only closed once every subscribe/unsubscribe iteration
+// below has finished, so publishing stays live for the whole test instead of
+// a single Publish call per iteration that could complete before its
+// corresponding unsubscribe and leave later iterations racing against
+// nothing.
 func TestInProcessHubConcurrentPublishAndUnsubscribeDoesNotRace(t *testing.T) {
 	hub := NewInProcessHub()
 	ctx := context.Background()
 
 	const iterations = 200
-	var wg sync.WaitGroup
+	const publishers = 4
 
+	stop := make(chan struct{})
+	var publishWG sync.WaitGroup
+
+	// Publishers continuously broadcast events to room-race until stop is
+	// closed below.
+	for p := 0; p < publishers; p++ {
+		publishWG.Add(1)
+		go func() {
+			defer publishWG.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					hub.Publish(ctx, RoomEvent{
+						Type:       EventMessageCreated,
+						RoomID:     "room-race",
+						Message:    &message.Message{ID: "msg-race"},
+						OccurredAt: time.Now(),
+					})
+				}
+			}
+		}()
+	}
+
+	var wg sync.WaitGroup
 	for i := 0; i < iterations; i++ {
 		ch, unsubscribe := hub.Subscribe(ctx, "room-race", "user-race")
 
-		wg.Add(3)
-		go func() {
-			defer wg.Done()
-			hub.Publish(ctx, RoomEvent{
-				Type:       EventMessageCreated,
-				RoomID:     "room-race",
-				Message:    &message.Message{ID: "msg-race"},
-				OccurredAt: time.Now(),
-			})
-		}()
+		wg.Add(2)
 		go func() {
 			defer wg.Done()
 			unsubscribe()
 		}()
 		go func() {
 			defer wg.Done()
-			// Drain concurrently with the other two goroutines so a
-			// send racing a close also has a reader on the other end.
+			// Drain concurrently with unsubscribe and the background
+			// publishers above so a send racing a close also has a
+			// reader on the other end.
 			select {
 			case <-ch:
 			case <-time.After(100 * time.Millisecond):
@@ -193,6 +218,8 @@ func TestInProcessHubConcurrentPublishAndUnsubscribeDoesNotRace(t *testing.T) {
 	}
 
 	wg.Wait()
+	close(stop)
+	publishWG.Wait()
 }
 
 func TestInProcessHubPublishNonBlockingOnFullChannel(t *testing.T) {
