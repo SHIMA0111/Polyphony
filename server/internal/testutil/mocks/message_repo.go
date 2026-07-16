@@ -90,14 +90,13 @@ func visibleTo(msg *message.Message, requestingUserID string) bool {
 
 // ListByRoom returns messages in a room, ignoring the cursor (this fake does
 // not implement true cursor-based pagination), ordered sequence-descending
-// (newest first, mirroring postgres.MessageRepository.ListByRoom's `ORDER BY
-// sequence DESC`) before being truncated to limit entries -- the map-backed
-// m.Messages iterates in random order, so without this sort, truncation
-// could silently drop an arbitrary subset of matching messages instead of
-// the oldest ones, and the returned order itself would be nondeterministic.
-// Soft-deleted messages (IsDeleted == true) are excluded, mirroring the
-// postgres.MessageRepository behavior. A private message not owned by
-// requestingUserID is also excluded (see visibleTo).
+// (newest first, mirroring postgres.MessageRepository.ListByRoom's
+// ORDER BY sequence DESC -- callers such as
+// MessageUsecase.assembleAIContext rely on this ordering to bucket the
+// newest N entries as the "recent, always verbatim" tail), truncated to
+// limit entries. Soft-deleted messages (IsDeleted == true) are excluded,
+// mirroring the postgres.MessageRepository behavior. A private message not
+// owned by requestingUserID is also excluded (see visibleTo).
 func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int, requestingUserID string) (*message.CursorPage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -120,7 +119,7 @@ func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int,
 // ListByRoomUpTo returns up to limit messages in a room with sequence
 // <= maxSequence, ordered sequence-descending (newest first, mirroring
 // postgres.MessageRepository.ListByRoomUpTo -- see ListByRoom's doc comment
-// for why this ordering matters before truncation). Soft-deleted messages
+// for why this ordering matters to callers). Soft-deleted messages
 // (IsDeleted == true) are excluded, mirroring the postgres.MessageRepository
 // behavior. A private message not owned by requestingUserID is also
 // excluded (see visibleTo).

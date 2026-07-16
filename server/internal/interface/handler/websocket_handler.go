@@ -166,10 +166,18 @@ func (h *WebSocketHandler) Handle(c echo.Context) error {
 				return nil
 			}
 
+			msgResp := toMessageResponse(ev.Message)
+			// UsedContextSummary is a one-time, request-scoped signal (see
+			// event.RoomEvent.UsedContextSummary/handler.MessageResponse.
+			// UsedContextSummary's doc comments): it is never persisted on
+			// the domain message itself, so toMessageResponse always
+			// defaults it to false and it must be copied across separately
+			// from the originating RoomEvent.
+			msgResp.UsedContextSummary = ev.UsedContextSummary
 			frame := wsEventFrame{
 				Type:    string(ev.Type),
 				RoomID:  ev.RoomID,
-				Message: toMessageResponse(ev.Message),
+				Message: msgResp,
 			}
 
 			writeCtx, cancel := context.WithTimeout(readCtx, wsWriteTimeout)

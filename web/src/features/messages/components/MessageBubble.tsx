@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import {
+  Badge,
   Box,
   Button,
   Dialog,
@@ -237,6 +238,14 @@ export function MessageBubble({
             <Flex align="center" color="fg.muted" tabIndex={0}>
               <EyeOff size={12} aria-label="Excluded from AI context" />
             </Flex>
+          </Tooltip>
+        )}
+
+        {message.type === "ai" && message.used_context_summary && (
+          <Tooltip content="Older messages were summarized to fit the model's context window">
+            <Badge size="xs" variant="subtle" colorPalette="purple" tabIndex={0}>
+              Summarized history
+            </Badge>
           </Tooltip>
         )}
 

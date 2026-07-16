@@ -30,11 +30,34 @@ const attachmentViewURLExpiry = time.Hour
 
 const defaultContextMessages = 50
 
+// summaryRecentTailCount is the number of newest messages (by Sequence)
+// that assembleAIContext always keeps verbatim, never summarized,
+// regardless of how large the fetched context window is. Keeping a
+// verbatim recent tail means the AI always sees the exact wording of the
+// most recent turns, even when older history has been folded into a cached
+// summary.
+const summaryRecentTailCount = 10
+
+// reservedOutputTokens is subtracted from a model's resolved context window
+// (ai.ResolveContextWindow) to compute assembleAIContext's usable input
+// token budget, leaving headroom for the model's own reply. It is a fixed
+// approximation, not a per-request MaxTokens-aware calculation: Out of
+// scope explicitly excludes real tokenizer-accurate limit enforcement for
+// this step.
+const reservedOutputTokens = 1024
+
 // SendAIResult holds both the human and AI messages from a SendAIMessage call.
 // When AIMessage.Status is "failed", the LLM call failed but both messages were persisted.
 type SendAIResult struct {
 	HumanMessage *domainmessage.Message
 	AIMessage    *domainmessage.Message
+	// UsedContextSummary reports whether the context assembled for this
+	// call (see assembleAIContext) included a cached/freshly-computed
+	// summary of older history in place of the raw messages it replaces.
+	// It is a one-time, request-scoped signal describing how AIMessage was
+	// generated -- it is never persisted on the message itself (see
+	// handler.MessageResponse.UsedContextSummary's doc comment).
+	UsedContextSummary bool
 }
 
 // MessageUsecase provides message-related business logic.
@@ -53,6 +76,11 @@ type MessageUsecase struct {
 	billing        BillingGuard
 	attachmentRepo domainattachment.AttachmentRepository
 	objStorage     storage.ObjectStorage
+	// summaryRepo caches and invalidates per-room context summaries (Step
+	// 50, phases.md Phase 18). See assembleAIContext for how it is
+	// consulted/written, and DeleteMessage/SetExcludeFromAI for
+	// invalidation.
+	summaryRepo ai.ContextSummaryRepository
 	// defaultAIModel is the deployment-wide fallback model string, sourced
 	// from Config.DefaultAIModel by the caller of NewMessageUsecase. It is
 	// the lowest-precedence tier consulted by resolveModel, used only when
@@ -76,9 +104,12 @@ type MessageUsecase struct {
 // message's attachments (see domain/attachment, landed in Step 12) and
 // objStorage mints a fresh presigned view URL for each one, reusing the same
 // storage.ObjectStorage.PresignView helper usecase/attachment's
-// ListAttachments uses rather than re-deriving S3 URLs here. defaultAIModel
-// is the deployment-wide fallback model string consulted by resolveModel
-// (see model_resolution.go) whenever an AI request omits an explicit model
+// ListAttachments uses rather than re-deriving S3 URLs here. summaryRepo
+// caches and invalidates per-room AI context summaries (see
+// assembleAIContext); pass a postgres.ContextSummaryRepository (see
+// interface/repository/postgres). defaultAIModel is the deployment-wide
+// fallback model string consulted by resolveModel (see
+// model_resolution.go) whenever an AI request omits an explicit model
 // and the target room has no configured domainroom.Room.AIModel; pass
 // cfg.DefaultAIModel from internal/infrastructure/config.Config.
 func NewMessageUsecase(
@@ -89,6 +120,7 @@ func NewMessageUsecase(
 	billing BillingGuard,
 	attachmentRepo domainattachment.AttachmentRepository,
 	objStorage storage.ObjectStorage,
+	summaryRepo ai.ContextSummaryRepository,
 	defaultAIModel string,
 ) *MessageUsecase {
 	return &MessageUsecase{
@@ -100,6 +132,7 @@ func NewMessageUsecase(
 		billing:        billing,
 		attachmentRepo: attachmentRepo,
 		objStorage:     objStorage,
+		summaryRepo:    summaryRepo,
 		defaultAIModel: defaultAIModel,
 	}
 }
@@ -168,7 +201,7 @@ func (u *MessageUsecase) createHumanMessage(ctx context.Context, userID, roomID,
 		return nil, err
 	}
 
-	u.publishMessageEvent(ctx, event.EventMessageCreated, roomID, msg, now)
+	u.publishMessageEvent(ctx, event.EventMessageCreated, roomID, msg, now, false)
 
 	return msg, nil
 }
@@ -213,18 +246,26 @@ func targetUserIDsForVisibility(msg *domainmessage.Message) []string {
 // therefore logged as an error rather than silently skipped, since it
 // always indicates the message's owning user row was deleted out from
 // under it.
-func (u *MessageUsecase) publishMessageEvent(ctx context.Context, eventType event.EventType, roomID string, msg *domainmessage.Message, occurredAt time.Time) {
+//
+// usedContextSummary is forwarded verbatim onto the published
+// event.RoomEvent.UsedContextSummary (Step 50): true only for the AI
+// message events produced by a SendAIMessage/RegenerateAIMessage call whose
+// context assembly folded older history into a cached summary. Callers with
+// nothing to report (e.g. SendMessage's plain human-message publish) pass
+// false.
+func (u *MessageUsecase) publishMessageEvent(ctx context.Context, eventType event.EventType, roomID string, msg *domainmessage.Message, occurredAt time.Time, usedContextSummary bool) {
 	if msg.Visibility == domainmessage.MessageVisibilityPrivate && msg.SenderID == nil {
 		slog.Error("suppressing publish of an ownerless private message: TargetUserIDs cannot express \"nobody\"",
 			"room_id", roomID, "message_id", msg.ID)
 		return
 	}
 	u.hub.Publish(ctx, event.RoomEvent{
-		Type:          eventType,
-		RoomID:        roomID,
-		Message:       msg,
-		TargetUserIDs: targetUserIDsForVisibility(msg),
-		OccurredAt:    occurredAt,
+		Type:               eventType,
+		RoomID:             roomID,
+		Message:            msg,
+		TargetUserIDs:      targetUserIDsForVisibility(msg),
+		OccurredAt:         occurredAt,
+		UsedContextSummary: usedContextSummary,
 	})
 }
 
@@ -332,18 +373,19 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	// returning — see createFailedAIPlaceholder and the doc comment above.
 	contextPage, err := u.msgRepo.ListByRoom(ctx, roomID, "", defaultContextMessages, userID)
 	if err != nil {
-		u.saveFailedAIPlaceholderOnError(ctx, roomID, userID, humanMsg.ID, aiSeq, visibility, private, "context fetch", err)
+		// Context assembly has not run yet, so there is no summary usage to
+		// report.
+		u.saveFailedAIPlaceholderOnError(ctx, roomID, userID, humanMsg.ID, aiSeq, visibility, private, false, "context fetch", err)
 		return nil, err
 	}
 
-	// Build chat messages (reverse to chronological order), filtering out
-	// soft-deleted, exclude_from_ai, failed, and pre-cutoff messages.
-	chatMsgs := u.contextBuilder.Build(contextPage.Messages, rm.AIContextCutoffAt)
-	chatMsgs, err = u.enrichWithAttachments(
-		ctx, chatMsgs, filterEligibleMessages(contextPage.Messages, rm.AIContextCutoffAt),
-	)
+	// Build chat messages (reverse to chronological order, filtering out
+	// soft-deleted, exclude_from_ai, failed, and pre-cutoff messages),
+	// summarizing older history behind a cache when the estimated context
+	// would overflow model's resolved context window (Step 50).
+	chatMsgs, usedSummary, err := u.assembleAIContext(ctx, rm, model, contextPage.Messages)
 	if err != nil {
-		u.saveFailedAIPlaceholderOnError(ctx, roomID, userID, humanMsg.ID, aiSeq, visibility, private, "attachment enrichment", err)
+		u.saveFailedAIPlaceholderOnError(ctx, roomID, userID, humanMsg.ID, aiSeq, visibility, private, usedSummary, "attachment enrichment", err)
 		return nil, err
 	}
 
@@ -353,11 +395,11 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		Messages: chatMsgs,
 	})
 	if llmErr != nil {
-		aiMsg, err := u.createFailedAIPlaceholder(ctx, roomID, userID, humanMsg.ID, aiSeq, visibility, private)
+		aiMsg, err := u.createFailedAIPlaceholder(ctx, roomID, userID, humanMsg.ID, aiSeq, visibility, private, usedSummary)
 		if err != nil {
 			return nil, err
 		}
-		return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg}, nil
+		return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg, UsedContextSummary: usedSummary}, nil
 	}
 
 	aiNow := time.Now()
@@ -390,10 +432,10 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		// saved before returning, exactly like the context-fetch and
 		// attachment-enrichment failure paths above -- otherwise a client
 		// retry would resubmit and duplicate the human message.
-		u.saveFailedAIPlaceholderOnError(ctx, roomID, userID, humanMsg.ID, aiSeq, visibility, private, "completed AI message create", err)
+		u.saveFailedAIPlaceholderOnError(ctx, roomID, userID, humanMsg.ID, aiSeq, visibility, private, usedSummary, "completed AI message create", err)
 		return nil, err
 	}
-	u.publishMessageEvent(ctx, event.EventMessageCreated, roomID, aiMsg, aiNow)
+	u.publishMessageEvent(ctx, event.EventMessageCreated, roomID, aiMsg, aiNow, usedSummary)
 
 	// Fire-and-forget: the AI message is already durably persisted, so a
 	// usage-recording failure must never affect the returned result.
@@ -401,7 +443,7 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		slog.Error("failed to record token usage", "error", err, "room_id", roomID, "message_id", aiMsg.ID)
 	}
 
-	return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg}, nil
+	return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg, UsedContextSummary: usedSummary}, nil
 }
 
 // createFailedAIPlaceholder persists and publishes a status=failed AI
@@ -417,8 +459,11 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 // applies uniformly regardless of which step failed.
 //
 // aiMsg.SenderID mirrors the successful path's rule for a private exchange
-// (see the SenderID deviation comment in SendAIMessage).
-func (u *MessageUsecase) createFailedAIPlaceholder(ctx context.Context, roomID, userID, humanMsgID string, aiSeq int64, visibility domainmessage.MessageVisibility, private bool) (*domainmessage.Message, error) {
+// (see the SenderID deviation comment in SendAIMessage). usedSummary is
+// forwarded verbatim to the published event's UsedContextSummary (Step 50);
+// callers that failed before context assembly ran at all (e.g. the
+// context-fetch failure path) must pass false.
+func (u *MessageUsecase) createFailedAIPlaceholder(ctx context.Context, roomID, userID, humanMsgID string, aiSeq int64, visibility domainmessage.MessageVisibility, private bool, usedSummary bool) (*domainmessage.Message, error) {
 	aiNow := time.Now()
 	aiMsg := &domainmessage.Message{
 		ID:                    uuid.New().String(),
@@ -438,7 +483,7 @@ func (u *MessageUsecase) createFailedAIPlaceholder(ctx context.Context, roomID, 
 	if err := u.msgRepo.Create(ctx, aiMsg); err != nil {
 		return nil, err
 	}
-	u.publishMessageEvent(ctx, event.EventMessageCreated, roomID, aiMsg, aiNow)
+	u.publishMessageEvent(ctx, event.EventMessageCreated, roomID, aiMsg, aiNow, usedSummary)
 	return aiMsg, nil
 }
 
@@ -449,9 +494,10 @@ func (u *MessageUsecase) createFailedAIPlaceholder(ctx context.Context, roomID, 
 // path, origErr is always what SendAIMessage returns to its caller
 // regardless of whether the placeholder could be saved, so a secondary
 // failure to create the placeholder is only logged here (tagged with step)
-// rather than replacing or being combined with origErr.
-func (u *MessageUsecase) saveFailedAIPlaceholderOnError(ctx context.Context, roomID, userID, humanMsgID string, aiSeq int64, visibility domainmessage.MessageVisibility, private bool, step string, origErr error) {
-	if _, err := u.createFailedAIPlaceholder(ctx, roomID, userID, humanMsgID, aiSeq, visibility, private); err != nil {
+// rather than replacing or being combined with origErr. usedSummary is
+// forwarded to createFailedAIPlaceholder unchanged.
+func (u *MessageUsecase) saveFailedAIPlaceholderOnError(ctx context.Context, roomID, userID, humanMsgID string, aiSeq int64, visibility domainmessage.MessageVisibility, private bool, usedSummary bool, step string, origErr error) {
+	if _, err := u.createFailedAIPlaceholder(ctx, roomID, userID, humanMsgID, aiSeq, visibility, private, usedSummary); err != nil {
 		slog.Error("failed to save failed AI placeholder after SendAIMessage error",
 			"step", step, "original_error", origErr, "placeholder_error", err, "room_id", roomID, "human_message_id", humanMsgID)
 	}
@@ -475,21 +521,25 @@ func (u *MessageUsecase) saveFailedAIPlaceholderOnError(ctx context.Context, roo
 // rather than domain.ErrNotFound, because the only way a member can fail to
 // see an otherwise-existing message is that it is private and belongs to
 // someone else.
-func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID, messageID, model string) (*domainmessage.Message, error) {
+//
+// The second return value reports whether the regenerated response's
+// context included a summary of older history (see assembleAIContext); it
+// is a one-time, request-scoped signal, not a persisted message property.
+func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID, messageID, model string) (*domainmessage.Message, bool, error) {
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if !member.Role.Allows(room.ActionInvokeAI) {
-		return nil, domain.ErrForbidden
+	if err := room.Authorize(member.Role, room.ActionInvokeAI); err != nil {
+		return nil, false, err
 	}
 	if err := u.billing.CheckBalance(ctx, roomID); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	rm, err := u.roomRepo.GetByID(ctx, roomID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	model = resolveModel(model, rm, u.defaultAIModel)
 
@@ -498,41 +548,40 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	targetMsg, err := u.msgRepo.GetByID(ctx, messageID, userID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			return nil, domain.ErrForbidden
+			return nil, false, domain.ErrForbidden
 		}
-		return nil, err
+		return nil, false, err
 	}
 	if targetMsg.RoomID != roomID {
-		return nil, domain.ErrNotFound
+		return nil, false, domain.ErrNotFound
 	}
 	if targetMsg.Type != domainmessage.MessageTypeHuman {
-		return nil, domain.ErrInvalidMessageType
+		return nil, false, domain.ErrInvalidMessageType
 	}
 
 	// Find the AI response that follows the target message
 	nextMsg, err := u.msgRepo.GetNextInRoom(ctx, roomID, targetMsg.Sequence)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if nextMsg.Type != domainmessage.MessageTypeAI {
-		return nil, domain.ErrNotFound
+		return nil, false, domain.ErrNotFound
 	}
 
 	// Fetch context up to the target message (inclusive), excluding any
 	// other user's private messages from what this regeneration call sees.
 	contextMsgs, err := u.msgRepo.ListByRoomUpTo(ctx, roomID, targetMsg.Sequence, defaultContextMessages, userID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	// Build chat messages (reverse to chronological order), filtering out
-	// soft-deleted, exclude_from_ai, failed, and pre-cutoff messages.
-	chatMsgs := u.contextBuilder.Build(contextMsgs, rm.AIContextCutoffAt)
-	chatMsgs, err = u.enrichWithAttachments(
-		ctx, chatMsgs, filterEligibleMessages(contextMsgs, rm.AIContextCutoffAt),
-	)
+	// Build chat messages (reverse to chronological order, filtering out
+	// soft-deleted, exclude_from_ai, failed, and pre-cutoff messages),
+	// summarizing older history behind a cache when the estimated context
+	// would overflow the model's resolved context window (Step 50).
+	chatMsgs, usedSummary, err := u.assembleAIContext(ctx, rm, model, contextMsgs)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Call LLM Gateway
@@ -541,13 +590,13 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 		Messages: chatMsgs,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Update existing AI response in place (preserve sequence and created_at)
 	now := time.Now()
 	if err = u.msgRepo.UpdateAIResponse(ctx, nextMsg.ID, completion.Content, domainmessage.MessageStatusCompleted, now); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	nextMsg.Content = completion.Content
 	nextMsg.Status = domainmessage.MessageStatusCompleted
@@ -559,9 +608,9 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 		slog.Error("failed to record token usage", "error", err, "room_id", roomID, "message_id", nextMsg.ID)
 	}
 
-	u.publishMessageEvent(ctx, event.EventMessageUpdated, roomID, nextMsg, now)
+	u.publishMessageEvent(ctx, event.EventMessageUpdated, roomID, nextMsg, now, usedSummary)
 
-	return nextMsg, nil
+	return nextMsg, usedSummary, nil
 }
 
 // DeleteMessage soft-deletes a message in roomID on behalf of userID. The
@@ -597,7 +646,22 @@ func (u *MessageUsecase) DeleteMessage(ctx context.Context, userID, roomID, mess
 		return domain.ErrForbidden
 	}
 
-	return u.msgRepo.Delete(ctx, messageID)
+	if err := u.msgRepo.Delete(ctx, messageID); err != nil {
+		return err
+	}
+
+	// Invalidate the room's cached context summary (Step 50): a deleted
+	// message may fall within the previously-summarized range, and coarsely
+	// wiping the whole room's cache on every delete (rather than checking
+	// whether it actually does) trades a possibly-unnecessary
+	// re-summarization for guaranteed correctness. Best-effort: a cache
+	// invalidation failure must never fail the delete that already
+	// succeeded.
+	if err := u.summaryRepo.DeleteByRoom(ctx, roomID); err != nil {
+		slog.Error("failed to invalidate cached context summary", "error", err, "room_id", roomID)
+	}
+
+	return nil
 }
 
 // SetExcludeFromAI toggles whether a message is excluded from future AI
@@ -633,6 +697,13 @@ func (u *MessageUsecase) SetExcludeFromAI(ctx context.Context, userID, roomID, m
 	}
 	msg.ExcludeFromAI = exclude
 	msg.UpdatedAt = now
+
+	// Invalidate the room's cached context summary (Step 50): see
+	// DeleteMessage's identical invalidation call for why this is
+	// deliberately coarse (whole-room, not range-checked) and best-effort.
+	if err := u.summaryRepo.DeleteByRoom(ctx, roomID); err != nil {
+		slog.Error("failed to invalidate cached context summary", "error", err, "room_id", roomID)
+	}
 
 	return msg, nil
 }
@@ -736,4 +807,233 @@ func (u *MessageUsecase) enrichWithAttachments(
 		chatMsgs[i].Parts = parts
 	}
 	return chatMsgs, nil
+}
+
+// assembleAIContext is the single mechanism SendAIMessage/RegenerateAIMessage
+// use to turn a raw, sequence-descending batch of fetched room messages
+// (msgs, as returned by MessageRepository.ListByRoom/ListByRoomUpTo) into the
+// []ai.ChatMessage sent to ai.LLMGateway.Complete, deciding along the way
+// whether older history needs to be replaced by a cached/freshly-computed
+// AI-generated summary (phases.md Phase 18) because the full context would
+// overflow rm's target model's resolved context window.
+//
+// # Bucketing
+//
+// msgs is split into three buckets, oldest-message-per-bucket-boundary
+// documented inline below:
+//   - recentRaw: the first summaryRecentTailCount entries (the newest, by
+//     Sequence) -- always kept verbatim, never summarized, so the AI always
+//     sees the exact wording of the most recent turns.
+//   - olderPrivateRaw: everything older than the recent tail whose
+//     Visibility is private. Because msgs was fetched with requestingUserID
+//     already applied (MessageRepository's visibility filter), any private
+//     message present here already belongs to the caller -- there is no
+//     "someone else's private message" to filter out again.
+//   - olderPublicRaw: everything older than the recent tail whose
+//     Visibility is public -- the only bucket ever eligible for
+//     summarization/caching.
+//
+// olderPrivateRaw is deliberately never summarized or written into the
+// shared, room-scoped (not per-user) message_context_summaries cache: since
+// the cache has no per-user dimension, caching any private content would
+// leak it to every other member's subsequent AI calls in the same room. This
+// is why a private message can never end up in a cached summary "by
+// construction" (it never enters the summarizable bucket in the first
+// place) rather than needing an explicit invalidation trigger when a
+// message's visibility or exclusion state changes.
+//
+// # Budget check and summarization
+//
+// ai.ContextBuilder.Build is called separately over each raw bucket (it is a
+// pure filter/map function and composes fine over sub-slices), each result
+// enriched with image attachments exactly as SendAIMessage/RegenerateAIMessage
+// did directly before this step (Step 39). If olderPublicRaw is empty, there
+// is nothing to summarize and the verbatim buckets are concatenated as-is.
+// Otherwise, the estimated token cost of the full verbatim concatenation is
+// compared against rm's target model's resolved context window (minus
+// reservedOutputTokens); if it fits, the verbatim concatenation is still
+// returned unchanged. Only on overflow is the older-public bucket replaced by
+// a single system-role summary message -- see the inline comments below for
+// the cache-hit/summarize/cache-write sequence.
+//
+// # Ordering caveat
+//
+// olderPublicRaw/olderPrivateRaw are split from the same sequence-descending
+// remainder, so each preserves its own relative chronological order, but the
+// two buckets are interleaved in real time. The final concatenation always
+// places olderPrivateChat immediately before recentChat (both "never
+// summarized, always verbatim") regardless of their true interleaving with
+// the (possibly summarized) older-public bucket; this is an accepted,
+// documented approximation of true chronological order, not a bug.
+func (u *MessageUsecase) assembleAIContext(
+	ctx context.Context,
+	rm *room.Room,
+	model string,
+	msgs []*domainmessage.Message,
+) ([]ai.ChatMessage, bool, error) {
+	cutoff := rm.AIContextCutoffAt
+
+	tailCount := summaryRecentTailCount
+	if tailCount > len(msgs) {
+		tailCount = len(msgs)
+	}
+	recentRaw := msgs[:tailCount]
+	remainder := msgs[tailCount:]
+
+	var olderPublicRaw, olderPrivateRaw []*domainmessage.Message
+	for _, m := range remainder {
+		if m.Visibility == domainmessage.MessageVisibilityPrivate {
+			olderPrivateRaw = append(olderPrivateRaw, m)
+		} else {
+			olderPublicRaw = append(olderPublicRaw, m)
+		}
+	}
+
+	recentChat, err := u.buildAndEnrichContextBucket(ctx, recentRaw, cutoff)
+	if err != nil {
+		return nil, false, err
+	}
+	olderPrivateChat, err := u.buildAndEnrichContextBucket(ctx, olderPrivateRaw, cutoff)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if len(olderPublicRaw) == 0 {
+		// Nothing eligible to summarize -- the common case for most
+		// rooms/history lengths.
+		return append(append([]ai.ChatMessage{}, olderPrivateChat...), recentChat...), false, nil
+	}
+
+	olderPublicChat, err := u.buildAndEnrichContextBucket(ctx, olderPublicRaw, cutoff)
+	if err != nil {
+		return nil, false, err
+	}
+
+	verbatim := func() []ai.ChatMessage {
+		out := make([]ai.ChatMessage, 0, len(olderPublicChat)+len(olderPrivateChat)+len(recentChat))
+		out = append(out, olderPublicChat...)
+		out = append(out, olderPrivateChat...)
+		out = append(out, recentChat...)
+		return out
+	}
+
+	// Resolve the target model's context window on a best-effort basis:
+	// ListModels failing must not fail the whole AI call, so a nil models
+	// slice is passed through to ResolveContextWindow/
+	// ResolveSupportsImageInput, which fall back to their hard-coded tables.
+	models, listErr := u.llmGateway.ListModels(ctx)
+	if listErr != nil {
+		models = nil
+	}
+	budget := ai.ResolveContextWindow(models, model) - reservedOutputTokens
+
+	estimate, estErr := u.llmGateway.EstimateTokens(ctx, &ai.TokenEstimateRequest{
+		Model:    model,
+		Messages: verbatim(),
+	})
+	if estErr != nil {
+		// Cannot determine whether the context is oversized -- degrade to
+		// sending the raw, potentially-oversized context rather than
+		// failing the whole AI call (this step never hard-rejects on
+		// tokenizer-accuracy grounds; see step50.md's Out of scope note).
+		slog.Error("failed to estimate context tokens; skipping summarization check", "error", estErr, "room_id", rm.ID)
+		return verbatim(), false, nil
+	}
+	if estimate.EstimatedTokens <= budget {
+		return verbatim(), false, nil
+	}
+
+	// Overflow: the oldest message still included in olderPublicRaw (its
+	// last element, since olderPublicRaw is itself sequence-descending)
+	// marks the boundary a cached summary must match exactly to be reused.
+	boundarySeq := olderPublicRaw[len(olderPublicRaw)-1].Sequence
+
+	summaryText, cacheErr := u.summaryOrCompute(ctx, rm.ID, model, boundarySeq, olderPublicChat, models)
+	if cacheErr != nil {
+		// Best-effort: a summarization or cache-write failure degrades to
+		// the un-summarized (potentially oversized) context rather than
+		// failing the whole AI call.
+		slog.Error("context summarization failed; falling back to unsummarized context", "error", cacheErr, "room_id", rm.ID)
+		return verbatim(), false, nil
+	}
+
+	result := make([]ai.ChatMessage, 0, 1+len(olderPrivateChat)+len(recentChat))
+	result = append(result, ai.ChatMessage{Role: "system", Content: "Summary of earlier conversation:\n" + summaryText})
+	result = append(result, olderPrivateChat...)
+	result = append(result, recentChat...)
+	return result, true, nil
+}
+
+// buildAndEnrichContextBucket runs ai.ContextBuilder.Build over a single raw
+// message sub-slice (see assembleAIContext's bucketing) and applies the same
+// attachment enrichment (Step 39) SendAIMessage/RegenerateAIMessage applied
+// directly before this step existed, using filterEligibleMessages to
+// reconstruct Build's parallel source-message slice for that same
+// (subMsgs, cutoff) pair.
+func (u *MessageUsecase) buildAndEnrichContextBucket(
+	ctx context.Context,
+	subMsgs []*domainmessage.Message,
+	cutoff *time.Time,
+) ([]ai.ChatMessage, error) {
+	chatMsgs := u.contextBuilder.Build(subMsgs, cutoff)
+	return u.enrichWithAttachments(ctx, chatMsgs, filterEligibleMessages(subMsgs, cutoff))
+}
+
+// summaryOrCompute returns the summary text to prepend to the AI context for
+// (roomID, model, boundarySeq): a cached ai.ContextSummary if
+// u.summaryRepo.Get returns one whose Model and CoveredUpToSequence match
+// exactly, or a freshly computed one otherwise.
+//
+// On a cache miss, it resolves includeImages from the same models slice
+// already fetched by assembleAIContext for the context-window resolution (no
+// second ListModels call), builds the summarization prompt over
+// olderPublicChat (already attachment-enriched -- so a Vision-capable model
+// receives the real image parts when includeImages is true), calls
+// ai.LLMGateway.Complete, and -- on success -- caches the result via
+// u.summaryRepo.Upsert before returning it. A Complete or EstimateTokens
+// failure, or an Upsert failure, is returned to the caller (assembleAIContext
+// logs it and degrades to the un-summarized context); a successful Complete
+// whose subsequent cache-write fails still returns the freshly computed
+// summary text, since the summary itself is still valid for this one call
+// even though it won't be reused by a later one.
+func (u *MessageUsecase) summaryOrCompute(
+	ctx context.Context,
+	roomID, model string,
+	boundarySeq int64,
+	olderPublicChat []ai.ChatMessage,
+	models []ai.ModelInfo,
+) (string, error) {
+	if cached, err := u.summaryRepo.Get(ctx, roomID); err == nil &&
+		cached.Model == model && cached.CoveredUpToSequence == boundarySeq {
+		return cached.SummaryText, nil
+	}
+
+	includeImages := ai.ResolveSupportsImageInput(models, model)
+	prompt := ai.BuildSummarizationPrompt(olderPublicChat, includeImages)
+
+	completion, err := u.llmGateway.Complete(ctx, &ai.CompletionRequest{Model: model, Messages: prompt})
+	if err != nil {
+		return "", err
+	}
+	summaryText := completion.Content
+
+	tokenCount := 0
+	if estimate, err := u.llmGateway.EstimateTokens(ctx, &ai.TokenEstimateRequest{
+		Model:    model,
+		Messages: []ai.ChatMessage{{Role: "system", Content: summaryText}},
+	}); err == nil {
+		tokenCount = estimate.EstimatedTokens
+	}
+
+	if err := u.summaryRepo.Upsert(ctx, &ai.ContextSummary{
+		RoomID:              roomID,
+		Model:               model,
+		CoveredUpToSequence: boundarySeq,
+		SummaryText:         summaryText,
+		TokenCount:          tokenCount,
+	}); err != nil {
+		slog.Error("failed to cache context summary", "error", err, "room_id", roomID)
+	}
+
+	return summaryText, nil
 }

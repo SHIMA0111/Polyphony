@@ -186,3 +186,19 @@ CREATE TABLE room_fork_jobs (
 );
 
 CREATE INDEX idx_room_fork_jobs_new_room ON room_fork_jobs(new_room_id);
+
+-- Step 50: cached context summaries. One row per room -- the room's most
+-- recently computed summary of its older public-visibility message history,
+-- reused by MessageUsecase.assembleAIContext across AI calls that see the
+-- same (room, model, covered_up_to_sequence) triple, and invalidated
+-- (deleted) whenever a message in the room is deleted or its exclude_from_ai
+-- flag changes.
+CREATE TABLE message_context_summaries (
+    room_id UUID PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+    model VARCHAR(100) NOT NULL,
+    covered_up_to_sequence BIGINT NOT NULL,
+    summary_text TEXT NOT NULL,
+    token_count INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

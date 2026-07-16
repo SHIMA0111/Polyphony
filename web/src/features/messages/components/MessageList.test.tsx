@@ -23,6 +23,7 @@ const messages: Message[] = [
     in_response_to_message_id: null,
     is_deleted: false,
     exclude_from_ai: false,
+    used_context_summary: false,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   },
@@ -37,6 +38,7 @@ const messages: Message[] = [
     in_response_to_message_id: "message-human",
     is_deleted: false,
     exclude_from_ai: false,
+    used_context_summary: false,
     created_at: "2026-01-01T00:00:01Z",
     updated_at: "2026-01-01T00:00:01Z",
   },
@@ -51,6 +53,7 @@ const messages: Message[] = [
     in_response_to_message_id: "message-human",
     is_deleted: false,
     exclude_from_ai: false,
+    used_context_summary: false,
     created_at: "2026-01-01T00:00:02Z",
     updated_at: "2026-01-01T00:00:02Z",
   },
@@ -131,6 +134,7 @@ describe("MessageList", () => {
         in_response_to_message_id: null,
         is_deleted: false,
         exclude_from_ai: false,
+        used_context_summary: false,
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
       },
@@ -168,6 +172,7 @@ describe("MessageList", () => {
         in_response_to_message_id: "message-human",
         is_deleted: false,
         exclude_from_ai: false,
+        used_context_summary: false,
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
       },
@@ -219,5 +224,82 @@ describe("MessageList", () => {
     )
 
     expect(fetchNextPage).not.toHaveBeenCalled()
+  })
+
+  // --- Step 50: context summarization badge ---
+
+  it("shows the 'Summarized history' badge on an AI message with used_context_summary: true", () => {
+    const summarizedMessages: Message[] = [
+      {
+        id: "message-ai-summarized",
+        room_id: "room-1",
+        sender_id: null,
+        content: "Here's the answer, considering our earlier discussion.",
+        type: "ai",
+        status: "completed",
+        sequence: 1,
+        in_response_to_message_id: "message-human",
+        is_deleted: false,
+        exclude_from_ai: false,
+        used_context_summary: true,
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    ]
+
+    render(
+      <MessageList
+        messages={summarizedMessages}
+        onRegenerate={vi.fn()}
+        isRegenerating={null}
+        {...noopPaginationProps}
+      />,
+    )
+
+    expect(screen.getByText("Summarized history")).toBeInTheDocument()
+  })
+
+  it("does not show the 'Summarized history' badge when used_context_summary is false", () => {
+    render(
+      <MessageList
+        messages={messages}
+        onRegenerate={vi.fn()}
+        isRegenerating={null}
+        {...noopPaginationProps}
+      />,
+    )
+
+    expect(screen.queryByText("Summarized history")).not.toBeInTheDocument()
+  })
+
+  it("does not show the 'Summarized history' badge on a human message even if used_context_summary were true", () => {
+    const humanOnly: Message[] = [
+      {
+        id: "message-human-2",
+        room_id: "room-1",
+        sender_id: "user-1",
+        content: "Just a normal question",
+        type: "human",
+        status: "completed",
+        sequence: 1,
+        in_response_to_message_id: null,
+        is_deleted: false,
+        exclude_from_ai: false,
+        used_context_summary: true,
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+    ]
+
+    render(
+      <MessageList
+        messages={humanOnly}
+        onRegenerate={vi.fn()}
+        isRegenerating={null}
+        {...noopPaginationProps}
+      />,
+    )
+
+    expect(screen.queryByText("Summarized history")).not.toBeInTheDocument()
   })
 })

@@ -98,6 +98,7 @@ export function useSendAIMessage(roomId: string, options?: UseSendAIMessageOptio
         in_response_to_message_id: null,
         is_deleted: false,
         exclude_from_ai: false,
+        used_context_summary: false,
         created_at: now,
         updated_at: now,
       }
@@ -112,6 +113,7 @@ export function useSendAIMessage(roomId: string, options?: UseSendAIMessageOptio
         in_response_to_message_id: humanOptimisticId,
         is_deleted: false,
         exclude_from_ai: false,
+        used_context_summary: false,
         created_at: now,
         updated_at: now,
       }
