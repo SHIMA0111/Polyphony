@@ -29,15 +29,16 @@ func seedMessage(ctx context.Context, t *testing.T, msgRepo *MessageRepository, 
 
 	now := time.Now()
 	msg := &domainmessage.Message{
-		ID:        uuid.New().String(),
-		RoomID:    roomID,
-		SenderID:  &senderID,
-		Content:   "hello",
-		Type:      domainmessage.MessageTypeHuman,
-		Status:    domainmessage.MessageStatusCompleted,
-		Sequence:  seq,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:         uuid.New().String(),
+		RoomID:     roomID,
+		SenderID:   &senderID,
+		Content:    "hello",
+		Type:       domainmessage.MessageTypeHuman,
+		Status:     domainmessage.MessageStatusCompleted,
+		Sequence:   seq,
+		Visibility: domainmessage.MessageVisibilityPublic,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 	if err := msgRepo.Create(ctx, msg); err != nil {
 		t.Fatalf("create message: %v", err)

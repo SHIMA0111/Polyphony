@@ -44,29 +44,44 @@ func (m *MessageRepo) Create(_ context.Context, msg *message.Message) error {
 }
 
 // GetByID retrieves a message by ID. Returns domain.ErrNotFound if not
-// present.
-func (m *MessageRepo) GetByID(_ context.Context, id string) (*message.Message, error) {
+// present, or if present but invisible to requestingUserID (see
+// visibleTo).
+func (m *MessageRepo) GetByID(_ context.Context, id string, requestingUserID string) (*message.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	msg, ok := m.Messages[id]
-	if !ok {
+	if !ok || !visibleTo(msg, requestingUserID) {
 		return nil, domain.ErrNotFound
 	}
 	return msg, nil
 }
 
+// visibleTo reports whether msg is visible to requestingUserID: true for
+// any message that is not MessageVisibilityPrivate (this also treats the
+// zero value of Visibility — used by test fixtures that construct a
+// *message.Message directly without setting it — as visible, mirroring
+// production's NOT NULL DEFAULT 'public'), and for a private message, true
+// only when requestingUserID matches SenderID.
+func visibleTo(msg *message.Message, requestingUserID string) bool {
+	if msg.Visibility != message.MessageVisibilityPrivate {
+		return true
+	}
+	return msg.SenderID != nil && *msg.SenderID == requestingUserID
+}
+
 // ListByRoom returns messages in a room, ignoring the cursor (this fake does
 // not implement true cursor-based pagination), truncated to limit entries.
 // Soft-deleted messages (IsDeleted == true) are excluded, mirroring the
-// postgres.MessageRepository behavior.
-func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int) (*message.CursorPage, error) {
+// postgres.MessageRepository behavior. A private message not owned by
+// requestingUserID is also excluded (see visibleTo).
+func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int, requestingUserID string) (*message.CursorPage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var msgs []*message.Message
 	for _, msg := range m.Messages {
-		if msg.RoomID == roomID && !msg.IsDeleted {
+		if msg.RoomID == roomID && !msg.IsDeleted && visibleTo(msg, requestingUserID) {
 			msgs = append(msgs, msg)
 		}
 	}
@@ -78,14 +93,15 @@ func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int)
 
 // ListByRoomUpTo returns up to limit messages in a room with sequence
 // <= maxSequence. Soft-deleted messages (IsDeleted == true) are excluded,
-// mirroring the postgres.MessageRepository behavior.
-func (m *MessageRepo) ListByRoomUpTo(_ context.Context, roomID string, maxSequence int64, limit int) ([]*message.Message, error) {
+// mirroring the postgres.MessageRepository behavior. A private message not
+// owned by requestingUserID is also excluded (see visibleTo).
+func (m *MessageRepo) ListByRoomUpTo(_ context.Context, roomID string, maxSequence int64, limit int, requestingUserID string) ([]*message.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var msgs []*message.Message
 	for _, msg := range m.Messages {
-		if msg.RoomID == roomID && msg.Sequence <= maxSequence && !msg.IsDeleted {
+		if msg.RoomID == roomID && msg.Sequence <= maxSequence && !msg.IsDeleted && visibleTo(msg, requestingUserID) {
 			msgs = append(msgs, msg)
 		}
 	}

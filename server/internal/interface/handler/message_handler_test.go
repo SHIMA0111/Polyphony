@@ -137,6 +137,97 @@ func TestSendAIHandler201(t *testing.T) {
 	}
 }
 
+// TestSendAIHandlerPrivate201 asserts that SendAI with "private": true
+// returns HTTP 201 with visibility: "private" on both the user_message and
+// ai_message in the response body.
+func TestSendAIHandlerPrivate201(t *testing.T) {
+	e, h := setupMessageTest(true)
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai",
+		strings.NewReader(`{"content":"secret question","model":"test","private":true}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.SendAI(c); err != nil {
+		t.Fatalf("SendAI error: %v", err)
+	}
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+
+	var resp SendAIMessageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.UserMessage.Visibility != "private" {
+		t.Fatalf("expected user_message visibility private, got %s", resp.UserMessage.Visibility)
+	}
+	if resp.AIMessage.Visibility != "private" {
+		t.Fatalf("expected ai_message visibility private, got %s", resp.AIMessage.Visibility)
+	}
+}
+
+// TestListHandlerExcludesOtherUsersPrivateMessage asserts that a private
+// exchange created by user-1 via SendAI does not appear in another member's
+// (user-2's) List call on the same room.
+func TestListHandlerExcludesOtherUsersPrivateMessage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedMember("room-1", "user-2", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	e := echo.New()
+	h := NewMessageHandler(uc)
+
+	sendReq := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai",
+		strings.NewReader(`{"content":"secret question","model":"test","private":true}`))
+	sendReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	sendRec := httptest.NewRecorder()
+	sendCtx := e.NewContext(sendReq, sendRec)
+	sendCtx.SetParamNames("roomId")
+	sendCtx.SetParamValues("room-1")
+	sendCtx.Set("user_id", "user-1")
+	if err := h.SendAI(sendCtx); err != nil {
+		t.Fatalf("SendAI error: %v", err)
+	}
+	if sendRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", sendRec.Code)
+	}
+	var sent SendAIMessageResponse
+	if err := json.Unmarshal(sendRec.Body.Bytes(), &sent); err != nil {
+		t.Fatalf("failed to unmarshal SendAI response: %v", err)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/rooms/room-1/messages", nil)
+	listRec := httptest.NewRecorder()
+	listCtx := e.NewContext(listReq, listRec)
+	listCtx.SetParamNames("roomId")
+	listCtx.SetParamValues("room-1")
+	listCtx.Set("user_id", "user-2")
+
+	if err := h.List(listCtx); err != nil {
+		t.Fatalf("List error: %v", err)
+	}
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", listRec.Code)
+	}
+
+	var list MessageListResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("failed to unmarshal List response: %v", err)
+	}
+	for _, m := range list.Messages {
+		if m.ID == sent.UserMessage.ID || m.ID == sent.AIMessage.ID {
+			t.Fatalf("expected user-2's message list to exclude private message %s", m.ID)
+		}
+	}
+}
+
 func TestSendAIHandlerLLMFailure201(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}

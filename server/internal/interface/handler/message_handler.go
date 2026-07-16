@@ -107,7 +107,7 @@ func (h *MessageHandler) SendAI(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "content is required"})
 	}
 
-	result, err := h.usecase.SendAIMessage(c.Request().Context(), userID, roomID, req.Content, req.Model)
+	result, err := h.usecase.SendAIMessage(c.Request().Context(), userID, roomID, req.Content, req.Model, req.Private)
 	if err != nil {
 		return handleMessageError(c, err)
 	}
@@ -195,6 +195,7 @@ func toMessageResponse(msg *domainmessage.Message) MessageResponse {
 		InResponseToMessageID: msg.InResponseToMessageID,
 		IsDeleted:             msg.IsDeleted,
 		ExcludeFromAI:         msg.ExcludeFromAI,
+		Visibility:            string(msg.Visibility),
 		CreatedAt:             msg.CreatedAt,
 		UpdatedAt:             msg.UpdatedAt,
 	}
