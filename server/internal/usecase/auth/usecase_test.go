@@ -8,6 +8,8 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
 
+// TestAuthUsecaseRegister verifies Register succeeds and returns a token
+// pair for a new, unique email/username.
 func TestAuthUsecaseRegister(t *testing.T) {
 	svc := &mocks.AuthService{}
 	uc := NewAuthUsecase(svc)
@@ -22,6 +24,9 @@ func TestAuthUsecaseRegister(t *testing.T) {
 	}
 }
 
+// TestAuthUsecaseRegisterDuplicate verifies Register returns
+// domain.ErrEmailAlreadyExists when registering a second account with an
+// email already in use.
 func TestAuthUsecaseRegisterDuplicate(t *testing.T) {
 	svc := &mocks.AuthService{}
 	uc := NewAuthUsecase(svc)
@@ -34,6 +39,8 @@ func TestAuthUsecaseRegisterDuplicate(t *testing.T) {
 	}
 }
 
+// TestAuthUsecaseLogin verifies Login succeeds with correct credentials and
+// returns domain.ErrInvalidCredentials with an incorrect password.
 func TestAuthUsecaseLogin(t *testing.T) {
 	svc := &mocks.AuthService{}
 	uc := NewAuthUsecase(svc)

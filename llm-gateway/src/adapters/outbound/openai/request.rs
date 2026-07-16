@@ -17,7 +17,7 @@ struct OpenAIRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
+    max_completion_tokens: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -93,7 +93,7 @@ fn to_openai_request(req: &CompletionRequest) -> OpenAIRequest {
             })
             .collect(),
         temperature: req.temperature,
-        max_tokens: req.max_tokens,
+        max_completion_tokens: req.max_tokens,
     }
 }
 
@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(openai_req.messages[0].role, "developer");
         assert_eq!(openai_req.messages[1].role, "user");
         assert_eq!(openai_req.temperature, Some(0.7));
-        assert_eq!(openai_req.max_tokens, Some(1000));
+        assert_eq!(openai_req.max_completion_tokens, Some(1000));
     }
 
     #[test]

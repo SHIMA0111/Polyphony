@@ -131,7 +131,9 @@ impl From<String> for MessageContent {
 /// A chat message consisting of a role and content.
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
+    /// Conceptual role of the message sender.
     pub role: Role,
+    /// Content of the message.
     pub content: MessageContent,
 }
 
@@ -188,7 +190,9 @@ pub struct ModelInfo {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompletionChunk {
+    /// Identifier of the completion this chunk belongs to.
     pub id: String,
+    /// Model ID that produced this chunk.
     pub model: String,
     /// Incremental text content produced since the previous chunk, if any.
     pub delta: Option<String>,

@@ -22,8 +22,12 @@ import (
 //
 // RoomRepo is safe for concurrent use.
 type RoomRepo struct {
-	mu      sync.Mutex
-	Rooms   map[string]*room.Room
+	mu sync.Mutex
+	// Rooms is the backing store of rooms, keyed by room ID; access only
+	// while holding mu.
+	Rooms map[string]*room.Room
+	// Members is the backing store of room memberships, keyed by roomID
+	// then userID; access only while holding mu.
 	Members map[string]map[string]*room.RoomMember // roomID -> userID -> member
 }
 
@@ -88,8 +92,12 @@ func (r *RoomRepo) ListByUserID(_ context.Context, userID string) ([]*room.Room,
 
 	var rooms []*room.Room
 	for roomID, members := range r.Members {
+		rm, ok := r.Rooms[roomID]
+		if !ok {
+			continue // orphan membership with no corresponding room
+		}
 		if _, ok := members[userID]; ok {
-			rooms = append(rooms, r.Rooms[roomID])
+			rooms = append(rooms, rm)
 		}
 	}
 	return rooms, nil

@@ -85,6 +85,12 @@ impl CompletionUseCase for CompletionService {
     ) -> BoxFuture<'_, Result<BoxStream<'static, Result<CompletionChunk, DomainError>>, DomainError>>
     {
         Box::pin(async move {
+            if req.messages.is_empty() {
+                return Err(DomainError::InvalidRequest(
+                    "messages must not be empty".to_string(),
+                ));
+            }
+
             let provider = self
                 .find_provider(&req.model)
                 .await
@@ -226,6 +232,21 @@ mod tests {
             max_tokens: None,
         };
         let result = service.complete(req).await;
+        assert!(matches!(result, Err(DomainError::InvalidRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn test_stream_empty_messages_rejected() {
+        let service =
+            CompletionService::new(vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))]);
+
+        let req = CompletionRequest {
+            model: "gpt-5.2".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+        };
+        let result = service.stream(req).await;
         assert!(matches!(result, Err(DomainError::InvalidRequest(_))));
     }
 

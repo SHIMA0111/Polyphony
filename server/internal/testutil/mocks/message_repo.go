@@ -18,9 +18,13 @@ import (
 //
 // MessageRepo is safe for concurrent use.
 type MessageRepo struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+	// Messages is the backing store of messages, keyed by message ID;
+	// access only while holding mu.
 	Messages map[string]*message.Message
-	Seqs     map[string]int64 // roomID -> next sequence to allocate
+	// Seqs is the per-room next-sequence counter, keyed by room ID; access
+	// only while holding mu.
+	Seqs map[string]int64 // roomID -> next sequence to allocate
 }
 
 func (m *MessageRepo) ensureInit() {

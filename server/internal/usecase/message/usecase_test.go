@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
@@ -262,8 +263,15 @@ func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
 		t.Fatalf("expected failed status, got %s", result.AIMessage.Status)
 	}
 
-	// Second call succeeds — failed placeholder should not appear in LLM context
+	// Second call succeeds — capture the request sent to the LLM Gateway and
+	// verify the failed AI placeholder (an empty-content assistant message)
+	// from the first call is not present in its context.
 	gw.ShouldErr = false
+	var capturedReq *ai.CompletionRequest
+	gw.CompleteFunc = func(_ context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+		capturedReq = req
+		return &ai.CompletionResponse{Content: "AI response", Model: "test-model"}, nil
+	}
 	result2, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model")
 	if err != nil {
 		t.Fatalf("SendAIMessage failed: %v", err)
@@ -271,8 +279,14 @@ func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
 	if result2.AIMessage.Content != "AI response" {
 		t.Fatalf("expected AI response, got %s", result2.AIMessage.Content)
 	}
-	// The fact that the LLM call succeeds confirms the context was valid
-	// (no empty assistant message that could confuse the LLM)
+	if capturedReq == nil {
+		t.Fatal("expected CompleteFunc to have been called")
+	}
+	for _, m := range capturedReq.Messages {
+		if m.Role == "assistant" && m.Content == "" {
+			t.Fatalf("context sent to LLM Gateway contains the failed AI placeholder: %+v", capturedReq.Messages)
+		}
+	}
 }
 
 func TestSendAIMessageLLMError(t *testing.T) {

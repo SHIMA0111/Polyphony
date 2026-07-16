@@ -76,6 +76,9 @@ impl OpenAIProvider {
     ///
     /// # Environment Variables
     /// * `OPENAI_BASE_URL` — OpenAI API base URL (default: https://api.openai.com)
+    ///
+    /// # Returns
+    /// A new `OpenAIProvider` configured with the resolved base URL and API key.
     pub fn new(key_store: Arc<dyn KeyStore>) -> Result<Self, DomainError> {
         let base_url = std::env::var("OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com".to_string());

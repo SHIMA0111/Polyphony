@@ -32,12 +32,12 @@ This document records the conventions for editing database migrations, `docker-c
   change (e.g. a safer multi-step column rename) before it can be merged.
 
   **Atlas Pro login required**: as of Atlas v0.38, `atlas migrate lint` requires an authenticated
-  Atlas account (`atlas login`) — it exits 1 without one, even for a clean migration. Run
-  `atlas login` once per machine (a free Atlas account is sufficient) before running
-  `task migrate:lint`. If you cannot or do not want to create an Atlas account, review the
-  generated migration SQL by hand instead (destructive statements like `DROP COLUMN`/`DROP TABLE`
-  or a `NOT NULL` addition without a default are the main things `migrate lint` would flag) and
-  skip the automated lint step for that PR.
+  Atlas Pro account/subscription (`atlas login`) — it exits 1 without one, even for a clean
+  migration. Run `atlas login` once per machine before running `task migrate:lint`. If you cannot
+  or do not want to set up an Atlas Pro account, review the generated migration SQL by hand instead
+  (destructive statements like `DROP COLUMN`/`DROP TABLE` or a `NOT NULL` addition without a
+  default are the main things `migrate lint` would flag) and skip the automated lint step for that
+  PR.
 - `task up` never runs `migrate:generate` as a side effect. Migration generation is always a
   deliberate, explicit step a developer runs after editing `schema.sql`.
 

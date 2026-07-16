@@ -85,9 +85,10 @@ func Load() (*Config, error) {
 
 // parseDurationEnv reads the given environment variable and parses it as a
 // time.Duration. If the variable is unset, it returns fallback. If the
-// variable is set but fails to parse, it logs a warning via slog.Default()
-// and returns fallback rather than propagating an error, since these
-// settings are optional tuning knobs, not required configuration.
+// variable is set but fails to parse, or parses to a non-positive duration
+// (which is not a meaningful pool tuning value), it logs a warning via
+// slog.Default() and returns fallback rather than propagating an error,
+// since these settings are optional tuning knobs, not required configuration.
 func parseDurationEnv(key string, fallback time.Duration) time.Duration {
 	val := os.Getenv(key)
 	if val == "" {
@@ -98,6 +99,12 @@ func parseDurationEnv(key string, fallback time.Duration) time.Duration {
 	if err != nil {
 		slog.Default().Warn("invalid duration for env var, using default",
 			"env", key, "value", val, "default", fallback, "error", err)
+		return fallback
+	}
+
+	if d <= 0 {
+		slog.Default().Warn("non-positive duration for env var, using default",
+			"env", key, "value", val, "default", fallback)
 		return fallback
 	}
 

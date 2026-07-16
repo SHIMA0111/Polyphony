@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"errors"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -29,7 +31,22 @@ func RequestLogger(logger *slog.Logger) echo.MiddlewareFunc {
 
 			err := next(c)
 
+			// If the handler returned an error and nothing was written to the
+			// response yet, c.Response().Status still reflects the zero-value
+			// default rather than the status Echo's error handler will
+			// eventually write. Derive the status to log from the error itself
+			// in that case so the logged level/status match what actually
+			// happened; otherwise (response already committed, or no error)
+			// c.Response().Status is authoritative.
 			status := c.Response().Status
+			if err != nil && !c.Response().Committed {
+				var he *echo.HTTPError
+				if errors.As(err, &he) {
+					status = he.Code
+				} else {
+					status = http.StatusInternalServerError
+				}
+			}
 			duration := time.Since(start)
 
 			if status >= 500 {

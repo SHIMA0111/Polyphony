@@ -6,6 +6,16 @@ import { ACCESS_TOKEN_COOKIE } from "@/lib/auth-cookie"
 /** Base URL of the Go API, read server-side only (never inlined into the client bundle). */
 const API_URL = process.env.API_URL ?? "http://localhost:8080"
 
+/** Default upstream request timeout in milliseconds, overridable via `PROXY_UPSTREAM_TIMEOUT_MS`. */
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000
+
+/** Upstream request timeout in milliseconds, read from `PROXY_UPSTREAM_TIMEOUT_MS` (default 30s). */
+const UPSTREAM_TIMEOUT_MS = (() => {
+  const raw = process.env.PROXY_UPSTREAM_TIMEOUT_MS
+  const parsed = raw ? Number(raw) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_UPSTREAM_TIMEOUT_MS
+})()
+
 /** Route handlers must not be statically optimized: every request reads the session cookie. */
 export const dynamic = "force-dynamic"
 
@@ -52,11 +62,25 @@ async function proxy(
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD"
 
-  const upstreamRes = await fetch(upstreamUrl, {
-    method: request.method,
-    headers,
-    body: hasBody ? await request.arrayBuffer() : undefined,
-  })
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
+
+  let upstreamRes: Response
+  try {
+    upstreamRes = await fetch(upstreamUrl, {
+      method: request.method,
+      headers,
+      body: hasBody ? await request.arrayBuffer() : undefined,
+      signal: controller.signal,
+    })
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      return NextResponse.json({ message: "upstream timeout" }, { status: 504 })
+    }
+    return NextResponse.json({ message: "upstream unreachable" }, { status: 502 })
+  } finally {
+    clearTimeout(timeout)
+  }
 
   const responseBody = await upstreamRes.arrayBuffer()
   const responseHeaders: Record<string, string> = {}

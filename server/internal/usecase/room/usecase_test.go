@@ -9,6 +9,8 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
 
+// TestCreateRoom verifies CreateRoom persists a room with the given name
+// and owner.
 func TestCreateRoom(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -26,6 +28,8 @@ func TestCreateRoom(t *testing.T) {
 	}
 }
 
+// TestGetRoomNotMember verifies GetRoom returns domain.ErrForbidden when the
+// requesting user is not a member of the room.
 func TestGetRoomNotMember(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -39,6 +43,8 @@ func TestGetRoomNotMember(t *testing.T) {
 	}
 }
 
+// TestUpdateRoomNotOwner verifies UpdateRoom returns domain.ErrForbidden
+// when a non-owner member attempts to update the room.
 func TestUpdateRoomNotOwner(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -57,6 +63,8 @@ func TestUpdateRoomNotOwner(t *testing.T) {
 	}
 }
 
+// TestDeleteRoom verifies DeleteRoom removes the room so a subsequent
+// GetRoom fails.
 func TestDeleteRoom(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -75,6 +83,8 @@ func TestDeleteRoom(t *testing.T) {
 	}
 }
 
+// TestListRoomsEmpty verifies ListRooms returns an empty slice (not an
+// error) for a user who is not a member of any room.
 func TestListRoomsEmpty(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)

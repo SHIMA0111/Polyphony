@@ -17,8 +17,11 @@ import (
 //
 // UserRepo is safe for concurrent use.
 type UserRepo struct {
-	mu    sync.Mutex
-	Users map[string]*user.User // keyed by user ID
+	mu sync.Mutex
+	// Users is the backing store, keyed by user ID. It is exported
+	// deliberately for test fixture ergonomics (seeding/inspecting state
+	// directly); access only while holding mu.
+	Users map[string]*user.User
 }
 
 func (r *UserRepo) ensureInit() {
@@ -42,7 +45,8 @@ func (r *UserRepo) Create(_ context.Context, u *user.User) error {
 			return domain.ErrUsernameAlreadyExists
 		}
 	}
-	r.Users[u.ID] = u
+	stored := *u // clone: never alias the caller-owned struct
+	r.Users[u.ID] = &stored
 	return nil
 }
 
@@ -107,7 +111,8 @@ func (r *UserRepo) Update(_ context.Context, u *user.User) error {
 			return domain.ErrUsernameAlreadyExists
 		}
 	}
-	r.Users[u.ID] = u
+	stored := *u // clone: never alias the caller-owned struct
+	r.Users[u.ID] = &stored
 	return nil
 }
 

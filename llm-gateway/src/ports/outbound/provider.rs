@@ -14,6 +14,9 @@ pub trait LLMProvider: Send + Sync {
     /// # Arguments
     /// * `req` — Completion request
     ///
+    /// # Returns
+    /// A future resolving to the provider's completion response.
+    ///
     /// # Errors
     /// Returns `DomainError` on provider errors, timeouts, etc.
     fn complete(
@@ -23,8 +26,14 @@ pub trait LLMProvider: Send + Sync {
 
     /// Returns the list of models provided by this provider.
     ///
+    /// # Arguments
+    /// None.
+    ///
     /// # Returns
     /// A future resolving to the models available from this provider.
+    ///
+    /// # Errors
+    /// None.
     fn models(&self) -> BoxFuture<'_, Vec<ModelInfo>>;
 
     /// Executes a streaming chat completion request.

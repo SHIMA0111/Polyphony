@@ -62,6 +62,37 @@ func TestRequestLoggerLogsErrorLevelOn5xx(t *testing.T) {
 	}
 }
 
+// TestRequestLoggerLogsErrorLevelOnUncommittedHTTPError is a regression test:
+// when a handler returns an *echo.HTTPError without writing anything to the
+// response (as happens when RequestLogger runs before Echo's central error
+// handler commits the response), the logged status/level must still reflect
+// the error's code rather than the zero-value default status.
+func TestRequestLoggerLogsErrorLevelOnUncommittedHTTPError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	mw := RequestLogger(logger)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Response().Header().Set(echo.HeaderXRequestID, "req-boom")
+
+	handler := mw(func(c echo.Context) error {
+		return echo.NewHTTPError(http.StatusInternalServerError, "boom")
+	})
+
+	if err := handler(c); err == nil {
+		t.Fatal("expected the handler's error to be returned unchanged so Echo's error handler runs")
+	}
+	if !strings.Contains(buf.String(), `"level":"ERROR"`) {
+		t.Fatalf("expected an ERROR-level log line for an uncommitted 500 error, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"status":500`) {
+		t.Fatalf("expected status=500 in the log line, got: %s", buf.String())
+	}
+}
+
 func TestGetLoggerFallsBackToDefault(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)

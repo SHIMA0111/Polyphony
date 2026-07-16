@@ -13,6 +13,9 @@ pub trait CompletionUseCase: Send + Sync {
     /// # Arguments
     /// * `req` — Completion request
     ///
+    /// # Returns
+    /// A future resolving to the completion response.
+    ///
     /// # Errors
     /// Returns `DomainError` on model not found, provider errors, etc.
     fn complete(
