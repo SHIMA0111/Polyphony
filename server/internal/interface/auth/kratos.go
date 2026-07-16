@@ -1,0 +1,419 @@
+// Package auth defines the authentication service port (token issuance and validation).
+package auth
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
+)
+
+// kratosManagedPasswordHash is stored in users.password_hash for accounts
+// whose credentials are owned by Ory Kratos rather than SimpleJWTService.
+// It is never a valid argon2id PHC string (see simple_jwt.go's hashPassword),
+// so SimpleJWTService.verifyPassword can never accidentally succeed against
+// it; the column is NOT NULL, so a placeholder is still required.
+const kratosManagedPasswordHash = "!kratos-managed!"
+
+// kratosHTTPHeaderSessionToken is the header KratosAuthService.ValidateToken
+// uses to present an opaque native/API session token to Kratos's
+// /sessions/whoami endpoint, as documented at
+// https://www.ory.sh/docs/kratos/session-management/overview.
+const kratosHTTPHeaderSessionToken = "X-Session-Token"
+
+// cookieTokenPrefix marks a token string passed to ValidateToken as an Ory
+// Kratos session cookie value rather than an opaque native session token.
+// See ValidateToken's GoDoc for the full contract.
+const cookieTokenPrefix = "cookie:"
+
+// KratosAuthService implements domainauth.AuthService using Ory Kratos's
+// self-service registration/login API flows and the /sessions/whoami
+// endpoint, with the caller's local users.id resolved through
+// users.kratos_identity_id. It hand-rolls REST calls with net/http and
+// encoding/json (mirroring the pattern in interface/gateway/llm_client.go)
+// rather than depending on the full ory/client-go SDK.
+type KratosAuthService struct {
+	userRepo   user.UserRepository
+	publicURL  string
+	adminURL   string
+	cookieName string
+	httpClient *http.Client
+}
+
+// NewKratosAuthService creates a new KratosAuthService. publicURL and
+// adminURL are Kratos's public (self-service flows, whoami) and admin
+// (identity management) API base URLs respectively, with no trailing
+// slash expected (e.g. "http://localhost:4433"). cookieName is the name of
+// the session cookie Kratos issues (default "ory_kratos_session"); it is
+// only used for documentation/consistency here since ValidateToken itself
+// receives the cookie value already extracted by the caller (see
+// ValidateToken's GoDoc). adminURL is retained on the struct for parity with
+// the constructor signature required by container.go, even though this
+// type's three AuthService methods do not currently call the Admin API
+// (that is cmd/kratosmigrate's job).
+func NewKratosAuthService(userRepo user.UserRepository, publicURL, adminURL, cookieName string, httpClient *http.Client) *KratosAuthService {
+	return &KratosAuthService{
+		userRepo:   userRepo,
+		publicURL:  strings.TrimRight(publicURL, "/"),
+		adminURL:   strings.TrimRight(adminURL, "/"),
+		cookieName: cookieName,
+		httpClient: httpClient,
+	}
+}
+
+// --- Private request/response DTOs matching Kratos's self-service flow API ---
+
+type kratosFlowDTO struct {
+	ID string `json:"id"`
+}
+
+type kratosTraitsDTO struct {
+	Email    string `json:"email"`
+	Username string `json:"username"`
+}
+
+type kratosIdentityDTO struct {
+	ID     string          `json:"id"`
+	Traits kratosTraitsDTO `json:"traits"`
+}
+
+type kratosRegistrationReqDTO struct {
+	Method   string          `json:"method"`
+	Password string          `json:"password"`
+	Traits   kratosTraitsDTO `json:"traits"`
+}
+
+type kratosRegistrationRespDTO struct {
+	SessionToken string            `json:"session_token"`
+	Identity     kratosIdentityDTO `json:"identity"`
+}
+
+type kratosLoginReqDTO struct {
+	Method     string `json:"method"`
+	Identifier string `json:"identifier"`
+	Password   string `json:"password"`
+}
+
+type kratosLoginRespDTO struct {
+	SessionToken string `json:"session_token"`
+	Session      struct {
+		Identity kratosIdentityDTO `json:"identity"`
+	} `json:"session"`
+}
+
+type kratosWhoamiRespDTO struct {
+	Identity kratosIdentityDTO `json:"identity"`
+}
+
+// kratosUIMessageDTO is a single UI message Kratos attaches to a flow node
+// or to the flow itself (e.g. validation errors), per
+// https://www.ory.sh/docs/kratos/concepts/ui-user-interface#messages.
+type kratosUIMessageDTO struct {
+	ID   int    `json:"id"`
+	Text string `json:"text"`
+	Type string `json:"type"`
+}
+
+// kratosFlowErrorDTO is the shape of a Kratos self-service flow returned
+// with a 4xx status when a registration/login attempt fails validation
+// (e.g. duplicate identifier, wrong credentials).
+type kratosFlowErrorDTO struct {
+	UI struct {
+		Messages []kratosUIMessageDTO `json:"messages"`
+		Nodes    []struct {
+			Attributes struct {
+				Name string `json:"name"`
+			} `json:"attributes"`
+			Messages []kratosUIMessageDTO `json:"messages"`
+		} `json:"nodes"`
+	} `json:"ui"`
+}
+
+// Register creates a new Kratos identity via the self-service registration
+// API flow (GET .../self-service/registration/api to obtain a flow ID, then
+// POST .../self-service/registration?flow=<id> with the password method),
+// then mirrors it into a local users row (with a KratosIdentityID link and
+// an unusable placeholder PasswordHash, since Kratos now owns credential
+// verification) via userRepo.Create followed by userRepo.SetKratosIdentityID.
+//
+// It returns domain.ErrEmailAlreadyExists or domain.ErrUsernameAlreadyExists
+// if Kratos's registration flow reports the email or username trait is
+// already taken by another identity.
+func (s *KratosAuthService) Register(ctx context.Context, email, username, password string) (*domainauth.TokenPair, error) {
+	flowID, err := s.fetchFlowID(ctx, "/self-service/registration/api")
+	if err != nil {
+		return nil, fmt.Errorf("fetch registration flow: %w", err)
+	}
+
+	reqBody := kratosRegistrationReqDTO{
+		Method:   "password",
+		Password: password,
+		Traits:   kratosTraitsDTO{Email: email, Username: username},
+	}
+
+	var result kratosRegistrationRespDTO
+	status, body, err := s.postFlow(ctx, "/self-service/registration", flowID, reqBody, &result)
+	if err != nil {
+		return nil, fmt.Errorf("submit registration flow: %w", err)
+	}
+	if status != http.StatusOK {
+		if status >= 400 && status < 500 {
+			return nil, classifyRegistrationError(body)
+		}
+		return nil, fmt.Errorf("kratos registration failed: status %d: %s", status, string(body))
+	}
+
+	now := time.Now()
+	identityID := result.Identity.ID
+	u := &user.User{
+		ID:               uuid.New().String(),
+		Email:            email,
+		Username:         username,
+		PasswordHash:     kratosManagedPasswordHash,
+		KratosIdentityID: &identityID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := s.userRepo.Create(ctx, u); err != nil {
+		return nil, err
+	}
+	if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {
+		return nil, err
+	}
+
+	return &domainauth.TokenPair{AccessToken: result.SessionToken, TokenType: "Bearer"}, nil
+}
+
+// Login authenticates against Kratos's self-service login API flow (GET
+// .../self-service/login/api to obtain a flow ID, then POST
+// .../self-service/login?flow=<id> with the password method), then resolves
+// the caller's local user via userRepo.GetByKratosIdentityID.
+//
+// If the Kratos identity has no local link yet (domain.ErrNotFound from
+// GetByKratosIdentityID — e.g. the identity was created directly via the
+// Kratos Admin API, bypassing Register above), Login self-heals by creating
+// the local row from the session's identity traits, the same way Register
+// does, so a subsequent call resolves without repeating this path.
+//
+// It returns domain.ErrInvalidCredentials if Kratos's login flow reports
+// the identifier/password combination is invalid.
+func (s *KratosAuthService) Login(ctx context.Context, email, password string) (*domainauth.TokenPair, error) {
+	flowID, err := s.fetchFlowID(ctx, "/self-service/login/api")
+	if err != nil {
+		return nil, fmt.Errorf("fetch login flow: %w", err)
+	}
+
+	reqBody := kratosLoginReqDTO{Method: "password", Identifier: email, Password: password}
+
+	var result kratosLoginRespDTO
+	status, body, err := s.postFlow(ctx, "/self-service/login", flowID, reqBody, &result)
+	if err != nil {
+		return nil, fmt.Errorf("submit login flow: %w", err)
+	}
+	if status != http.StatusOK {
+		if status >= 400 && status < 500 {
+			return nil, domain.ErrInvalidCredentials
+		}
+		return nil, fmt.Errorf("kratos login failed: status %d: %s", status, string(body))
+	}
+
+	identity := result.Session.Identity
+	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, identity.ID)
+	if err != nil {
+		if !errors.Is(err, domain.ErrNotFound) {
+			return nil, err
+		}
+
+		now := time.Now()
+		identityID := identity.ID
+		u := &user.User{
+			ID:               uuid.New().String(),
+			Email:            identity.Traits.Email,
+			Username:         identity.Traits.Username,
+			PasswordHash:     kratosManagedPasswordHash,
+			KratosIdentityID: &identityID,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		if err := s.userRepo.Create(ctx, u); err != nil {
+			return nil, err
+		}
+		if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {
+			return nil, err
+		}
+		localUser = u
+	}
+	_ = localUser // resolved for parity with the interface contract; not needed in the returned TokenPair
+
+	return &domainauth.TokenPair{AccessToken: result.SessionToken, TokenType: "Bearer"}, nil
+}
+
+// ValidateToken validates a token against Kratos's GET /sessions/whoami
+// endpoint and resolves the local user via userRepo.GetByKratosIdentityID.
+//
+// token is interpreted using the following convention, which is the
+// contract that interface/middleware.JWTAuth relies on: if token has the
+// prefix "cookie:", the remainder is treated as the value of the Kratos
+// session cookie and sent as a Cookie header (Cookie: <cookieName>=<value>);
+// otherwise token is treated as an opaque native/API session token (as
+// returned by Register/Login above) and sent via the X-Session-Token header.
+// This prefix exists because SimpleJWTService.ValidateToken never receives
+// a "cookie:"-prefixed string in practice (SimpleJWT never sets a browser
+// cookie), so the distinction only matters when AUTH_MODE=kratos.
+//
+// It returns domain.ErrInvalidToken on any non-200 whoami response or if
+// the resolved identity has no linked local user.
+func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.publicURL+"/sessions/whoami", nil)
+	if err != nil {
+		return nil, domain.ErrInvalidToken
+	}
+	req.Header.Set("Accept", "application/json")
+
+	if strings.HasPrefix(token, cookieTokenPrefix) {
+		cookieValue := strings.TrimPrefix(token, cookieTokenPrefix)
+		req.Header.Set("Cookie", fmt.Sprintf("%s=%s", s.cookieName, cookieValue))
+	} else {
+		req.Header.Set(kratosHTTPHeaderSessionToken, token)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, domain.ErrInvalidToken
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, domain.ErrInvalidToken
+	}
+
+	var result kratosWhoamiRespDTO
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, domain.ErrInvalidToken
+	}
+
+	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, result.Identity.ID)
+	if err != nil {
+		return nil, domain.ErrInvalidToken
+	}
+
+	return &domainauth.Claims{UserID: localUser.ID}, nil
+}
+
+// fetchFlowID performs the GET .../self-service/{registration,login}/api
+// request that initializes a native/API self-service flow, and returns the
+// flow ID to submit with the follow-up POST.
+func (s *KratosAuthService) fetchFlowID(ctx context.Context, path string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.publicURL+path, nil)
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("send request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var flow kratosFlowDTO
+	if err := json.NewDecoder(resp.Body).Decode(&flow); err != nil {
+		return "", fmt.Errorf("decode flow: %w", err)
+	}
+	return flow.ID, nil
+}
+
+// postFlow submits the given request body to path?flow=<flowID> and
+// decodes the response body into out on a 200 response. It returns the raw
+// status code and (unparsed) response body regardless of status, so callers
+// can inspect a non-200 body for Kratos's structured validation errors.
+func (s *KratosAuthService) postFlow(ctx context.Context, path, flowID string, reqBody, out interface{}) (int, []byte, error) {
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return 0, nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s%s?flow=%s", s.publicURL, path, flowID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return 0, nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("send request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusOK && out != nil {
+		if err := json.Unmarshal(body, out); err != nil {
+			return resp.StatusCode, body, fmt.Errorf("decode response: %w", err)
+		}
+	}
+
+	return resp.StatusCode, body, nil
+}
+
+// classifyRegistrationError inspects a Kratos registration flow's 4xx
+// response body for a "duplicate identifier" validation message on the
+// traits.email or traits.username node and maps it to
+// domain.ErrEmailAlreadyExists / domain.ErrUsernameAlreadyExists
+// respectively. If no such message is found, it returns a generic error
+// wrapping the raw response body.
+func classifyRegistrationError(body []byte) error {
+	var flowErr kratosFlowErrorDTO
+	if err := json.Unmarshal(body, &flowErr); err == nil {
+		for _, node := range flowErr.UI.Nodes {
+			for _, msg := range node.Messages {
+				if !isDuplicateIdentifierMessage(msg) {
+					continue
+				}
+				switch node.Attributes.Name {
+				case "traits.email":
+					return domain.ErrEmailAlreadyExists
+				case "traits.username":
+					return domain.ErrUsernameAlreadyExists
+				}
+			}
+		}
+		for _, msg := range flowErr.UI.Messages {
+			if isDuplicateIdentifierMessage(msg) {
+				// Kratos's identity schema configures email (not username)
+				// as the password credential identifier, so a top-level
+				// duplicate-identifier message always refers to email.
+				return domain.ErrEmailAlreadyExists
+			}
+		}
+	}
+	return fmt.Errorf("kratos registration validation failed: %s", string(body))
+}
+
+// isDuplicateIdentifierMessage reports whether msg is Kratos's "an account
+// with the same identifier exists already" validation error (message ID
+// 4000007 per https://www.ory.sh/docs/kratos/concepts/ui-user-interface).
+func isDuplicateIdentifierMessage(msg kratosUIMessageDTO) bool {
+	return msg.ID == 4000007 || strings.Contains(strings.ToLower(msg.Text), "exists already")
+}

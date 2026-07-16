@@ -90,6 +90,46 @@ func (r *UserRepo) GetByUsername(_ context.Context, username string) (*user.User
 	return nil, domain.ErrNotFound
 }
 
+// GetByKratosIdentityID retrieves the user linked to the given Kratos
+// identity ID. Returns domain.ErrNotFound if no user is linked to it,
+// mirroring postgres.UserRepository.GetByKratosIdentityID.
+func (r *UserRepo) GetByKratosIdentityID(_ context.Context, kratosIdentityID string) (*user.User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, u := range r.Users {
+		if u.KratosIdentityID != nil && *u.KratosIdentityID == kratosIdentityID {
+			return u, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+// SetKratosIdentityID links the user identified by userID to the given
+// Kratos identity ID. Returns domain.ErrNotFound if userID does not exist,
+// or domain.ErrKratosIdentityAlreadyLinked if kratosIdentityID is already
+// linked to a different user, mirroring postgres.UserRepository.SetKratosIdentityID.
+func (r *UserRepo) SetKratosIdentityID(_ context.Context, userID, kratosIdentityID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	u, ok := r.Users[userID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	for id, existing := range r.Users {
+		if id == userID {
+			continue
+		}
+		if existing.KratosIdentityID != nil && *existing.KratosIdentityID == kratosIdentityID {
+			return domain.ErrKratosIdentityAlreadyLinked
+		}
+	}
+	linked := kratosIdentityID
+	u.KratosIdentityID = &linked
+	return nil
+}
+
 // Update updates user fields. Returns domain.ErrNotFound if the user does
 // not exist, or domain.ErrEmailAlreadyExists / domain.ErrUsernameAlreadyExists
 // if the update would conflict with a different existing user.
