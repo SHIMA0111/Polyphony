@@ -38,7 +38,7 @@ interface RegisteredUser {
   password: string
 }
 
-/** Registers a brand-new user through the rendered Kratos-flow `RegisterForm` and lands on `/rooms` (see `web/e2e/private-mode.spec.ts`'s identical helper). */
+/** Registers a brand-new user through the rendered Kratos-flow `RegisterForm` and lands on `/rooms` (see `web/e2e/private-mode.spec.ts`'s identical helper). `prefix` must be 12 characters or fewer: registerSchema caps usernames at 32, and the runId alone is up to 19 (wave-8 review fix — `advpriv_alice_` + runId reached 33 and failed client-side validation). */
 async function registerUser(page: Page, prefix: string): Promise<RegisteredUser> {
   const runId = `${Date.now()}_${Math.floor(Math.random() * 100_000)}`
   const user: RegisteredUser = {
@@ -130,7 +130,7 @@ test.describe("Private AI mode regression", () => {
     const publicContent = `An ordinary, non-private message ${runId}`
 
     // (a) Alice registers, is credited a balance, and creates a room.
-    const alice = await registerUser(alicePage, "advpriv_alice")
+    const alice = await registerUser(alicePage, "apriv_alice")
     creditTokenBalance(alice.email, 1_000_000)
 
     await alicePage.getByRole("button", { name: "New Room" }).first().click()
@@ -146,7 +146,7 @@ test.describe("Private AI mode regression", () => {
     // (b) Bob registers in a separate browser context (own cookies/session).
     const bobContext = await browser.newContext()
     const bobPage = await bobContext.newPage()
-    const bob = await registerUser(bobPage, "advpriv_bob")
+    const bob = await registerUser(bobPage, "apriv_bob")
 
     // (c) Alice invites Bob and he accepts, landing both users in the same room.
     await inviteByUsername(alicePage, bob.username)

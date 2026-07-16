@@ -70,8 +70,11 @@ test("AI reply streams incrementally, disables Regenerate while in flight, and s
   const runId = `${Date.now()}_${Math.floor(Math.random() * 100_000)}`
   const email = `adv-streaming-${runId}@polyphony.test`
   // Underscores only: registerSchema's username regex (`/^[a-zA-Z0-9_]+$/`)
-  // rejects hyphens, matching every other spec's convention.
-  const username = `adv_streaming_${runId}`
+  // rejects hyphens, matching every other spec's convention. Prefix kept
+  // short: registerSchema also caps usernames at 32 characters, and the
+  // runId alone is up to 19 (`adv_streaming_` + runId reached 33 and failed
+  // client-side validation — wave-8 review fix).
+  const username = `advstr_${runId}`
   const password = "adv-streaming-test-password-123"
   const roomName = `Advanced Streaming Test Room ${runId}`
   const messageContent = `[[fixture:streaming-demo]] Show me a streaming response ${runId}`

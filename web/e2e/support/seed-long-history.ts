@@ -110,10 +110,19 @@ const ESTIMATE_CHECK_BATCH = 5
  */
 const FILLER_CHAR_COUNT = 33_000
 
+/** The phrase `FILLER_MESSAGE` repeats. Its real `.length` (55) is used for
+ * the repeat count below — a previous hardcoded divisor (57) overshot it,
+ * making `FILLER_MESSAGE` come up ~1,150 characters short per message
+ * (`.slice` cannot lengthen a too-short string), which left a full
+ * 50-message window at ~398k estimated tokens, just under the 1.5x-margin
+ * target (~406k) — caught live by this file's own fail-loudly check during
+ * the wave-8 integration review. */
+const FILLER_PHRASE = "Polyphony e2e summarization regression filler content. "
+
 /** Repeating phrase padded/truncated to exactly `FILLER_CHAR_COUNT` characters. */
-const FILLER_MESSAGE = "Polyphony e2e summarization regression filler content. "
-  .repeat(Math.ceil(FILLER_CHAR_COUNT / 57))
-  .slice(0, FILLER_CHAR_COUNT)
+const FILLER_MESSAGE = FILLER_PHRASE.repeat(
+  Math.ceil(FILLER_CHAR_COUNT / FILLER_PHRASE.length),
+).slice(0, FILLER_CHAR_COUNT)
 
 interface TokenResponse {
   access_token: string
