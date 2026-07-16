@@ -1,4 +1,9 @@
-// Package auth defines the authentication service port (token issuance and validation).
+// Package auth provides the initial argon2id + HS256 JWT implementation of
+// the domain/auth.AuthService port, centered on NewSimpleJWTService: it
+// hashes and verifies passwords with argon2id and issues/validates
+// self-contained JWT access tokens signed with a shared HMAC secret. Per
+// CLAUDE.md's Interface Swap Points table, this implementation is expected to
+// be swapped for an Ory Kratos-backed one in a later phase.
 package auth
 
 import (

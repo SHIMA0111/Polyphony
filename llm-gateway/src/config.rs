@@ -53,7 +53,8 @@ impl Config {
     /// # Environment Variables
     /// - `LLM_GATEWAY_PORT` — Listen port (default: `8081`)
     /// - `LLM_GATEWAY_CONNECT_TIMEOUT_SECS` — Connect timeout in seconds (default: `10`)
-    /// - `LLM_GATEWAY_REQUEST_TIMEOUT_SECS` — Total request timeout in seconds (default: `30`)
+    /// - `LLM_GATEWAY_REQUEST_TIMEOUT_SECS` — Total request timeout in seconds (default: `600`,
+    ///   since LLM completions routinely take longer than a typical HTTP request timeout)
     /// - `LLM_GATEWAY_MAX_RETRIES` — Max retry attempts on `429`/`5xx` responses (default: `3`)
     /// - `LLM_GATEWAY_RETRY_BASE_DELAY_MS` — Base backoff delay in milliseconds (default: `500`)
     /// - `OPENAI_BASE_URL` — OpenAI API base URL (default: `https://api.openai.com`)
@@ -67,7 +68,7 @@ impl Config {
         let connect_timeout =
             Duration::from_secs(env_parsed("LLM_GATEWAY_CONNECT_TIMEOUT_SECS", 10));
         let request_timeout =
-            Duration::from_secs(env_parsed("LLM_GATEWAY_REQUEST_TIMEOUT_SECS", 30));
+            Duration::from_secs(env_parsed("LLM_GATEWAY_REQUEST_TIMEOUT_SECS", 600));
         let max_retries = env_parsed("LLM_GATEWAY_MAX_RETRIES", 3);
         let retry_base_delay =
             Duration::from_millis(env_parsed("LLM_GATEWAY_RETRY_BASE_DELAY_MS", 500));
@@ -114,42 +115,80 @@ mod tests {
     // this crate for env-var-based tests).
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    fn clear_env() {
-        for key in [
-            "LLM_GATEWAY_PORT",
-            "LLM_GATEWAY_CONNECT_TIMEOUT_SECS",
-            "LLM_GATEWAY_REQUEST_TIMEOUT_SECS",
-            "LLM_GATEWAY_MAX_RETRIES",
-            "LLM_GATEWAY_RETRY_BASE_DELAY_MS",
-            "OPENAI_BASE_URL",
-        ] {
-            unsafe {
-                std::env::remove_var(key);
+    /// Environment variable names touched by `Config::from_env` tests.
+    const CONFIG_ENV_VARS: &[&str] = &[
+        "LLM_GATEWAY_PORT",
+        "LLM_GATEWAY_CONNECT_TIMEOUT_SECS",
+        "LLM_GATEWAY_REQUEST_TIMEOUT_SECS",
+        "LLM_GATEWAY_MAX_RETRIES",
+        "LLM_GATEWAY_RETRY_BASE_DELAY_MS",
+        "OPENAI_BASE_URL",
+    ];
+
+    /// RAII guard that snapshots `CONFIG_ENV_VARS`, clears them for the duration of
+    /// a test, and restores their original values (or unset-ness) on drop.
+    ///
+    /// This makes env-var state exception-safe: a panic or early return inside the
+    /// test body still triggers `Drop::drop`, so a failing test can't leak env
+    /// mutations into whichever test runs next (tests share a process-global
+    /// environment, and are serialized via `ENV_LOCK` to make that safe).
+    struct EnvVarGuard {
+        snapshot: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvVarGuard {
+        /// Snapshots the current value of every `CONFIG_ENV_VARS` entry, then
+        /// removes them all from the environment so tests start from a clean slate.
+        fn new() -> Self {
+            let snapshot: Vec<(&'static str, Option<String>)> = CONFIG_ENV_VARS
+                .iter()
+                .map(|&key| (key, std::env::var(key).ok()))
+                .collect();
+
+            for &key in CONFIG_ENV_VARS {
+                unsafe {
+                    std::env::remove_var(key);
+                }
+            }
+
+            Self { snapshot }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        /// Restores every snapshotted variable to its original value, or leaves it
+        /// unset if it was unset when the guard was created.
+        fn drop(&mut self) {
+            for (key, value) in &self.snapshot {
+                unsafe {
+                    match value {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
+                }
             }
         }
     }
 
     #[test]
     fn test_from_env_defaults() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        clear_env();
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::new();
 
         let config = Config::from_env();
 
         assert_eq!(config.port, 8081);
         assert_eq!(config.http.connect_timeout, Duration::from_secs(10));
-        assert_eq!(config.http.request_timeout, Duration::from_secs(30));
+        assert_eq!(config.http.request_timeout, Duration::from_secs(600));
         assert_eq!(config.http.max_retries, 3);
         assert_eq!(config.http.retry_base_delay, Duration::from_millis(500));
         assert_eq!(config.openai.base_url, "https://api.openai.com");
-
-        clear_env();
     }
 
     #[test]
     fn test_from_env_overrides() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        clear_env();
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::new();
 
         unsafe {
             std::env::set_var("LLM_GATEWAY_PORT", "9000");
@@ -168,7 +207,5 @@ mod tests {
         assert_eq!(config.http.max_retries, 5);
         assert_eq!(config.http.retry_base_delay, Duration::from_millis(100));
         assert_eq!(config.openai.base_url, "http://localhost:9091");
-
-        clear_env();
     }
 }

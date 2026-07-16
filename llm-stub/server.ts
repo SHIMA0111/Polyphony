@@ -31,6 +31,15 @@ interface CompletionRequestBody {
 const FIXTURE_MARKER = /^\[\[fixture:([^\]]+)]]/
 
 /**
+ * Allowed shape for a fixture name, whether it comes from the `[[fixture:NAME]]`
+ * marker or falls back to `"default"`. Enforced before any fixture name is
+ * joined into a filesystem path (see {@link loadNonStreamingFixture} and
+ * {@link loadStreamingFixture}), so a marker like `[[fixture:../../etc/passwd]]`
+ * can never escape `FIXTURES_DIR` via path traversal.
+ */
+const VALID_FIXTURE_NAME = /^[a-zA-Z0-9_-]+$/
+
+/**
  * Determines which fixture to serve for a completion request.
  *
  * Inspects the last message with `role: "user"` in the request body: if its
@@ -117,9 +126,12 @@ export function mergeCompletionResponse(
  * canned SSE stream depending on `body.stream`.
  *
  * @param request - The incoming HTTP request.
- * @returns A `200` JSON/SSE response for a known fixture, or a `404` JSON
- *   error body (so a missing fixture fails a spec loudly) for an unknown one,
- *   or a `400` JSON error body for an unparseable request.
+ * @returns A `200` JSON/SSE response for a known fixture, a `404` JSON
+ *   error body (so a missing fixture fails a spec loudly) for an unknown but
+ *   validly-named one, a `400` JSON error body for an unparseable request, or
+ *   a `400` JSON error body for a fixture name that fails
+ *   {@link VALID_FIXTURE_NAME} (rejected before it ever reaches a path join,
+ *   so it can't be used for path traversal).
  */
 export async function handleChatCompletions(request: Request): Promise<Response> {
   let body: CompletionRequestBody
@@ -130,6 +142,10 @@ export async function handleChatCompletions(request: Request): Promise<Response>
   }
 
   const fixtureName = extractFixtureName(body.messages ?? [])
+
+  if (!VALID_FIXTURE_NAME.test(fixtureName)) {
+    return errorResponse(400, `invalid fixture name: ${fixtureName}`)
+  }
 
   if (body.stream === true) {
     const sse = await loadStreamingFixture(fixtureName)

@@ -6,6 +6,12 @@ const E2E_API_URL = process.env.E2E_API_URL ?? "http://localhost:8090"
 const HEALTH_POLL_TIMEOUT_MS = 30_000
 const HEALTH_POLL_INTERVAL_MS = 1_000
 
+/** Per-request timeout for a single health-check poll attempt. */
+const HEALTH_CHECK_REQUEST_TIMEOUT_MS = 5_000
+
+/** Per-request timeout for the auth/room seed requests below. */
+const SEED_REQUEST_TIMEOUT_MS = 10_000
+
 interface TokenResponse {
   access_token: string
   token_type: string
@@ -34,7 +40,9 @@ async function waitForHealth(): Promise<void> {
 
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${E2E_API_URL}/health`)
+      const res = await fetch(`${E2E_API_URL}/health`, {
+        signal: AbortSignal.timeout(HEALTH_CHECK_REQUEST_TIMEOUT_MS),
+      })
       if (res.ok) return
       lastError = new Error(`/health returned HTTP ${res.status}`)
     } catch (err) {
@@ -65,6 +73,7 @@ async function ensureFixtureUser(): Promise<string> {
       username: FIXTURE_USER.username,
       password: FIXTURE_USER.password,
     }),
+    signal: AbortSignal.timeout(SEED_REQUEST_TIMEOUT_MS),
   })
 
   if (registerRes.ok) {
@@ -79,6 +88,7 @@ async function ensureFixtureUser(): Promise<string> {
       email: FIXTURE_USER.email,
       password: FIXTURE_USER.password,
     }),
+    signal: AbortSignal.timeout(SEED_REQUEST_TIMEOUT_MS),
   })
 
   if (!loginRes.ok) {
@@ -102,7 +112,10 @@ async function ensureFixtureUser(): Promise<string> {
 async function ensureFixtureRoom(accessToken: string): Promise<void> {
   const authHeaders = { Authorization: `Bearer ${accessToken}` }
 
-  const listRes = await fetch(`${E2E_API_URL}/rooms`, { headers: authHeaders })
+  const listRes = await fetch(`${E2E_API_URL}/rooms`, {
+    headers: authHeaders,
+    signal: AbortSignal.timeout(SEED_REQUEST_TIMEOUT_MS),
+  })
   if (!listRes.ok) {
     throw new Error(`failed to list rooms: HTTP ${listRes.status}`)
   }
@@ -118,6 +131,7 @@ async function ensureFixtureRoom(accessToken: string): Promise<void> {
       name: FIXTURE_ROOM_NAME,
       description: "Seeded room for Playwright E2E fixtures.",
     }),
+    signal: AbortSignal.timeout(SEED_REQUEST_TIMEOUT_MS),
   })
   if (!createRes.ok) {
     throw new Error(`failed to create fixture room: HTTP ${createRes.status}`)

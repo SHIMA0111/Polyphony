@@ -31,8 +31,17 @@ type subscriber struct {
 // phase.
 //
 // The zero value is not usable; construct with NewInProcessHub.
+//
+// mu is a sync.RWMutex rather than a plain Mutex because Publish must hold the
+// lock across its entire send loop (not just while snapshotting the
+// subscriber list) to prevent a send-on-closed-channel race against
+// unsubscribe: unsubscribe removes the subscriber from subs and closes its
+// channel atomically under the write lock, so Publish can never observe a
+// subscriber that is concurrently being torn down. RWMutex lets concurrent
+// Publish calls (and readers in general) still run in parallel while holding
+// the lock for the duration of the send loop.
 type InProcessHub struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	subs map[string][]*subscriber // roomID -> subscribers
 }
 
@@ -50,11 +59,17 @@ func NewInProcessHub() *InProcessHub {
 // blocking the caller. Publish never returns an error and never blocks on
 // slow subscribers, which is what guarantees that broadcasting can never
 // roll back or fail the write that produced the event.
+//
+// Publish holds the read lock across both the subscriber snapshot and the
+// entire send loop below, not just the snapshot. unsubscribe only closes a
+// subscriber's channel while holding the write lock, so as long as Publish
+// holds the read lock for its full duration, it can never observe (and send
+// on) a channel that unsubscribe has closed or is in the process of closing.
 func (h *InProcessHub) Publish(_ context.Context, event RoomEvent) {
-	h.mu.Lock()
-	subs := make([]*subscriber, len(h.subs[event.RoomID]))
-	copy(subs, h.subs[event.RoomID])
-	h.mu.Unlock()
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	subs := h.subs[event.RoomID]
 
 	var targets map[string]struct{}
 	if len(event.TargetUserIDs) > 0 {
@@ -86,9 +101,12 @@ func (h *InProcessHub) Publish(_ context.Context, event RoomEvent) {
 // an unsubscribe function.
 //
 // The returned unsubscribe function removes the subscription and closes the
-// channel. It is safe to call more than once — only the first call has any
-// effect — so callers may unconditionally defer it without needing to track
-// whether they already called it elsewhere.
+// channel, both while holding the write lock, so a concurrent Publish (which
+// holds the read lock for its entire send loop, see Publish) can never send
+// on a channel that has already been, or is concurrently being, closed. It is
+// safe to call more than once — only the first call has any effect — so
+// callers may unconditionally defer it without needing to track whether they
+// already called it elsewhere.
 func (h *InProcessHub) Subscribe(_ context.Context, roomID, userID string) (<-chan RoomEvent, func()) {
 	sub := &subscriber{
 		userID: userID,
@@ -113,9 +131,8 @@ func (h *InProcessHub) Subscribe(_ context.Context, roomID, userID string) (<-ch
 			if len(h.subs[roomID]) == 0 {
 				delete(h.subs, roomID)
 			}
-			h.mu.Unlock()
-
 			close(sub.ch)
+			h.mu.Unlock()
 		})
 	}
 

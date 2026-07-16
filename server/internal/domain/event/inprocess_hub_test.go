@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -157,4 +158,89 @@ func TestInProcessHubPublishNonBlockingOnFullChannel(t *testing.T) {
 			return
 		}
 	}
+}
+
+// TestInProcessHubConcurrentPublishAndUnsubscribeIsRaceFree is a regression
+// test for a send-on-closed-channel race: Publish used to snapshot the
+// subscriber slice under the lock but send to subscribers' channels *outside*
+// the lock, while unsubscribe closed a subscriber's channel outside the lock
+// too (after removing it from the registry). That let a Publish goroutine
+// hold a reference to a subscriber whose channel unsubscribe had already
+// closed, so `sub.ch <- event` could panic with "send on closed channel".
+//
+// This test hammers Publish concurrently with repeated Subscribe/unsubscribe
+// cycles on the same room so that race is likely to manifest under `go test
+// -race`. It must be run with -race to be meaningful (see the `test:
+// go test -race ./internal/domain/event/...` verification step) — without
+// -race a panic may still occur but is less reliably triggered.
+func TestInProcessHubConcurrentPublishAndUnsubscribeIsRaceFree(t *testing.T) {
+	hub := NewInProcessHub()
+	ctx := context.Background()
+	const roomID = "room-race"
+
+	const publishers = 4
+	const subscribeCycles = 8
+	const publishesPerPublisher = 200
+
+	var wg sync.WaitGroup
+
+	// Publishers continuously broadcast events to roomID.
+	for p := 0; p < publishers; p++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < publishesPerPublisher; i++ {
+				hub.Publish(ctx, RoomEvent{
+					Type:       EventMessageCreated,
+					RoomID:     roomID,
+					Message:    &message.Message{ID: "msg-race"},
+					OccurredAt: time.Now(),
+				})
+			}
+		}()
+	}
+
+	// Subscribers repeatedly subscribe, receive a couple of events (if any
+	// arrive before they unsubscribe), and unsubscribe, racing against the
+	// publishers above and against each other.
+	for s := 0; s < subscribeCycles; s++ {
+		wg.Add(1)
+		go func(userID string) {
+			defer wg.Done()
+			for i := 0; i < subscribeCycles; i++ {
+				ch, unsubscribe := hub.Subscribe(ctx, roomID, userID)
+
+				// Drain whatever happens to be available without blocking;
+				// the point of this test is the concurrent teardown, not
+				// delivery guarantees.
+				select {
+				case <-ch:
+				case <-time.After(time.Millisecond):
+				}
+
+				unsubscribe()
+			}
+		}(userIDForCycle(s))
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for concurrent Publish/Subscribe/unsubscribe cycles")
+	}
+}
+
+// userIDForCycle generates a distinct subscriber userID per subscribe-cycle
+// goroutine index so TestInProcessHubConcurrentPublishAndUnsubscribeIsRaceFree
+// exercises multiple independent subscribers rather than repeatedly
+// subscribing the same identity.
+func userIDForCycle(i int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	return "user-race-" + string(letters[i%len(letters)])
 }

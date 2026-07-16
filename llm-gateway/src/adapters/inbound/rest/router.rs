@@ -21,6 +21,11 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 ///
 /// # Arguments
 /// * `state` — Shared state implementing `CompletionUseCase`.
+///
+/// # Returns
+/// A fully assembled `Router` with `/health`, `/ready`, `/models`, and
+/// `/completions` routes registered, the request-id/tracing middleware
+/// layered on, and `state` bound via `with_state`, ready to be served.
 pub fn build_router(state: AppState) -> Router {
     let header_name = axum::http::HeaderName::from_static(REQUEST_ID_HEADER);
 

@@ -1,4 +1,8 @@
-// Package message defines the chat message entity, its repository port, and cursor pagination types.
+// Package message implements the chat message use cases (MessageUsecase):
+// sending and listing human messages, invoking the AI to generate and
+// regenerate AI messages within a room, and building the AI context from
+// prior room history, on top of the domain/message entity and repository
+// port.
 package message
 
 import (

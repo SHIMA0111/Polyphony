@@ -13,13 +13,20 @@ import {
   SimpleGrid,
   Text,
 } from "@chakra-ui/react"
-import { MessageSquare, Users, LogOut, Settings, Pen } from "lucide-react"
+import {
+  AlertCircle,
+  MessageSquare,
+  Users,
+  LogOut,
+  Settings,
+  Pen,
+} from "lucide-react"
 import { useRooms } from "@/features/rooms/hooks/use-rooms"
 import { useLogout } from "@/features/auth/hooks/use-logout"
 import { CreateRoomForm } from "./CreateRoomForm"
 
 export function RoomList() {
-  const { data: rooms = [], isPending } = useRooms()
+  const { data: rooms = [], isPending, isError, error, refetch } = useRooms()
   const logoutMutation = useLogout()
 
   return (
@@ -113,6 +120,41 @@ export function RoomList() {
               </Card.Root>
             ))}
           </SimpleGrid>
+        ) : isError ? (
+          <Card.Root borderStyle="dashed">
+            <Card.Body>
+              <Flex
+                direction="column"
+                align="center"
+                justify="center"
+                py={16}
+                textAlign="center"
+              >
+                <Flex
+                  h={16}
+                  w={16}
+                  rounded="full"
+                  bg="bg.subtle"
+                  align="center"
+                  justify="center"
+                  mb={4}
+                >
+                  <AlertCircle size={32} color="var(--chakra-colors-fg-error)" />
+                </Flex>
+                <Heading size="md" mb={2}>
+                  Couldn&apos;t load your rooms
+                </Heading>
+                <Text color="fg.muted" mb={6} maxW="sm">
+                  {error instanceof Error
+                    ? error.message
+                    : "Something went wrong while fetching your rooms."}
+                </Text>
+                <Button onClick={() => refetch()} colorPalette="blue">
+                  Try again
+                </Button>
+              </Flex>
+            </Card.Body>
+          </Card.Root>
         ) : rooms.length > 0 ? (
           <SimpleGrid columns={{ base: 1, md: 2 }} gap={4}>
             {rooms.map((room) => (

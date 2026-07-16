@@ -84,6 +84,12 @@ impl OpenAIProvider {
     /// * `http` — Shared HTTP client tuning (connect/request timeouts, retry policy).
     /// * `provider` — OpenAI-specific configuration (base URL).
     ///
+    /// # Returns
+    /// `Ok(Self)` once the underlying `reqwest::Client` has been built with `http`'s
+    /// connect/request timeouts. API key resolution is deferred (see above), so a
+    /// successful return here says nothing about whether the key is actually valid
+    /// or even present yet.
+    ///
     /// # Errors
     /// Returns `DomainError::ProviderError` if the underlying `reqwest::Client` fails
     /// to build. Never fails due to a missing API key — that is only reported when a

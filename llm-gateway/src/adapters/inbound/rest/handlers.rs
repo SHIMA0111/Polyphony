@@ -47,6 +47,11 @@ pub async fn ready(State(service): State<AppState>) -> impl IntoResponse {
 /// List models endpoint.
 ///
 /// `GET /models` — Returns available models from all providers.
+///
+/// # Returns
+/// `200` with a `ModelsResponseDto` listing every model reported by
+/// `CompletionUseCase::list_models`, converted via `ModelInfoDto::from`. Always `200`
+/// — an empty `models` list (e.g. no providers configured) is not an error.
 pub async fn list_models(State(service): State<AppState>) -> impl IntoResponse {
     let models = service
         .list_models()
@@ -60,6 +65,16 @@ pub async fn list_models(State(service): State<AppState>) -> impl IntoResponse {
 /// Chat completion endpoint.
 ///
 /// `POST /completions` — Sends a chat completion request to an LLM provider.
+///
+/// # Returns
+/// `200` with a `CompletionResponseDto` on success.
+///
+/// # Errors
+/// Returns `AppError` (via `?` on `dto.into_domain()` and `service.complete`), which
+/// maps each `DomainError` variant to an HTTP status: `InvalidRequest` → `400`,
+/// `ModelNotFound` → `404`, `KeyNotFound` → `500`, `Timeout` → `504`, `ProviderError`
+/// → `502`, `RateLimited` → `429` (with a `Retry-After` header when
+/// `retry_after_secs` is set). See `AppError::into_response`.
 pub async fn complete(
     State(service): State<AppState>,
     Json(dto): Json<CompletionRequestDto>,

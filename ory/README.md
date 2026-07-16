@@ -101,8 +101,8 @@ registration, not a well-known example string.
 ## Health checks
 
 ```bash
-curl -sf http://localhost:4433/health/ready   # public API
-curl -sf http://localhost:4434/health/ready   # admin API (redirects to /admin/health/ready)
+curl -sf http://localhost:4433/health/ready         # public API
+curl -sf http://localhost:4434/admin/health/ready   # admin API (bare /health/ready 307-redirects here, and -f doesn't follow)
 ```
 
 ## Out of scope (this step)

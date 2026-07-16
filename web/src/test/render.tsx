@@ -47,10 +47,18 @@ export function createQueryClientWrapper(
   }
 }
 
-interface RenderWithProvidersOptions extends RenderOptions {
+interface RenderWithProvidersOptions extends Omit<RenderOptions, "wrapper"> {
   /** Supply a pre-configured `QueryClient` (e.g. to spy on its methods). */
   queryClient?: QueryClient
 }
+
+// `wrapper` is omitted (not just optional) from RenderWithProvidersOptions:
+// `renderWithProviders` always supplies its own `Wrapper` below to guarantee
+// every rendered component gets the app's real `Provider` +
+// `QueryClientProvider`. If callers could pass `wrapper` through `options`,
+// it would silently replace that mandatory wrapper instead of composing with
+// it, and a test could end up rendering without Chakra/TanStack Query
+// context without any type error warning it.
 
 function renderWithProviders(
   ui: ReactElement,

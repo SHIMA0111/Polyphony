@@ -54,6 +54,10 @@ pub trait CompletionUseCase: Send + Sync {
     /// key can be resolved via `KeyStore`. It makes no network calls, so it stays
     /// fast enough to back a `GET /ready` endpoint.
     ///
+    /// # Returns
+    /// `Ok(())` when every registered provider's API key resolves successfully via
+    /// `KeyStore`.
+    ///
     /// # Errors
     /// Returns `DomainError::KeyNotFound` for the first registered provider whose API
     /// key cannot be resolved.

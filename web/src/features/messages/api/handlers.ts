@@ -76,11 +76,15 @@ export const messagesHandlers = [
 
   http.post(
     "/api/proxy/rooms/:roomId/messages/:messageId/regenerate",
-    ({ params }) => {
-      return HttpResponse.json<Message>({
-        ...fixtureAiMessage,
-        id: String(params.messageId),
-      })
+    () => {
+      // Deliberately keep `fixtureAiMessage`'s own id rather than echoing
+      // back `params.messageId`: a regenerated message is a distinct AI
+      // message (new id, new content) that replaces/supersedes the one at
+      // `:messageId`, not the same message mutated in place. Overriding the
+      // id here would make the fixture indistinguishable from the message
+      // being regenerated, masking bugs where a caller conflates the two
+      // identities.
+      return HttpResponse.json<Message>(fixtureAiMessage)
     },
   ),
 

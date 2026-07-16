@@ -50,8 +50,8 @@ services:
     image: oryd/kratos:v1.3.1
     environment:
       DSN: ${KRATOS_DSN:-postgres://kratos:kratos@kratos-db:5432/kratos?sslmode=disable}
-      SECRETS_COOKIE: ${KRATOS_COOKIE_SECRET:-change-me-32-byte-cookie-secret}
-      SECRETS_CIPHER: ${KRATOS_CIPHER_SECRET:-change-me-32-byte-cipher-secret}
+      SECRETS_COOKIE: ${KRATOS_COOKIE_SECRET:-dev-32-byte-kratos-cookie-secret}
+      SECRETS_CIPHER: ${KRATOS_CIPHER_SECRET:-dev-32-byte-kratos-cipher-secret}
     command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
     volumes:
       - ./ory/kratos:/etc/config/kratos:ro
@@ -100,7 +100,7 @@ services:
       LLM_GATEWAY_PORT: ${LLM_GATEWAY_PORT:-8081}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       LLM_GATEWAY_CONNECT_TIMEOUT_SECS: ${LLM_GATEWAY_CONNECT_TIMEOUT_SECS:-10}
-      LLM_GATEWAY_REQUEST_TIMEOUT_SECS: ${LLM_GATEWAY_REQUEST_TIMEOUT_SECS:-30}
+      LLM_GATEWAY_REQUEST_TIMEOUT_SECS: ${LLM_GATEWAY_REQUEST_TIMEOUT_SECS:-600}
       LLM_GATEWAY_MAX_RETRIES: ${LLM_GATEWAY_MAX_RETRIES:-3}
       LLM_GATEWAY_RETRY_BASE_DELAY_MS: ${LLM_GATEWAY_RETRY_BASE_DELAY_MS:-500}
     ports:

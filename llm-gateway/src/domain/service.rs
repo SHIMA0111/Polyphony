@@ -25,6 +25,10 @@ impl CompletionService {
     /// * `providers` — List of available LLM providers.
     /// * `key_store` — Key store used by `readiness()` to confirm every registered
     ///   provider's API key is resolvable, without making any network calls.
+    ///
+    /// # Returns
+    /// A `CompletionService` holding `providers` and `key_store`, ready to serve
+    /// `complete`/`list_models`/`readiness` calls.
     pub fn new(providers: Vec<Box<dyn LLMProvider>>, key_store: Arc<dyn KeyStore>) -> Self {
         Self {
             providers,

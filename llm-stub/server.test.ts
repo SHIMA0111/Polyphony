@@ -125,6 +125,18 @@ describe("POST /v1/chat/completions", () => {
     const json = (await res.json()) as { error: { message: string } }
     expect(json.error.message).toContain("does-not-exist")
   })
+
+  test("a path-traversal fixture marker is rejected with 400 before any file access", async () => {
+    const res = await fetchHandler(
+      request({
+        model: "gpt-5-mini",
+        messages: [{ role: "user", content: "[[fixture:../package]] hi" }],
+      }),
+    )
+    expect(res.status).toBe(400)
+    const json = (await res.json()) as { error: { message: string } }
+    expect(json.error.message).toContain("../package")
+  })
 })
 
 describe("GET /health", () => {
