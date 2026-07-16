@@ -291,6 +291,70 @@ async fn test_complete_slow_response_maps_to_timeout() {
     assert!(matches!(err, DomainError::Timeout));
 }
 
+/// End-to-end Vision test: a `CompletionRequest` whose message carries mixed
+/// text+image `ContentPart`s produces the exact Gemini multimodal `parts` array shape
+/// on the wire (`text`, `fileData`, and `inlineData` parts). The mock only matches
+/// (and responds 200) if the outbound body equals `expected_body` exactly, so a
+/// successful `complete()` call here is itself the assertion that the gateway sent the
+/// expected multimodal JSON body.
+#[tokio::test]
+async fn test_complete_with_image_content_sends_gemini_multimodal_body() {
+    use llm_gateway::domain::model::{ContentPart, MessageContent};
+    use wiremock::matchers::body_json;
+
+    let mock_server = MockServer::start().await;
+    let expected_body = serde_json::json!({
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {"text": "what is this?"},
+                {"fileData": {"fileUri": "https://example.com/cat.png"}},
+                {"inlineData": {"mimeType": "image/png", "data": "abcd"}},
+            ],
+        }],
+    });
+    let response_fixture = serde_json::json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{"text": "It's a cat."}]},
+            "finishReason": "STOP",
+            "index": 0,
+        }],
+        "usageMetadata": {"promptTokenCount": 30, "candidatesTokenCount": 4, "totalTokenCount": 34},
+        "responseId": "resp-vision-1",
+    });
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-3-pro:generateContent"))
+        .and(body_json(&expected_body))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&response_fixture))
+        .mount(&mock_server)
+        .await;
+
+    let req = CompletionRequest {
+        model: "gemini-3-pro".to_string(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Parts(vec![
+                ContentPart::Text("what is this?".to_string()),
+                ContentPart::ImageUrl("https://example.com/cat.png".to_string()),
+                ContentPart::ImageBase64 {
+                    media_type: "image/png".to_string(),
+                    data: "abcd".to_string(),
+                },
+            ]),
+        }],
+        temperature: None,
+        max_tokens: None,
+    };
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let resp = provider
+        .complete(&req)
+        .await
+        .expect("complete should succeed once the mock's exact-body matcher accepts the request");
+
+    assert_eq!(resp.choices[0].message.content.as_text(), "It's a cat.");
+}
+
 /// Proves that `GeminiProvider`'s hardcoded model IDs (`gemini-` prefixed) do not
 /// collide with `OpenAIProvider`'s (`gpt-`/`o`-prefixed). Both providers are
 /// constructed via their Step-8 config-injection constructors with a trivial

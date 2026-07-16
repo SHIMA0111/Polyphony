@@ -11,11 +11,19 @@ import (
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
+	domainattachment "github.com/SHIMA0111/multi-user-ai/server/internal/domain/attachment"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/storage"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
+
+// attachmentViewURLExpiry is how long a presigned view URL minted for an
+// AI-context image part remains valid. Matches
+// usecase/attachment.viewURLExpiry: the URL only needs to survive the single
+// LLM Gateway request it is embedded in.
+const attachmentViewURLExpiry = time.Hour
 
 const defaultContextMessages = 50
 
@@ -40,6 +48,8 @@ type MessageUsecase struct {
 	hub            event.MessageHub
 	contextBuilder ai.ContextBuilder
 	billing        BillingGuard
+	attachmentRepo domainattachment.AttachmentRepository
+	objStorage     storage.ObjectStorage
 	// defaultAIModel is the deployment-wide fallback model string, sourced
 	// from Config.DefaultAIModel by the caller of NewMessageUsecase. It is
 	// the lowest-precedence tier consulted by resolveModel, used only when
@@ -58,17 +68,24 @@ type MessageUsecase struct {
 // requests once the room owner's token balance is exhausted, and to record
 // usage after a successful completion; pass a *billingusecase.BillingUsecase
 // (see usecase/billing), which satisfies BillingGuard structurally.
-// defaultAIModel is the deployment-wide fallback model string consulted by
-// resolveModel (see model_resolution.go) whenever an AI request omits an
-// explicit model and the target room has no configured
-// domainroom.Room.AIModel; pass cfg.DefaultAIModel from
-// internal/infrastructure/config.Config.
+// attachmentRepo and objStorage are used only to enrich AI context with
+// image attachments (see enrichWithAttachments): attachmentRepo looks up a
+// message's attachments (see domain/attachment, landed in Step 12) and
+// objStorage mints a fresh presigned view URL for each one, reusing the same
+// storage.ObjectStorage.PresignView helper usecase/attachment's
+// ListAttachments uses rather than re-deriving S3 URLs here. defaultAIModel
+// is the deployment-wide fallback model string consulted by resolveModel
+// (see model_resolution.go) whenever an AI request omits an explicit model
+// and the target room has no configured domainroom.Room.AIModel; pass
+// cfg.DefaultAIModel from internal/infrastructure/config.Config.
 func NewMessageUsecase(
 	msgRepo domainmessage.MessageRepository,
 	roomRepo room.RoomRepository,
 	llmGateway ai.LLMGateway,
 	hub event.MessageHub,
 	billing BillingGuard,
+	attachmentRepo domainattachment.AttachmentRepository,
+	objStorage storage.ObjectStorage,
 	defaultAIModel string,
 ) *MessageUsecase {
 	return &MessageUsecase{
@@ -78,6 +95,8 @@ func NewMessageUsecase(
 		hub:            hub,
 		contextBuilder: ai.NewDefaultContextBuilder(),
 		billing:        billing,
+		attachmentRepo: attachmentRepo,
+		objStorage:     objStorage,
 		defaultAIModel: defaultAIModel,
 	}
 }
@@ -211,6 +230,12 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	// Build chat messages (reverse to chronological order), filtering out
 	// soft-deleted, exclude_from_ai, failed, and pre-cutoff messages.
 	chatMsgs := u.contextBuilder.Build(contextPage.Messages, rm.AIContextCutoffAt)
+	chatMsgs, err = u.enrichWithAttachments(
+		ctx, chatMsgs, filterEligibleMessages(contextPage.Messages, rm.AIContextCutoffAt),
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	// Call LLM Gateway
 	completion, llmErr := u.llmGateway.Complete(ctx, &ai.CompletionRequest{
@@ -325,6 +350,12 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	// Build chat messages (reverse to chronological order), filtering out
 	// soft-deleted, exclude_from_ai, failed, and pre-cutoff messages.
 	chatMsgs := u.contextBuilder.Build(contextMsgs, rm.AIContextCutoffAt)
+	chatMsgs, err = u.enrichWithAttachments(
+		ctx, chatMsgs, filterEligibleMessages(contextMsgs, rm.AIContextCutoffAt),
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	// Call LLM Gateway
 	completion, err := u.llmGateway.Complete(ctx, &ai.CompletionRequest{
@@ -446,4 +477,90 @@ func (u *MessageUsecase) getMember(ctx context.Context, roomID, userID string) (
 		return nil, err
 	}
 	return member, nil
+}
+
+// filterEligibleMessages reproduces ai.ContextBuilder.Build's exclusion filter and
+// chronological reordering (via ai.IsEligibleForContext, in the exact same iteration
+// order Build uses), returning the parallel []*domainmessage.Message slice that lines
+// up 1:1 with ai.ContextBuilder.Build(msgs, cutoff)'s output.
+//
+// This exists solely to correlate Build's []ai.ChatMessage output back to its source
+// messages for enrichWithAttachments: Build's signature is frozen (it returns
+// []ai.ChatMessage, not the source messages, so there is no message ID on its output
+// to look up attachments by), so this helper rebuilds the same filtered, chronological
+// slice independently, using the same exported predicate Build itself calls.
+func filterEligibleMessages(msgs []*domainmessage.Message, cutoff *time.Time) []*domainmessage.Message {
+	eligible := make([]*domainmessage.Message, 0, len(msgs))
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if ai.IsEligibleForContext(msgs[i], cutoff) {
+			eligible = append(eligible, msgs[i])
+		}
+	}
+	return eligible
+}
+
+// enrichWithAttachments upgrades chatMsgs entries whose source message carries one or
+// more image attachments into multimodal ai.ChatMessage Parts payloads, for both
+// SendAIMessage and RegenerateAIMessage's context-assembly path.
+//
+// chatMsgs must be ai.ContextBuilder.Build(msgs, cutoff)'s output and sourceMsgs must
+// be filterEligibleMessages(msgs, cutoff)'s output for that same (msgs, cutoff) pair,
+// so the two slices line up 1:1 by index -- see filterEligibleMessages' doc comment
+// for why this indirection is needed instead of Build returning message IDs directly.
+//
+// A message with no image attachments is left untouched (its Parts stays nil/empty,
+// so it still serializes via the plain-Content path). A message with one or more
+// image attachments has Parts set to: a text part carrying its original Content (only
+// if Content is non-empty), followed by one image part per attachment in
+// attachmentRepo.ListByMessageID order, each built from a freshly presigned view URL
+// (u.objStorage.PresignView -- the same helper usecase/attachment.AttachmentUsecase's
+// ListAttachments uses, reused here rather than re-deriving S3 URLs).
+//
+// It is a no-op (returns chatMsgs unchanged) if this usecase was constructed with a
+// nil attachmentRepo or objStorage, so callers/tests that don't care about Vision
+// attachments don't need to wire either dependency.
+//
+// # Errors
+// Returns the first error encountered from attachmentRepo.ListByMessageID or
+// objStorage.PresignView: a context-assembly call cannot silently omit an attachment
+// the sender attached, so any lookup/presign failure aborts the whole enrichment
+// rather than falling back to the plain-Content path for that message.
+func (u *MessageUsecase) enrichWithAttachments(
+	ctx context.Context,
+	chatMsgs []ai.ChatMessage,
+	sourceMsgs []*domainmessage.Message,
+) ([]ai.ChatMessage, error) {
+	if u.attachmentRepo == nil || u.objStorage == nil {
+		return chatMsgs, nil
+	}
+
+	for i := range chatMsgs {
+		attachments, err := u.attachmentRepo.ListByMessageID(ctx, sourceMsgs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(attachments) == 0 {
+			continue
+		}
+
+		parts := make([]ai.ContentPart, 0, len(attachments)+1)
+		if chatMsgs[i].Content != "" {
+			parts = append(parts, ai.ContentPart{
+				Type: ai.ContentPartTypeText,
+				Text: chatMsgs[i].Content,
+			})
+		}
+		for _, att := range attachments {
+			viewURL, err := u.objStorage.PresignView(ctx, att.S3Key, attachmentViewURLExpiry)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, ai.ContentPart{
+				Type:     ai.ContentPartTypeImageURL,
+				ImageURL: viewURL,
+			})
+		}
+		chatMsgs[i].Parts = parts
+	}
+	return chatMsgs, nil
 }

@@ -40,9 +40,77 @@ type completionReqDTO struct {
 	Temperature *float64     `json:"temperature,omitempty"`
 }
 
+// chatMsgDTO is the wire shape of a single chat message, matching the LLM
+// Gateway's REST contract on both the request and response side.
+//
+// Content is `any` rather than `string` because the gateway's `content`
+// field is a `#[serde(untagged)]` union (see
+// llm-gateway/src/adapters/inbound/rest/request.rs's ContentDto): a plain
+// JSON string for text-only messages, or an array of contentPartDTO objects
+// for multimodal (Vision) messages. On the outbound (request) side, build it
+// with toContentDTO rather than assigning a raw string/slice directly, so the
+// two shapes stay centralized in one place. On the inbound (response) side,
+// json.Unmarshal decodes a bare JSON string into a Go string held by this
+// `any` (every completion response's message content is plain text today, no
+// provider adapter yet echoes image content back) -- see Complete's use of a
+// type assertion when reading it back out.
 type chatMsgDTO struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
+}
+
+// contentPartDTO is the wire shape of a single multimodal content part,
+// matching the LLM Gateway's ContentPartDto
+// (llm-gateway/src/adapters/inbound/rest/request.rs): internally tagged by
+// Type ("text" | "image_url" | "image_base64"), with only the fields
+// relevant to that Type populated (the others are omitted via `omitempty`).
+type contentPartDTO struct {
+	Type      string       `json:"type"`
+	Text      string       `json:"text,omitempty"`
+	ImageURL  *imageURLDTO `json:"image_url,omitempty"`
+	MediaType string       `json:"media_type,omitempty"`
+	Data      string       `json:"data,omitempty"`
+}
+
+// imageURLDTO is the nested `image_url` object of a contentPartDTO whose
+// Type is "image_url", matching the gateway's `{"url": "..."}` shape rather
+// than a bare string.
+type imageURLDTO struct {
+	URL string `json:"url"`
+}
+
+// toContentDTO builds the wire-format `content` value for a single domain
+// ai.ChatMessage: a non-empty Parts takes precedence over Content and
+// becomes a []contentPartDTO (via toContentPartDTO); otherwise Content
+// becomes a plain string (the common, backward-compatible text-only case).
+func toContentDTO(m ai.ChatMessage) any {
+	if len(m.Parts) == 0 {
+		return m.Content
+	}
+	parts := make([]contentPartDTO, len(m.Parts))
+	for i, p := range m.Parts {
+		parts[i] = toContentPartDTO(p)
+	}
+	return parts
+}
+
+// toContentPartDTO converts a single domain ai.ContentPart to its wire-format
+// contentPartDTO, dispatching on p.Type (one of the ai.ContentPartType*
+// constants). An unrecognized Type falls back to a text part carrying
+// p.Text (defaulting to the empty string).
+func toContentPartDTO(p ai.ContentPart) contentPartDTO {
+	switch p.Type {
+	case ai.ContentPartTypeImageURL:
+		return contentPartDTO{Type: "image_url", ImageURL: &imageURLDTO{URL: p.ImageURL}}
+	case ai.ContentPartTypeImageBase64:
+		var mediaType, data string
+		if p.ImageBase64 != nil {
+			mediaType, data = p.ImageBase64.MediaType, p.ImageBase64.Data
+		}
+		return contentPartDTO{Type: "image_base64", MediaType: mediaType, Data: data}
+	default:
+		return contentPartDTO{Type: "text", Text: p.Text}
+	}
 }
 
 type completionRespDTO struct {
@@ -103,7 +171,7 @@ type tokenEstimateRespDTO struct {
 func (c *LLMClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
 	msgs := make([]chatMsgDTO, len(req.Messages))
 	for i, m := range req.Messages {
-		msgs[i] = chatMsgDTO{Role: m.Role, Content: m.Content}
+		msgs[i] = chatMsgDTO{Role: m.Role, Content: toContentDTO(m)}
 	}
 
 	body := completionReqDTO{
@@ -140,9 +208,16 @@ func (c *LLMClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*a
 		return nil, fmt.Errorf("%w: decode response: %v", domain.ErrLLMGateway, err)
 	}
 
+	// The gateway's completion response message content is always plain text
+	// today (no provider adapter yet echoes image content back in a
+	// response), so it always decodes as a bare JSON string; a non-string
+	// value here (e.g. a future multimodal response) is treated as empty
+	// rather than panicking on a failed type assertion.
 	content := ""
 	if len(result.Choices) > 0 {
-		content = result.Choices[0].Message.Content
+		if s, ok := result.Choices[0].Message.Content.(string); ok {
+			content = s
+		}
 	}
 
 	return &ai.CompletionResponse{
@@ -201,7 +276,7 @@ func (c *LLMClient) ListModels(ctx context.Context) ([]ai.ModelInfo, error) {
 func (c *LLMClient) EstimateTokens(ctx context.Context, req *ai.TokenEstimateRequest) (*ai.TokenEstimateResponse, error) {
 	msgs := make([]chatMsgDTO, len(req.Messages))
 	for i, m := range req.Messages {
-		msgs[i] = chatMsgDTO{Role: m.Role, Content: m.Content}
+		msgs[i] = chatMsgDTO{Role: m.Role, Content: toContentDTO(m)}
 	}
 
 	body := tokenEstimateReqDTO{

@@ -161,7 +161,7 @@ func TestGRPCClientCompleteHappyPath(t *testing.T) {
 				Index: 0,
 				Message: &llmgatewaypb.ChatMessage{
 					Role:    llmgatewaypb.ChatRole_CHAT_ROLE_ASSISTANT,
-					Content: "hello there",
+					Content: &llmgatewaypb.ChatMessage_Text{Text: "hello there"},
 				},
 				FinishReason: "stop",
 			},
@@ -294,7 +294,7 @@ func TestGRPCClientCompleteRetriesOnUnavailableThenSucceeds(t *testing.T) {
 	fixture.completion.resp = &llmgatewaypb.CompletionResponse{
 		Model: "gpt-5.2",
 		Choices: []*llmgatewaypb.Choice{
-			{Message: &llmgatewaypb.ChatMessage{Content: "recovered"}},
+			{Message: &llmgatewaypb.ChatMessage{Content: &llmgatewaypb.ChatMessage_Text{Text: "recovered"}}},
 		},
 		Usage: &llmgatewaypb.Usage{},
 	}

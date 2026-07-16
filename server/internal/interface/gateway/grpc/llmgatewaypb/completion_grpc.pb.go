@@ -11,8 +11,9 @@
 // endpoint (`llm-gateway/src/adapters/inbound/rest/`); both transports share the same
 // domain service (`CompletionUseCase`) and must stay semantically identical.
 //
-// Streaming completions and multimodal (Vision) message content are explicitly out of
-// scope for this contract version — see `docs/tasks/step19.md` for the rationale.
+// Streaming completions are explicitly out of scope for this contract version — see
+// `docs/tasks/step19.md` for the rationale. Multimodal (Vision) message content was
+// added in Step 39 via `ChatMessage.content`'s `text`/`parts` oneof (see below).
 
 package llmgatewaypb
 

@@ -11,7 +11,10 @@ use tonic::{Request, Response, Status};
 use crate::domain::model as domain;
 use crate::ports::inbound::completion::CompletionUseCase;
 
-use super::convert::{domain_error_to_status, domain_role_to_proto, proto_role_to_domain};
+use super::convert::{
+    domain_content_to_proto, domain_error_to_status, domain_role_to_proto, proto_content_to_domain,
+    proto_role_to_domain,
+};
 use super::pb::completion_service_server::CompletionService;
 use super::pb::{
     ChatMessage, Choice, CompletionRequest, CompletionResponse, TokenEstimateRequest,
@@ -39,17 +42,15 @@ impl GrpcCompletionService {
 ///
 /// # Errors
 /// Returns `tonic::Status::invalid_argument` if any message carries an unrecognized
-/// `ChatRole`.
+/// `ChatRole` or a malformed content part (see `proto_content_to_domain`).
 fn proto_request_to_domain(req: CompletionRequest) -> Result<domain::CompletionRequest, Status> {
     let messages = req
         .messages
         .into_iter()
         .map(|m| {
             let role = proto_role_to_domain(m.role).map_err(domain_error_to_status)?;
-            Ok(domain::ChatMessage {
-                role,
-                content: m.content.into(),
-            })
+            let content = proto_content_to_domain(m.content).map_err(domain_error_to_status)?;
+            Ok(domain::ChatMessage { role, content })
         })
         .collect::<Result<Vec<_>, Status>>()?;
 
@@ -77,10 +78,8 @@ fn proto_token_estimate_to_domain(
         .into_iter()
         .map(|m| {
             let role = proto_role_to_domain(m.role).map_err(domain_error_to_status)?;
-            Ok(domain::ChatMessage {
-                role,
-                content: m.content.into(),
-            })
+            let content = proto_content_to_domain(m.content).map_err(domain_error_to_status)?;
+            Ok(domain::ChatMessage { role, content })
         })
         .collect::<Result<Vec<_>, Status>>()?;
 
@@ -112,7 +111,7 @@ fn domain_response_to_proto(resp: domain::CompletionResponse) -> CompletionRespo
                 index: c.index,
                 message: Some(ChatMessage {
                     role: domain_role_to_proto(&c.message.role) as i32,
-                    content: c.message.content.as_text(),
+                    content: Some(domain_content_to_proto(c.message.content)),
                 }),
                 finish_reason: c.finish_reason,
             })

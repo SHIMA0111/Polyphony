@@ -288,3 +288,67 @@ async fn test_complete_slow_response_maps_to_timeout() {
 
     assert!(matches!(err, DomainError::Timeout));
 }
+
+/// End-to-end Vision test: a `CompletionRequest` whose message carries mixed
+/// text+image `ContentPart`s produces the exact Anthropic multimodal `content` array
+/// shape on the wire (a `text` block plus `image` blocks with `"url"`/`"base64"`
+/// sources). The mock only matches (and responds 200) if the outbound body equals
+/// `expected_body` exactly, so a successful `complete()` call here is itself the
+/// assertion that the gateway sent the expected multimodal JSON body.
+#[tokio::test]
+async fn test_complete_with_image_content_sends_anthropic_multimodal_body() {
+    use llm_gateway::domain::model::{ContentPart, MessageContent};
+    use wiremock::matchers::body_json;
+
+    let mock_server = MockServer::start().await;
+    let expected_body = serde_json::json!({
+        "model": "claude-opus-4-6",
+        "max_tokens": 4096,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is this?"},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.png"}},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abcd"}},
+            ],
+        }],
+    });
+    let response_fixture = serde_json::json!({
+        "id": "msg_vision_1",
+        "model": "claude-opus-4-6",
+        "content": [{"type": "text", "text": "It's a cat."}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 30, "output_tokens": 4},
+    });
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_json(&expected_body))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&response_fixture))
+        .mount(&mock_server)
+        .await;
+
+    let req = CompletionRequest {
+        model: "claude-opus-4-6".to_string(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Parts(vec![
+                ContentPart::Text("what is this?".to_string()),
+                ContentPart::ImageUrl("https://example.com/cat.png".to_string()),
+                ContentPart::ImageBase64 {
+                    media_type: "image/png".to_string(),
+                    data: "abcd".to_string(),
+                },
+            ]),
+        }],
+        temperature: None,
+        max_tokens: None,
+    };
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let resp = provider
+        .complete(&req)
+        .await
+        .expect("complete should succeed once the mock's exact-body matcher accepts the request");
+
+    assert_eq!(resp.choices[0].message.content.as_text(), "It's a cat.");
+}

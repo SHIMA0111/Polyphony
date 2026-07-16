@@ -4,10 +4,55 @@
 package ai
 
 // ChatMessage represents a single message in a conversation context sent to the LLM.
+//
+// Content holds the message's plain-text body, the original (and still the common)
+// shape. Parts, when non-empty, holds multimodal content (text mixed with images)
+// built from the message's attachments (see usecase/message's attachment-enrichment
+// step, added in Step 39) and takes precedence over Content when this message is
+// serialized to the LLM Gateway (see interface/gateway/llm_client.go's chatMsgDTO and
+// grpc_client.go's toPBChatMessages): Content is left populated alongside Parts so
+// existing readers of Content (e.g. logging) keep working, but a non-empty Parts
+// always wins on the wire.
 type ChatMessage struct {
 	Role    string
 	Content string
+	Parts   []ContentPart
 }
+
+// ContentPart represents a single part of a multimodal message's content, mirroring
+// the LLM Gateway's `ContentPart` enum (`llm-gateway/src/domain/model.rs`) and its
+// REST/gRPC wire contracts.
+//
+// Exactly one of Text, ImageURL, or ImageBase64 holds meaningful data, discriminated
+// by Type (one of the ContentPartType* constants):
+//   - Type == ContentPartTypeText: Text holds the segment's text.
+//   - Type == ContentPartTypeImageURL: ImageURL holds the image's URL.
+//   - Type == ContentPartTypeImageBase64: ImageBase64 holds the inline image bytes.
+type ContentPart struct {
+	Type        string
+	Text        string
+	ImageURL    string
+	ImageBase64 *ImageBase64Data
+}
+
+// ImageBase64Data holds an inline base64-encoded image, referenced by a ContentPart
+// whose Type is ContentPartTypeImageBase64.
+type ImageBase64Data struct {
+	MediaType string
+	Data      string
+}
+
+// Content part type discriminators, matching the wire-format `"type"` values used by
+// the LLM Gateway's REST content-part contract
+// (llm-gateway/src/adapters/inbound/rest/request.rs's ContentPartDto).
+const (
+	// ContentPartTypeText marks a ContentPart carrying a plain text segment.
+	ContentPartTypeText = "text"
+	// ContentPartTypeImageURL marks a ContentPart referencing an image by URL.
+	ContentPartTypeImageURL = "image_url"
+	// ContentPartTypeImageBase64 marks a ContentPart carrying an inline base64-encoded image.
+	ContentPartTypeImageBase64 = "image_base64"
+)
 
 // CompletionRequest holds the parameters for an LLM completion request.
 type CompletionRequest struct {

@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::adapters::outbound::http_retry::send_with_retry;
 use crate::domain::error::DomainError;
 use crate::domain::model::{
-    ChatMessage, Choice, CompletionRequest, CompletionResponse, Role, Usage,
+    ChatMessage, Choice, CompletionRequest, CompletionResponse, ContentPart, MessageContent, Role,
+    Usage,
 };
 
 use super::GeminiProvider;
@@ -14,26 +15,81 @@ use super::GeminiProvider;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiRequest {
-    contents: Vec<GeminiContent>,
+    contents: Vec<GeminiRequestContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system_instruction: Option<GeminiContent>,
+    system_instruction: Option<GeminiRequestContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
 }
 
-/// A single `Content` object in Gemini's request/response shape.
+/// A single outbound `Content` object in Gemini's request shape.
 ///
-/// `role` is `None`/omitted when this `GeminiContent` represents the top-level
-/// `systemInstruction` (Gemini's `systemInstruction` object has no `role` field), and
+/// `role` is `None`/omitted when this represents the top-level `systemInstruction`
+/// (Gemini's `systemInstruction` object has no `role` field), and
 /// `Some("user"|"model"|"function")` for entries in `contents`.
-#[derive(Serialize, Deserialize, Clone)]
-struct GeminiContent {
+///
+/// This is the *outbound* counterpart of [`GeminiContent`] (used for parsing
+/// responses): the two are kept separate because `parts` carries a richer,
+/// Vision-capable shape ([`GeminiPartDto`]) on the outbound side than the
+/// text-only shape Gemini ever echoes back in a response.
+#[derive(Serialize)]
+struct GeminiRequestContent {
     #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    parts: Vec<GeminiPartDto>,
+}
+
+/// A single outbound `Part` object in Gemini's `generateContent` request shape.
+///
+/// Untagged: Gemini distinguishes part kinds by which key is present (`text`,
+/// `inlineData`, or `fileData`), not by an explicit discriminator field, so
+/// `#[serde(untagged)]` (which serializes only the active variant's fields, without a
+/// wrapping tag) matches the wire format exactly.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum GeminiPartDto {
+    Text {
+        text: String,
+    },
+    InlineData {
+        #[serde(rename = "inlineData")]
+        inline_data: GeminiInlineData,
+    },
+    FileData {
+        #[serde(rename = "fileData")]
+        file_data: GeminiFileData,
+    },
+}
+
+/// Gemini's `inlineData` part: a base64-encoded image (or other blob) embedded
+/// directly in the request.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiInlineData {
+    mime_type: String,
+    data: String,
+}
+
+/// Gemini's `fileData` part: a reference to an image (or other file) by URI.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiFileData {
+    file_uri: String,
+}
+
+/// A single `Content` object in Gemini's response shape (`candidates[].content`).
+///
+/// See [`GeminiRequestContent`] for the outbound counterpart used when building a
+/// request; this type only needs to deserialize the text-only shape Gemini responses
+/// ever contain.
+#[derive(Deserialize, Clone)]
+struct GeminiContent {
+    #[serde(default)]
     role: Option<String>,
     parts: Vec<GeminiPart>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 struct GeminiPart {
     text: String,
 }
@@ -149,6 +205,46 @@ fn gemini_role_to_role(s: &str) -> Role {
     }
 }
 
+/// Converts a domain `MessageContent` into Gemini's `parts` array.
+///
+/// `MessageContent::Text` becomes a single-element `parts` array (Gemini has no bare
+/// string shorthand for `content`, unlike OpenAI/Anthropic — every message is always a
+/// `parts` array). `MessageContent::Parts` becomes one `parts` entry per `ContentPart`
+/// (see `to_gemini_part`).
+///
+/// # Errors
+/// Never fails: every `ContentPart` variant has a representable Gemini part (see
+/// `to_gemini_part`).
+fn to_gemini_parts(content: &MessageContent) -> Vec<GeminiPartDto> {
+    match content {
+        MessageContent::Text(s) => vec![GeminiPartDto::Text { text: s.clone() }],
+        MessageContent::Parts(parts) => parts.iter().map(to_gemini_part).collect(),
+    }
+}
+
+/// Converts a single domain `ContentPart` into a Gemini part.
+///
+/// `ContentPart::ImageBase64` maps to an `inlineData` part (Gemini's native
+/// inline-image shape); `ContentPart::ImageUrl` maps to a `fileData` part (Gemini's
+/// reference-by-URI shape, intended for Gemini File API URIs, but structurally the
+/// only Gemini part type that carries a bare URL string).
+fn to_gemini_part(part: &ContentPart) -> GeminiPartDto {
+    match part {
+        ContentPart::Text(text) => GeminiPartDto::Text { text: text.clone() },
+        ContentPart::ImageUrl(url) => GeminiPartDto::FileData {
+            file_data: GeminiFileData {
+                file_uri: url.clone(),
+            },
+        },
+        ContentPart::ImageBase64 { media_type, data } => GeminiPartDto::InlineData {
+            inline_data: GeminiInlineData {
+                mime_type: media_type.clone(),
+                data: data.clone(),
+            },
+        },
+    }
+}
+
 /// Converts a provider-agnostic `CompletionRequest` into a Gemini `generateContent`
 /// request body.
 ///
@@ -162,11 +258,9 @@ fn to_gemini_request(req: &CompletionRequest) -> GeminiRequest {
     for m in &req.messages {
         match m.role {
             Role::System => system_texts.push(m.content.as_text()),
-            _ => contents.push(GeminiContent {
+            _ => contents.push(GeminiRequestContent {
                 role: Some(role_to_gemini_role(&m.role).to_string()),
-                parts: vec![GeminiPart {
-                    text: m.content.as_text(),
-                }],
+                parts: to_gemini_parts(&m.content),
             }),
         }
     }
@@ -174,9 +268,9 @@ fn to_gemini_request(req: &CompletionRequest) -> GeminiRequest {
     let system_instruction = if system_texts.is_empty() {
         None
     } else {
-        Some(GeminiContent {
+        Some(GeminiRequestContent {
             role: None,
-            parts: vec![GeminiPart {
+            parts: vec![GeminiPartDto::Text {
                 text: system_texts.join("\n"),
             }],
         })
@@ -408,8 +502,8 @@ mod tests {
         assert!(system_instruction.role.is_none());
         assert_eq!(system_instruction.parts.len(), 1);
         assert_eq!(
-            system_instruction.parts[0].text,
-            "You are helpful.\nBe concise."
+            serde_json::to_value(&system_instruction.parts[0]).unwrap(),
+            serde_json::json!({"text": "You are helpful.\nBe concise."})
         );
 
         assert_eq!(gemini_req.contents.len(), 3);
@@ -446,6 +540,70 @@ mod tests {
         let gemini_req = to_gemini_request(&req);
         assert!(gemini_req.system_instruction.is_none());
         assert!(gemini_req.generation_config.is_none());
+    }
+
+    /// `MessageContent::Text` becomes a single-element `parts` array with a `text`
+    /// entry (Gemini has no bare-string shorthand, unlike OpenAI/Anthropic).
+    #[test]
+    fn test_to_gemini_parts_text_becomes_single_text_part() {
+        let parts = to_gemini_parts(&MessageContent::Text("hello".to_string()));
+        let json = serde_json::to_value(&parts).unwrap();
+        assert_eq!(json, serde_json::json!([{"text": "hello"}]));
+    }
+
+    /// `MessageContent::Parts` maps each `ContentPart` to its Gemini counterpart:
+    /// `ImageBase64` becomes `inlineData`, `ImageUrl` becomes `fileData`.
+    #[test]
+    fn test_to_gemini_parts_maps_image_parts() {
+        let content = MessageContent::Parts(vec![
+            ContentPart::Text("look: ".to_string()),
+            ContentPart::ImageUrl("https://example.com/cat.png".to_string()),
+            ContentPart::ImageBase64 {
+                media_type: "image/png".to_string(),
+                data: "abcd".to_string(),
+            },
+        ]);
+
+        let json = serde_json::to_value(to_gemini_parts(&content)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {"text": "look: "},
+                {"fileData": {"fileUri": "https://example.com/cat.png"}},
+                {"inlineData": {"mimeType": "image/png", "data": "abcd"}},
+            ])
+        );
+    }
+
+    /// End-to-end: a `CompletionRequest` with a mixed text+image message serializes to
+    /// the exact Gemini request body shape.
+    #[test]
+    fn test_to_gemini_request_with_image_parts_serializes_full_message_body() {
+        let req = CompletionRequest {
+            model: "gemini-3-pro".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: MessageContent::Parts(vec![
+                    ContentPart::Text("what is this?".to_string()),
+                    ContentPart::ImageBase64 {
+                        media_type: "image/png".to_string(),
+                        data: "abcd".to_string(),
+                    },
+                ]),
+            }],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let gemini_req = to_gemini_request(&req);
+        let json = serde_json::to_value(&gemini_req).unwrap();
+        assert_eq!(
+            json["contents"][0]["parts"],
+            serde_json::json!([
+                {"text": "what is this?"},
+                {"inlineData": {"mimeType": "image/png", "data": "abcd"}},
+            ])
+        );
     }
 
     #[test]
