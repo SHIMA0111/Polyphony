@@ -82,4 +82,42 @@ describe("http-client", () => {
 
     expect(capturedUrl).toBe("/api/auth/login")
   })
+
+  it("on a 401, clears the session cookie via /api/auth/logout before redirecting to /login", async () => {
+    const calledUrls: string[] = []
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      calledUrls.push(url)
+      if (url === "/api/auth/logout") {
+        return jsonResponse(200, { ok: true })
+      }
+      return jsonResponse(401, { message: "unauthorized" })
+    })
+
+    const assign = vi.fn()
+    const originalLocation = window.location
+    // jsdom does not implement real navigation, and `window.location` is
+    // non-configurable in some environments, so replace it wholesale for
+    // this test only.
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, assign },
+    })
+
+    try {
+      await expect(apiRequest("/rooms")).rejects.toBeInstanceOf(ApiRequestError)
+
+      // The dead cookie must be cleared (via the logout route) before the
+      // browser is redirected — otherwise middleware.ts's presence-only
+      // check would immediately bounce /login back to /rooms, producing an
+      // infinite redirect loop.
+      expect(calledUrls).toEqual(["/api/proxy/rooms", "/api/auth/logout"])
+      expect(assign).toHaveBeenCalledWith("/login")
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      })
+    }
+  })
 })

@@ -28,7 +28,10 @@ test("register, create room, and send a message", async ({ page }) => {
 
   await expect(page).toHaveURL(/\/rooms$/)
 
-  await page.getByRole("button", { name: "New Room" }).click()
+  // A brand-new user's /rooms page renders "New Room" twice (the header
+  // button and the empty-state CTA); `.first()` disambiguates since either
+  // one opens the same CreateRoomForm dialog.
+  await page.getByRole("button", { name: "New Room" }).first().click()
   await page.getByPlaceholder("e.g., Product Strategy").fill(roomName)
   await page.getByRole("button", { name: "Create room" }).click()
 
