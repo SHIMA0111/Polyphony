@@ -40,7 +40,7 @@ func TestRoomHandlerFork(t *testing.T) {
 
 		repo := &mocks.RoomRepo{}
 		msgRepo := &gatedMessageRepo{MessageRepo: &mocks.MessageRepo{}, proceed: gate}
-		uc := roomusecase.NewRoomUsecase(repo, msgRepo, &mocks.ForkJobRepo{})
+		uc := roomusecase.NewRoomUsecase(repo, msgRepo, &mocks.ForkJobRepo{}, nil)
 		h := NewRoomHandler(uc)
 		e := echo.New()
 
@@ -83,7 +83,7 @@ func TestRoomHandlerFork(t *testing.T) {
 
 	t.Run("403 member caller", func(t *testing.T) {
 		repo := &mocks.RoomRepo{}
-		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 		h := NewRoomHandler(uc)
 		e := echo.New()
 
@@ -120,7 +120,7 @@ func TestRoomHandlerGetForkJobStatus(t *testing.T) {
 	setup := func() (*echo.Echo, *RoomHandler, *mocks.ForkJobRepo, string) {
 		repo := &mocks.RoomRepo{}
 		forkJobRepo := &mocks.ForkJobRepo{}
-		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, forkJobRepo)
+		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, forkJobRepo, nil)
 		h := NewRoomHandler(uc)
 		e := echo.New()
 

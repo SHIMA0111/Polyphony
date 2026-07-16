@@ -744,6 +744,7 @@ func TestSendAIMessageAttachmentEnrichmentSingleImage(t *testing.T) {
 
 	if err := attachmentRepo.Create(ctx, &domainattachment.Attachment{
 		ID:        "att-1",
+		RoomID:    "room-1",
 		S3Key:     "attachments/room-1/att-1",
 		MimeType:  "image/png",
 		SizeBytes: 1024,
@@ -751,7 +752,7 @@ func TestSendAIMessageAttachmentEnrichmentSingleImage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed attachment: %v", err)
 	}
-	if _, err := attachmentRepo.AttachToMessage(ctx, "att-1", sent.ID); err != nil {
+	if _, err := attachmentRepo.AttachToMessage(ctx, "att-1", sent.ID, "room-1"); err != nil {
 		t.Fatalf("AttachToMessage failed: %v", err)
 	}
 
@@ -802,21 +803,21 @@ func TestSendAIMessageAttachmentEnrichmentMultipleImages(t *testing.T) {
 
 	now := time.Now()
 	if err := attachmentRepo.Create(ctx, &domainattachment.Attachment{
-		ID: "att-1", S3Key: "attachments/room-1/att-1", MimeType: "image/png",
+		ID: "att-1", RoomID: "room-1", S3Key: "attachments/room-1/att-1", MimeType: "image/png",
 		SizeBytes: 1024, CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("seed attachment 1: %v", err)
 	}
 	if err := attachmentRepo.Create(ctx, &domainattachment.Attachment{
-		ID: "att-2", S3Key: "attachments/room-1/att-2", MimeType: "image/jpeg",
+		ID: "att-2", RoomID: "room-1", S3Key: "attachments/room-1/att-2", MimeType: "image/jpeg",
 		SizeBytes: 2048, CreatedAt: now.Add(time.Second),
 	}); err != nil {
 		t.Fatalf("seed attachment 2: %v", err)
 	}
-	if _, err := attachmentRepo.AttachToMessage(ctx, "att-1", sent.ID); err != nil {
+	if _, err := attachmentRepo.AttachToMessage(ctx, "att-1", sent.ID, "room-1"); err != nil {
 		t.Fatalf("AttachToMessage att-1 failed: %v", err)
 	}
-	if _, err := attachmentRepo.AttachToMessage(ctx, "att-2", sent.ID); err != nil {
+	if _, err := attachmentRepo.AttachToMessage(ctx, "att-2", sent.ID, "room-1"); err != nil {
 		t.Fatalf("AttachToMessage att-2 failed: %v", err)
 	}
 

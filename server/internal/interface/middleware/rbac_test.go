@@ -125,12 +125,3 @@ func TestRequireRoleNonMemberReturns403NotFound(t *testing.T) {
 		t.Fatalf("expected 403 for a non-member (never 404, to avoid leaking room existence), got %d", rec.Code)
 	}
 }
-
-func TestAuthorize(t *testing.T) {
-	if err := Authorize(domainroom.RoleMember, domainroom.ActionInvokeAI); err != nil {
-		t.Fatalf("expected member to be authorized to invoke AI, got %v", err)
-	}
-	if err := Authorize(domainroom.RoleGuest, domainroom.ActionInvokeAI); err == nil {
-		t.Fatal("expected guest to be forbidden from invoking AI")
-	}
-}

@@ -8,6 +8,7 @@ import oneDark from "react-syntax-highlighter/dist/esm/styles/prism/one-dark"
 import oneLight from "react-syntax-highlighter/dist/esm/styles/prism/one-light"
 import { useColorModeValue } from "@/components/ui/color-mode"
 import { Tooltip } from "@/components/ui/tooltip"
+import { toaster } from "@/components/ui/toaster"
 
 interface CodeBlockProps {
   /** Fenced-code-block language, taken from the markdown info string (e.g. `js` in ` ```js `). */
@@ -29,9 +30,21 @@ export function CodeBlock({ language, children }: CodeBlockProps) {
   const resolvedLanguage = language || "text"
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(children)
-    setCopied(true)
-    setTimeout(() => setCopied(false), COPY_FEEDBACK_MS)
+    try {
+      await navigator.clipboard.writeText(children)
+      setCopied(true)
+      setTimeout(() => setCopied(false), COPY_FEEDBACK_MS)
+    } catch {
+      // navigator.clipboard.writeText rejects if the browser denies clipboard
+      // permission or the page isn't in a secure context — surface that
+      // instead of leaving the click silently do nothing (an unhandled
+      // rejection with no user-visible feedback).
+      toaster.create({
+        type: "error",
+        title: "Failed to copy",
+        description: "Your browser blocked access to the clipboard.",
+      })
+    }
   }
 
   return (

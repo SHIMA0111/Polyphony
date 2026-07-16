@@ -16,9 +16,15 @@ import (
 // browser) exchange bytes directly with the object store.
 type ObjectStorage interface {
 	// PresignUpload returns a presigned URL that can be used to PUT an
-	// object with the given key and content type. The URL expires after the
-	// given duration.
-	PresignUpload(ctx context.Context, key, contentType string, expires time.Duration) (url string, err error)
+	// object with the given key, content type, and exact content length.
+	// Binding contentLength into the signed request means the underlying
+	// store rejects any PUT whose actual Content-Length header does not
+	// match — the enforcement point that makes the declared size checked at
+	// request time (see usecase/attachment.MaxAttachmentSizeBytes) binding
+	// on the upload itself, rather than just a client-supplied claim the
+	// caller could then ignore when PUTting to the URL. The URL expires
+	// after the given duration.
+	PresignUpload(ctx context.Context, key, contentType string, contentLength int64, expires time.Duration) (url string, err error)
 
 	// PresignView returns a presigned URL that can be used to GET the
 	// object with the given key. The URL expires after the given duration.

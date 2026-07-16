@@ -2,8 +2,8 @@
 
 import Link from "next/link"
 import { useParams } from "next/navigation"
-import { Box, Flex, Text, type FlexProps } from "@chakra-ui/react"
-import { MessageSquare, MessageSquarePlus } from "lucide-react"
+import { Box, Button, Flex, Text, type FlexProps } from "@chakra-ui/react"
+import { AlertTriangle, MessageSquare, MessageSquarePlus } from "lucide-react"
 import { useRooms } from "@/features/rooms/hooks/use-rooms"
 import { CreateRoomForm } from "./CreateRoomForm"
 
@@ -31,7 +31,7 @@ interface RoomRailProps {
  * persistent layout.
  */
 export function RoomRail({ display }: RoomRailProps) {
-  const { data: rooms = [], isPending } = useRooms()
+  const { data: rooms = [], isPending, isError, error, refetch } = useRooms()
   const params = useParams<{ roomId?: string }>()
   const activeRoomId = typeof params.roomId === "string" ? params.roomId : undefined
 
@@ -81,6 +81,39 @@ export function RoomRail({ display }: RoomRailProps) {
                 <Box h={3} flex={1} rounded="sm" bg="bg.muted" />
               </Flex>
             ))}
+          </Flex>
+        ) : isError ? (
+          <Flex
+            direction="column"
+            align="center"
+            justify="center"
+            h="full"
+            gap={3}
+            px={4}
+            py={10}
+            textAlign="center"
+          >
+            <Flex
+              h={12}
+              w={12}
+              rounded="full"
+              bg="bg.subtle"
+              align="center"
+              justify="center"
+            >
+              <AlertTriangle size={22} color="var(--chakra-colors-fg-error)" />
+            </Flex>
+            <Text fontSize="sm" color="fg.muted">
+              Failed to load rooms
+            </Text>
+            <Text fontSize="xs" color="fg.muted" maxW="full">
+              {error instanceof Error
+                ? error.message
+                : "Something went wrong while loading your rooms."}
+            </Text>
+            <Button size="xs" variant="outline" onClick={() => refetch()}>
+              Try again
+            </Button>
           </Flex>
         ) : rooms.length > 0 ? (
           <Flex direction="column" gap={0.5} p={2}>

@@ -41,6 +41,13 @@ test.describe("form validation, toasts, and the room not-found page", () => {
     await page.goto("/register")
 
     await page.getByPlaceholder("Create a password").fill("correcthorse1")
+
+    // "correcthorse1" scores 3/4 on getPasswordStrength (>=8 chars, >=12
+    // chars, contains a digit; no uppercase letter) -- 75% maps to
+    // PasswordStrengthMeter's "High" label (see getColorPalette in
+    // @/components/ui/password-input).
+    await expect(page.getByText("High", { exact: true })).toBeVisible()
+
     await page.getByPlaceholder("Confirm your password").fill("mismatch1")
 
     const mismatchAlert = page

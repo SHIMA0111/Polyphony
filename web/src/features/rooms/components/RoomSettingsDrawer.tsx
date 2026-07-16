@@ -424,11 +424,11 @@ function RoomSettingsDrawerBody({
                             <Text fontSize="sm" color="fg.success">
                               Fork complete -- the new room is ready.
                             </Text>
-                            <Link href={`/rooms/${forkJob.new_room_id}`}>
-                              <Button size="sm" colorPalette="blue">
+                            <Button asChild size="sm" colorPalette="blue">
+                              <Link href={`/rooms/${forkJob.new_room_id}`}>
                                 Open forked room
-                              </Button>
-                            </Link>
+                              </Link>
+                            </Button>
                           </Flex>
                         ) : forkJob.status === "failed" ? (
                           <Flex direction="column" gap={2} align="flex-start">

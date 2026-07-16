@@ -14,7 +14,6 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
 
 // streamBackgroundTimeout bounds the background goroutine SendAIMessageStream
@@ -82,7 +81,7 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
+	if err := room.Authorize(member.Role, room.ActionInvokeAI); err != nil {
 		return nil, err
 	}
 	if err := u.billing.CheckBalance(ctx, roomID); err != nil {

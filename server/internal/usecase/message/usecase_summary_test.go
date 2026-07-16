@@ -350,12 +350,13 @@ func TestAssembleAIContextIncludeImagesResolvedFromModelMetadata(t *testing.T) {
 		}
 		if err := attachmentRepo.Create(ctx, &domainattachment.Attachment{
 			ID:       "att-1",
+			RoomID:   "room-1",
 			S3Key:    "attachments/room-1/att-1",
 			MimeType: "image/png",
 		}); err != nil {
 			t.Fatalf("seed attachment: %v", err)
 		}
-		if _, err := attachmentRepo.AttachToMessage(ctx, "att-1", firstMsg.ID); err != nil {
+		if _, err := attachmentRepo.AttachToMessage(ctx, "att-1", firstMsg.ID, "room-1"); err != nil {
 			t.Fatalf("AttachToMessage failed: %v", err)
 		}
 		for i := 2; i <= 11; i++ {

@@ -99,7 +99,10 @@ export function CreateRoomForm() {
                 <Button
                   variant="outline"
                   type="button"
-                  onClick={() => setOpen(false)}
+                  onClick={() => {
+                    reset()
+                    setOpen(false)
+                  }}
                 >
                   Cancel
                 </Button>

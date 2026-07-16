@@ -11,6 +11,14 @@ modules:
 lint:
   use:
     - DEFAULT
+  except:
+    # proto/llmgateway/v1/*.proto declares `package polyphony.llmgateway.v1;`
+    # but lives at proto/llmgateway/v1/ (module root is ./proto), one path
+    # segment short of what PACKAGE_DIRECTORY_MATCH expects for that package
+    # name -- a deliberate, documented flat layout (see docs/tasks/step19.md's
+    # "Proto location rationale") rather than an oversight, so it is excluded
+    # here instead of being left to fail a future `buf lint` run.
+    - PACKAGE_DIRECTORY_MATCH
 breaking:
   use:
     - FILE

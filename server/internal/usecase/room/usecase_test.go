@@ -7,13 +7,14 @@ import (
 	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
 
 func TestCreateRoom(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, err := uc.CreateRoom(ctx, "user-1", "Test Room", "A test room")
@@ -33,7 +34,7 @@ func TestCreateRoom(t *testing.T) {
 
 func TestGetRoomNotMember(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -46,7 +47,7 @@ func TestGetRoomNotMember(t *testing.T) {
 
 func TestGetRoomReturnsRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	created, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -66,7 +67,7 @@ func TestGetRoomReturnsRole(t *testing.T) {
 
 func TestUpdateRoomMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -84,7 +85,7 @@ func TestUpdateRoomMemberForbidden(t *testing.T) {
 
 func TestUpdateRoomAdminAllowed(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -105,7 +106,7 @@ func TestUpdateRoomAdminAllowed(t *testing.T) {
 
 func TestDeleteRoomAdminForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -123,7 +124,7 @@ func TestDeleteRoomAdminForbidden(t *testing.T) {
 
 func TestDeleteRoom(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -143,7 +144,7 @@ func TestDeleteRoom(t *testing.T) {
 
 func TestUpdateAIContextCutoffAdminCanSet(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -163,7 +164,7 @@ func TestUpdateAIContextCutoffAdminCanSet(t *testing.T) {
 
 func TestUpdateAIContextCutoffMasterCanClear(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -184,7 +185,7 @@ func TestUpdateAIContextCutoffMasterCanClear(t *testing.T) {
 
 func TestUpdateAIContextCutoffMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -200,7 +201,7 @@ func TestUpdateAIContextCutoffMemberForbidden(t *testing.T) {
 
 func TestUpdateAIContextCutoffGuestForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -216,7 +217,7 @@ func TestUpdateAIContextCutoffGuestForbidden(t *testing.T) {
 
 func TestUpdateAIContextCutoffReaderForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -232,7 +233,7 @@ func TestUpdateAIContextCutoffReaderForbidden(t *testing.T) {
 
 func TestUpdateAIContextCutoffNonMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -245,7 +246,7 @@ func TestUpdateAIContextCutoffNonMemberForbidden(t *testing.T) {
 
 func TestListRoomsEmpty(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rooms, err := uc.ListRooms(ctx, "user-1")
@@ -259,7 +260,7 @@ func TestListRoomsEmpty(t *testing.T) {
 
 func TestListRoomsIncludesRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -281,7 +282,7 @@ func TestListRoomsIncludesRole(t *testing.T) {
 
 func TestListMembersReturnsForReader(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -300,7 +301,7 @@ func TestListMembersReturnsForReader(t *testing.T) {
 
 func TestListMembersForbiddenForNonMember(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -313,7 +314,7 @@ func TestListMembersForbiddenForNonMember(t *testing.T) {
 
 func TestLeaveRoomSucceedsForNonOwnerMember(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -331,7 +332,7 @@ func TestLeaveRoomSucceedsForNonOwnerMember(t *testing.T) {
 
 func TestLeaveRoomOwnerProtected(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -342,9 +343,42 @@ func TestLeaveRoomOwnerProtected(t *testing.T) {
 	}
 }
 
+// TestLeaveRoomRevokesLiveSubscription proves that a successful LeaveRoom
+// closes the departing member's live MessageHub subscription on the room
+// (via hub.Revoke), so their WebSocket connection stops receiving room
+// events immediately rather than continuing until some later membership
+// check happens to run.
+func TestLeaveRoomRevokesLiveSubscription(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	hub := event.NewInProcessHub()
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, hub)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
+	})
+
+	ch, unsubscribe := hub.Subscribe(ctx, rwr.Room.ID, "user-2")
+	defer unsubscribe()
+
+	if err := uc.LeaveRoom(ctx, "user-2", rwr.Room.ID, "user-2"); err != nil {
+		t.Fatalf("LeaveRoom failed: %v", err)
+	}
+
+	select {
+	case _, open := <-ch:
+		if open {
+			t.Fatal("expected the subscription channel to be closed (revoked), not to still deliver values")
+		}
+	default:
+		t.Fatal("expected the subscription channel to be closed by LeaveRoom, but a read would have blocked")
+	}
+}
+
 func TestLeaveRoomForbiddenWhenTargetNotCaller(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -360,7 +394,7 @@ func TestLeaveRoomForbiddenWhenTargetNotCaller(t *testing.T) {
 
 func TestChangeMemberRoleSucceedsForAdmin(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -382,7 +416,7 @@ func TestChangeMemberRoleSucceedsForAdmin(t *testing.T) {
 
 func TestChangeMemberRoleForbiddenForInsufficientRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -403,7 +437,7 @@ func TestChangeMemberRoleForbiddenForInsufficientRole(t *testing.T) {
 
 func TestChangeMemberRoleOwnerProtected(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -419,7 +453,7 @@ func TestChangeMemberRoleOwnerProtected(t *testing.T) {
 
 func TestTransferOwnershipSucceeds(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -454,7 +488,7 @@ func TestTransferOwnershipSucceeds(t *testing.T) {
 
 func TestTransferOwnershipForbiddenForNonOwner(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -470,7 +504,7 @@ func TestTransferOwnershipForbiddenForNonOwner(t *testing.T) {
 
 func TestTransferOwnershipNotFoundForNonMemberTarget(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -483,7 +517,7 @@ func TestTransferOwnershipNotFoundForNonMemberTarget(t *testing.T) {
 
 func TestTransferOwnershipNoOpWhenTargetIsCurrentOwner(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")

@@ -294,6 +294,50 @@ func TestKratosLoginSelfHeal(t *testing.T) {
 	}
 }
 
+// TestKratosLoginRelinksExistingUserByEmail proves that ensureLocalUser's
+// self-heal path relinks a pre-existing local users row (e.g. a
+// pre-Kratos-migration SimpleJWT account, or one cmd/kratosmigrate hasn't
+// backfilled yet) by matching the Kratos identity's email, instead of
+// falling straight to Create — which would fail on the email unique
+// constraint (domain.ErrEmailAlreadyExists) since a row with that email
+// already exists, permanently locking that account out of Kratos login.
+func TestKratosLoginRelinksExistingUserByEmail(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	existing := newSeedUser("relink@example.com", "relinkuser")
+	userRepo := &mocks.UserRepo{}
+	if err := userRepo.Create(context.Background(), existing); err != nil {
+		t.Fatalf("seed existing user: %v", err)
+	}
+
+	identityID := uuid.New().String()
+	f.loginSubmitBody = kratosLoginRespDTO{
+		SessionToken: "relink-session-token",
+		Session: struct {
+			Identity kratosIdentityDTO `json:"identity"`
+		}{Identity: kratosIdentityDTO{ID: identityID, Traits: kratosTraitsDTO{Email: "relink@example.com", Username: "relinkuser"}}},
+	}
+
+	svc := newTestKratosService(f, userRepo)
+
+	if _, err := svc.Login(context.Background(), "relink@example.com", "Str0ngP@ss1"); err != nil {
+		t.Fatalf("Login failed: %v", err)
+	}
+
+	if got := len(userRepo.Users); got != 1 {
+		t.Fatalf("expected relink not to create a second user row, got %d users", got)
+	}
+
+	linkedUser, err := userRepo.GetByKratosIdentityID(context.Background(), identityID)
+	if err != nil {
+		t.Fatalf("expected the existing user to be linked to the identity, got error: %v", err)
+	}
+	if linkedUser.ID != existing.ID {
+		t.Fatalf("expected the pre-existing user %q to be relinked, got a different user %+v", existing.ID, linkedUser)
+	}
+}
+
 // TestKratosLoginInvalidCredentials proves that a 400 response from the
 // login flow maps to domain.ErrInvalidCredentials.
 func TestKratosLoginInvalidCredentials(t *testing.T) {

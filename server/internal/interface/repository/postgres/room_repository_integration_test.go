@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
@@ -137,6 +139,17 @@ func TestRoomMembersRoleCheckConstraint(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected an INSERT with role='superadmin' to violate the room_members_role_check CHECK constraint, got nil error")
+	}
+
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("expected a *pgconn.PgError, got %T: %v", err, err)
+	}
+	if pgErr.Code != pgerrcode.CheckViolation {
+		t.Fatalf("expected check_violation (%s), got code %s: %v", pgerrcode.CheckViolation, pgErr.Code, err)
+	}
+	if pgErr.ConstraintName != "room_members_role_check" {
+		t.Fatalf("expected constraint room_members_role_check, got %s", pgErr.ConstraintName)
 	}
 }
 

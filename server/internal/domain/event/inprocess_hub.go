@@ -14,9 +14,17 @@ const subscriberChannelCapacity = 16
 
 // subscriber holds one registered listener for a room: the user it belongs
 // to (used for TargetUserIDs filtering) and the channel events are sent on.
+//
+// closeOnce guards the actual removal-and-close so that the two independent
+// callers who can each trigger it — the unsubscribe function Subscribe
+// returns, and Revoke closing this same subscription from the outside — can
+// race harmlessly: whichever runs first performs the removal/close, and the
+// other's call becomes a no-op instead of double-closing sub.ch (which would
+// panic).
 type subscriber struct {
-	userID string
-	ch     chan RoomEvent
+	userID    string
+	ch        chan RoomEvent
+	closeOnce sync.Once
 }
 
 // InProcessHub is the initial, in-memory implementation of MessageHub. It
@@ -101,10 +109,10 @@ func (h *InProcessHub) Publish(_ context.Context, event RoomEvent) {
 // The returned unsubscribe function removes the subscription and closes the
 // channel. It is safe to call more than once — only the first call has any
 // effect — so callers may unconditionally defer it without needing to track
-// whether they already called it elsewhere. The channel is closed while
-// still holding the write lock (see Publish's doc comment) so that no
-// concurrent Publish call can ever observe a stale reference to this
-// subscriber after its channel has been closed.
+// whether they already called it elsewhere; the same guard also makes it
+// safe to race against Revoke closing this same subscription from the
+// outside (see removeSubscriber's doc comment for why the locking is
+// structured the way it is).
 func (h *InProcessHub) Subscribe(_ context.Context, roomID, userID string) (<-chan RoomEvent, func()) {
 	sub := &subscriber{
 		userID: userID,
@@ -115,26 +123,81 @@ func (h *InProcessHub) Subscribe(_ context.Context, roomID, userID string) (<-ch
 	h.subs[roomID] = append(h.subs[roomID], sub)
 	h.mu.Unlock()
 
-	var once sync.Once
 	unsubscribe := func() {
-		once.Do(func() {
-			h.mu.Lock()
-			defer h.mu.Unlock()
-
-			list := h.subs[roomID]
-			for i, s := range list {
-				if s == sub {
-					h.subs[roomID] = append(list[:i], list[i+1:]...)
-					break
-				}
-			}
-			if len(h.subs[roomID]) == 0 {
-				delete(h.subs, roomID)
-			}
-
-			close(sub.ch)
+		sub.closeOnce.Do(func() {
+			h.removeSubscriber(roomID, sub)
 		})
 	}
 
 	return sub.ch, unsubscribe
+}
+
+// removeSubscriber removes sub from roomID's subscriber list and closes its
+// channel, acquiring the write lock itself.
+//
+// It is always called from inside sub.closeOnce.Do (by both unsubscribe and
+// Revoke), and deliberately does not expect the lock to already be held:
+// the two closeOnce.Do call sites run concurrently from independent
+// goroutines with no shared lock between them, and sync.Once.Do blocks every
+// caller until the winning call's function returns. If Revoke instead held
+// h.mu for the duration of its own closeOnce.Do call (as an earlier version
+// of this method did), a concurrent unsubscribe call that raced to become
+// the Once's winner would block forever trying to acquire h.mu from inside
+// that same Do call — which Revoke, itself blocked waiting for that same Do
+// call to return, would never release. Keeping the lock acquisition inside
+// the Once-guarded function itself (here) instead of around the Do call
+// avoids that self-deadlock: whichever of Revoke/unsubscribe wins the race
+// acquires h.mu, does the removal, and releases it before Do returns to
+// either caller. The channel is still closed under the write lock (see
+// Publish's doc comment) so no concurrent Publish call can ever observe a
+// stale reference to this subscriber after its channel has been closed.
+func (h *InProcessHub) removeSubscriber(roomID string, sub *subscriber) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	list := h.subs[roomID]
+	for i, s := range list {
+		if s == sub {
+			h.subs[roomID] = append(list[:i], list[i+1:]...)
+			break
+		}
+	}
+	if len(h.subs[roomID]) == 0 {
+		delete(h.subs, roomID)
+	}
+
+	close(sub.ch)
+}
+
+// Revoke closes every open subscription userID currently holds on roomID.
+// Matching subscribers are snapshotted under the hub's read lock (so the
+// snapshot itself can never race with a concurrent Subscribe/unsubscribe
+// mutating the slice), then each match is removed and closed via
+// removeSubscriber, guarded by the same sub.closeOnce its own unsubscribe
+// function uses — see removeSubscriber's doc comment for why the lock
+// acquisition must happen inside that guarded call rather than around it.
+// It is a no-op if userID has no open subscription on roomID.
+//
+// A Subscribe call for (roomID, userID) that lands after this snapshot but
+// before Revoke returns is not seen by this call and so is not revoked; this
+// mirrors the same narrow window every caller of LeaveRoom already
+// tolerates (a concurrent Subscribe attempt for a user whose membership was
+// just removed will itself be rejected at the membership check that
+// precedes hub.Subscribe in the WebSocket handler, in all but the most
+// improbable interleavings).
+func (h *InProcessHub) Revoke(_ context.Context, roomID, userID string) {
+	h.mu.RLock()
+	var matches []*subscriber
+	for _, sub := range h.subs[roomID] {
+		if sub.userID == userID {
+			matches = append(matches, sub)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, sub := range matches {
+		sub.closeOnce.Do(func() {
+			h.removeSubscriber(roomID, sub)
+		})
+	}
 }

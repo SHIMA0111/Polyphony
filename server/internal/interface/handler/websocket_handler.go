@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -14,6 +16,18 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/wsticket"
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
 )
+
+// wsWriteTimeout bounds every individual frame write to a connected
+// WebSocket client (see Handle's event-forwarding loop). Without it, a
+// stalled or slow-reading peer (e.g. a dead TCP connection the OS hasn't
+// noticed yet, or a client that stopped reading) could make wsjson.Write
+// block indefinitely, pinning this goroutine — and, since coder/websocket
+// serializes writes per-connection, every subsequent event for that same
+// connection — forever. This applies uniformly to every frame this loop
+// writes, including the per-chunk "token_chunk" frames from AI streaming
+// (Step 51): they share this same write call, so a slow client can't stall
+// out a stream indefinitely either.
+const wsWriteTimeout = 10 * time.Second
 
 // wsEventFrame is the JSON wire frame forwarded to a connected WebSocket
 // client for every event.RoomEvent delivered to it. The top-level "type" and
@@ -110,6 +124,12 @@ type wsTicketResponse struct {
 // error. After the upgrade succeeds, no further JSON error body can be
 // written (the connection has switched protocols), so failures at that
 // point only close the WebSocket connection.
+//
+// Every frame write is bounded by wsWriteTimeout (see its doc comment): a
+// write that doesn't complete in time is treated the same as any other write
+// error, ending the loop and closing the connection, rather than blocking
+// this goroutine (and every event still queued for this connection)
+// indefinitely on a stalled peer.
 func (h *WebSocketHandler) Handle(c echo.Context) error {
 	ticket := c.QueryParam("ticket")
 	if ticket == "" {
@@ -191,7 +211,10 @@ func (h *WebSocketHandler) Handle(c echo.Context) error {
 				msg.UsedContextSummary = ev.UsedContextSummary
 				frame.Message = &msg
 			}
-			if err := wsjson.Write(readCtx, conn, frame); err != nil {
+			writeCtx, cancel := context.WithTimeout(readCtx, wsWriteTimeout)
+			err := wsjson.Write(writeCtx, conn, frame)
+			cancel()
+			if err != nil {
 				return nil
 			}
 		}

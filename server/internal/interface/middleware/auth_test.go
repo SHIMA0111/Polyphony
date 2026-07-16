@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -200,6 +201,36 @@ func TestJWTAuthMissingHeaderAndCookie(t *testing.T) {
 	}
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+// TestJWTAuthNonInvalidTokenErrorReturns500 proves that JWTAuth maps a
+// ValidateToken failure that does NOT wrap domain.ErrInvalidToken (e.g. a
+// repository failure while resolving the local user) to HTTP 500, not the
+// generic 401 given to a genuinely invalid/expired token.
+func TestJWTAuthNonInvalidTokenErrorReturns500(t *testing.T) {
+	svc := &mocks.AuthService{
+		ValidateTokenFunc: func(_ context.Context, _ string) (*domainauth.Claims, error) {
+			return nil, errors.New("database is unreachable")
+		},
+	}
+	mw := JWTAuth(svc, testCookieName)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer some-token")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	handler := mw(func(c echo.Context) error {
+		return c.String(http.StatusOK, "ok")
+	})
+
+	if err := handler(c); err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", rec.Code)
 	}
 }
 

@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation"
 import { HydrationBoundary, dehydrate } from "@tanstack/react-query"
 import { getQueryClient } from "@/lib/query-client"
+import { ApiRequestError } from "@/lib/http-client"
 import { serverHttpClient } from "@/lib/http-client.server"
 import { getRoomQueryOptions } from "@/features/rooms/api/get-room"
 import { getMessagesInfiniteQueryOptions } from "@/features/messages/api/get-messages"
@@ -15,9 +16,11 @@ import { ChatRoom } from "@/features/messages/components/ChatRoom"
  * on first navigation into a room.
  *
  * The room itself is fetched with `fetchQuery` (not `prefetchQuery`, which
- * swallows query errors by design) inside a `try/catch` so a 404/failed
- * fetch can trigger `notFound()`, rendering this route's `not-found.tsx`
- * instead of a chat UI with no room to show.
+ * swallows query errors by design) inside a `try/catch` so a genuine 404 can
+ * trigger `notFound()`, rendering this route's `not-found.tsx` instead of a
+ * chat UI with no room to show. Any other failure (5xx, network error) is
+ * rethrown rather than treated as "not found", so it surfaces via this
+ * segment's `error.tsx` boundary instead of the misleading not-found page.
  */
 export default async function ChatRoomPage({
   params,
@@ -29,8 +32,11 @@ export default async function ChatRoomPage({
 
   try {
     await queryClient.fetchQuery(getRoomQueryOptions(roomId, serverHttpClient.get))
-  } catch {
-    notFound()
+  } catch (err) {
+    if (err instanceof ApiRequestError && err.status === 404) {
+      notFound()
+    }
+    throw err
   }
 
   await Promise.all([

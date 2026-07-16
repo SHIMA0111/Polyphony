@@ -301,6 +301,7 @@ export function MessageBubble({
             fontSize="xs"
             opacity={isFailed ? 1 : 0}
             _groupHover={{ opacity: 1 }}
+            _focusVisible={{ opacity: 1 }}
             transition="opacity 0.2s"
             onClick={() => onRegenerate(message.id)}
             loading={isRegenerating}
@@ -337,6 +338,7 @@ export function MessageBubble({
                 minW={7}
                 opacity={0}
                 _groupHover={{ opacity: 1 }}
+                _focusVisible={{ opacity: 1 }}
                 transition="opacity 0.2s"
               >
                 <MoreVertical size={14} />

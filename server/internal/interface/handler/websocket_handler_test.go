@@ -26,7 +26,7 @@ import (
 // bare echo.Echo for constructing request contexts.
 func setupWebSocketTest() (*echo.Echo, *WebSocketHandler, *mocks.RoomRepo, *event.InProcessHub, *wsticket.Issuer) {
 	repo := &mocks.RoomRepo{}
-	roomUC := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	roomUC := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	hub := event.NewInProcessHub()
 	issuer := wsticket.NewIssuer([]byte("test-secret"), time.Minute)
 	h := NewWebSocketHandler(roomUC, hub, issuer, nil)
@@ -164,7 +164,7 @@ func TestHandleWS_TwoClientsBroadcastAndTargeted(t *testing.T) {
 	repo.Rooms = map[string]*domainroom.Room{
 		roomID: {ID: roomID, Name: "Test Room", OwnerID: "user-1"},
 	}
-	roomUC := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	roomUC := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 
 	hub := event.NewInProcessHub()
 	issuer := wsticket.NewIssuer([]byte("test-secret"), time.Minute)

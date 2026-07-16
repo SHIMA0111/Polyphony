@@ -16,12 +16,13 @@ import (
 	attachmentusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/attachment"
 )
 
-// newAttachmentFixture builds a minimal attachment fixture for directly
-// seeding a mocks.AttachmentRepo via Create, bypassing RequestUpload.
-// messageID is nil (unlinked) if empty.
+// newAttachmentFixture builds a minimal attachment fixture, uploaded into
+// "room-1", for directly seeding a mocks.AttachmentRepo via Create, bypassing
+// RequestUpload. messageID is nil (unlinked) if empty.
 func newAttachmentFixture(id, messageID string) *domainattachment.Attachment {
 	a := &domainattachment.Attachment{
 		ID:        id,
+		RoomID:    "room-1",
 		S3Key:     "attachments/room-1/" + id,
 		MimeType:  "image/png",
 		SizeBytes: 1024,
@@ -107,6 +108,26 @@ func TestRequestUploadHandler400TooLarge(t *testing.T) {
 	}
 }
 
+func TestRequestUploadHandler400NonPositiveSize(t *testing.T) {
+	e, h, _, _ := setupAttachmentTest(true)
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/attachments/upload-url",
+		strings.NewReader(`{"mime_type":"image/png","size_bytes":0}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.RequestUpload(c); err != nil {
+		t.Fatalf("RequestUpload error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
 func TestRequestUploadHandler403(t *testing.T) {
 	e, h, _, _ := setupAttachmentTest(false)
 
@@ -156,6 +177,38 @@ func TestAttachHandler200(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"message_id":"msg-1"`) {
 		t.Fatalf("expected message_id msg-1 in response, got %s", rec.Body.String())
+	}
+}
+
+func TestAttachHandler404WrongRoom(t *testing.T) {
+	e, h, attachmentRepo, msgRepo := setupAttachmentTest(true)
+	ctx := context.Background()
+
+	senderID := "user-1"
+	msgRepo.Messages = map[string]*domainmessage.Message{
+		"msg-1": {ID: "msg-1", RoomID: "room-1", SenderID: &senderID},
+	}
+	// att-1 was uploaded into a different room than msg-1 belongs to.
+	other := newAttachmentFixture("att-1", "")
+	other.RoomID = "room-2"
+	if err := attachmentRepo.Create(ctx, other); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/msg-1/attachments",
+		strings.NewReader(`{"attachment_id":"att-1"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId", "messageId")
+	c.SetParamValues("room-1", "msg-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.Attach(c); err != nil {
+		t.Fatalf("Attach error: %v", err)
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-room attachment, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

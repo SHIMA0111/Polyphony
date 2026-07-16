@@ -51,7 +51,7 @@ func (g *gatedForkJobRepo) MarkFailed(ctx context.Context, id string, errMsg str
 
 func TestForkRoomForbiddenForMember(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(roomRepo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(roomRepo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	created, err := uc.CreateRoom(ctx, "owner", "Source Room", "desc")
@@ -77,7 +77,7 @@ func TestForkRoomSuccess(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	forkJobRepo := &gatedForkJobRepo{ForkJobRepo: &mocks.ForkJobRepo{}, done: done}
 
-	uc := NewRoomUsecase(roomRepo, msgRepo, forkJobRepo)
+	uc := NewRoomUsecase(roomRepo, msgRepo, forkJobRepo, nil)
 	ctx := context.Background()
 
 	src, err := uc.CreateRoom(ctx, "owner", "Source Room", "desc")
@@ -144,7 +144,7 @@ func TestForkRoomSuccess(t *testing.T) {
 func TestGetForkJobStatusMembershipRules(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	forkJobRepo := &mocks.ForkJobRepo{}
-	uc := NewRoomUsecase(roomRepo, &mocks.MessageRepo{}, forkJobRepo)
+	uc := NewRoomUsecase(roomRepo, &mocks.MessageRepo{}, forkJobRepo, nil)
 	ctx := context.Background()
 
 	roomRepo.SeedMember("source-room", "source-member", "member")
@@ -177,7 +177,7 @@ func TestGetForkJobStatusMembershipRules(t *testing.T) {
 func TestGetForkJobStatusNotFound(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	forkJobRepo := &mocks.ForkJobRepo{}
-	uc := NewRoomUsecase(roomRepo, &mocks.MessageRepo{}, forkJobRepo)
+	uc := NewRoomUsecase(roomRepo, &mocks.MessageRepo{}, forkJobRepo, nil)
 	ctx := context.Background()
 
 	_, err := uc.GetForkJobStatus(ctx, "someone", "nonexistent-job")
@@ -259,7 +259,7 @@ func TestRunForkJobMultiBatchBoundaryRemap(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	uc := NewRoomUsecase(roomRepo, msgRepo, forkJobRepo)
+	uc := NewRoomUsecase(roomRepo, msgRepo, forkJobRepo, nil)
 	uc.runForkJob(context.Background(), job.ID, sourceRoomID, newRoomID)
 
 	got, err := forkJobRepo.GetByID(context.Background(), job.ID)
@@ -355,7 +355,7 @@ func TestRunForkJobDefensiveNilRemap(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	uc := NewRoomUsecase(roomRepo, msgRepo, forkJobRepo)
+	uc := NewRoomUsecase(roomRepo, msgRepo, forkJobRepo, nil)
 	uc.runForkJob(context.Background(), job.ID, sourceRoomID, newRoomID)
 
 	got, err := forkJobRepo.GetByID(context.Background(), job.ID)

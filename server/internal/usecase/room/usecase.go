@@ -9,10 +9,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	domainevent "github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	domainroomfork "github.com/SHIMA0111/multi-user-ai/server/internal/domain/roomfork"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
 
 // RoomUsecase provides room-related business logic.
@@ -20,16 +20,19 @@ type RoomUsecase struct {
 	roomRepo    domainroom.RoomRepository
 	msgRepo     domainmessage.MessageRepository
 	forkJobRepo domainroomfork.ForkJobRepository
+	hub         domainevent.MessageHub
 }
 
 // NewRoomUsecase creates a new RoomUsecase. msgRepo and forkJobRepo are used
 // only by the room-fork feature (see fork.go's ForkRoom/GetForkJobStatus/
 // runForkJob): msgRepo drives the fork worker's message-copy loop
 // (CountByRoom/ListByRoomAfter/CreateBatch/ReserveSequenceRange) and
-// forkJobRepo persists roomfork.Job progress/state transitions. Every other
+// forkJobRepo persists roomfork.Job progress/state transitions. hub is used
+// only by LeaveRoom, to revoke the departing member's live WebSocket
+// subscription on the room (see LeaveRoom's doc comment) — every other
 // RoomUsecase method (CreateRoom, UpdateRoom, ...) uses only roomRepo.
-func NewRoomUsecase(roomRepo domainroom.RoomRepository, msgRepo domainmessage.MessageRepository, forkJobRepo domainroomfork.ForkJobRepository) *RoomUsecase {
-	return &RoomUsecase{roomRepo: roomRepo, msgRepo: msgRepo, forkJobRepo: forkJobRepo}
+func NewRoomUsecase(roomRepo domainroom.RoomRepository, msgRepo domainmessage.MessageRepository, forkJobRepo domainroomfork.ForkJobRepository, hub domainevent.MessageHub) *RoomUsecase {
+	return &RoomUsecase{roomRepo: roomRepo, msgRepo: msgRepo, forkJobRepo: forkJobRepo, hub: hub}
 }
 
 // CreateRoom creates a new room with the given user as owner. The creating
@@ -86,7 +89,7 @@ func (u *RoomUsecase) UpdateRoom(ctx context.Context, userID, roomID, name, desc
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
+	if err := domainroom.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
 		return nil, err
 	}
 
@@ -122,7 +125,7 @@ func (u *RoomUsecase) UpdateAIContextCutoff(ctx context.Context, userID, roomID 
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
+	if err := domainroom.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
 		return nil, err
 	}
 
@@ -149,7 +152,7 @@ func (u *RoomUsecase) DeleteRoom(ctx context.Context, userID, roomID string) err
 	if err != nil {
 		return err
 	}
-	if err := middleware.Authorize(member.Role, domainroom.ActionDeleteRoom); err != nil {
+	if err := domainroom.Authorize(member.Role, domainroom.ActionDeleteRoom); err != nil {
 		return err
 	}
 
@@ -175,6 +178,14 @@ func (u *RoomUsecase) ListMembers(ctx context.Context, callerID, roomID string) 
 // room's current owner (domainroom.Room.OwnerID), it returns
 // domainroom.ErrOwnerRoleProtected instead of leaving — the owner must
 // transfer ownership (see TransferOwnership) before they can leave.
+//
+// On success, it also calls hub.Revoke to close any live WebSocket
+// subscription targetUserID holds on roomID: once membership is gone, the
+// room's messages must stop reaching them immediately, not just on their
+// next HTTP request's membership check. This is unconditional (unlike a
+// role change via ChangeMemberRole, which never revokes — see that method's
+// doc comment) because leaving removes access entirely rather than merely
+// changing its level.
 func (u *RoomUsecase) LeaveRoom(ctx context.Context, callerID, roomID, targetUserID string) error {
 	if targetUserID != callerID {
 		return domain.ErrForbidden
@@ -191,7 +202,14 @@ func (u *RoomUsecase) LeaveRoom(ctx context.Context, callerID, roomID, targetUse
 		return domainroom.ErrOwnerRoleProtected
 	}
 
-	return u.roomRepo.RemoveMember(ctx, roomID, targetUserID)
+	if err := u.roomRepo.RemoveMember(ctx, roomID, targetUserID); err != nil {
+		return err
+	}
+
+	if u.hub != nil {
+		u.hub.Revoke(ctx, roomID, targetUserID)
+	}
+	return nil
 }
 
 // ChangeMemberRole changes targetUserID's role within roomID to newRole. The
@@ -203,12 +221,19 @@ func (u *RoomUsecase) LeaveRoom(ctx context.Context, callerID, roomID, targetUse
 // never directly. It returns domain.ErrNotFound if targetUserID is not a
 // member of roomID. Rejecting newRole == domainroom.RoleMaster is validated
 // at the handler layer, so this method never needs to special-case it.
+//
+// Unlike LeaveRoom, this never calls hub.Revoke: a role change (even a
+// demotion, e.g. to domainroom.RoleReader) never removes room membership
+// itself, and every role above "not a member" still carries at least
+// read/view access to the room — so targetUserID's live WebSocket
+// subscription remains valid and must keep receiving events after this
+// call, just as it would after a promotion.
 func (u *RoomUsecase) ChangeMemberRole(ctx context.Context, callerID, roomID, targetUserID string, newRole domainroom.Role) (*domainroom.RoomMember, error) {
 	caller, err := u.getMember(ctx, roomID, callerID)
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(caller.Role, domainroom.ActionManageMembers); err != nil {
+	if err := domainroom.Authorize(caller.Role, domainroom.ActionManageMembers); err != nil {
 		return nil, err
 	}
 

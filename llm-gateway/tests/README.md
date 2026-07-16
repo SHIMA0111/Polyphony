@@ -1,7 +1,7 @@
 # `llm-gateway` integration test harness
 
-This directory holds network-free, deterministic HTTP-level integration tests, split
-into two test binaries by what they exercise:
+This directory holds network-free, deterministic integration tests, split into test
+binaries by what they exercise:
 
 - **`router_test.rs`** — drives the fully assembled `axum::Router` (from
   `adapters::inbound::rest::router::build_router`) through
@@ -10,14 +10,28 @@ into two test binaries by what they exercise:
   responses are built and inspected in-process. Use this file's pattern to add cases
   for new routes, new `DomainError` → HTTP status mappings, or new request/response DTO
   shapes.
-- **`openai_provider_test.rs`** — drives `OpenAIProvider` against a `wiremock::MockServer`
-  standing in for `https://api.openai.com`, with the provider constructed via explicit
-  config injection (`HttpClientConfig` / `ProviderConfig` pointed at the mock server's
-  URI). No real network call ever leaves the test process. Use this file's pattern —
-  or a sibling file with the same construction/assertion style — for new outbound
-  provider adapters.
+- **`grpc_test.rs`** — drives the gRPC inbound adapter
+  (`adapters::inbound::grpc::serve_grpc`) end-to-end: a real `tonic` server, backed by
+  the same kind of `StubUseCase` test double as `router_test.rs`, is spun up on a fixed
+  high test port and exercised via a connected `tonic::transport::Channel`, covering
+  `CompletionService`, `ModelsService`, and the standard `grpc.health.v1.Health`
+  service. All assertions run inside a single `#[tokio::test]` sharing one server
+  instance, so the fixed port is never raced by cargo's parallel test execution — keep
+  new gRPC-adapter cases in that same function rather than adding a second server on a
+  second port. Use this file's pattern for new gRPC methods/services.
+- **`openai_provider_test.rs`**, **`anthropic_provider_test.rs`**,
+  **`gemini_provider_test.rs`** — each drives its respective outbound provider
+  (`OpenAIProvider` / `AnthropicProvider` / `GeminiProvider`) against a
+  `wiremock::MockServer` standing in for that provider's real API host, with the
+  provider constructed via explicit config injection (`HttpClientConfig` /
+  `ProviderConfig` pointed at the mock server's URI). No real network call ever leaves
+  the test process. `gemini_provider_test.rs` additionally exercises `GeminiProvider`
+  wrapping an inner `OpenAIProvider` where relevant (Gemini's OpenAI-compatible
+  endpoint), so it imports `OpenAIProvider` too. Use these files' shared
+  construction/assertion style — or a sibling file following the same pattern — for any
+  new outbound provider adapter.
 
-## Conventions both files follow
+## Conventions every file follows
 
 - **No process environment mutation.** Every test constructs its dependencies (router
   state, provider config, key store) via plain function/constructor arguments. Do not
@@ -36,7 +50,8 @@ into two test binaries by what they exercise:
 
 ## Extending this harness
 
-Steps that add new providers (Anthropic, Gemini) or a streaming endpoint should add new
-`#[tokio::test]` functions to these same files (or, for a brand-new provider, a new
-`tests/<provider>_provider_test.rs` file mirroring `openai_provider_test.rs`'s
-structure) instead of introducing a different mocking library or testing approach.
+Steps that add new provider HTTP behavior or a streaming endpoint should add new
+`#[tokio::test]` functions to the relevant existing file (or, for a brand-new provider, a
+new `tests/<provider>_provider_test.rs` file mirroring `openai_provider_test.rs`'s
+structure) instead of introducing a different mocking library or testing approach. New
+gRPC methods or services follow the same rule against `grpc_test.rs`.

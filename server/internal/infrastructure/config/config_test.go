@@ -5,12 +5,62 @@ import (
 	"time"
 )
 
-// withRequiredEnv sets the two required environment variables for the
-// duration of the test and clears them afterwards.
+// withRequiredEnv sets the two required environment variables and clears
+// every optional environment variable Load reads (via t.Setenv("...", ""),
+// which os.Getenv cannot distinguish from unset, and which t.Setenv restores
+// to its prior value after the test regardless).
+//
+// Without this, a test asserting a default value (e.g.
+// TestLoadRateLimitAndWhoamiCacheDefaults) would silently pass or fail based
+// on whatever happened to already be set in the ambient shell/CI
+// environment (e.g. a developer's .env sourced into their shell, or
+// leftover exported vars from a previous docker compose run) rather than
+// proving Load()'s own default-selection logic. This list must be kept in
+// sync with every os.Getenv("...") call (including the ones behind
+// parseDurationEnv/parseIntEnv) in config.go.
 func withRequiredEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/db")
 	t.Setenv("JWT_SECRET", "test-secret")
+
+	optionalEnvVars := []string{
+		"PORT",
+		"LLM_GATEWAY_URL",
+		"CORS_ORIGINS",
+		"DB_MAX_CONN_LIFETIME",
+		"DB_MAX_CONN_IDLE_TIME",
+		"DB_HEALTH_CHECK_PERIOD",
+		"S3_ENDPOINT",
+		"S3_REGION",
+		"S3_BUCKET",
+		"S3_ACCESS_KEY",
+		"S3_SECRET_KEY",
+		"S3_FORCE_PATH_STYLE",
+		"WS_TICKET_SECRET",
+		"AUTH_MODE",
+		"KRATOS_PUBLIC_URL",
+		"KRATOS_ADMIN_URL",
+		"KRATOS_COOKIE_NAME",
+		"LLM_GATEWAY_TRANSPORT",
+		"LLM_GATEWAY_GRPC_ADDR",
+		"LLM_GATEWAY_GRPC_MAX_RETRIES",
+		"LLM_GATEWAY_GRPC_BASE_BACKOFF",
+		"REDIS_URL",
+		"MESSAGE_HUB_DRIVER",
+		"DEFAULT_AI_MODEL",
+		"RATE_LIMIT_LOGIN_PER_MINUTE",
+		"RATE_LIMIT_AI_INVOKE_PER_MINUTE",
+		"WHOAMI_CACHE_TTL",
+		"STRIPE_SECRET_KEY",
+		"STRIPE_WEBHOOK_SECRET",
+		"STRIPE_PLANS_JSON",
+		"STRIPE_TOKEN_PACKAGES_JSON",
+		"STRIPE_CHECKOUT_SUCCESS_URL",
+		"STRIPE_CHECKOUT_CANCEL_URL",
+	}
+	for _, name := range optionalEnvVars {
+		t.Setenv(name, "")
+	}
 }
 
 func TestLoadDBDurationDefaults(t *testing.T) {
@@ -70,6 +120,46 @@ func TestLoadDBDurationInvalidFallsBackToDefault(t *testing.T) {
 func TestLoadMissingRequiredVars(t *testing.T) {
 	if _, err := Load(); err == nil {
 		t.Fatal("expected Load to fail when DATABASE_URL and JWT_SECRET are unset")
+	}
+}
+
+// TestLoadCORSOriginsWildcardReturnsError proves that Load fails fast when
+// CORS_ORIGINS contains a bare "*", since app/router.go pairs
+// AllowCredentials: true with CORSOrigins on the documented assumption that
+// it never contains a wildcard.
+func TestLoadCORSOriginsWildcardReturnsError(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("CORS_ORIGINS", "*")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to fail when CORS_ORIGINS is a bare wildcard")
+	}
+}
+
+// TestLoadCORSOriginsWildcardInListReturnsError proves the same fail-fast
+// applies when "*" appears alongside other explicit origins in the
+// comma-separated list, not just as the sole value.
+func TestLoadCORSOriginsWildcardInListReturnsError(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("CORS_ORIGINS", "http://localhost:3000, * ,https://example.com")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to fail when CORS_ORIGINS' list includes a wildcard entry")
+	}
+}
+
+// TestLoadCORSOriginsExplicitListSucceeds proves that a comma-separated list
+// of explicit (non-wildcard) origins is still accepted.
+func TestLoadCORSOriginsExplicitListSucceeds(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("CORS_ORIGINS", "http://localhost:3000,https://example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CORSOrigins != "http://localhost:3000,https://example.com" {
+		t.Errorf("unexpected CORSOrigins: %v", cfg.CORSOrigins)
 	}
 }
 

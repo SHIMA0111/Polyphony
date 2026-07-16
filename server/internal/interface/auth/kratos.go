@@ -188,21 +188,7 @@ func (s *KratosAuthService) Register(ctx context.Context, email, username, passw
 		return nil, fmt.Errorf("kratos registration succeeded but returned no session_token: is the registration flow's after.password.hooks missing the session hook?")
 	}
 
-	now := time.Now()
-	identityID := result.Identity.ID
-	u := &user.User{
-		ID:               uuid.New().String(),
-		Email:            email,
-		Username:         username,
-		PasswordHash:     kratosManagedPasswordHash,
-		KratosIdentityID: &identityID,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}
-	if err := s.userRepo.Create(ctx, u); err != nil {
-		return nil, err
-	}
-	if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {
+	if _, err := s.ensureLocalUser(ctx, result.Identity); err != nil {
 		return nil, err
 	}
 
@@ -253,11 +239,25 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 }
 
 // ensureLocalUser resolves identity to a local users row via
-// userRepo.GetByKratosIdentityID, self-healing a missing row from the
-// identity's traits when Kratos knows about an identity that this app's
-// database has never mirrored (e.g. an identity created directly via the
-// Kratos Admin API, or a browser-driven registration whose local mirror
-// write raced/failed independently of Kratos's own identity creation).
+// userRepo.GetByKratosIdentityID, self-healing a missing link when Kratos
+// knows about an identity that this app's database has not (yet) mirrored
+// to that identity.
+//
+// A missing link is resolved in one of two ways, tried in order:
+//  1. Relink by traits: if a local users row already exists with this
+//     identity's email (e.g. a pre-Kratos-migration SimpleJWT account not
+//     yet backfilled by cmd/kratosmigrate, or a row created by Register but
+//     whose SetKratosIdentityID call raced/failed independently of Kratos's
+//     own identity creation), that existing row is linked to identityID via
+//     SetKratosIdentityID and returned as-is. This must be tried before
+//     creating a new row: falling straight to Create below with an email
+//     that already exists in users would fail on the column's unique
+//     constraint (domain.ErrEmailAlreadyExists), turning a self-heal
+//     opportunity into a permanent login failure for that account.
+//  2. Create: only if no local row exists for this email at all (e.g. an
+//     identity created directly via the Kratos Admin API for a brand-new
+//     user) is a new row created and linked.
+//
 // This is the single shared implementation Login and ValidateToken both
 // rely on so neither path can silently diverge from the other.
 func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identity kratosIdentityDTO) (*user.User, error) {
@@ -269,8 +269,20 @@ func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identity kratos
 		return nil, err
 	}
 
-	now := time.Now()
 	identityID := identity.ID
+
+	if existing, err := s.userRepo.GetByEmail(ctx, identity.Traits.Email); err == nil {
+		if err := s.userRepo.SetKratosIdentityID(ctx, existing.ID, identityID); err != nil {
+			return nil, err
+		}
+		linkedID := identityID
+		existing.KratosIdentityID = &linkedID
+		return existing, nil
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return nil, err
+	}
+
+	now := time.Now()
 	u := &user.User{
 		ID:               uuid.New().String(),
 		Email:            identity.Traits.Email,
@@ -308,9 +320,15 @@ func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identity kratos
 // a "cookie:"-prefixed string in practice (SimpleJWT never sets a browser
 // cookie), so the distinction only matters when AUTH_MODE=kratos.
 //
-// It returns domain.ErrInvalidToken on any non-200 whoami response or if
-// the resolved/self-healed local user lookup fails for a reason other than
-// a missing row.
+// It returns domain.ErrInvalidToken if the request cannot be built, the
+// HTTP call itself fails, whoami responds with a non-200 status, or the
+// response body cannot be decoded — every case where the presented
+// credential itself is the problem. If ensureLocalUser subsequently fails
+// (a repository error resolving/creating/linking the local user), that
+// error is wrapped and returned as-is rather than flattened to
+// domain.ErrInvalidToken, since by that point whoami has already confirmed
+// the token is valid — see interface/middleware.JWTAuth, which relies on
+// this distinction to map the two cases to 401 and 500 respectively.
 func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.publicURL+"/sessions/whoami", nil)
 	if err != nil {
@@ -342,7 +360,14 @@ func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*d
 
 	localUser, err := s.ensureLocalUser(ctx, result.Identity)
 	if err != nil {
-		return nil, domain.ErrInvalidToken
+		// A failure here is always a genuine infrastructure problem (a
+		// repository error while looking up or creating/linking the local
+		// user) rather than evidence the token itself is invalid — whoami
+		// already returned 200 and a decodable identity above. Flattening
+		// this to domain.ErrInvalidToken would make interface/middleware.
+		// JWTAuth surface a misleading 401 instead of a 5xx for what is
+		// really a server-side failure.
+		return nil, fmt.Errorf("resolve local user for kratos identity: %w", err)
 	}
 
 	return &domainauth.Claims{UserID: localUser.ID}, nil

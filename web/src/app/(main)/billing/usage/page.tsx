@@ -27,12 +27,12 @@ export default function BillingUsagePage() {
         h={16}
         flexShrink={0}
       >
-        <Link href="/rooms">
-          <Button variant="ghost" size="sm" gap={1.5} px={2}>
+        <Button asChild variant="ghost" size="sm" gap={1.5} px={2}>
+          <Link href="/rooms">
             <ChevronLeft size={18} />
             Rooms
-          </Button>
-        </Link>
+          </Link>
+        </Button>
         <Heading size="md">Token Usage</Heading>
       </Flex>
 

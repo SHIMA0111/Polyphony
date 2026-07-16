@@ -85,12 +85,12 @@ function CheckoutSuccessContent() {
           .
         </Text>
         <Flex gap={3} mt={2}>
-          <Link href="/billing/subscription">
-            <Button colorPalette="blue">View subscription</Button>
-          </Link>
-          <Link href="/rooms">
-            <Button variant="outline">Back to rooms</Button>
-          </Link>
+          <Button asChild colorPalette="blue">
+            <Link href="/billing/subscription">View subscription</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/rooms">Back to rooms</Link>
+          </Button>
         </Flex>
         {sessionId && (
           <Text fontSize="xs" color="fg.muted" mt={4}>
@@ -114,11 +114,9 @@ function CheckoutSuccessContent() {
         >
           Check again
         </Button>
-        <Link href="/billing/subscription">
-          <Button variant="ghost" size="sm">
-            Go to subscription
-          </Button>
-        </Link>
+        <Button asChild variant="ghost" size="sm">
+          <Link href="/billing/subscription">Go to subscription</Link>
+        </Button>
       </Flex>
     )
   }

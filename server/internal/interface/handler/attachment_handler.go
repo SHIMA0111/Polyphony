@@ -43,6 +43,9 @@ func (h *AttachmentHandler) RequestUpload(c echo.Context) error {
 	if req.MimeType == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "mime_type is required"})
 	}
+	if req.SizeBytes <= 0 {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "size_bytes must be a positive integer"})
+	}
 
 	ticket, err := h.usecase.RequestUpload(c.Request().Context(), userID, roomID, req.MimeType, req.SizeBytes)
 	if err != nil {

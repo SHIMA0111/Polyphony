@@ -18,7 +18,7 @@ import (
 
 func setupRoomTest() (*echo.Echo, *RoomHandler) {
 	repo := &mocks.RoomRepo{}
-	uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	h := NewRoomHandler(uc)
 	e := echo.New()
 	return e, h
@@ -86,7 +86,7 @@ func TestListRoomsHandler200(t *testing.T) {
 
 func TestGetRoomHandlerIncludesRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	h := NewRoomHandler(uc)
 	e := echo.New()
 	ctx := e.NewContext(httptest.NewRequest(http.MethodPost, "/rooms", nil), httptest.NewRecorder())
@@ -125,7 +125,7 @@ func TestGetRoomHandlerIncludesRole(t *testing.T) {
 func setupRoomWithMember(t *testing.T, memberRole domainroom.Role) (*RoomHandler, *mocks.RoomRepo, string) {
 	t.Helper()
 	repo := &mocks.RoomRepo{}
-	uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	h := NewRoomHandler(uc)
 
 	rwr, err := uc.CreateRoom(context.Background(), "user-1", "Test Room", "desc")
@@ -229,7 +229,7 @@ func TestChangeRoleHandler200(t *testing.T) {
 	// success case can't target the owner (user-1) — that's covered
 	// separately by TestChangeRoleHandler409ForOwnerTarget.
 	repo := &mocks.RoomRepo{}
-	uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	h := NewRoomHandler(uc)
 	rwr, err := uc.CreateRoom(context.Background(), "user-1", "Test Room", "desc")
 	if err != nil {
@@ -434,7 +434,7 @@ func TestTransferOwnershipHandler403NonOwner(t *testing.T) {
 func TestRoomHandlerUpdateAIContextCutoff(t *testing.T) {
 	t.Run("200 master sets cutoff", func(t *testing.T) {
 		repo := &mocks.RoomRepo{}
-		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 		h := NewRoomHandler(uc)
 		e := echo.New()
 
@@ -470,7 +470,7 @@ func TestRoomHandlerUpdateAIContextCutoff(t *testing.T) {
 
 	t.Run("403 non-admin member", func(t *testing.T) {
 		repo := &mocks.RoomRepo{}
-		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 		h := NewRoomHandler(uc)
 		e := echo.New()
 

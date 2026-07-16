@@ -1,5 +1,8 @@
+import { http, HttpResponse } from "msw"
 import { describe, expect, it, vi } from "vitest"
+import userEvent from "@testing-library/user-event"
 import { render, screen, waitFor } from "@/test/render"
+import { server } from "@/test/msw/server"
 import { fixtureRooms } from "@/features/rooms/api/handlers"
 import { RoomRail } from "./RoomRail"
 
@@ -57,5 +60,34 @@ describe("RoomRail", () => {
         screen.getByRole("link", { name: room.name }),
       ).not.toHaveAttribute("aria-current")
     }
+  })
+
+  it("renders an error state with a Try again button when the rooms query fails, and recovers on refetch", async () => {
+    useParamsMock.mockReturnValue({})
+
+    let requestCount = 0
+    server.use(
+      http.get("/api/proxy/rooms", () => {
+        requestCount += 1
+        if (requestCount === 1) {
+          return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+        }
+        return HttpResponse.json(fixtureRooms)
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<RoomRail />)
+
+    await waitFor(() =>
+      expect(screen.getByText("Failed to load rooms")).toBeInTheDocument(),
+    )
+
+    await user.click(screen.getByRole("button", { name: "Try again" }))
+
+    await waitFor(() =>
+      expect(screen.getByText(fixtureRooms[0].name)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText("Failed to load rooms")).not.toBeInTheDocument()
   })
 })

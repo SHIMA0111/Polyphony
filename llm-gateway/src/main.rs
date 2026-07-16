@@ -95,7 +95,7 @@ async fn main() {
     let grpc_server = async move {
         tracing::info!(port = config.grpc_port, "LLM Gateway (gRPC) listening");
 
-        serve_grpc(state, grpc_addr)
+        serve_grpc(state, grpc_addr, shutdown_signal())
             .await
             .expect("gRPC server error");
     };

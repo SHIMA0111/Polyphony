@@ -222,6 +222,124 @@ func TestInProcessHubConcurrentPublishAndUnsubscribeDoesNotRace(t *testing.T) {
 	publishWG.Wait()
 }
 
+// TestInProcessHubConcurrentRevokeAndUnsubscribeDoesNotRace mirrors
+// TestInProcessHubConcurrentPublishAndUnsubscribeDoesNotRace above, but races
+// Revoke against the subscriber's own unsubscribe function instead of racing
+// Publish against unsubscribe: both can independently trigger the same
+// close, and subscriber.closeOnce is what must make that safe regardless of
+// which one wins. Run with -race to catch either a double-close panic or a
+// data race on the subscriber registry.
+func TestInProcessHubConcurrentRevokeAndUnsubscribeDoesNotRace(t *testing.T) {
+	hub := NewInProcessHub()
+	ctx := context.Background()
+
+	// No background Publish load here (unlike
+	// TestInProcessHubConcurrentPublishAndUnsubscribeDoesNotRace above): that
+	// test already covers Publish racing unsubscribe under the hub's RWMutex.
+	// This test isolates the race this change actually adds — Revoke racing
+	// the subscriber's own unsubscribe function on the same subscription —
+	// which subscriber.closeOnce guards independently of Publish.
+	const iterations = 200
+
+	var wg sync.WaitGroup
+	for i := 0; i < iterations; i++ {
+		ch, unsubscribe := hub.Subscribe(ctx, "room-revoke-race", "user-race")
+
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			unsubscribe()
+		}()
+		go func() {
+			defer wg.Done()
+			hub.Revoke(ctx, "room-revoke-race", "user-race")
+		}()
+		go func() {
+			defer wg.Done()
+			select {
+			case <-ch: // closed by whichever of the above runs first
+			case <-time.After(time.Second):
+				t.Error("expected channel to be closed by unsubscribe or Revoke within 1s")
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestInProcessHubRevokeClosesOnlyTargetUsersSubscriptions proves that
+// Revoke closes every subscription belonging to the given (roomID, userID)
+// pair — including more than one, e.g. multiple browser tabs open on the
+// same room — while leaving other users' subscriptions on the same room,
+// and the same user's subscriptions on other rooms, untouched.
+func TestInProcessHubRevokeClosesOnlyTargetUsersSubscriptions(t *testing.T) {
+	hub := NewInProcessHub()
+	ctx := context.Background()
+
+	revokedCh1, _ := hub.Subscribe(ctx, "room-1", "user-1")
+	revokedCh2, _ := hub.Subscribe(ctx, "room-1", "user-1") // second tab, same user/room
+	otherUserCh, unsubOtherUser := hub.Subscribe(ctx, "room-1", "user-2")
+	defer unsubOtherUser()
+	otherRoomCh, unsubOtherRoom := hub.Subscribe(ctx, "room-2", "user-1")
+	defer unsubOtherRoom()
+
+	hub.Revoke(ctx, "room-1", "user-1")
+
+	if _, ok := <-revokedCh1; ok {
+		t.Fatal("expected first revoked subscription's channel to be closed")
+	}
+	if _, ok := <-revokedCh2; ok {
+		t.Fatal("expected second revoked subscription's channel to be closed")
+	}
+
+	// Confirm the untouched subscriptions still work end-to-end.
+	hub.Publish(ctx, RoomEvent{Type: EventMessageCreated, RoomID: "room-1", Message: &message.Message{ID: "m1"}, OccurredAt: time.Now()})
+	waitForEvent(t, otherUserCh)
+	hub.Publish(ctx, RoomEvent{Type: EventMessageCreated, RoomID: "room-2", Message: &message.Message{ID: "m2"}, OccurredAt: time.Now()})
+	waitForEvent(t, otherRoomCh)
+}
+
+// TestInProcessHubRevokeThenUnsubscribeIsSafe proves that calling the
+// subscriber's own unsubscribe function after Revoke has already closed its
+// channel is a safe no-op (no double-close panic) — the two share the same
+// underlying guard (subscriber.closeOnce).
+func TestInProcessHubRevokeThenUnsubscribeIsSafe(t *testing.T) {
+	hub := NewInProcessHub()
+	ctx := context.Background()
+
+	ch, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+
+	hub.Revoke(ctx, "room-1", "user-1")
+	if _, ok := <-ch; ok {
+		t.Fatal("expected channel to be closed by Revoke")
+	}
+
+	// Must not panic.
+	unsubscribe()
+}
+
+// TestInProcessHubUnsubscribeThenRevokeIsSafe proves the reverse ordering:
+// calling Revoke after the caller already unsubscribed on their own must not
+// panic or affect any other subscriber, since the matching subscriber is
+// already gone from the registry by the time Revoke runs.
+func TestInProcessHubUnsubscribeThenRevokeIsSafe(t *testing.T) {
+	hub := NewInProcessHub()
+	ctx := context.Background()
+
+	_, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	unsubscribe()
+
+	// Must not panic, even though the subscriber is already gone.
+	hub.Revoke(ctx, "room-1", "user-1")
+}
+
+// TestInProcessHubRevokeNoSubscribersIsNoop proves Revoke on a room/user with
+// no open subscription is a harmless no-op.
+func TestInProcessHubRevokeNoSubscribersIsNoop(t *testing.T) {
+	hub := NewInProcessHub()
+	hub.Revoke(context.Background(), "room-1", "user-1")
+}
+
 func TestInProcessHubPublishNonBlockingOnFullChannel(t *testing.T) {
 	hub := NewInProcessHub()
 	ctx := context.Background()

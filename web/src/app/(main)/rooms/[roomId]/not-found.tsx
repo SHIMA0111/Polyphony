@@ -37,11 +37,9 @@ export default function RoomNotFound() {
             This room doesn&apos;t exist or may have been deleted. Check the
             link, or head back to your rooms.
           </Text>
-          <Link href="/rooms">
-            <Button colorPalette="blue" size="lg" w="full">
-              Back to rooms
-            </Button>
-          </Link>
+          <Button asChild colorPalette="blue" size="lg" w="full">
+            <Link href="/rooms">Back to rooms</Link>
+          </Button>
         </Card.Body>
       </Card.Root>
     </Flex>

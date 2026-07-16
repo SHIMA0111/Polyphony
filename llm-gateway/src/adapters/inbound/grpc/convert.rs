@@ -54,18 +54,6 @@ pub fn domain_role_to_proto(role: &Role) -> ChatRole {
     }
 }
 
-/// Maps a `DomainError` to the `tonic::Status` gRPC clients should observe.
-///
-/// This is the gRPC counterpart of `AppError::into_response` in the REST adapter;
-/// both matches must cover every `DomainError` variant identically in spirit (same
-/// error class → same transport-level status).
-///
-/// # Arguments
-/// * `err` — The domain error produced by `CompletionUseCase`.
-///
-/// # Returns
-/// A `tonic::Status` with a code appropriate to the error variant and the error's
-/// `Display` message as the status message.
 /// Converts a proto `ChatMessage.content` oneof into the domain `MessageContent`.
 ///
 /// # Arguments
@@ -165,6 +153,18 @@ pub fn domain_content_part_to_proto(part: ContentPart) -> super::pb::ContentPart
     }
 }
 
+/// Maps a `DomainError` to the `tonic::Status` gRPC clients should observe.
+///
+/// This is the gRPC counterpart of `AppError::into_response` in the REST adapter;
+/// both matches must cover every `DomainError` variant identically in spirit (same
+/// error class → same transport-level status).
+///
+/// # Arguments
+/// * `err` — The domain error produced by `CompletionUseCase`.
+///
+/// # Returns
+/// A `tonic::Status` with a code appropriate to the error variant and the error's
+/// `Display` message as the status message.
 pub fn domain_error_to_status(err: DomainError) -> Status {
     let message = err.to_string();
     match err {

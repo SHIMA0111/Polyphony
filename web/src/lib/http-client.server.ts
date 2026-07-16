@@ -1,5 +1,6 @@
 import "server-only"
 import { headers } from "next/headers"
+import { ApiRequestError } from "@/lib/http-client"
 
 /**
  * Server-only fetcher used exclusively for RSC `prefetchQuery` calls (e.g.
@@ -16,6 +17,12 @@ import { headers } from "next/headers"
  * stays in exactly one place (the proxy route handler). The incoming
  * request's `cookie` header is forwarded so the proxy can read the same
  * `ory_kratos_session` cookie the browser would have sent.
+ *
+ * Throws the same `ApiRequestError` (with its `status` code intact) that
+ * `@/lib/http-client`'s `apiFetch` throws on the client, so callers like
+ * `app/(main)/rooms/[roomId]/page.tsx` can distinguish a `404` (render
+ * `not-found.tsx`) from any other failure (let it propagate to `error.tsx`)
+ * instead of treating every fetch failure as "not found".
  */
 
 const APP_INTERNAL_URL = process.env.APP_INTERNAL_URL ?? "http://localhost:3000"
@@ -28,7 +35,16 @@ async function request<T>(path: string): Promise<T> {
   })
 
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`)
+    const body = await res.json().catch(() => ({ message: "Unknown error" }))
+    const message =
+      typeof body === "object" &&
+      body !== null &&
+      "message" in body &&
+      typeof (body as { message: unknown }).message === "string"
+        ? (body as { message: string }).message
+        : `Request failed: ${res.status}`
+
+    throw new ApiRequestError(res.status, body, message)
   }
 
   if (res.status === 204) {

@@ -13,10 +13,14 @@ type AttachmentRepository interface {
 	GetByID(ctx context.Context, id string) (*Attachment, error)
 
 	// AttachToMessage links an existing, previously-uploaded attachment to a
-	// message. It returns domain.ErrNotFound if the attachment does not
-	// exist, and domain.ErrAttachmentAlreadyLinked if the attachment is
-	// already linked to a (possibly different) message.
-	AttachToMessage(ctx context.Context, attachmentID, messageID string) (*Attachment, error)
+	// message, provided the attachment's RoomID matches roomID. It returns
+	// domain.ErrNotFound if the attachment does not exist or belongs to a
+	// different room (the two are deliberately indistinguishable to
+	// callers, so a caller cannot use this to probe for the existence of
+	// attachments in rooms it has no access to), and
+	// domain.ErrAttachmentAlreadyLinked if the attachment is already linked
+	// to a (possibly different) message.
+	AttachToMessage(ctx context.Context, attachmentID, messageID, roomID string) (*Attachment, error)
 
 	// ListByMessageID returns every attachment linked to the given message,
 	// ordered by creation time ascending.

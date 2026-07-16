@@ -106,13 +106,27 @@ func TestMigrateUserAdminAPIFailure(t *testing.T) {
 
 // TestMigrateUserAlreadyLinkedIdentity proves that migrateUser surfaces the
 // error from SetKratosIdentityID when the Admin API happens to return an
-// identity ID already linked to a different local user.
+// identity ID already linked to a different local user, and that it cleans
+// up the now-orphaned Kratos identity via DELETE /admin/identities/{id}
+// rather than leaving it behind.
 func TestMigrateUserAlreadyLinkedIdentity(t *testing.T) {
 	createdID := uuid.New().String()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(kratosCreateIdentityRespDTO{ID: createdID})
+	var deletedPath string
+	var deleteCalls int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/identities":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(kratosCreateIdentityRespDTO{ID: createdID})
+		case r.Method == http.MethodDelete:
+			deleteCalls++
+			deletedPath = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
 	}))
 	defer server.Close()
 
@@ -130,5 +144,12 @@ func TestMigrateUserAlreadyLinkedIdentity(t *testing.T) {
 
 	if err := migrateUser(context.Background(), server.URL, server.Client(), userRepo, u); err == nil {
 		t.Fatal("expected migrateUser to fail when the identity is already linked to another user")
+	}
+
+	if deleteCalls != 1 {
+		t.Fatalf("expected exactly one DELETE call to clean up the orphaned identity, got %d", deleteCalls)
+	}
+	if deletedPath != "/admin/identities/"+createdID {
+		t.Fatalf("expected DELETE /admin/identities/%s, got %q", createdID, deletedPath)
 	}
 }

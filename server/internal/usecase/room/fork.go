@@ -11,7 +11,6 @@ import (
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	domainroomfork "github.com/SHIMA0111/multi-user-ai/server/internal/domain/roomfork"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
 
 // forkBatchSize is the maximum number of messages runForkJob copies from
@@ -51,7 +50,7 @@ func (u *RoomUsecase) ForkRoom(ctx context.Context, userID, sourceRoomID string)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := middleware.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
+	if err := domainroom.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
 		return nil, nil, err
 	}
 

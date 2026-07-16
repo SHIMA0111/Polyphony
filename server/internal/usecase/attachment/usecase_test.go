@@ -84,6 +84,45 @@ func TestRequestUpload_TooLarge(t *testing.T) {
 	}
 }
 
+// TestRequestUpload_NonPositiveSize proves that a zero or negative declared
+// size is rejected the same way an oversized one is, rather than being
+// passed through to a presigned upload with a nonsensical content length.
+func TestRequestUpload_NonPositiveSize(t *testing.T) {
+	uc, _, roomRepo, _, _ := newTestUsecase()
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	ctx := context.Background()
+
+	for _, sizeBytes := range []int64{0, -1} {
+		_, err := uc.RequestUpload(ctx, "user-1", "room-1", "image/png", sizeBytes)
+		if !errors.Is(err, domain.ErrAttachmentTooLarge) {
+			t.Fatalf("sizeBytes=%d: expected ErrAttachmentTooLarge, got %v", sizeBytes, err)
+		}
+	}
+}
+
+// TestRequestUpload_BindsContentLength proves that RequestUpload passes the
+// declared size through to storage.ObjectStorage.PresignUpload's
+// contentLength parameter, so the presigned URL binds (and thereby enforces)
+// the same size the caller declared.
+func TestRequestUpload_BindsContentLength(t *testing.T) {
+	uc, _, roomRepo, _, objStorage := newTestUsecase()
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	ctx := context.Background()
+
+	var gotContentLength int64
+	objStorage.PresignUploadFunc = func(_ context.Context, key, _ string, contentLength int64, _ time.Duration) (string, error) {
+		gotContentLength = contentLength
+		return "https://mock-upload/" + key, nil
+	}
+
+	if _, err := uc.RequestUpload(ctx, "user-1", "room-1", "image/png", 4096); err != nil {
+		t.Fatalf("RequestUpload failed: %v", err)
+	}
+	if gotContentLength != 4096 {
+		t.Fatalf("expected PresignUpload to be called with contentLength 4096, got %d", gotContentLength)
+	}
+}
+
 func TestAttachToMessage_HappyPath(t *testing.T) {
 	uc, attachmentRepo, roomRepo, msgRepo, _ := newTestUsecase()
 	roomRepo.SeedMember("room-1", "user-1", "member")
@@ -176,13 +215,46 @@ func TestListAttachments_WithViewURLs(t *testing.T) {
 	}
 }
 
-// mustAttachment builds a minimal, unlinked attachment fixture for directly
-// seeding a mocks.AttachmentRepo via Create, bypassing RequestUpload.
+// TestAttachToMessage_WrongRoom proves that an attachment uploaded into one
+// room cannot be linked to a message in a different room, even by that
+// message's own sender who is a member of both rooms — the security
+// boundary that motivated adding Attachment.RoomID.
+func TestAttachToMessage_WrongRoom(t *testing.T) {
+	uc, attachmentRepo, roomRepo, msgRepo, _ := newTestUsecase()
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedMember("room-2", "user-1", "member")
+	ctx := context.Background()
+
+	senderID := "user-1"
+	msgRepo.Messages = map[string]*domainmessage.Message{
+		"msg-1": {ID: "msg-1", RoomID: "room-2", SenderID: &senderID},
+	}
+	// Attachment was uploaded into room-1, not room-2.
+	if err := attachmentRepo.Create(ctx, mustAttachmentInRoom("att-1", "room-1")); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+
+	_, err := uc.AttachToMessage(ctx, "user-1", "room-2", "msg-1", "att-1")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for cross-room attachment, got %v", err)
+	}
+}
+
+// mustAttachment builds a minimal, unlinked attachment fixture in room-1 for
+// directly seeding a mocks.AttachmentRepo via Create, bypassing
+// RequestUpload.
 func mustAttachment(id string) *domainattachment.Attachment {
+	return mustAttachmentInRoom(id, "room-1")
+}
+
+// mustAttachmentInRoom is mustAttachment with an explicit RoomID, for tests
+// that need to seed an attachment belonging to a room other than "room-1".
+func mustAttachmentInRoom(id, roomID string) *domainattachment.Attachment {
 	return &domainattachment.Attachment{
 		ID:        id,
+		RoomID:    roomID,
 		MessageID: nil,
-		S3Key:     "attachments/room-1/" + id,
+		S3Key:     "attachments/" + roomID + "/" + id,
 		MimeType:  "image/png",
 		SizeBytes: 1024,
 		CreatedAt: time.Now(),

@@ -168,7 +168,11 @@ async fn start_test_server_and_connect() -> Channel {
     let state: Arc<dyn CompletionUseCase> = Arc::new(StubUseCase::new());
 
     tokio::spawn(async move {
-        serve_grpc(state, addr).await.expect("gRPC server error");
+        // The test never signals shutdown; the spawned task is simply dropped when
+        // the test process exits.
+        serve_grpc(state, addr, std::future::pending())
+            .await
+            .expect("gRPC server error");
     });
 
     // Poll until the server accepts connections rather than sleeping a fixed amount,

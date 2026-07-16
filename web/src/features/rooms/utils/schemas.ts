@@ -11,10 +11,12 @@ import { z } from "zod"
 export const createRoomSchema = z.object({
   name: z
     .string()
+    .trim()
     .min(1, "Room name is required")
     .max(255, "Room name must be at most 255 characters"),
   description: z
     .string()
+    .trim()
     .max(2000, "Description must be at most 2000 characters")
     .optional()
     .default(""),

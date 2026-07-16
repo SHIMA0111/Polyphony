@@ -52,15 +52,18 @@ func (r *AttachmentRepo) GetByID(_ context.Context, id string) (*attachment.Atta
 	return &cp, nil
 }
 
-// AttachToMessage links an existing attachment to a message. Returns
-// domain.ErrNotFound if the attachment does not exist, and
+// AttachToMessage links an existing attachment to a message, provided the
+// attachment's RoomID matches roomID. Returns domain.ErrNotFound if the
+// attachment does not exist or belongs to a different room, and
 // domain.ErrAttachmentAlreadyLinked if it is already linked to a message.
-func (r *AttachmentRepo) AttachToMessage(_ context.Context, attachmentID, messageID string) (*attachment.Attachment, error) {
+// Mirrors the room-scoping enforced by the real
+// postgres.AttachmentRepository's UPDATE predicate.
+func (r *AttachmentRepo) AttachToMessage(_ context.Context, attachmentID, messageID, roomID string) (*attachment.Attachment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	a, ok := r.Attachments[attachmentID]
-	if !ok {
+	if !ok || a.RoomID != roomID {
 		return nil, domain.ErrNotFound
 	}
 	if a.MessageID != nil {

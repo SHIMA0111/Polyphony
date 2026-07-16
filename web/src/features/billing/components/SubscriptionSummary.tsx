@@ -58,11 +58,9 @@ export function SubscriptionSummary() {
         <Text color="fg.muted" mb={3}>
           You don&apos;t have an active subscription
         </Text>
-        <Link href="/billing/plans">
-          <Button colorPalette="blue" size="sm">
-            View plans
-          </Button>
-        </Link>
+        <Button asChild colorPalette="blue" size="sm">
+          <Link href="/billing/plans">View plans</Link>
+        </Button>
       </Box>
     )
   }
@@ -121,9 +119,9 @@ export function SubscriptionSummary() {
           >
             Manage subscription
           </Button>
-          <Link href="/billing/plans">
-            <Button variant="ghost">Change plan</Button>
-          </Link>
+          <Button asChild variant="ghost">
+            <Link href="/billing/plans">Change plan</Link>
+          </Button>
         </Flex>
       </Card.Body>
     </Card.Root>

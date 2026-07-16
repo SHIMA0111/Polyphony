@@ -11,6 +11,16 @@ interface MarkdownContentProps {
 }
 
 /**
+ * Matches the `language-<lang>` class react-markdown/remark-gfm puts on a
+ * fenced code block's `code` element, capturing `<lang>`. Hoisted to module
+ * scope (rather than constructed inside the `code` renderer on every
+ * render/keystroke) since it holds no per-call state; `[\w-]+` (rather than
+ * `\w+`) so hyphenated language tags (e.g. `language-objective-c`) capture in
+ * full instead of stopping at the first hyphen.
+ */
+const CODE_LANGUAGE_CLASS_PATTERN = /language-([\w-]+)/
+
+/**
  * Renders markdown for an AI message body: GFM (tables, strikethrough, task
  * lists) via `remark-gfm`, with fenced code blocks delegated to `CodeBlock`
  * for syntax highlighting and a copy button. Human messages do not go
@@ -28,7 +38,7 @@ export function MarkdownContent({ content }: MarkdownContentProps) {
     // wrapper here would double-wrap fenced blocks.
     pre: ({ children }) => <>{children}</>,
     code({ className, children }) {
-      const match = /language-(\w+)/.exec(className ?? "")
+      const match = CODE_LANGUAGE_CLASS_PATTERN.exec(className ?? "")
       const text = String(children).replace(/\n$/, "")
 
       if (match) {

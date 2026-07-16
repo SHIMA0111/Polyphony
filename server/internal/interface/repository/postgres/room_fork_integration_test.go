@@ -94,7 +94,7 @@ func TestRoomForkIntegration_MultiBatchEndToEnd(t *testing.T) {
 		t.Fatalf("seed CreateBatch failed: %v", err)
 	}
 
-	uc := roomusecase.NewRoomUsecase(roomRepo, msgRepo, forkJobRepo)
+	uc := roomusecase.NewRoomUsecase(roomRepo, msgRepo, forkJobRepo, nil)
 
 	job, newRoom, err := uc.ForkRoom(ctx, sourceRoom.OwnerID, sourceRoom.ID)
 	if err != nil {

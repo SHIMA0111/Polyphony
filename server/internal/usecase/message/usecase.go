@@ -21,7 +21,6 @@ import (
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/storage"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
 
 // defaultContextMessages is the default number of recent room messages
@@ -136,7 +135,7 @@ func (u *MessageUsecase) SendMessage(ctx context.Context, userID, roomID, conten
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, room.ActionSendMessage); err != nil {
+	if err := room.Authorize(member.Role, room.ActionSendMessage); err != nil {
 		return nil, err
 	}
 
@@ -261,7 +260,7 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
+	if err := room.Authorize(member.Role, room.ActionInvokeAI); err != nil {
 		return nil, err
 	}
 	if err := u.billing.CheckBalance(ctx, roomID); err != nil {
@@ -409,7 +408,7 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	if err != nil {
 		return nil, false, err
 	}
-	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
+	if err := room.Authorize(member.Role, room.ActionInvokeAI); err != nil {
 		return nil, false, err
 	}
 	if err := u.billing.CheckBalance(ctx, roomID); err != nil {
@@ -574,7 +573,7 @@ func (u *MessageUsecase) SetExcludeFromAI(ctx context.Context, userID, roomID, m
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
+	if err := room.Authorize(member.Role, room.ActionInvokeAI); err != nil {
 		return nil, err
 	}
 

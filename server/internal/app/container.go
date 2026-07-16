@@ -93,9 +93,11 @@ type Container struct {
 	RateLimiter *redis_rate.Limiter
 
 	// Repositories
-	UserRepo         domainuser.UserRepository
-	RoomRepo         domainroom.RoomRepository
-	MsgRepo          domainmessage.MessageRepository
+	UserRepo domainuser.UserRepository
+	RoomRepo domainroom.RoomRepository
+	MsgRepo  domainmessage.MessageRepository
+	// AttachmentRepo is the domain/attachment.AttachmentRepository backing
+	// AttachmentUC's presign/link/list operations.
 	AttachmentRepo   domainattachment.AttachmentRepository
 	InvitationRepo   domaininvitation.InvitationRepository
 	BillingRepo      domainbilling.BalanceRepository
@@ -126,24 +128,32 @@ type Container struct {
 	MessageHub event.MessageHub
 
 	// Use cases
-	AuthUC       *authusecase.AuthUsecase
-	RoomUC       *roomusecase.RoomUsecase
-	MsgUC        *msgusecase.MessageUsecase
-	UserUC       *userusecase.UserUsecase
+	AuthUC *authusecase.AuthUsecase
+	RoomUC *roomusecase.RoomUsecase
+	MsgUC  *msgusecase.MessageUsecase
+	UserUC *userusecase.UserUsecase
+	// AttachmentUC implements the attachment presign/link/list business
+	// logic (see usecase/attachment.AttachmentUsecase).
 	AttachmentUC *attachmentusecase.AttachmentUsecase
+	// ModelUC lists available AI models across all configured providers via
+	// LLMGateway (see usecase/model.ModelUsecase).
 	ModelUC      *modelusecase.ModelUsecase
 	InvitationUC *invitationusecase.InvitationUsecase
 	BillingUC    *billingusecase.BillingUsecase
 	GroupUC      *groupusecase.GroupUsecase
 
 	// Handlers
-	HealthHandler     *handler.HealthHandler
-	AuthHandler       *handler.AuthHandler
-	RoomHandler       *handler.RoomHandler
-	MessageHandler    *handler.MessageHandler
-	ModelHandler      *handler.ModelHandler
-	UserHandler       *handler.UserHandler
+	HealthHandler  *handler.HealthHandler
+	AuthHandler    *handler.AuthHandler
+	RoomHandler    *handler.RoomHandler
+	MessageHandler *handler.MessageHandler
+	ModelHandler   *handler.ModelHandler
+	UserHandler    *handler.UserHandler
+	// AttachmentHandler serves the presigned-upload/attach/list attachment
+	// endpoints, delegating to AttachmentUC.
 	AttachmentHandler *handler.AttachmentHandler
+	// WebSocketHandler serves the ticket-issuance and connection-upgrade
+	// endpoints that push real-time event.RoomEvent updates to clients.
 	WebSocketHandler  *handler.WebSocketHandler
 	InvitationHandler *handler.InvitationHandler
 	TokenHandler      *handler.TokenHandler
@@ -308,7 +318,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
-	roomUC := roomusecase.NewRoomUsecase(roomRepo, msgRepo, forkJobRepo)
+	roomUC := roomusecase.NewRoomUsecase(roomRepo, msgRepo, forkJobRepo, messageHub)
 	billingUC := billingusecase.NewBillingUsecase(
 		billingRepo, roomRepo, subscriptionRepo, paymentRepo, stripeGateway,
 		stripePlans, stripeTokenPackages, cfg.StripeCheckoutSuccessURL, cfg.StripeCheckoutCancelURL,

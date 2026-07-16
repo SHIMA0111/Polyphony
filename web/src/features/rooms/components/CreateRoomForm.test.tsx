@@ -16,7 +16,10 @@ import { CreateRoomForm } from "./CreateRoomForm"
  * - the empty-name validation error rendering as `role="alert"` text without
  *   calling the mutation;
  * - a mutation failure surfacing through the toaster instead of the old
- *   silent `// TODO: show error toast` catch block.
+ *   silent `// TODO: show error toast` catch block;
+ * - clicking Cancel resets the form fields, not just the dialog's open
+ *   state, so reopening the dialog never shows a previous attempt's stale
+ *   input.
  */
 describe("CreateRoomForm", () => {
   it("invalidates the rooms query after a successful create", async () => {
@@ -75,5 +78,23 @@ describe("CreateRoomForm", () => {
         "Failed to create room",
       ),
     )
+  })
+
+  it("resets the form when Cancel is clicked, so reopening starts blank", async () => {
+    const user = userEvent.setup()
+    render(<CreateRoomForm />)
+
+    await user.click(screen.getByRole("button", { name: "New Room" }))
+    await user.type(
+      screen.getByPlaceholderText("e.g., Product Strategy"),
+      "Draft name",
+    )
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+
+    await user.click(screen.getByRole("button", { name: "New Room" }))
+
+    expect(
+      screen.getByPlaceholderText("e.g., Product Strategy"),
+    ).toHaveValue("")
   })
 })

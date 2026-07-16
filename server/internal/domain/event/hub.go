@@ -132,4 +132,24 @@ type MessageHub interface {
 	// be closed. The channel is closed when the unsubscribe function runs;
 	// callers must stop reading from it at that point.
 	Subscribe(ctx context.Context, roomID, userID string) (<-chan RoomEvent, func())
+
+	// Revoke forcibly ends every open Subscribe subscription userID currently
+	// holds on roomID, closing each subscription's channel exactly as if its
+	// own unsubscribe function had been called. It is used when userID loses
+	// access to roomID entirely (removed from the room, or leaving it) so a
+	// live WebSocket connection cannot keep observing a room the caller is no
+	// longer a member of — a role change alone does not warrant this (any
+	// member may still view the room, so ChangeMemberRole never calls
+	// Revoke; see usecase/room.RoomUsecase.ChangeMemberRole's doc comment).
+	//
+	// Revoke has no error return and must never block: like Publish, it is
+	// best-effort with respect to callers, though unlike Publish its actual
+	// effect (closing matching subscriptions) is synchronous within a single
+	// process. It is a no-op if userID has no open subscription on roomID.
+	//
+	// RedisHub's implementation only closes subscriptions held open on the
+	// same process (API server replica) that calls Revoke — see its doc
+	// comment for why a WebSocket connection served by a different replica
+	// is not affected by this call.
+	Revoke(ctx context.Context, roomID, userID string)
 }

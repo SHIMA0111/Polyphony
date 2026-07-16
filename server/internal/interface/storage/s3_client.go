@@ -43,13 +43,17 @@ func NewS3Storage(endpoint, region, bucket, accessKey, secretKey string, pathSty
 	}
 }
 
-// PresignUpload returns a presigned PUT URL for the given object key and
-// content type, valid for the given expiry.
-func (s *S3Storage) PresignUpload(ctx context.Context, key, contentType string, expires time.Duration) (string, error) {
+// PresignUpload returns a presigned PUT URL for the given object key,
+// content type, and exact content length, valid for the given expiry.
+// Binding ContentLength into the signed request makes S3 reject a PUT whose
+// actual Content-Length header doesn't match contentLength, enforcing the
+// declared size on the upload itself rather than trusting the caller's claim.
+func (s *S3Storage) PresignUpload(ctx context.Context, key, contentType string, contentLength int64, expires time.Duration) (string, error) {
 	req, err := s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.bucket),
-		Key:         aws.String(key),
-		ContentType: aws.String(contentType),
+		Bucket:        aws.String(s.bucket),
+		Key:           aws.String(key),
+		ContentType:   aws.String(contentType),
+		ContentLength: aws.Int64(contentLength),
 	}, s3.WithPresignExpires(expires))
 	if err != nil {
 		return "", fmt.Errorf("presign upload for key %q: %w", key, err)

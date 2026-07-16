@@ -16,7 +16,7 @@ func strPtr(v string) *string { return &v }
 
 func TestUpdateSettingsAdminCanSet(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -38,7 +38,7 @@ func TestUpdateSettingsAdminCanSet(t *testing.T) {
 
 func TestUpdateSettingsMasterCanSet(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -54,7 +54,7 @@ func TestUpdateSettingsMasterCanSet(t *testing.T) {
 
 func TestUpdateSettingsMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -69,7 +69,7 @@ func TestUpdateSettingsMemberForbidden(t *testing.T) {
 
 func TestUpdateSettingsGuestForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -84,7 +84,7 @@ func TestUpdateSettingsGuestForbidden(t *testing.T) {
 
 func TestUpdateSettingsReaderForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -99,7 +99,7 @@ func TestUpdateSettingsReaderForbidden(t *testing.T) {
 
 func TestUpdateSettingsNonMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -114,7 +114,7 @@ func TestUpdateSettingsNonMemberForbidden(t *testing.T) {
 // stored field exactly as it was, rather than clearing it.
 func TestUpdateSettingsNilLeavesFieldUnchanged(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -142,7 +142,7 @@ func TestUpdateSettingsNilLeavesFieldUnchanged(t *testing.T) {
 // back to NULL.
 func TestUpdateSettingsEmptyStringClearsField(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -270,6 +271,22 @@ func Load() (*Config, error) {
 	corsOrigins := os.Getenv("CORS_ORIGINS")
 	if corsOrigins == "" {
 		corsOrigins = "http://localhost:3000"
+	}
+	for _, origin := range strings.Split(corsOrigins, ",") {
+		if strings.TrimSpace(origin) == "*" {
+			// app/router.go configures the CORS middleware with
+			// AllowCredentials: true so the browser can send/receive the
+			// Kratos session cookie cross-origin (Step 20), on the
+			// documented assumption that CORSOrigins never contains "*".
+			// Failing fast here instead of silently accepting it matters
+			// because credentialed CORS with a wildcard origin is either
+			// rejected outright or (depending on the CORS middleware's
+			// wildcard-reflection behavior) ends up reflecting *any*
+			// request's Origin header back as allowed — letting any site
+			// on the internet make credentialed, cookie-bearing requests
+			// against this API on a logged-in user's behalf.
+			return nil, fmt.Errorf(`CORS_ORIGINS must not contain "*": credentialed CORS with a wildcard origin allows any site to make authenticated requests against this API; list explicit origins instead`)
+		}
 	}
 
 	dbMaxConnLifetime := parseDurationEnv("DB_MAX_CONN_LIFETIME", defaultDBMaxConnLifetime)

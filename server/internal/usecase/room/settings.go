@@ -5,7 +5,6 @@ import (
 	"time"
 
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
 
 // UpdateSettings sets a room's default AI provider/model
@@ -44,7 +43,7 @@ func (u *RoomUsecase) UpdateSettings(ctx context.Context, userID, roomID string,
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
+	if err := domainroom.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
 		return nil, err
 	}
 
