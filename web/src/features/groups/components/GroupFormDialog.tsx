@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Box, Button, Dialog, Field, Flex, Input, Portal, Textarea } from "@chakra-ui/react"
 import { Pencil, Plus } from "lucide-react"
 import { useCreateGroup } from "../hooks/use-create-group"
@@ -31,13 +31,18 @@ export function GroupFormDialog({ mode, initialGroup }: GroupFormDialogProps) {
 
   // Re-sync local field state whenever a fresh `initialGroup` arrives (e.g.
   // the group detail query refetches after some other edit), so opening the
-  // dialog again doesn't show values from an earlier mount.
-  useEffect(() => {
-    if (mode === "edit" && initialGroup) {
-      setName(initialGroup.name)
-      setDescription(initialGroup.description)
-    }
-  }, [mode, initialGroup])
+  // dialog again doesn't show values from an earlier mount. Done during
+  // render (React's "adjust state while rendering" pattern, same as
+  // LoginForm/MessageInput) instead of a `useEffect`-that-calls-`setState`:
+  // the `lastInitialGroup` marker makes this fire exactly once per new
+  // `initialGroup` object, and the `useState` initializers above already
+  // cover the mount-time case.
+  const [lastInitialGroup, setLastInitialGroup] = useState(initialGroup)
+  if (mode === "edit" && initialGroup && initialGroup !== lastInitialGroup) {
+    setLastInitialGroup(initialGroup)
+    setName(initialGroup.name)
+    setDescription(initialGroup.description)
+  }
 
   const resetState = () => {
     setName(mode === "edit" ? (initialGroup?.name ?? "") : "")
