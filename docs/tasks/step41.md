@@ -64,8 +64,8 @@ After this PR, `POST /rooms/:roomId/messages/ai` accepts an optional `private` f
 
 1. [x] `cd server && go build ./...` — compiles cleanly.
 2. [x] `cd server && go test ./...` (or `task test:server` from repo root) — all tests pass, including the new visibility-focused cases in `usecase_test.go`, `entity_test.go`, and `message_handler_test.go`. Also ran `go test -tags=integration ./...` (testcontainers-backed; does not need the compose stack) — all pass, including the new `TestMessageRepository_PrivateVisibilityFiltering`.
-3. [ ] `docker compose up -d db && task migrate:apply` (or `task up`) — migration applies without error; `docker compose exec db psql -U polyphony -d polyphony -c "\d messages"` shows the new `visibility` column with a `NOT NULL DEFAULT 'public'` and a check constraint. **Skipped** (requires the shared compose stack on fixed ports; see the implementation agent's report). The migration itself was generated and its correctness verified via the testcontainers harness in item 2 instead.
-4. [ ] With the stack up (`task up`), as two different authenticated users A and B who are both members of the same room — curl checks. **Skipped** (requires the full compose stack); covered instead by `TestSendAIHandlerPrivate201`/`TestListHandlerExcludesOtherUsersPrivateMessage` (handler-level) and `TestMessageRepository_PrivateVisibilityFiltering` (SQL-level, via testcontainers).
+3. [x] Verified in the wave-5 integration review against the live compose stack: migrations applied cleanly on `task up`, and `\d messages` shows `visibility character varying(20) NOT NULL DEFAULT 'public'` plus the `messages_visibility_check` (`public`/`private`) constraint.
+4. [x] Verified in the wave-5 integration review with two live users in a shared room: B's `POST .../messages/ai` with `"private":true` returned 201 with both rows `visibility:"private"` and the AI row's `sender_id` set to B; A's `GET .../messages` excluded both private rows while B's included them; A's `POST .../messages/:id/regenerate` against B's private AI message returned 403.
 5. [x] `cd server && go vet ./...` — no new issues. Also ran `golangci-lint run ./...` — 0 issues.
 6. [x] Go test against the in-process hub: `TestSendAIMessagePrivateWSDeliveryTargetsOnlySender` subscribes as the sender, sends a private AI message, and asserts every event carries `TargetUserIDs == ["user-1"]`.
 
@@ -80,4 +80,4 @@ After this PR, `POST /rooms/:roomId/messages/ai` accepts an optional `private` f
 - [x] `SendAIMessageRequest.private` and `MessageResponse.visibility` are wired through the handler and DTOs.
 - [x] The Step-23 context builder excludes other users' private messages when assembling AI context for a different requester.
 - [x] New/updated unit tests cover: private send, cross-user list exclusion, owner list inclusion, non-owner regenerate rejection, and context-builder exclusion.
-- [ ] All verification checks above pass. (All checks that do not require the shared compose stack pass; items 3-4 skipped per the wave's compose-check policy.)
+- [x] All verification checks above pass (items 3-4 completed against the live compose stack in the wave-5 integration review).

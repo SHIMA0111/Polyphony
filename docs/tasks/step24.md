@@ -63,8 +63,8 @@
    - [x] `go test ./internal/usecase/room/... -run Settings` — admin/master allowed, member/guest/reader forbidden, unset-to-NULL works.
    - [x] `go test ./internal/interface/handler/... -run TestRoomHandlerUpdateSettings` — 200/403/400 cases pass.
 4. [x] From the repo root, ran `task migrate:generate -- add_room_ai_settings`; confirmed `server/migrations/20260715230313_add_room_ai_settings.sql` was generated containing `ALTER TABLE "rooms" ADD COLUMN "ai_provider" character varying(50) NULL, ADD COLUMN "ai_model" character varying(100) NULL;`, and that `server/migrations/atlas.sum` was updated by Atlas (not hand-edited).
-5. [ ] SKIPPED (needs the full docker compose stack on fixed ports — see skippedComposeChecks in the agent report). `task up` / end-to-end curl smoke test of `PATCH /rooms/:roomId/settings` + `POST /rooms/:roomId/messages/ai`.
-6. [ ] SKIPPED (same reason as #5 — needs the live compose stack).
+5. [x] Verified in the wave-5 integration review against the live compose stack: as a room master, `PATCH /rooms/:roomId/settings` with `{"ai_model":"claude-opus-4"}` returned 200 echoing `ai_provider`/`ai_model`; after re-pointing the room at `gpt-5.2`, `POST /rooms/:roomId/messages/ai` with no `model` returned 201 and the LLM Gateway's outbound request carried `"model":"gpt-5.2"` (stub-backed gateway), not the `gpt-5-mini` global default.
+6. [x] Verified in the wave-5 integration review: the same `PATCH` from a second user holding only the `member` role returned 403.
 7. [x] `cd server && go test ./... -cover` — `model_resolution.go`/`settings.go`/`room_settings_handler.go` are all exercised (see `internal/usecase/message` 83.0%, `internal/usecase/room` 83.6%, `internal/interface/handler` 76.7% package coverage) across all precedence/authorization branches. Also ran the Step 24-owned integration test (`go test -tags integration ./internal/interface/repository/postgres/... -run TestRoomRepositoryAIProviderModelRoundTrip`) against a testcontainers-backed Postgres — passed.
 
 ## Completion criteria
@@ -74,4 +74,4 @@
 - [x] Global default model is sourced from `Config.DefaultAIModel`, not a hardcoded package constant.
 - [x] `SendAIMessage`/`RegenerateAIMessage` context-building, privacy, and read-filter logic are untouched beyond the model-fallback line(s).
 - [x] All items in Scope are checked off.
-- [x] All Verification checks pass (except #5/#6, which require the live compose stack and are left to the post-merge integration review per this run's instructions).
+- [x] All Verification checks pass (#5/#6 completed against the live compose stack in the wave-5 integration review).

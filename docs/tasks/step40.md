@@ -107,7 +107,7 @@ Error mapping in `handleGroupError` (mirror `handleRoomError` in `server/interna
 3. [x] `task test:server` (equivalently `cd server && go test ./...`) — all unit tests pass, including the new `internal/usecase/group` and `internal/interface/handler` tests.
 4. [x] `cd server && go test -tags=integration ./internal/interface/repository/postgres/... -run TestGroup -v` — the testcontainers-backed `GroupRepository` tests pass (requires a local Docker daemon).
 5. [x] `task migrate:generate -- add_groups_and_group_members` followed by `git diff server/migrations` shows a single new migration file that only creates `groups`, `group_members`, and their indexes, and `server/migrations/atlas.sum` is regenerated (not hand-edited).
-6. [ ] End-to-end smoke test via `task up` then, with two registered users `alice` (room Admin+, group owner) and `bob`/`carol` (existing users, not yet room members):
+6. [x] End-to-end smoke test completed in the wave-5 integration review via the live compose stack (all sub-checks passed exactly as specified: group create 201, add bob/carol 201, member list resolves usernames, batch invite → both `invited` + empty `skipped`, repeat → empty `invited` + both `skipped` with "invitation already exists", non-owner bob → 403). With two registered users `alice` (room Admin+, group owner) and `bob`/`carol` (existing users, not yet room members):
    - `curl -s -X POST localhost:8080/groups -H "Authorization: Bearer $ALICE_TOKEN" -H "Content-Type: application/json" -d '{"name":"Team","description":"my team"}'` → HTTP 201 with a `GroupResponse`; capture `$GROUP_ID`.
    - `curl -s -X POST localhost:8080/groups/$GROUP_ID/members -H "Authorization: Bearer $ALICE_TOKEN" -H "Content-Type: application/json" -d '{"username":"bob"}'` → HTTP 201; repeat for `carol` → HTTP 201.
    - `curl -s localhost:8080/groups/$GROUP_ID/members -H "Authorization: Bearer $ALICE_TOKEN"` → HTTP 200, both `bob` and `carol` present with usernames resolved.
@@ -121,4 +121,4 @@ Error mapping in `handleGroupError` (mirror `handleRoomError` in `server/interna
 - [x] All group CRUD/membership endpoints and the batch-invitation endpoint are routed and behave per the authorization/status rules in this document.
 - [x] `GroupUsecase.BatchInviteToRoom` reuses `InvitationUsecase.CreateInvitation` unchanged, returns per-member skip results instead of failing the whole batch on a duplicate/already-member case, and short-circuits on RBAC failure.
 - [x] Unit tests (usecase + handler, using `server/internal/testutil/mocks`) and testcontainers integration tests (repository) are added and pass.
-- [x] All verification checks above pass (except item 6, which requires the full compose stack — see skippedComposeChecks).
+- [x] All verification checks above pass (item 6 completed against the live compose stack in the wave-5 integration review).
