@@ -213,6 +213,58 @@ func (m *MessageRepo) Delete(_ context.Context, id string) error {
 	return nil
 }
 
+// CountByRoom returns the total number of messages in roomID, ignoring
+// soft-delete/visibility.
+func (m *MessageRepo) CountByRoom(_ context.Context, roomID string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var count int64
+	for _, msg := range m.Messages {
+		if msg.RoomID == roomID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+// ListByRoomAfter returns up to limit messages in roomID with
+// sequence > afterSequence, ordered ascending by sequence, ignoring
+// soft-delete/visibility/exclude-from-ai flags (mirroring the
+// postgres.MessageRepository behavior this fake models).
+func (m *MessageRepo) ListByRoomAfter(_ context.Context, roomID string, afterSequence int64, limit int) ([]*message.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var msgs []*message.Message
+	for _, msg := range m.Messages {
+		if msg.RoomID == roomID && msg.Sequence > afterSequence {
+			msgs = append(msgs, msg)
+		}
+	}
+	sort.Slice(msgs, func(i, j int) bool {
+		return msgs[i].Sequence < msgs[j].Sequence
+	})
+	if len(msgs) > limit {
+		msgs = msgs[:limit]
+	}
+	return msgs, nil
+}
+
+// CreateBatch persists every message in msgs. This fake does not model
+// transactional rollback (it has no partial-failure mode to test against),
+// mirroring the always-succeeds nature of the other mock write methods.
+func (m *MessageRepo) CreateBatch(_ context.Context, msgs []*message.Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureInit()
+
+	for _, msg := range msgs {
+		m.Messages[msg.ID] = msg
+	}
+	return nil
+}
+
 // ReserveSequenceRange atomically reserves count contiguous sequence numbers
 // for the given room, starting at 1, and returns the first one; the caller
 // owns [first, first+count).

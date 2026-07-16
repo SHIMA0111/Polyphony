@@ -16,7 +16,7 @@ import (
 // and owner.
 func TestCreateRoom(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, err := uc.CreateRoom(ctx, "user-1", "Test Room", "A test room")
@@ -38,7 +38,7 @@ func TestCreateRoom(t *testing.T) {
 // requesting user is not a member of the room.
 func TestGetRoomNotMember(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -53,7 +53,7 @@ func TestGetRoomNotMember(t *testing.T) {
 // membership role (e.g. domainroom.RoleGuest) alongside the room.
 func TestGetRoomReturnsRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	created, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -76,7 +76,7 @@ func TestGetRoomReturnsRole(t *testing.T) {
 // ActionManageRoom permission.
 func TestUpdateRoomMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -96,7 +96,7 @@ func TestUpdateRoomMemberForbidden(t *testing.T) {
 // domainroom.RoleAdmin member, who holds ActionManageRoom permission.
 func TestUpdateRoomAdminAllowed(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -120,7 +120,7 @@ func TestUpdateRoomAdminAllowed(t *testing.T) {
 // reserved for domainroom.RoleMaster (the ActionDeleteRoom permission).
 func TestDeleteRoomAdminForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -140,7 +140,7 @@ func TestDeleteRoomAdminForbidden(t *testing.T) {
 // GetRoom fails.
 func TestDeleteRoom(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -160,7 +160,7 @@ func TestDeleteRoom(t *testing.T) {
 
 func TestUpdateAIContextCutoffAdminCanSet(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -187,7 +187,7 @@ func TestUpdateAIContextCutoffAdminCanSet(t *testing.T) {
 // have lost under either ordering.
 func TestUpdateRoomAndAIContextCutoffDoNotClobberEachOther(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Original Name", "Original Description")
@@ -246,7 +246,7 @@ func TestUpdateRoomAndAIContextCutoffDoNotClobberEachOther(t *testing.T) {
 // Run with -race to also catch any data race in the repo mock itself.
 func TestConcurrentUpdateRoomAndAIContextCutoffNoLostUpdate(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Original Name", "Original Description")
@@ -317,7 +317,7 @@ func TestConcurrentUpdateRoomAndAIContextCutoffNoLostUpdate(t *testing.T) {
 
 func TestUpdateAIContextCutoffMasterCanClear(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -338,7 +338,7 @@ func TestUpdateAIContextCutoffMasterCanClear(t *testing.T) {
 
 func TestUpdateAIContextCutoffMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -354,7 +354,7 @@ func TestUpdateAIContextCutoffMemberForbidden(t *testing.T) {
 
 func TestUpdateAIContextCutoffGuestForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -370,7 +370,7 @@ func TestUpdateAIContextCutoffGuestForbidden(t *testing.T) {
 
 func TestUpdateAIContextCutoffReaderForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -386,7 +386,7 @@ func TestUpdateAIContextCutoffReaderForbidden(t *testing.T) {
 
 func TestUpdateAIContextCutoffNonMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -401,7 +401,7 @@ func TestUpdateAIContextCutoffNonMemberForbidden(t *testing.T) {
 // error) for a user who is not a member of any room.
 func TestListRoomsEmpty(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rooms, err := uc.ListRooms(ctx, "user-1")
@@ -420,7 +420,7 @@ func TestListRoomsEmpty(t *testing.T) {
 // list too, not just single-room reads like GetByID.
 func TestListRoomsIncludesRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -450,7 +450,7 @@ func TestListRoomsIncludesRole(t *testing.T) {
 
 func TestListMembersReturnsForReader(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -469,7 +469,7 @@ func TestListMembersReturnsForReader(t *testing.T) {
 
 func TestListMembersForbiddenForNonMember(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -482,7 +482,7 @@ func TestListMembersForbiddenForNonMember(t *testing.T) {
 
 func TestLeaveRoomSucceedsForNonOwnerMember(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -500,7 +500,7 @@ func TestLeaveRoomSucceedsForNonOwnerMember(t *testing.T) {
 
 func TestLeaveRoomOwnerProtected(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -513,7 +513,7 @@ func TestLeaveRoomOwnerProtected(t *testing.T) {
 
 func TestLeaveRoomForbiddenWhenTargetNotCaller(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -529,7 +529,7 @@ func TestLeaveRoomForbiddenWhenTargetNotCaller(t *testing.T) {
 
 func TestChangeMemberRoleSucceedsForAdmin(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -551,7 +551,7 @@ func TestChangeMemberRoleSucceedsForAdmin(t *testing.T) {
 
 func TestChangeMemberRoleForbiddenForInsufficientRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -576,7 +576,7 @@ func TestChangeMemberRoleForbiddenForInsufficientRole(t *testing.T) {
 // mirroring ListMembers, instead of always leaving it "").
 func TestChangeMemberRolePreservesUsername(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -601,7 +601,7 @@ func TestChangeMemberRolePreservesUsername(t *testing.T) {
 // handler layer already blocks it before reaching the usecase.
 func TestChangeMemberRoleRejectsMasterRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -620,7 +620,7 @@ func TestChangeMemberRoleRejectsMasterRole(t *testing.T) {
 
 func TestChangeMemberRoleOwnerProtected(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -636,7 +636,7 @@ func TestChangeMemberRoleOwnerProtected(t *testing.T) {
 
 func TestTransferOwnershipSucceeds(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -678,7 +678,7 @@ func TestTransferOwnershipSucceeds(t *testing.T) {
 // mirrors from the real postgres implementation.
 func TestTransferOwnershipStaleOwnerRepoCAS(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -717,7 +717,7 @@ func TestTransferOwnershipStaleOwnerRepoCAS(t *testing.T) {
 
 func TestTransferOwnershipForbiddenForNonOwner(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -733,7 +733,7 @@ func TestTransferOwnershipForbiddenForNonOwner(t *testing.T) {
 
 func TestTransferOwnershipNotFoundForNonMemberTarget(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
@@ -746,7 +746,7 @@ func TestTransferOwnershipNotFoundForNonMemberTarget(t *testing.T) {
 
 func TestTransferOwnershipNoOpWhenTargetIsCurrentOwner(t *testing.T) {
 	repo := &mocks.RoomRepo{}
-	uc := NewRoomUsecase(repo)
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")

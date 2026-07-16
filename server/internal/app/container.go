@@ -190,6 +190,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	groupRepo := postgres.NewGroupRepository(pool)
 	subscriptionRepo := postgres.NewSubscriptionRepository(pool)
 	paymentRepo := postgres.NewPaymentRepository(pool)
+	forkJobRepo := postgres.NewRoomForkRepository(pool)
 
 	// RedisClient/RateLimiter: constructed whenever Config.RedisURL is
 	// non-empty, independent of MessageHubDriver (see Container.RedisClient's
@@ -339,7 +340,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
-	roomUC := roomusecase.NewRoomUsecase(roomRepo)
+	roomUC := roomusecase.NewRoomUsecase(roomRepo, msgRepo, forkJobRepo)
 	billingUC := billingusecase.NewBillingUsecase(
 		billingRepo, roomRepo, subscriptionRepo, paymentRepo, stripeGateway,
 		stripePlans, stripeTokenPackages, cfg.StripeCheckoutSuccessURL, cfg.StripeCheckoutCancelURL,

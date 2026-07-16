@@ -395,6 +395,20 @@ func (r *RoomRepo) UpdateMemberRole(_ context.Context, roomID, userID string, ro
 	return nil
 }
 
+// SetArchived flips the IsArchived flag on the given room. Returns
+// domain.ErrNotFound if the room does not exist.
+func (r *RoomRepo) SetArchived(_ context.Context, roomID string, archived bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rm, ok := r.Rooms[roomID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	rm.IsArchived = archived
+	return nil
+}
+
 // TransferOwnership updates the fake Rooms map's OwnerID and both affected
 // memberships' roles (new owner -> master, old owner -> admin), mirroring
 // postgres.RoomRepository.TransferOwnership. Returns domain.ErrNotFound if

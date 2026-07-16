@@ -261,6 +261,81 @@ func (r *MessageRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// CountByRoom returns the total number of messages in roomID, ignoring
+// soft-delete/visibility (a structural count, not a visibility-filtered
+// read) — see message.MessageRepository.CountByRoom.
+func (r *MessageRepository) CountByRoom(ctx context.Context, roomID string) (int64, error) {
+	var count int64
+	err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM messages WHERE room_id = $1`, roomID,
+	).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// ListByRoomAfter returns up to limit messages in roomID with
+// sequence > afterSequence, ordered ascending by sequence (oldest first) —
+// see message.MessageRepository.ListByRoomAfter. Like CountByRoom, it
+// ignores soft-delete/visibility/exclude-from-ai flags: a room fork copies
+// the room's entire, unfiltered history.
+func (r *MessageRepository) ListByRoomAfter(ctx context.Context, roomID string, afterSequence int64, limit int) ([]*message.Message, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence > $2
+		 ORDER BY sequence ASC LIMIT $3`,
+		roomID, afterSequence, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []*message.Message
+	for rows.Next() {
+		msg, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return messages, nil
+}
+
+// CreateBatch persists msgs within a single transaction, executing the same
+// INSERT statement Create uses once per message and committing once at the
+// end, so a failure partway through leaves no partially-copied batch
+// persisted — see message.MessageRepository.CreateBatch.
+func (r *MessageRepository) CreateBatch(ctx context.Context, msgs []*message.Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, msg := range msgs {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO messages (id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, is_deleted, exclude_from_ai, visibility, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+			msg.ID, msg.RoomID, msg.SenderID, msg.Content, string(msg.Type), string(msg.Status), msg.Sequence, msg.InResponseToMessageID, msg.IsDeleted, msg.ExcludeFromAI, string(msg.Visibility), msg.CreatedAt, msg.UpdatedAt,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 // ReserveSequenceRange atomically reserves count contiguous sequence numbers
 // for a room and returns the first one; the caller owns [first, first+count).
 // It uses a single UPDATE ... RETURNING statement, so the read-modify-write

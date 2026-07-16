@@ -108,6 +108,14 @@ var (
 	// methods.
 	ErrBillingNotConfigured = errors.New("billing is not configured")
 
+	// ErrArchivedRoom indicates a new message (SendMessage/SendAIMessage)
+	// was rejected because its target room is archived. A room is archived
+	// from the moment a fork of it is created until the fork's background
+	// copy job (usecase/room.RoomUsecase.runForkJob) reaches
+	// roomfork.StatusCompleted (see domainroom.Room.IsArchived). Mapped to
+	// HTTP 409 by handler.handleMessageError.
+	ErrArchivedRoom = errors.New("room is archived")
+
 	// ErrSubscriptionAlreadyExists indicates a subscriptions row already
 	// exists for the given stripe_subscription_id (a unique-constraint
 	// violation on SubscriptionRepository.Create). In normal operation the

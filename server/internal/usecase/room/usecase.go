@@ -10,17 +10,26 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
+	domainroomfork "github.com/SHIMA0111/multi-user-ai/server/internal/domain/roomfork"
 )
 
 // RoomUsecase provides room-related business logic.
 type RoomUsecase struct {
-	roomRepo domainroom.RoomRepository
+	roomRepo    domainroom.RoomRepository
+	msgRepo     domainmessage.MessageRepository
+	forkJobRepo domainroomfork.ForkJobRepository
 }
 
-// NewRoomUsecase creates a new RoomUsecase.
-func NewRoomUsecase(roomRepo domainroom.RoomRepository) *RoomUsecase {
-	return &RoomUsecase{roomRepo: roomRepo}
+// NewRoomUsecase creates a new RoomUsecase. msgRepo and forkJobRepo are used
+// only by the room-fork feature (see fork.go's ForkRoom/GetForkJobStatus/
+// runForkJob): msgRepo drives the fork worker's message-copy loop
+// (CountByRoom/ListByRoomAfter/CreateBatch/ReserveSequenceRange) and
+// forkJobRepo persists roomfork.Job progress/state transitions. Every other
+// RoomUsecase method (CreateRoom, UpdateRoom, ...) uses only roomRepo.
+func NewRoomUsecase(roomRepo domainroom.RoomRepository, msgRepo domainmessage.MessageRepository, forkJobRepo domainroomfork.ForkJobRepository) *RoomUsecase {
+	return &RoomUsecase{roomRepo: roomRepo, msgRepo: msgRepo, forkJobRepo: forkJobRepo}
 }
 
 // CreateRoom creates a new room with the given user as owner. The creating

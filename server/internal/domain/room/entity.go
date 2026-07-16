@@ -27,9 +27,23 @@ type Room struct {
 	// above the deployment-wide Config.DefaultAIModel). A nil or empty
 	// value means "not configured" — resolution falls through to the next
 	// tier.
-	AIModel   *string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	AIModel *string
+	// ForkedFromRoomID, when non-nil, is the ID of the source room this room
+	// was forked from (see usecase/room.RoomUsecase.ForkRoom). It is
+	// write-once: set only at Create time by ForkRoom and never modified by
+	// Update. A nil value means this room was created normally, not via a
+	// fork.
+	ForkedFromRoomID *string
+	// IsArchived marks a room as read-only for new posts: while true,
+	// usecase/message.MessageUsecase.SendMessage/SendAIMessage reject new
+	// messages into it with domain.ErrArchivedRoom. A freshly forked room
+	// starts archived (see ForkRoom) and flips to false only once its
+	// background copy job (usecase/room.RoomUsecase.runForkJob) reaches
+	// StatusCompleted (see RoomRepository.SetArchived). A normally-created
+	// room always starts with IsArchived == false.
+	IsArchived bool
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // RoomMember represents a user's membership in a room, including their

@@ -306,6 +306,7 @@ func TestMessageHandlerDelete(t *testing.T) {
 		roomRepo := &mocks.RoomRepo{}
 		roomRepo.SeedMember("room-1", "user-1", "member")
 		roomRepo.SeedMember("room-1", "user-2", "member")
+		roomRepo.SeedRoom("room-1", nil)
 		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 		e := echo.New()
 		h := NewMessageHandler(uc)
@@ -335,6 +336,7 @@ func TestMessageHandlerDelete(t *testing.T) {
 		roomRepo := &mocks.RoomRepo{}
 		roomRepo.SeedMember("room-1", "user-1", "member")
 		roomRepo.SeedMember("room-2", "user-1", "member")
+		roomRepo.SeedRoom("room-1", nil)
 		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 		e := echo.New()
 		h := NewMessageHandler(uc)
@@ -368,6 +370,7 @@ func TestMessageHandlerUpdateExclude(t *testing.T) {
 		msgRepo := &mocks.MessageRepo{}
 		roomRepo := &mocks.RoomRepo{}
 		roomRepo.SeedMember("room-1", "user-1", "member")
+		roomRepo.SeedRoom("room-1", nil)
 		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 		e := echo.New()
 		h := NewMessageHandler(uc)

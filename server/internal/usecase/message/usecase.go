@@ -110,6 +110,11 @@ func NewMessageUsecase(
 // EventMessageCreated on the hub after the persist succeeds. Publishing is
 // fire-and-forget: its outcome never affects the returned error, and it only
 // happens once the write has already succeeded.
+//
+// It returns domain.ErrArchivedRoom if the room is archived (see
+// domainroom.Room.IsArchived, set while a room-fork copy job is in
+// progress — usecase/room.RoomUsecase.ForkRoom/runForkJob) — new posts into
+// an archived room are rejected before any sequence number is reserved.
 func (u *MessageUsecase) SendMessage(ctx context.Context, userID, roomID, content string) (*domainmessage.Message, error) {
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
@@ -117,6 +122,14 @@ func (u *MessageUsecase) SendMessage(ctx context.Context, userID, roomID, conten
 	}
 	if !member.Role.Allows(room.ActionSendMessage) {
 		return nil, domain.ErrForbidden
+	}
+
+	rm, err := u.roomRepo.GetByID(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if rm.IsArchived {
+		return nil, domain.ErrArchivedRoom
 	}
 
 	seq, err := u.msgRepo.ReserveSequenceRange(ctx, roomID, 1)
@@ -267,6 +280,10 @@ func (u *MessageUsecase) ListMessages(ctx context.Context, userID, roomID, curso
 // is included in AI context assembled for another user's request, and both
 // are delivered over WebSocket only to userID's own connections instead of
 // being broadcast to the room (see targetUserIDsForVisibility).
+//
+// It returns domain.ErrArchivedRoom if the room is archived (see
+// domainroom.Room.IsArchived / SendMessage's matching guard) — checked
+// right after loading rm, before any sequence number is reserved.
 func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, content, model string, private bool) (*SendAIResult, error) {
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
@@ -282,6 +299,9 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	rm, err := u.roomRepo.GetByID(ctx, roomID)
 	if err != nil {
 		return nil, err
+	}
+	if rm.IsArchived {
+		return nil, domain.ErrArchivedRoom
 	}
 	model = resolveModel(model, rm, u.defaultAIModel)
 
