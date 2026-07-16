@@ -59,11 +59,11 @@ After this PR, two new Playwright spec files exist under `web/e2e/regression/` �
 
 ## Verification
 1. [x] `cd web && bun install` — clean install, no errors.
-2. [ ] `task test:e2e:up` — SKIPPED: requires the full Docker Compose stack on fixed ports; this worktree only runs checks that don't need it (see this step's implementation-agent report for the full skip list).
+2. [x] `task test:e2e:up` — run live in the wave-8 integration review; all long-running services healthy (13 containers up after the one-shot migrate/init services exited).
 3. [x] `docker compose --profile test config | grep -i stripe` equivalent — confirmed directly via `grep -n "STRIPE\|stripe" docker-compose.yml` and reading the `api-e2e` block: no `STRIPE_*` env vars are present there (only the dev-only `api`/`stripe-cli` services have them). Documented as the gap.
-4. [ ] `cd web && bunx playwright test e2e/regression/billing.spec.ts` — SKIPPED (needs the running compose stack); verified instead via `bunx tsc --noEmit`, `bun run lint`, and `bunx playwright test --list` (all 3 tests parse/discover correctly).
-5. [ ] `cd web && bunx playwright test e2e/regression/room-fork.spec.ts` — SKIPPED (needs the running compose stack); verified instead via `bunx tsc --noEmit`, `bun run lint`, and `bunx playwright test --list` (both tests parse/discover correctly).
-6. [ ] `task test:e2e:down` — SKIPPED (nothing was brought up; no compose stack was started).
+4. [x] `cd web && bunx playwright test e2e/regression/billing.spec.ts` — run live in the wave-8 integration review: 2 passed, 1 skipped (the documented Stripe-credentials probe-and-skip), after one review fix — the first test clicked a "Rooms" back button from `/billing/history`, but that button only exists on `/billing/usage`'s standalone layout (`/billing/history` renders inside the `(main)` layout); it now navigates via `page.goto("/rooms")`.
+5. [x] `cd web && bunx playwright test e2e/regression/room-fork.spec.ts` — run live in the wave-8 integration review: both tests passed unmodified on the first live run.
+6. [x] `task test:e2e:down` — run live in the wave-8 integration review; stack and volumes removed cleanly.
 7. [x] `git diff --stat` — confirmed changes are limited to `web/e2e/regression/billing.spec.ts`, `web/e2e/regression/room-fork.spec.ts`, `web/e2e/regression/README.md`, and this file's own checklist edits — no changes to `web/src/features/billing/**`, `RoomSettingsDrawer.tsx`, `ChatRoom.tsx`, `server/`, or `llm-gateway/` (no live-surfaced defect was found, since the compose stack could not be run here).
 8. [x] `task test:server && task test:gateway` — ran directly (`go test ./...` in `server/`, `cargo test` in `llm-gateway/`); all existing tests pass unmodified.
 
@@ -73,4 +73,4 @@ After this PR, two new Playwright spec files exist under `web/e2e/regression/` �
 - [x] Any concrete defect these two specs surfaced in already-merged Step 48/52/53 code has been fixed with a minimal, targeted diff (or, if the defect is missing Stripe webhook-forwarding infra outside this step's scope, documented rather than worked around). (No live run was possible in this worktree, so no defect was surfaced to fix; the pre-existing Stripe-infra gap is documented per Scope.)
 - [x] No changes outside the files listed in Verification step 7.
 - [x] All items in Scope are checked off.
-- [ ] All verification checks above pass — partially: everything that does not require the full Docker Compose stack passed; items 2, 4, 5, 6 require the live stack and are left for the post-merge integration review (see `skippedComposeChecks` in this step's report).
+- [x] All verification checks above pass — items 2, 4, 5, 6 were executed live in the wave-8 integration review (full suite: 34 passed, 2 documented Stripe skips, 0 failed).
