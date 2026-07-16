@@ -19,7 +19,7 @@ A multi-user AI chat application. Combines ChatGPT-like AI chat with LINE/Slack-
 
 ### Data Layer & Infrastructure
 
-- **DB**: Single PostgreSQL (messages with monthly partitioning)
+- **DB**: Single PostgreSQL (messages monthly partitioning planned in Phase 23; plain table until then)
 - **Cache/Pub/Sub**: Redis (sessions, Pub/Sub, rate limiting)
 - **Storage**: S3 + CloudFront (images, presigned URLs)
 - **Auth**: Initially SimpleJWT (argon2+JWT) → Phase 9 Ory Kratos → Phase 15 Ory Hydra

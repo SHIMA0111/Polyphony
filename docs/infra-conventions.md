@@ -89,8 +89,10 @@ checksums Atlas expects. Instead:
 - Do not reformat or reorder existing tasks when adding a new one — append the new task block within
   its section, leaving surrounding tasks byte-identical, so parallel PRs adding unrelated tasks don't
   collide on the same lines.
-- `dotenv: ['../.env.local', '../.env']` is declared **per task**, only on the host-run tasks
-  (`dev:server`, `dev:gateway`, `dev:web`), not at the Taskfile's top level. It is scoped this way
+- `dotenv: ['../.env.local', '../.env']` is declared **per task**, only on host-run tasks
+  (`dev:server`, `dev:gateway`, `dev:web`, `oauth:hydra:test`, and `billing:topup` — the last
+  with a task-level `env:` override so `DATABASE_URL` stays host-reachable), never at the
+  Taskfile's top level. It is scoped this way
   deliberately — see the next section for why Docker lifecycle tasks (`up`, `rebuild`, `down`,
   `build`, `logs`, `migrate:apply`, ...) must never load `.env.local`.
 - **Precedence note**: go-task gives precedence to *earlier* entries in a `dotenv` list — the
@@ -114,8 +116,8 @@ checksums Atlas expects. Instead:
   `.env` interpolation, and the `migrate` container would receive a `localhost` `DATABASE_URL` —
   which resolves to `[::1]:5432` *inside the container*, where nothing is listening, so `migrate`
   fails and `api`/`web` never start.
-- The fix is scope, not removal: `dotenv` is attached only to `dev:server`, `dev:gateway`, and
-  `dev:web` (see above). Docker lifecycle tasks (`up`, `rebuild`, `down`, `down:clean`, `build`,
+- The fix is scope, not removal: `dotenv` is attached only to host-run tasks (`dev:server`,
+  `dev:gateway`, `dev:web`, `oauth:hydra:test`, `billing:topup` — see above). Docker lifecycle tasks (`up`, `rebuild`, `down`, `down:clean`, `build`,
   `logs`, `ps`, `migrate:apply`) declare no `dotenv` at all, so `docker compose` only ever sees
   its own `.env` file, exactly as if invoked directly on the command line.
 
@@ -132,6 +134,6 @@ checksums Atlas expects. Instead:
 
   `.env.local` itself is gitignored (covered by the blanket `.env.*` rule in `.gitignore`, with an
   explicit `!.env.local.example` exception keeping the template tracked) and is loaded automatically
-  by the per-task `dotenv` key on `dev:server`/`dev:gateway`/`dev:web`, listed *before* `.env` so
+  by the per-task `dotenv` key on the host-run tasks (see above), listed *before* `.env` so
   its values take precedence for those tasks (see the precedence note above). It is intentionally
   **not** loaded by any Docker lifecycle task (see previous section).
