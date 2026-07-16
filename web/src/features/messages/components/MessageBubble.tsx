@@ -13,7 +13,7 @@ import {
   Spinner,
   Text,
 } from "@chakra-ui/react"
-import { AlertTriangle, EyeOff, MoreVertical, RefreshCw } from "lucide-react"
+import { AlertTriangle, EyeOff, Lock, MoreVertical, RefreshCw } from "lucide-react"
 import type { Message } from "@/features/messages/types"
 import { Tooltip } from "@/components/ui/tooltip"
 import { useSession } from "@/features/auth/hooks/use-session"
@@ -156,6 +156,12 @@ export function MessageBubble({
   const isStreaming = message.status === "streaming"
   const isFailedHuman = isFailed && message.type === "human"
   const isExcluded = message.exclude_from_ai
+  // Step 41 guarantees a `visibility: "private"` message is only ever
+  // delivered (REST or WS) to its own sender's client -- no sender-identity
+  // comparison is needed here to decide whether to show the badge/border,
+  // any private message present in this client's cache already belongs to
+  // the current user's own private exchange.
+  const isPrivate = message.visibility === "private"
 
   // A client-synthesized optimistic entry (see `useSendMessage`/
   // `useSendAIMessage`) has no real, persisted id yet — its menu (if any
@@ -219,8 +225,9 @@ export function MessageBubble({
               ? "white"
               : "fg"
         }
-        borderWidth={isFailed ? "1px" : 0}
-        borderColor={isFailed ? "red.200" : undefined}
+        borderWidth={isFailed ? "1px" : isPrivate ? "1px" : 0}
+        borderColor={isFailed ? "red.200" : isPrivate ? "purple.300" : undefined}
+        borderStyle={!isFailed && isPrivate ? "dashed" : "solid"}
       >
         {isFailed && (
           <Flex align="center" gap={1} mb={1}>
@@ -286,6 +293,15 @@ export function MessageBubble({
             <Text fontSize="xs" color="fg.muted" tabIndex={0}>
               {formatShortTimestamp(message.created_at)}
             </Text>
+          </Tooltip>
+        )}
+
+        {isPrivate && (
+          <Tooltip content="Only you can see this exchange">
+            <Badge size="xs" variant="subtle" colorPalette="purple" tabIndex={0}>
+              <Lock size={10} />
+              Private
+            </Badge>
           </Tooltip>
         )}
 

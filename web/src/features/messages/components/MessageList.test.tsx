@@ -24,6 +24,7 @@ const messages: Message[] = [
     is_deleted: false,
     exclude_from_ai: false,
     used_context_summary: false,
+    visibility: "public",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   },
@@ -39,6 +40,7 @@ const messages: Message[] = [
     is_deleted: false,
     exclude_from_ai: false,
     used_context_summary: false,
+    visibility: "public",
     created_at: "2026-01-01T00:00:01Z",
     updated_at: "2026-01-01T00:00:01Z",
   },
@@ -54,6 +56,7 @@ const messages: Message[] = [
     is_deleted: false,
     exclude_from_ai: false,
     used_context_summary: false,
+    visibility: "public",
     created_at: "2026-01-01T00:00:02Z",
     updated_at: "2026-01-01T00:00:02Z",
   },
@@ -135,6 +138,7 @@ describe("MessageList", () => {
         is_deleted: false,
         exclude_from_ai: false,
         used_context_summary: false,
+        visibility: "public",
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
       },
@@ -173,6 +177,7 @@ describe("MessageList", () => {
         is_deleted: false,
         exclude_from_ai: false,
         used_context_summary: false,
+        visibility: "public",
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
       },
@@ -206,6 +211,7 @@ describe("MessageList", () => {
         is_deleted: false,
         exclude_from_ai: false,
         used_context_summary: true,
+        visibility: "public",
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
       },
@@ -250,6 +256,7 @@ describe("MessageList", () => {
         is_deleted: false,
         exclude_from_ai: false,
         used_context_summary: true,
+        visibility: "public",
         created_at: "2026-01-01T00:00:00Z",
         updated_at: "2026-01-01T00:00:00Z",
       },
@@ -265,5 +272,68 @@ describe("MessageList", () => {
     )
 
     expect(screen.queryByText("Summarized history")).not.toBeInTheDocument()
+  })
+
+  // --- Step 47: private AI mode badge ---
+
+  it("shows the 'Private' badge on a message with visibility: 'private'", () => {
+    const privateMessages: Message[] = [
+      {
+        id: "message-private-human",
+        room_id: "room-1",
+        sender_id: "user-1",
+        content: "What's my salary review outcome?",
+        type: "human",
+        status: "completed",
+        sequence: 1,
+        in_response_to_message_id: null,
+        is_deleted: false,
+        exclude_from_ai: false,
+        used_context_summary: false,
+        visibility: "private",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "message-private-ai",
+        room_id: "room-1",
+        sender_id: null,
+        content: "I can't know that.",
+        type: "ai",
+        status: "completed",
+        sequence: 2,
+        in_response_to_message_id: "message-private-human",
+        is_deleted: false,
+        exclude_from_ai: false,
+        used_context_summary: false,
+        visibility: "private",
+        created_at: "2026-01-01T00:00:01Z",
+        updated_at: "2026-01-01T00:00:01Z",
+      },
+    ]
+
+    render(
+      <MessageList
+        messages={privateMessages}
+        onRegenerate={vi.fn()}
+        isRegenerating={null}
+        {...noopPaginationProps}
+      />,
+    )
+
+    expect(screen.getAllByText("Private")).toHaveLength(2)
+  })
+
+  it("does not show the 'Private' badge for visibility: 'public' messages", () => {
+    render(
+      <MessageList
+        messages={messages}
+        onRegenerate={vi.fn()}
+        isRegenerating={null}
+        {...noopPaginationProps}
+      />,
+    )
+
+    expect(screen.queryByText("Private")).not.toBeInTheDocument()
   })
 })

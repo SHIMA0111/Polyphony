@@ -73,6 +73,22 @@ export interface Message {
    * later refetch of the same message) always report `false`.
    */
   used_context_summary: boolean
+  /**
+   * `"public"` (the default) or `"private"` (Step 41's private AI mode,
+   * `phases.md` Phase 14; see `server/internal/interface/handler/dto.go`'s
+   * `MessageResponse.Visibility`). A `"private"` message (set via
+   * `SendAIMessageRequest.Private`) is only ever delivered -- over both REST
+   * (`GET /rooms/:roomId/messages`) and WebSocket (`message_created`/
+   * `message_updated`) -- to its own sender's client; the server never sends
+   * a private row/event to any other room member in the first place. Because
+   * of that server-side guarantee, this client never needs to compare
+   * `sender_id` to decide whether to show `MessageBubble`'s private badge --
+   * any `visibility === "private"` message present in this client's cache
+   * already belongs to the current user's own private exchange (see
+   * `../lib/merge-message-event.ts`'s defensive sender-mismatch guard for the
+   * one place that check *does* happen, as a belt-and-suspenders measure).
+   */
+  visibility: "public" | "private"
   created_at: string
   updated_at: string
 }

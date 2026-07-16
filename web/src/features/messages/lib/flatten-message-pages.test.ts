@@ -16,6 +16,7 @@ function makeMessage(id: string): Message {
     is_deleted: false,
     exclude_from_ai: false,
     used_context_summary: false,
+    visibility: "public",
     created_at: `2026-01-01T00:00:0${id}Z`,
     updated_at: `2026-01-01T00:00:0${id}Z`,
   }

@@ -1,7 +1,7 @@
 "use client"
 
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { sendAIMessageStream } from "../api/send-ai-message"
+import { sendAIMessage, sendAIMessageStream } from "../api/send-ai-message"
 import { toaster } from "@/components/ui/toaster"
 import {
   findMessageInPages,
@@ -16,6 +16,13 @@ import type { Message } from "../types"
 export interface SendAIMessageInput {
   content: string
   model?: string
+  /**
+   * Private AI mode flag (Step 41's `SendAIMessageRequest.Private`); the
+   * exact wire field name, kept as-is on this input rather than renamed to
+   * an `isPrivate` boolean, so no mapping step is needed before it reaches
+   * `sendAIMessage`. Defaults to `false`.
+   */
+  private?: boolean
 }
 
 /** Context carried from `onMutate` through to `onSuccess`/`onError`. */
@@ -32,11 +39,13 @@ interface SendAIMessageContext {
  * `ThinkingBubble`) the instant the mutation is invoked — no wait for the
  * round trip.
  *
- * Unlike the non-streaming `sendAIMessage` (still exported from
- * `../api/send-ai-message` as the documented fallback for callers that
- * cannot use streaming, e.g. a future private-AI-mode send —
- * `StreamAI` rejects `private: true` with HTTP 400), this mutation's own
- * `202` response never carries the finished AI text: `ai_message.status` is
+ * When `private: true` is requested, this mutation routes to the
+ * non-streaming `sendAIMessage` (`../api/send-ai-message`) instead —
+ * `StreamAI` rejects `private: true` with HTTP 400 (private AI mode is not
+ * yet supported for streaming) — so its `onSuccess` response already
+ * carries the finished AI text and no `token_chunk` frames follow. For the
+ * (default) non-private, streaming path, this mutation's own `202` response
+ * never carries the finished AI text: `ai_message.status` is
  * `"streaming"` with empty `content` on the happy path. The actual response
  * text arrives afterward as `token_chunk` WebSocket frames merged by
  * `mergeMessageEvent` (see `../lib/merge-message-event.ts`), terminated by a
@@ -77,14 +86,25 @@ export function useSendAIMessage(roomId: string) {
   const queryKey = ["rooms", roomId, "messages"] as const
 
   return useMutation({
-    mutationFn: ({ content, model }: SendAIMessageInput) =>
-      sendAIMessageStream(roomId, content, model),
-    onMutate: async ({ content }): Promise<SendAIMessageContext> => {
+    // Private-mode sends cannot use the streaming endpoint (`StreamAI`
+    // rejects `private: true` with HTTP 400), so route those through the
+    // non-streaming `sendAIMessage` instead; everything else (the default)
+    // goes through `sendAIMessageStream`.
+    mutationFn: ({ content, model, private: isPrivate }: SendAIMessageInput) =>
+      isPrivate
+        ? sendAIMessage(roomId, content, model, isPrivate)
+        : sendAIMessageStream(roomId, content, model),
+    onMutate: async ({ content, private: isPrivate }): Promise<SendAIMessageContext> => {
       await queryClient.cancelQueries({ queryKey })
 
       const humanOptimisticId = `optimistic-human-${crypto.randomUUID()}`
       const aiOptimisticId = `optimistic-ai-${crypto.randomUUID()}`
       const now = new Date().toISOString()
+      // Tag both optimistic entries with the visibility the user selected,
+      // so `MessageBubble`'s private badge/border render immediately, before
+      // the WS/REST-confirmed message reconciles over them (see
+      // `mergeMessageEvent`).
+      const visibility = isPrivate ? "private" : "public"
 
       const optimisticHuman: Message = {
         id: humanOptimisticId,
@@ -98,6 +118,7 @@ export function useSendAIMessage(roomId: string) {
         is_deleted: false,
         exclude_from_ai: false,
         used_context_summary: false,
+        visibility,
         created_at: now,
         updated_at: now,
       }
@@ -113,6 +134,7 @@ export function useSendAIMessage(roomId: string) {
         is_deleted: false,
         exclude_from_ai: false,
         used_context_summary: false,
+        visibility,
         created_at: now,
         updated_at: now,
       }

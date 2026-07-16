@@ -45,18 +45,49 @@ import type { RoomSocketEvent } from "../types/ws-events"
  * leave it, so events arriving out of send order still land in a stable,
  * predictable position rather than reshuffling the whole cache.
  *
+ * Defensive sender-mismatch guard (Step 47, private AI mode): the server's
+ * per-user `MessageHub` delivery (Step 41) is the sole authority for
+ * scoping a `visibility: "private"` message/event to its own sender's
+ * connection -- this client should never actually receive a private event
+ * whose `sender_id` doesn't match the current user. As a cheap
+ * belt-and-suspenders check that costs nothing when the server behaves
+ * correctly, any such event is dropped (logged via a single
+ * `console.error`) instead of merged into the cache. The check only runs
+ * when `currentUserId` is available and the message actually carries a
+ * `sender_id` (a human message; AI messages have a `null` `sender_id` and
+ * are never subject to this check) -- no new auth/session endpoint is
+ * introduced to make this check possible.
+ *
  * @param data - Current cache data, or `undefined` if nothing has loaded yet.
  * @param event - The inbound, already-validated WS event.
+ * @param currentUserId - The authenticated user's id (`useSession()`'s
+ * `identity.id`), or `undefined` if not yet available -- in which case the
+ * sender-mismatch guard is skipped entirely rather than guessed at.
  */
 export function mergeMessageEvent(
   data: MessagesInfiniteData | undefined,
   event: RoomSocketEvent,
+  currentUserId?: string,
 ): MessagesInfiniteData | undefined {
   if (event.type === "token_chunk") {
     return applyTokenChunk(data, event.room_id, event.chunk)
   }
 
   const { message } = event
+
+  if (
+    message.visibility === "private" &&
+    currentUserId != null &&
+    message.sender_id != null &&
+    message.sender_id !== currentUserId
+  ) {
+    console.error(
+      "Dropping private message event not addressed to the current user",
+      { messageId: message.id, senderId: message.sender_id, currentUserId },
+    )
+    return data
+  }
+
   const alreadyPresent = findMessageInPages(data, message.id) !== undefined
 
   if (event.type === "message_updated") {
@@ -135,6 +166,7 @@ function applyTokenChunk(
     is_deleted: false,
     exclude_from_ai: false,
     used_context_summary: chunk.summary_used,
+    visibility: "public",
     created_at: now,
     updated_at: now,
   }

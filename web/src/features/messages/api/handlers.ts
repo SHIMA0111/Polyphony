@@ -32,6 +32,7 @@ export const fixtureHumanMessage: Message = {
   is_deleted: false,
   exclude_from_ai: false,
   used_context_summary: false,
+  visibility: "public",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 }
@@ -48,6 +49,7 @@ export const fixtureAiMessage: Message = {
   is_deleted: false,
   exclude_from_ai: false,
   used_context_summary: false,
+  visibility: "public",
   created_at: "2026-01-01T00:00:01Z",
   updated_at: "2026-01-01T00:00:01Z",
 }
@@ -166,10 +168,21 @@ export const messagesHandlers = [
     return HttpResponse.json<Message>(fixtureHumanMessage, { status: 201 })
   }),
 
-  http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
-    return HttpResponse.json<AIMessageResponse>(fixtureAiMessageResponse, {
-      status: 201,
-    })
+  http.post("/api/proxy/rooms/:roomId/messages/ai", async ({ request }) => {
+    // Mirrors `SendAIMessageRequest.Private` (Step 41): echoes the request's
+    // `private` flag onto both response messages' `visibility`, so
+    // component tests can exercise the private-mode toggle end to end.
+    const body = (await request.json().catch(() => ({}))) as {
+      private?: boolean
+    }
+    const visibility = body.private ? "private" : "public"
+    return HttpResponse.json<AIMessageResponse>(
+      {
+        user_message: { ...fixtureAiMessageResponse.user_message, visibility },
+        ai_message: { ...fixtureAiMessageResponse.ai_message, visibility },
+      },
+      { status: 201 },
+    )
   }),
 
   // `useSendAIMessage`'s mutationFn calls this streaming endpoint by

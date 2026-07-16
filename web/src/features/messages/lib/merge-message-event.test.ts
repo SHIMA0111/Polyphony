@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { Message } from "@/features/messages/types"
 import type { RoomSocketEvent } from "@/features/messages/types/ws-events"
 import { mergeMessageEvent } from "./merge-message-event"
@@ -18,6 +18,7 @@ function makeMessage(id: string, overrides: Partial<Message> = {}): Message {
     is_deleted: false,
     exclude_from_ai: false,
     used_context_summary: false,
+    visibility: "public",
     created_at: `2026-01-01T00:00:0${id}Z`,
     updated_at: `2026-01-01T00:00:0${id}Z`,
     ...overrides,
@@ -257,5 +258,88 @@ describe("mergeMessageEvent", () => {
 
       expect(result).toEqual(seeded)
     })
+  })
+
+  // --- Step 47: private AI mode ---
+
+  it("passes visibility through untouched for a message_created event", () => {
+    const result = mergeMessageEvent(
+      undefined,
+      makeCreatedEvent(makeMessage("1", { visibility: "private" })),
+      "user-1",
+    )
+
+    expect(result?.pages[0].messages[0].visibility).toBe("private")
+  })
+
+  it("passes visibility through untouched for a message_updated event", () => {
+    const seeded: MessagesInfiniteData = {
+      pages: [{ messages: [makeMessage("1", { visibility: "private" })], next_cursor: null }],
+      pageParams: [undefined],
+    }
+
+    const result = mergeMessageEvent(
+      seeded,
+      makeUpdatedEvent(makeMessage("1", { visibility: "private", content: "edited" })),
+      "user-1",
+    )
+
+    expect(result?.pages[0].messages[0]).toMatchObject({
+      visibility: "private",
+      content: "edited",
+    })
+  })
+
+  it("drops (and logs) a private message_created event whose sender_id doesn't match the current user", () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+    const result = mergeMessageEvent(
+      undefined,
+      makeCreatedEvent(
+        makeMessage("1", { visibility: "private", sender_id: "someone-else" }),
+      ),
+      "user-1",
+    )
+
+    expect(result).toBeUndefined()
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1)
+
+    consoleErrorSpy.mockRestore()
+  })
+
+  it("does not drop a private event when no currentUserId is available (guard degrades to a no-op)", () => {
+    const result = mergeMessageEvent(
+      undefined,
+      makeCreatedEvent(
+        makeMessage("1", { visibility: "private", sender_id: "someone-else" }),
+      ),
+      // currentUserId omitted entirely
+    )
+
+    expect(result?.pages[0].messages[0].id).toBe("1")
+  })
+
+  it("does not drop a private AI event (null sender_id) even when a currentUserId is available", () => {
+    const result = mergeMessageEvent(
+      undefined,
+      makeCreatedEvent(
+        makeMessage("1", { visibility: "private", sender_id: null, type: "ai" }),
+      ),
+      "user-1",
+    )
+
+    expect(result?.pages[0].messages[0].id).toBe("1")
+  })
+
+  it("merges a private event normally when sender_id matches the current user", () => {
+    const result = mergeMessageEvent(
+      undefined,
+      makeCreatedEvent(
+        makeMessage("1", { visibility: "private", sender_id: "user-1" }),
+      ),
+      "user-1",
+    )
+
+    expect(result?.pages[0].messages[0].id).toBe("1")
   })
 })

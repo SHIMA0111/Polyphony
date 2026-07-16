@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { apiRequest } from "@/lib/http-client"
 import { getWsBaseUrl, isMockMode } from "@/config/env"
+import { useSession } from "@/features/auth/hooks/use-session"
 import { mergeMessageEvent } from "../lib/merge-message-event"
 import { isRoomSocketEvent } from "../types/ws-events"
 import type { MessagesInfiniteData } from "../lib/message-cache"
@@ -42,7 +43,9 @@ function withJitter(backoffMs: number): number {
  * `GET /rooms/:roomId/ws` endpoint (Step 15) and merges every inbound
  * `message_created`/`message_updated` event into the
  * `["rooms", roomId, "messages"]` TanStack Query cache Step 29 established,
- * via {@link mergeMessageEvent}.
+ * via {@link mergeMessageEvent} -- passing along the current user's id
+ * (`useSession()`) so that function's defensive sender-mismatch guard for
+ * private AI mode (Step 47) has something to compare against.
  *
  * A fresh, short-lived ticket (`POST /ws/ticket`, fetched through
  * `apiRequest` so it goes via the `/api/proxy/*` BFF and is authenticated by
@@ -74,6 +77,17 @@ export function useRoomSocket(roomId: string): ConnectionStatus {
   const [status, setStatus] = useState<ConnectionStatus>(
     isMockMode() ? "offline" : "connecting",
   )
+
+  // The current user's id, for `mergeMessageEvent`'s defensive
+  // sender-mismatch guard (Step 47). Read via a ref (rather than added to
+  // the effect's own dependency array) so a `useSession()` refetch never
+  // tears down and reopens the live WebSocket connection below -- only the
+  // value `onmessage` reads at event-handling time needs to be current.
+  const currentUserId = useSession().data?.identity.id
+  const currentUserIdRef = useRef(currentUserId)
+  useEffect(() => {
+    currentUserIdRef.current = currentUserId
+  }, [currentUserId])
 
   useEffect(() => {
     // The initial `useState` above already covers the mock-mode status; mock
@@ -137,7 +151,7 @@ export function useRoomSocket(roomId: string): ConnectionStatus {
         if (!isRoomSocketEvent(parsed)) return
 
         queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) =>
-          mergeMessageEvent(old, parsed),
+          mergeMessageEvent(old, parsed, currentUserIdRef.current),
         )
       }
 

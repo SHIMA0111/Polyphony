@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react"
 import Link from "next/link"
 import { Box, Button, Flex, IconButton, Separator, Spacer, Text } from "@chakra-ui/react"
-import { ArrowUp, ImagePlus, Sparkles } from "lucide-react"
+import { ArrowUp, ImagePlus, Lock, LockOpen, Sparkles } from "lucide-react"
 import { estimateTokens } from "@/features/messages/api/estimate-tokens"
 import type { Message, ModelInfo } from "@/features/messages/types"
 import { useAttachmentStaging } from "@/features/messages/hooks/use-attachment-staging"
@@ -35,6 +35,7 @@ interface MessageInputProps {
     content: string,
     model: string,
     attachmentIds: string[],
+    isPrivate: boolean,
   ) => Promise<void>
   models: ModelInfo[]
   disabled?: boolean
@@ -89,6 +90,17 @@ export function MessageInput({
   // even though `useChatRoom` only clears its own `aiError` state at the
   // *start* of the next `handleSendWithAI` call.
   const [aiErrorDismissed, setAiErrorDismissed] = useState(false)
+  // Tracks the most recent `aiError` value this component has reacted to, so
+  // a *new* rejection can un-dismiss the error line during render (see
+  // `displayedAiError`'s derivation below) without a
+  // `useEffect`-that-calls-`setState` (which trips
+  // `react-hooks/set-state-in-effect`).
+  const [lastSeenAiError, setLastSeenAiError] = useState(aiError)
+  // Step 47: private AI mode toggle. Opt-in per message (not sticky) --
+  // reset to `false` after every "Send with AI" call, mirroring the
+  // existing `setInput("")` reset in `handleSendWithAI`. Has no effect on
+  // the plain "Send" path.
+  const [isPrivate, setIsPrivate] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   // Guards against an older, slower estimate response overwriting a newer
@@ -111,12 +123,17 @@ export function MessageInput({
   const effectiveModel = explicitModel ?? models[0] ?? null
 
   // A new (truthy) `aiError` always un-dismisses — it represents a fresh
-  // rejection, not the one just dismissed.
-  useEffect(() => {
+  // rejection, not the one just dismissed. Adjusting state during render
+  // (rather than in a `useEffect`) per React's "you can update state right
+  // while rendering" pattern: guarded by comparing against `lastSeenAiError`
+  // so this only fires once per actual `aiError` change, not on every
+  // render, and never triggers `react-hooks/set-state-in-effect`.
+  if (aiError !== lastSeenAiError) {
+    setLastSeenAiError(aiError)
     if (aiError) {
       setAiErrorDismissed(false)
     }
-  }, [aiError])
+  }
 
   const displayedAiError = aiErrorDismissed ? null : (aiError ?? null)
 
@@ -225,9 +242,14 @@ export function MessageInput({
     setAiErrorDismissed(true)
     setIsSending(true)
     try {
-      await onSendWithAI(content, effectiveModel.id, doneAttachmentIds)
+      await onSendWithAI(content, effectiveModel.id, doneAttachmentIds, isPrivate)
       setInput("")
       resetAttachments()
+      // Private mode is opt-in per message, not sticky: reset to off on a
+      // successful send, mirroring `setInput("")`/`resetAttachments()`
+      // above. Left as-is on failure (like the typed content) so a retried
+      // send doesn't silently lose the user's private-mode choice.
+      setIsPrivate(false)
     } catch {
       // See `handleSend`'s catch above: restore the content instead of
       // losing it, the toast/failed-bubble is already handled by the
@@ -243,6 +265,7 @@ export function MessageInput({
     hasUploadingAttachment,
     visionGated,
     doneAttachmentIds,
+    isPrivate,
     onSendWithAI,
     resetAttachments,
   ])
@@ -385,6 +408,26 @@ export function MessageInput({
                 selectedModel={effectiveModel}
                 onModelSelect={setExplicitModel}
               />
+            )}
+            {canInvokeAI && (
+              <Tooltip content="Only you will see this exchange with the AI">
+                <IconButton
+                  aria-label={
+                    isPrivate ? "Private mode on" : "Private mode off"
+                  }
+                  aria-pressed={isPrivate}
+                  variant={isPrivate ? "solid" : "ghost"}
+                  colorPalette={isPrivate ? "purple" : "gray"}
+                  size="sm"
+                  h={8}
+                  minW={8}
+                  rounded="lg"
+                  disabled={disabled || isSending}
+                  onClick={() => setIsPrivate((prev) => !prev)}
+                >
+                  {isPrivate ? <Lock size={16} /> : <LockOpen size={16} />}
+                </IconButton>
+              </Tooltip>
             )}
             <Spacer />
             <Button
