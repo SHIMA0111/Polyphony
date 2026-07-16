@@ -118,4 +118,4 @@ After this PR: `SendAIMessage`/`RegenerateAIMessage` estimate the token cost of 
 - [x] The web `MessageList` shows a badge/tooltip on AI messages with `used_context_summary === true`.
 - [x] `ai.ContextBuilder.Build`'s method signature (Step 23) is unchanged.
 - [x] All items in Scope are checked off.
-- [ ] All Verification checks pass. (Verification items 1-4, 6-8 pass; items 5 and 9, which require the full Docker Compose stack, were not run in this isolated worktree -- see skippedComposeChecks.)
+- [x] All Verification checks pass. (Items 1-4 and 6-8 verified by the implementer; items 5 and 9 verified live in the wave-6 integration review: `\d message_context_summaries` shows the expected columns/PK/FK, `POST /rooms/:roomId/messages/ai` 201 responses carry `ai_message.used_context_summary: false` under normal volume, `GET /rooms/:roomId/messages` returns `used_context_summary: false` on every listed message per the non-persisted semantics, and `docker compose down` shut down cleanly at the end of the review.)

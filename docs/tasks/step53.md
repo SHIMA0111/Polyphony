@@ -107,6 +107,6 @@ Step 49's checkout success/cancel URLs default to this step's routes (`/billing/
 - [x] `/billing/history` renders a paginated list of past payments with date, description, formatted amount, status, and an optional receipt link.
 - [x] A new `web/src/app/(main)/billing/layout.tsx` provides sub-navigation across Plans/Subscription/History/Usage without modifying Step 48's `/billing/usage` page or the shared top-bar layout.
 - [x] `web/src/features/billing/types.ts` and `api/handlers.ts` contain this step's additions alongside (not instead of) Step 48's existing balance/usage exports.
-- [ ] `web/e2e/billing-checkout.spec.ts` passes end-to-end when Stripe test keys and `stripe listen` forwarding are configured, and skips gracefully (not fails) when they are not.
+- [ ] `web/e2e/billing-checkout.spec.ts` passes end-to-end when Stripe test keys and `stripe listen` forwarding are configured, and skips gracefully (not fails) when they are not. (Wave-6 review: the skip path is verified live — with placeholder Stripe keys the spec reports "skipped", not "failed", after one live fix: its generated username `billing_checkout_${runId}` was 36 chars, exceeding registerSchema's 32-char cap and stalling registration; now `billing_${runId}`. The credentialed full-checkout path still needs a real test-mode Stripe account + `stripe listen`, so this box stays open.)
 - [x] No edits outside the files listed in Conflict notes / Verification step 8.
-- [ ] All verification checks above pass.
+- [ ] All verification checks above pass. (Wave-6 review: 1-5 and 8 pass; 6 passes in its documented skip mode only — the live Stripe Checkout leg remains unexercised without real test credentials; 7 verified — the e2e stack tears down cleanly.)
