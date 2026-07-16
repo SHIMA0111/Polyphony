@@ -77,8 +77,8 @@ reconciled into this file at Step 60; they had not previously been tracked here.
 - [x] `docker compose config -q` — compose file parses/validates
 - [ ] `task migrate:status` — requires a real reachable Postgres target (no `url` configured in the `local` Atlas
       env beyond the Docker dev-db used for diffing); skipped, needs the compose `db` service
-- [ ] `docker compose up -d db migrate minio minio-init api llm-gateway` + `docker compose ps` — skipped (full
-      compose stack on fixed ports)
+- [x] `docker compose up -d db migrate minio minio-init api llm-gateway` + `docker compose ps` — verified live in
+      the wave-9 integration review via `task up`: all listed services `Up (healthy)` (one-shots exited 0).
 - [ ] End-to-end curl verification (steps 5-10 of docs/tasks/step12.md) — skipped (requires the running compose
       stack); left for the post-merge integration review
 
@@ -116,6 +116,6 @@ reconciled into this file at Step 60; they had not previously been tracked here.
       (includes the three `*_with_image_content_sends_*_multimodal_body` provider tests)
 - [x] `cd server && go build ./... && go vet ./... && go test ./... && go test -tags=integration ./...`
 - [x] `cd web && bun install && bun run lint && bunx tsc --noEmit && bunx vitest run`
-- [ ] `web/e2e/attachments.spec.ts` / `web/e2e/regression/advanced-ai/vision-attachments.spec.ts` against the live
-      compose stack (real MinIO + a real/stubbed Vision-capable model) — requires the full E2E stack; skipped
-      (post-merge integration review)
+- [x] `web/e2e/attachments.spec.ts` / `web/e2e/regression/advanced-ai/vision-attachments.spec.ts` against the live
+      compose stack (real MinIO + the stubbed Vision-capable model) — verified live in the wave-9 integration
+      review: both specs passed in the full-suite E2E runs.

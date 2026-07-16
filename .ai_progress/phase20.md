@@ -107,5 +107,6 @@ archived-room guard on new message posts.
 ### Verification run in this worktree (Step 60, Step 52)
 
 - [x] `cd web && bun install && bun run lint && bunx tsc --noEmit && bunx vitest run`
-- [ ] `web/e2e/room-fork.spec.ts` against the live compose stack — requires the full E2E stack; skipped (post-merge
-      integration review)
+- [x] `web/e2e/room-fork.spec.ts` against the live compose stack — verified live in the wave-9 integration review:
+      `room-fork.spec.ts` and `regression/room-fork.spec.ts` passed in the full-suite E2E runs (fork trigger →
+      progress → archived destination → completed → new room usable; member-role gating).

@@ -48,5 +48,6 @@ first-party rather than an external third-party consumer).
 
 - [x] `cd server && go build ./... && go vet ./... && go test ./...`
 - [x] `cd web && bun install && bun run lint && bunx tsc --noEmit && bunx vitest run`
-- [ ] `web/e2e/oauth-dex.spec.ts` / `web/e2e/oauth-hydra.spec.ts` against the live compose stack (dex/Kratos/Hydra
-      containers) — requires the full stack; skipped (post-merge integration review)
+- [x] `web/e2e/oauth-dex.spec.ts` / `web/e2e/oauth-hydra.spec.ts` against the live compose stack (dex/Kratos/Hydra
+      containers) — verified live in the wave-9 integration review: both specs passed in the full-suite E2E runs
+      (dex sign-in + account reuse; full Hydra authorization-code round trip through token exchange).

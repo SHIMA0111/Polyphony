@@ -46,8 +46,11 @@ completion, and fall back gracefully to the non-streaming path when no chunk eve
 
 - [x] `cd llm-gateway && cargo build --all-targets && cargo clippy --all-targets -- -D warnings && cargo test`
 - [x] `cd server && go build ./... && go vet ./... && go test ./... && go test -tags=integration ./...`
-- [ ] Live SSE-over-WebSocket end-to-end streaming smoke test against the compose stack — requires the full E2E
-      stack; skipped (post-merge integration review)
+- [x] Live SSE-over-WebSocket end-to-end streaming smoke test against the compose stack — verified live in the
+      wave-9 integration review: `e2e/streaming.spec.ts` and `e2e/regression/advanced-ai/streaming.spec.ts` passed
+      in the fully-green full-suite E2E runs (incremental `token_chunk` rendering + finalization). Note: both specs
+      carry timing-sensitive assertions that flaked once each under machine load — see docs/tasks/step60.md's
+      "Diagnose and fix" scope item for the recorded root causes.
 
 ## Scope
 

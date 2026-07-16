@@ -41,5 +41,8 @@
 
 - [x] `cd server && go build ./... && go vet ./... && go test ./... && go test -tags=integration ./...` (includes
       `redis_hub_integration_test.go` via testcontainers' Redis module)
-- [ ] `task verify:redis-hub` (multi-replica WebSocket smoke check) — requires the compose stack with a real
-      scaled `api` service; skipped (post-merge integration review)
+- [x] `task verify:redis-hub` (multi-replica WebSocket smoke check) — verified live in the wave-9 integration
+      review: a message sent via HTTP against api replica 2 was delivered over a WebSocket held by replica 1
+      through RedisHub ("SUCCESS"). Note: the script's hardcoded `-f docker-compose.yml -f
+      docker-compose.scale-test.yml` list bypasses a local `docker-compose.override.yml`, so on machines that rely
+      on one for host-port remaps the script needs the override appended to its `COMPOSE` array.

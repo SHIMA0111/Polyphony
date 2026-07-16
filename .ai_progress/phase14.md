@@ -42,5 +42,5 @@ UI). See those files for the full per-file implementation notes.
 
 - [x] `cd server && go build ./... && go vet ./... && go test ./... && go test -tags=integration ./...`
 - [x] `cd web && bun install && bun run lint && bunx tsc --noEmit && bunx vitest run`
-- [ ] `web/e2e/private-mode.spec.ts` / `web/e2e/regression/advanced-ai/private-mode.spec.ts` against the live
-      compose stack — requires the full E2E stack; skipped (post-merge integration review)
+- [x] `web/e2e/private-mode.spec.ts` / `web/e2e/regression/advanced-ai/private-mode.spec.ts` against the live
+      compose stack — verified live in the wave-9 integration review: both specs passed in the full-suite E2E runs.

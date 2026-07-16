@@ -52,5 +52,7 @@
 
 - [x] `cd server && go build ./... && go vet ./... && go test ./... && go test -tags=integration ./...`
 - [x] `cd web && bun install && bun run lint && bunx tsc --noEmit && bunx vitest run`
-- [ ] `docker compose config -q` against the full Kratos service block / live Kratos flow walkthrough — requires
-      the compose stack; skipped (post-merge integration review)
+- [x] `docker compose config -q` against the full Kratos service block / live Kratos flow walkthrough — verified
+      live in the wave-9 integration review: `docker compose config -q` passes, and the Kratos registration/login/
+      logout/session flows were exercised end to end by `e2e/auth.spec.ts` (plus the dex/Hydra OAuth specs) against
+      the live E2E stack.

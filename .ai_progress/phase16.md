@@ -68,9 +68,12 @@ below; Step 48 has since landed).
 - [x] `cd server && go test -tags=integration ./internal/interface/repository/postgres/... -run TestBillingRepository -v` (testcontainers, Docker required)
 - [x] `cd web && bun install && bun run lint && bunx tsc --noEmit && bunx vitest run` (includes `BalanceBadge`/`UsageHistoryList` tests)
 - [ ] `task up` + curl end-to-end flow (requires the full Docker Compose stack — left for post-merge integration verification)
-- [ ] `docker compose exec db psql ...` schema inspection (same as above)
-- [ ] `web/e2e/billing.spec.ts` against the live compose stack — requires the full E2E stack; skipped (post-merge
-      integration review)
+- [x] `docker compose exec db psql ...` schema inspection — verified live in the wave-9 integration review: `\dt`
+      lists `token_balances`, `token_transactions`, `subscriptions`, and `payment_history` alongside the rest of
+      the schema.
+- [x] `web/e2e/billing.spec.ts` against the live compose stack — verified live in the wave-9 integration review:
+      `billing.spec.ts` and `regression/billing.spec.ts` passed in the full-suite E2E runs (Stripe Checkout legs
+      self-skip without credentials, per the documented steady state).
 
 ## Out of scope (per step42.md / step48.md)
 

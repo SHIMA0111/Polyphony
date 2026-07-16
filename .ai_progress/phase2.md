@@ -61,10 +61,10 @@ file at Step 60; it had not previously been tracked here).
 - [x] `cd server && go vet ./...`
 - [x] `cd server && go test ./...` (Docker-free; `internal/interface/repository/postgres` has no non-integration
       test files, confirming the new tests are correctly gated behind `-tags=integration`)
-- [ ] `docker compose up -d db && task migrate:apply` — requires the fixed-port compose stack; skipped per this
-      run's constraints (post-merge integration review). Migration application was indirectly validated via
-      `testutil/postgres.New`, which applies every file under `server/migrations/` (including the new one) against
-      a fresh testcontainers PostgreSQL instance as part of every integration test run in this step.
+- [x] `docker compose up -d db && task migrate:apply` — verified live in the wave-9 integration review against the
+      dev compose stack (`migrate` exited 0 on `task up`; a follow-up `task migrate:apply` reported "No migration
+      files to execute"). Previously also validated indirectly via `testutil/postgres.New`, which applies every
+      file under `server/migrations/` against a fresh testcontainers PostgreSQL instance.
 - [x] `cd server && go test -tags=integration ./internal/interface/repository/postgres/... -run TestReserveSequenceRange -v`
 - [x] `cd server && go test -tags=integration ./internal/interface/repository/postgres/... -run TestMessages_UniqueRoomSequence -v`
 - [ ] Manual smoke check via `task up` + live HTTP calls — requires the compose stack; skipped per this run's
@@ -130,5 +130,6 @@ file at Step 60; it had not previously been tracked here).
 
 - [x] `cd web && bun install && bun run lint && bunx tsc --noEmit && bunx vitest run` (includes
       `use-room-socket.test.ts` and `merge-message-event.test.ts`)
-- [ ] Live WebSocket connection against the compose stack (`task test:e2e:up` + a real browser) — requires the
-      full E2E stack; skipped (post-merge integration review)
+- [x] Live WebSocket connection against the compose stack (`task test:e2e:up` + a real browser) — verified live in
+      the wave-9 integration review: `e2e/regression/two-client-realtime.spec.ts` and both streaming specs passed
+      against the full E2E stack (real Chromium WebSocket, cross-context delivery).
