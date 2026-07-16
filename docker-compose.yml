@@ -332,6 +332,19 @@ services:
       KRATOS_ADMIN_URL: http://kratos-e2e:4434
       KRATOS_COOKIE_NAME: ory_kratos_session
       REDIS_URL: redis://redis-e2e:6379/0
+      # Mirrors the dev `api` service's own S3_* defaults (above) verbatim,
+      # including `localhost:9000` rather than the in-network `minio:9000`
+      # hostname: presigned URLs are handed back to the browser, which runs
+      # on the host (Playwright's `baseURL` is `http://localhost:3001`), not
+      # inside the compose network, so they must resolve against the same
+      # host-published `minio` port the dev stack uses (Step 12's untagged
+      # `minio` service, always started alongside `--profile test` too).
+      S3_ENDPOINT: ${S3_ENDPOINT_E2E:-http://localhost:9000}
+      S3_REGION: ${S3_REGION_E2E:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET_E2E:-polyphony-attachments}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY_E2E:-polyphony}
+      S3_SECRET_KEY: ${S3_SECRET_KEY_E2E:-polyphony-minio}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE_E2E:-true}
       # Much higher/looser than the dev-stack defaults above, and a short
       # WHOAMI_CACHE_TTL rather than a long one, so Playwright specs never
       # trip a 429 and logout/revocation specs are not slowed down waiting
