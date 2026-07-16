@@ -34,7 +34,10 @@ async function registerUser(page: Page, prefix: string): Promise<RegisteredUser>
   await page.getByPlaceholder("Create a password").fill(user.password)
   await page.getByPlaceholder("Confirm your password").fill(user.password)
   await page.getByRole("button", { name: "Create account" }).click()
-  await expect(page).toHaveURL(/\/rooms$/)
+  // Longer timeout (wave 7 carryover): under 3-worker parallelism this
+  // navigation occasionally exceeds Playwright's default 5s assertion
+  // timeout while the registration request queues behind concurrent specs.
+  await expect(page).toHaveURL(/\/rooms$/, { timeout: 15_000 })
 
   return user
 }
