@@ -1,0 +1,13 @@
+{
+  "name": "llm-stub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic OpenAI-compatible completion stub for the Docker Compose E2E test profile.",
+  "scripts": {
+    "start": "bun run server.ts",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.4"
+  }
+}

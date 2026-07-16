@@ -91,6 +91,27 @@ bun install && bun run dev
 # → http://localhost:3000
 ```
 
+### End-to-End Tests (Playwright)
+
+A separate, isolated Docker Compose stack (the `test` profile) runs on alternate host ports
+(`5433`, `8090`, `8091`, `8092`, `3001`) alongside — and does not conflict with — the normal dev
+stack, with a deterministic OpenAI-compatible LLM stub (`llm-stub/`) standing in for a real
+provider:
+
+```bash
+# Bring up the isolated E2E stack (Postgres, migrations, API, LLM Gateway, LLM stub, Web)
+task test:e2e:up
+
+# Run Playwright specs (seeds a fixture user/room automatically via globalSetup)
+task test:e2e
+
+# Tear the E2E stack down, including its volumes
+task test:e2e:down
+```
+
+`task test:e2e:seed` re-runs just the fixture seed script standalone (idempotent — safe to run
+against an already-seeded stack). See `docs/tasks/step10.md` for the full harness design.
+
 ## License
 
 [AGPL-3.0](LICENSE.md)
