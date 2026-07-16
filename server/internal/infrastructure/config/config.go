@@ -37,6 +37,30 @@ type Config struct {
 	// DBHealthCheckPeriod is the interval at which pgxpool runs a background
 	// health check on idle connections (env DB_HEALTH_CHECK_PERIOD, default 1m).
 	DBHealthCheckPeriod time.Duration
+
+	// S3Endpoint is the S3-compatible object storage endpoint used when
+	// presigning URLs. It must be reachable by whichever caller (typically a
+	// browser) will actually use the resulting presigned URL, which is why
+	// the default is a host-reachable http://localhost:9000 rather than the
+	// container-internal MinIO service address (env S3_ENDPOINT).
+	S3Endpoint string
+	// S3Region is the region used for SigV4 signing (env S3_REGION, default
+	// "us-east-1"). MinIO ignores the region's real-world meaning but still
+	// requires one to be set for signing.
+	S3Region string
+	// S3Bucket is the bucket attachments are stored in (env S3_BUCKET,
+	// default "polyphony-attachments").
+	S3Bucket string
+	// S3AccessKey is the access key used for static credentials (env
+	// S3_ACCESS_KEY, default "minioadmin").
+	S3AccessKey string
+	// S3SecretKey is the secret key used for static credentials (env
+	// S3_SECRET_KEY, default "minioadmin").
+	S3SecretKey string
+	// S3ForcePathStyle selects path-style bucket addressing (required by
+	// MinIO, which does not support virtual-hosted-style addressing) rather
+	// than virtual-hosted-style (env S3_FORCE_PATH_STYLE, default true).
+	S3ForcePathStyle bool
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -72,6 +96,31 @@ func Load() (*Config, error) {
 	dbMaxConnIdleTime := parseDurationEnv("DB_MAX_CONN_IDLE_TIME", defaultDBMaxConnIdleTime)
 	dbHealthCheckPeriod := parseDurationEnv("DB_HEALTH_CHECK_PERIOD", defaultDBHealthCheckPeriod)
 
+	s3Endpoint := os.Getenv("S3_ENDPOINT")
+	if s3Endpoint == "" {
+		s3Endpoint = "http://localhost:9000"
+	}
+	s3Region := os.Getenv("S3_REGION")
+	if s3Region == "" {
+		s3Region = "us-east-1"
+	}
+	s3Bucket := os.Getenv("S3_BUCKET")
+	if s3Bucket == "" {
+		s3Bucket = "polyphony-attachments"
+	}
+	s3AccessKey := os.Getenv("S3_ACCESS_KEY")
+	if s3AccessKey == "" {
+		s3AccessKey = "minioadmin"
+	}
+	s3SecretKey := os.Getenv("S3_SECRET_KEY")
+	if s3SecretKey == "" {
+		s3SecretKey = "minioadmin"
+	}
+	s3ForcePathStyle := true
+	if v := os.Getenv("S3_FORCE_PATH_STYLE"); v != "" {
+		s3ForcePathStyle = v != "false"
+	}
+
 	return &Config{
 		Port:                port,
 		DatabaseURL:         dbURL,
@@ -81,6 +130,12 @@ func Load() (*Config, error) {
 		DBMaxConnLifetime:   dbMaxConnLifetime,
 		DBMaxConnIdleTime:   dbMaxConnIdleTime,
 		DBHealthCheckPeriod: dbHealthCheckPeriod,
+		S3Endpoint:          s3Endpoint,
+		S3Region:            s3Region,
+		S3Bucket:            s3Bucket,
+		S3AccessKey:         s3AccessKey,
+		S3SecretKey:         s3SecretKey,
+		S3ForcePathStyle:    s3ForcePathStyle,
 	}, nil
 }
 

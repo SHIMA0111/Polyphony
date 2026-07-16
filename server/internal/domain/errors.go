@@ -30,6 +30,18 @@ var (
 
 	// ErrInvalidMessageType indicates the message type is not valid for the operation.
 	ErrInvalidMessageType = errors.New("invalid message type")
+
+	// ErrAttachmentAlreadyLinked indicates an attachment has already been
+	// linked to a message and cannot be attached again.
+	ErrAttachmentAlreadyLinked = errors.New("attachment already linked to a message")
+
+	// ErrUnsupportedMimeType indicates an attachment upload was requested
+	// with a MIME type outside the supported allow-list.
+	ErrUnsupportedMimeType = errors.New("unsupported mime type")
+
+	// ErrAttachmentTooLarge indicates an attachment upload was requested
+	// with a declared size exceeding the maximum allowed.
+	ErrAttachmentTooLarge = errors.New("attachment too large")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.

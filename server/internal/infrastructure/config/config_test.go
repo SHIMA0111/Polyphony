@@ -96,3 +96,65 @@ func TestLoadMissingRequiredVars(t *testing.T) {
 		t.Fatal("expected Load to fail when DATABASE_URL and JWT_SECRET are unset")
 	}
 }
+
+func TestLoadS3Defaults(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.S3Endpoint != "http://localhost:9000" {
+		t.Errorf("expected default S3Endpoint http://localhost:9000, got %v", cfg.S3Endpoint)
+	}
+	if cfg.S3Region != "us-east-1" {
+		t.Errorf("expected default S3Region us-east-1, got %v", cfg.S3Region)
+	}
+	if cfg.S3Bucket != "polyphony-attachments" {
+		t.Errorf("expected default S3Bucket polyphony-attachments, got %v", cfg.S3Bucket)
+	}
+	if cfg.S3AccessKey != "minioadmin" {
+		t.Errorf("expected default S3AccessKey minioadmin, got %v", cfg.S3AccessKey)
+	}
+	if cfg.S3SecretKey != "minioadmin" {
+		t.Errorf("expected default S3SecretKey minioadmin, got %v", cfg.S3SecretKey)
+	}
+	if !cfg.S3ForcePathStyle {
+		t.Errorf("expected default S3ForcePathStyle true, got %v", cfg.S3ForcePathStyle)
+	}
+}
+
+func TestLoadS3Overrides(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("S3_ENDPOINT", "http://minio.example.com:9000")
+	t.Setenv("S3_REGION", "eu-west-1")
+	t.Setenv("S3_BUCKET", "custom-bucket")
+	t.Setenv("S3_ACCESS_KEY", "custom-access-key")
+	t.Setenv("S3_SECRET_KEY", "custom-secret-key")
+	t.Setenv("S3_FORCE_PATH_STYLE", "false")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.S3Endpoint != "http://minio.example.com:9000" {
+		t.Errorf("expected overridden S3Endpoint, got %v", cfg.S3Endpoint)
+	}
+	if cfg.S3Region != "eu-west-1" {
+		t.Errorf("expected overridden S3Region, got %v", cfg.S3Region)
+	}
+	if cfg.S3Bucket != "custom-bucket" {
+		t.Errorf("expected overridden S3Bucket, got %v", cfg.S3Bucket)
+	}
+	if cfg.S3AccessKey != "custom-access-key" {
+		t.Errorf("expected overridden S3AccessKey, got %v", cfg.S3AccessKey)
+	}
+	if cfg.S3SecretKey != "custom-secret-key" {
+		t.Errorf("expected overridden S3SecretKey, got %v", cfg.S3SecretKey)
+	}
+	if cfg.S3ForcePathStyle {
+		t.Errorf("expected overridden S3ForcePathStyle false, got %v", cfg.S3ForcePathStyle)
+	}
+}
