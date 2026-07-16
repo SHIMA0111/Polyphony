@@ -187,3 +187,150 @@ against Kratos's self-service/admin APIs in the meantime.
   linking and no-silent-merge" above).
 - Actually registering real Google/GitHub OAuth applications (documented above as an
   optional manual path only).
+
+## OAuth2/OIDC provider (Hydra)
+
+Step 55 adds Ory Hydra as a full OAuth2/OIDC *authorization server* layered
+on top of the Kratos session above. Kratos remains the only identity/session
+backend — Hydra never authenticates anyone itself, it is purely a protocol
+layer: it owns the `/oauth2/auth`, `/oauth2/token`, and `/userinfo`
+endpoints and the login/consent "challenge" handshake, while this app's own
+tiny Route Handlers (`web/src/app/(auth)/oauth/login/route.ts` and
+`web/src/app/(auth)/oauth/consent/route.ts`) act as Hydra's login/consent
+provider by checking the caller's existing `ory_kratos_session` cookie via
+`sessions/whoami` and telling Hydra which Kratos identity to bind as the
+OAuth2 `subject`. This means a third-party (or first-party) OAuth2 client
+can obtain tokens scoped to a Polyphony identity without Polyphony
+introducing any second authentication mechanism.
+
+### Services
+
+| Service          | Purpose                                                    | Ports (host)       |
+|------------------|-------------------------------------------------------------|---------------------|
+| `hydra`          | Hydra public + admin API server (`hydra serve all --dev`)    | `4444` (public), `4445` (admin) |
+| `hydra-db`       | Dedicated Postgres instance backing Hydra (independent of `db` and `kratos-db`) | none (internal only) |
+| `hydra-migrate`  | One-shot job that applies Hydra's own SQL migrations (`hydra migrate sql`) against `hydra-db` | none |
+
+Bring the group up with:
+
+```bash
+docker compose up -d hydra-db hydra-migrate hydra
+```
+
+(`hydra` depends on `hydra-migrate` completing successfully, and
+`hydra-migrate` depends on `hydra-db` being healthy, so `docker compose up -d
+hydra` alone is also enough — Compose resolves the rest of the dependency
+chain.)
+
+### Configuration files
+
+- `ory/hydra/hydra.yml` — Hydra configuration: cookie same-site policy, the
+  `urls.self.issuer`/`urls.login`/`urls.consent`/`urls.logout` endpoints,
+  opaque access tokens, and token/challenge TTLs. Like `ory/kratos/kratos.yml`,
+  it intentionally omits `dsn` and `secrets` — those, and any non-default
+  `urls.self.issuer`/`urls.login`/`urls.consent` override, are supplied at
+  container start via the `hydra`/`hydra-migrate` service blocks in
+  `docker-compose.yml` from the `HYDRA_*` variables in `.env`, using Hydra's
+  same uppercase-dot-to-underscore env-var-to-config-key convention Kratos
+  uses (`DSN` -> `dsn`, `SECRETS_SYSTEM` -> `secrets.system[0]`,
+  `URLS_SELF_ISSUER` -> `urls.self.issuer`, `URLS_LOGIN` -> `urls.login`,
+  `URLS_CONSENT` -> `urls.consent`).
+
+**`HYDRA_SYSTEM_SECRET` must be at least 32 characters** — Hydra uses it to
+encrypt data at rest and sign cookies, matching `KRATOS_CIPHER_SECRET`'s
+length requirement above.
+
+### `urls.login` / `urls.consent` and the new web routes
+
+Hydra never renders its own login/consent UI; it redirects the browser to
+whatever `urls.login`/`urls.consent` point at (here, this app's own routes)
+with a `login_challenge`/`consent_challenge` query parameter, and expects
+the provider to call back into Hydra's admin API to accept or reject the
+challenge:
+
+- `GET /oauth/login?login_challenge=...` (`urls.login`) — checks the
+  caller's Kratos session (`web/src/lib/kratos-session.ts`); if present,
+  accepts the login challenge with the Kratos identity's UUID as `subject`
+  (`web/src/lib/hydra-admin.ts`'s `acceptLoginRequest`) and redirects back
+  into Hydra. If absent, redirects to the plain `/login` page (no
+  `return_to` chaining — the OAuth2 authorization request must be
+  re-initiated afterward).
+- `GET /oauth/consent?consent_challenge=...` (`urls.consent`) — always
+  grants every scope/audience Hydra reports as requested
+  (`acceptConsentRequest`), attaching `traits.email`/`traits.username` from
+  the Kratos session to the issued ID token. No consent screen is rendered:
+  the only registered client is this app's own first-party demo client, so
+  there is no untrusted third party whose grant a human needs to review. A
+  real per-scope consent UI would be needed before a third-party client
+  could safely be registered.
+
+### Registering the first-party demo client
+
+```bash
+task oauth:hydra:register-demo-client
+```
+
+This wraps `hydra create oauth2-client` against the admin API
+(`authorization_code`/`refresh_token` grants, `openid offline_access profile
+email` scope, redirect URI `http://localhost:9999/callback`,
+`client_secret_basic` token-endpoint auth) and prints a JSON object
+containing `client_id`/`client_secret` — copy both into `.env`'s
+`HYDRA_DEMO_CLIENT_ID`/`HYDRA_DEMO_CLIENT_SECRET`.
+
+### Running the scripted authorization-code flow
+
+```bash
+task oauth:hydra:test
+```
+
+Runs `ory/hydra/test-oauth-flow.ts` (a self-contained Bun script), which
+registers a throwaway Kratos user, drives the full authorization-code flow
+against the demo client end to end (`/oauth2/auth` -> `/oauth/login` ->
+`/oauth/consent` -> the demo client's redirect URI -> `/oauth2/token` ->
+`/userinfo`), and asserts the returned `email` claim matches the throwaway
+user. Safely repeatable — every run registers a fresh user, so there's
+nothing to clean up between runs.
+
+### Registering additional first-party clients
+
+Only the one demo client above is created automatically. To register
+another first-party client (a different redirect URI, scope set, or name),
+re-run the CLI directly with different flags, e.g.:
+
+```bash
+docker compose exec hydra hydra create oauth2-client \
+  --endpoint http://localhost:4445 \
+  --name "My Other First-Party Client" \
+  --grant-type authorization_code,refresh_token \
+  --response-type code \
+  --scope "openid profile email" \
+  --redirect-uri http://localhost:9999/my-other-callback \
+  --token-endpoint-auth-method client_secret_basic \
+  --format json
+```
+
+Store the resulting `client_id`/`client_secret` wherever that client's own
+consumer keeps its credentials — this app never stores a second client's
+secret, and `.env`'s `HYDRA_DEMO_CLIENT_ID`/`HYDRA_DEMO_CLIENT_SECRET` are
+reserved for the one demo client `task oauth:hydra:register-demo-client`
+creates. Only register real third-party clients once a proper consent
+screen exists (see above) — this app's `/oauth/consent` route currently
+auto-grants every request.
+
+### Health checks
+
+```bash
+curl -sf http://localhost:4445/health/ready                        # admin API
+curl -sf http://localhost:4444/.well-known/openid-configuration    # public API discovery document
+```
+
+### Out of scope (this step)
+
+- Social login / Kratos-as-OIDC-*consumer* work (see the "Social login
+  (OIDC)" section above, Step 44) — disjoint from Hydra's role as an OIDC
+  *provider* here.
+- A `return_to`-chained redirect back into `/oauth/login` after completing
+  the plain Kratos login form, an actual `/oauth/logout` implementation, and
+  an interactive consent-screen UI — see `docs/tasks/step55.md`.
+- Any Go API or LLM Gateway consumption of Hydra-issued tokens — the Go API
+  continues to authenticate exclusively via the Kratos session cookie.

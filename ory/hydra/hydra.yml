@@ -1,0 +1,64 @@
+# Ory Hydra configuration for local development (Docker Compose).
+#
+# Hydra is the OAuth2/OIDC *authorization server* layered on top of the
+# existing Ory Kratos identity/session backend (ory/kratos/kratos.yml):
+# Hydra owns the `/oauth2/auth`, `/oauth2/token`, and `/userinfo` endpoints
+# and the login/consent "challenge" handshake, while this app's own tiny
+# `web/src/app/(auth)/oauth/{login,consent}/route.ts` handlers act as
+# Hydra's login/consent provider by checking the existing Kratos session
+# cookie. Hydra never authenticates anyone itself; it is a protocol layer,
+# not a second identity store.
+#
+# Like ory/kratos/kratos.yml, this file maps environment variables to
+# config keys by uppercasing the key path and joining nested segments with
+# underscores; the `hydra`/`hydra-migrate` service blocks in
+# docker-compose.yml set these directly (sourced from the HYDRA_* variables
+# in .env), and an env var fully overrides whatever the corresponding key
+# holds (or omits) in this file:
+#   DSN                -> dsn
+#   SECRETS_SYSTEM      -> secrets.system[0]
+#   URLS_SELF_ISSUER    -> urls.self.issuer
+#   URLS_LOGIN          -> urls.login
+#   URLS_CONSENT        -> urls.consent
+# The `dsn` and `secrets` keys are intentionally omitted below; they are
+# only ever supplied via those environment variables, never checked into
+# git. `urls.self.issuer`/`urls.login`/`urls.consent` below are documented
+# defaults matching the dev compose stack; the env-var overrides exist so a
+# non-default host (e.g. the Step 10 E2E stack, should a later step need
+# one) can point Hydra elsewhere without editing this file.
+#
+# See ory/README.md for how to reach the public/admin APIs and how to
+# register additional first-party OAuth2 clients.
+version: v2.2.0
+
+serve:
+  cookies:
+    same_site_mode: Lax
+
+urls:
+  self:
+    issuer: http://localhost:4444/
+  login: http://localhost:3000/oauth/login
+  consent: http://localhost:3000/oauth/consent
+  # No automated flow in this step exercises logout (see docs/tasks/step55.md
+  # "Out of scope"); this is a documented placeholder only.
+  logout: http://localhost:3000/oauth/logout
+
+oauth2:
+  # Dev-only: surfaces upstream error detail in API responses instead of a
+  # generic message, which is invaluable while wiring up the login/consent
+  # provider routes. Never enable this in production.
+  expose_internal_errors: true
+
+strategies:
+  access_token: opaque
+
+ttl:
+  login_consent_request: 30m
+  access_token: 1h
+  refresh_token: 720h
+  id_token: 1h
+
+log:
+  level: debug
+  format: text
