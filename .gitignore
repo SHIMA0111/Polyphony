@@ -70,3 +70,7 @@ htmlcov/
 # ===== Misc =====
 *.log
 tmp/
+
+# Local planning documents (working artifacts, not for the repo)
+docs/tasks/
+.ai_progress/
