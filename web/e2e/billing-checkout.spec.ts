@@ -29,8 +29,10 @@ test("plan selection through Stripe test Checkout to a webhook-driven subscripti
   const email = `billing-checkout-${runId}@polyphony.test`
   // Underscores only: registerSchema's username regex (`/^[a-zA-Z0-9_]+$/`)
   // rejects hyphens, which would otherwise block registration client-side
-  // before any request is even sent.
-  const username = `billing_checkout_${runId}`
+  // before any request is even sent. Short prefix: registerSchema also caps
+  // usernames at 32 characters, and `billing_checkout_${runId}` (36 chars)
+  // was rejected client-side.
+  const username = `billing_${runId}`
   const password = "billing-checkout-test-password-123"
 
   await page.goto("/register")
