@@ -47,6 +47,22 @@ type LLMGateway struct {
 	// made -- e.g. that context summarization issues exactly one extra
 	// Complete call beyond the final answer-generating one.
 	CompleteCallCount int
+
+	// StreamErr, if non-nil, makes Stream return it as a synchronous
+	// dispatch error (nil channel), as if the LLM Gateway's initial response
+	// to a streaming request failed.
+	StreamErr error
+	// StreamChunks, if non-empty and StreamFunc/StreamErr are unset, is the
+	// canned sequence of successful chunks Stream sends on its returned
+	// channel (each wrapped in a StreamResult{Chunk: ...}) before closing it.
+	StreamChunks []*ai.StreamChunk
+	// StreamMidErr, if non-nil and StreamFunc/StreamErr are unset, is sent
+	// as a single StreamResult{Err: ...} after StreamChunks, before the
+	// channel closes -- simulating a mid-stream provider failure.
+	StreamMidErr error
+
+	// StreamFunc, if set, overrides Stream entirely.
+	StreamFunc func(ctx context.Context, req *ai.CompletionRequest) (<-chan ai.StreamResult, error)
 }
 
 // Complete sends a completion request and returns the response. See the
@@ -94,4 +110,37 @@ func (g *LLMGateway) EstimateTokens(ctx context.Context, req *ai.TokenEstimateRe
 		return g.TokenEstimateResponse, nil
 	}
 	return &ai.TokenEstimateResponse{}, nil
+}
+
+// Stream sends a streaming completion request and returns a channel of
+// incremental results. See the LLMGateway doc comment for how StreamFunc,
+// StreamErr, StreamChunks, and StreamMidErr interact:
+//   - StreamFunc, if set, takes priority over everything else.
+//   - Otherwise, a non-nil StreamErr is returned synchronously with a nil
+//     channel (simulating a synchronous dispatch failure).
+//   - Otherwise, a channel is returned that sends one StreamResult{Chunk: c}
+//     per entry in StreamChunks (in order), then, if StreamMidErr is
+//     non-nil, one final StreamResult{Err: StreamMidErr}, before closing.
+//     The channel send happens in a background goroutine so callers observe
+//     the same "returns immediately, delivers asynchronously" contract the
+//     real gateway client has.
+func (g *LLMGateway) Stream(ctx context.Context, req *ai.CompletionRequest) (<-chan ai.StreamResult, error) {
+	if g.StreamFunc != nil {
+		return g.StreamFunc(ctx, req)
+	}
+	if g.StreamErr != nil {
+		return nil, g.StreamErr
+	}
+
+	out := make(chan ai.StreamResult)
+	go func() {
+		defer close(out)
+		for _, chunk := range g.StreamChunks {
+			out <- ai.StreamResult{Chunk: chunk}
+		}
+		if g.StreamMidErr != nil {
+			out <- ai.StreamResult{Err: g.StreamMidErr}
+		}
+	}()
+	return out, nil
 }

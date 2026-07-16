@@ -26,13 +26,25 @@ const wsWriteTimeout = 5 * time.Second
 
 // wsEventFrame is the JSON wire frame forwarded to a connected WebSocket
 // client for every event.RoomEvent delivered to it. The top-level "type" and
-// "room_id" fields are the stable contract; later steps (e.g. AI streaming
-// chunk forwarding) are expected to add new "type" values and, alongside
-// them, additional payload fields, without needing to change this envelope.
+// "room_id" fields are the stable contract; Message and Chunk are mutually
+// exclusive payload fields, keyed by Type: Message is populated (as a
+// pointer, so it is omitted entirely rather than serialized as a zero-value
+// object) for "message_created"/"message_updated" frames, and Chunk is
+// populated for "token_chunk" frames (Step 51's AI streaming chunk
+// forwarding).
 type wsEventFrame struct {
-	Type    string          `json:"type"`
-	RoomID  string          `json:"room_id"`
-	Message MessageResponse `json:"message"`
+	Type    string           `json:"type"`
+	RoomID  string           `json:"room_id"`
+	Message *MessageResponse `json:"message,omitempty"`
+	Chunk   *ChunkResponse   `json:"chunk,omitempty"`
+}
+
+// ChunkResponse is the JSON payload of a "token_chunk" wsEventFrame,
+// mirroring event.StreamChunkEvent.
+type ChunkResponse struct {
+	MessageID   string `json:"message_id"`
+	Delta       string `json:"delta"`
+	SummaryUsed bool   `json:"summary_used"`
 }
 
 // WebSocketHandler handles the WebSocket ticket-issuance and connection
@@ -166,18 +178,27 @@ func (h *WebSocketHandler) Handle(c echo.Context) error {
 				return nil
 			}
 
-			msgResp := toMessageResponse(ev.Message)
-			// UsedContextSummary is a one-time, request-scoped signal (see
-			// event.RoomEvent.UsedContextSummary/handler.MessageResponse.
-			// UsedContextSummary's doc comments): it is never persisted on
-			// the domain message itself, so toMessageResponse always
-			// defaults it to false and it must be copied across separately
-			// from the originating RoomEvent.
-			msgResp.UsedContextSummary = ev.UsedContextSummary
 			frame := wsEventFrame{
-				Type:    string(ev.Type),
-				RoomID:  ev.RoomID,
-				Message: msgResp,
+				Type:   string(ev.Type),
+				RoomID: ev.RoomID,
+			}
+			if ev.Chunk != nil {
+				frame.Chunk = &ChunkResponse{
+					MessageID:   ev.Chunk.MessageID,
+					Delta:       ev.Chunk.Delta,
+					SummaryUsed: ev.Chunk.SummaryUsed,
+				}
+			} else {
+				msg := toMessageResponse(ev.Message)
+				// UsedContextSummary is a one-time, request-scoped signal
+				// (see event.RoomEvent.UsedContextSummary/handler.
+				// MessageResponse.UsedContextSummary's doc comments): it is
+				// never persisted on the domain message itself, so
+				// toMessageResponse always defaults it to false and it must
+				// be copied across separately from the originating
+				// RoomEvent.
+				msg.UsedContextSummary = ev.UsedContextSummary
+				frame.Message = &msg
 			}
 
 			writeCtx, cancel := context.WithTimeout(readCtx, wsWriteTimeout)

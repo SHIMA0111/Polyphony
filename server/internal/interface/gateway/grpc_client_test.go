@@ -491,3 +491,24 @@ func TestGRPCClientCheckHealthNotServing(t *testing.T) {
 		t.Error("expected a non-nil error for NOT_SERVING status")
 	}
 }
+
+// TestGRPCClientStreamNotSupported asserts Stream (which GRPCClient must
+// implement to satisfy ai.LLMGateway) always returns a synchronous
+// domain.ErrLLMGateway-wrapped error and a nil channel, since gRPC streaming
+// is out of scope for this step (REST-only, per Step 51). It uses a bare
+// zero-value GRPCClient since Stream never touches the underlying
+// connection.
+func TestGRPCClientStreamNotSupported(t *testing.T) {
+	client := &GRPCClient{}
+
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{Model: "gpt-5.2"})
+	if err == nil {
+		t.Fatal("expected a non-nil error from Stream")
+	}
+	if !domain.IsLLMGatewayError(err) {
+		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", err)
+	}
+	if ch != nil {
+		t.Fatal("expected a nil channel from Stream")
+	}
+}
