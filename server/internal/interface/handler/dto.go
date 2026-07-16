@@ -74,17 +74,19 @@ type RegenerateAIMessageRequest struct {
 }
 
 // MessageResponse is the JSON response representation of a single message.
-// SenderID is nil for system-generated messages.
+// SenderID is nil for system-generated messages. InResponseToMessageID is
+// nil for human messages and set to the human message's ID for AI messages.
 type MessageResponse struct {
-	ID        string    `json:"id"`
-	RoomID    string    `json:"room_id"`
-	SenderID  *string   `json:"sender_id"`
-	Content   string    `json:"content"`
-	Type      string    `json:"type"`
-	Status    string    `json:"status"`
-	Sequence  int64     `json:"sequence"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                    string    `json:"id"`
+	RoomID                string    `json:"room_id"`
+	SenderID              *string   `json:"sender_id"`
+	Content               string    `json:"content"`
+	Type                  string    `json:"type"`
+	Status                string    `json:"status"`
+	Sequence              int64     `json:"sequence"`
+	InResponseToMessageID *string   `json:"in_response_to_message_id"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 // SendAIMessageResponse is the response body for POST /rooms/:roomId/messages/ai.

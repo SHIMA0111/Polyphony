@@ -12,9 +12,10 @@ import (
 
 // MessageRepo is an in-memory, map-backed fake implementing
 // message.MessageRepository, with a per-room sequence counter mirroring the
-// atomic allocation behavior of postgres.MessageRepository.GetNextSequence.
-// The zero value (mocks.MessageRepo{}) is ready to use; all maps are
-// initialized lazily on first write.
+// atomic allocation behavior of
+// postgres.MessageRepository.ReserveSequenceRange. The zero value
+// (mocks.MessageRepo{}) is ready to use; all maps are initialized lazily on
+// first write.
 //
 // MessageRepo is safe for concurrent use.
 type MessageRepo struct {
@@ -146,17 +147,18 @@ func (m *MessageRepo) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-// GetNextSequence atomically allocates and returns the next sequence number
-// for the given room, starting at 1.
-func (m *MessageRepo) GetNextSequence(_ context.Context, roomID string) (int64, error) {
+// ReserveSequenceRange atomically reserves count contiguous sequence numbers
+// for the given room, starting at 1, and returns the first one; the caller
+// owns [first, first+count).
+func (m *MessageRepo) ReserveSequenceRange(_ context.Context, roomID string, count int64) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ensureInit()
 
-	seq := m.Seqs[roomID]
-	if seq == 0 {
-		seq = 1
+	first := m.Seqs[roomID]
+	if first == 0 {
+		first = 1
 	}
-	m.Seqs[roomID] = seq + 1
-	return seq, nil
+	m.Seqs[roomID] = first + count
+	return first, nil
 }
