@@ -43,6 +43,9 @@ func (h *AttachmentHandler) RequestUpload(c echo.Context) error {
 	if req.MimeType == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "mime_type is required"})
 	}
+	if req.SizeBytes <= 0 {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "size_bytes must be a positive number of bytes"})
+	}
 
 	ticket, err := h.usecase.RequestUpload(c.Request().Context(), userID, roomID, req.MimeType, req.SizeBytes)
 	if err != nil {
@@ -136,6 +139,9 @@ func handleAttachmentError(c echo.Context, err error) error {
 	}
 	if errors.Is(err, domain.ErrAttachmentTooLarge) {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "attachment too large"})
+	}
+	if errors.Is(err, domain.ErrInvalidAttachmentSize) {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "size_bytes must be a positive number of bytes"})
 	}
 	if errors.Is(err, domain.ErrForbidden) {
 		return c.JSON(http.StatusForbidden, ErrorResponse{Message: "forbidden"})

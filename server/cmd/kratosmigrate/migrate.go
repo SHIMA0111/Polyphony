@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
@@ -44,6 +45,13 @@ type kratosCreateIdentityRespDTO struct {
 // the created identity ID collides with an existing link, mapped to
 // domain.ErrKratosIdentityAlreadyLinked). Callers are expected to log and
 // continue to the next user rather than treat this as fatal for the batch.
+//
+// If SetKratosIdentityID fails after the Kratos identity was already
+// created, this deletes the orphaned identity via the Admin API so a
+// re-run doesn't accumulate identities that no local user ever ends up
+// linked to. A cleanup failure is logged but never replaces the original
+// error returned to the caller — the original failure is what a caller
+// needs to know to decide whether/how to retry this user.
 func migrateUser(ctx context.Context, adminURL string, httpClient *http.Client, userRepo user.UserRepository, u *user.User) error {
 	reqBody := kratosCreateIdentityReqDTO{SchemaID: "default"}
 	reqBody.Traits.Email = u.Email
@@ -82,7 +90,43 @@ func migrateUser(ctx context.Context, adminURL string, httpClient *http.Client, 
 	}
 
 	if err := userRepo.SetKratosIdentityID(ctx, u.ID, result.ID); err != nil {
-		return fmt.Errorf("set kratos identity id: %w", err)
+		linkErr := fmt.Errorf("set kratos identity id: %w", err)
+		if cleanupErr := deleteKratosIdentity(ctx, adminURL, httpClient, result.ID); cleanupErr != nil {
+			slog.Error("failed to clean up orphaned kratos identity after link failure",
+				"user_id", u.ID, "kratos_identity_id", result.ID, "error", cleanupErr)
+		}
+		return linkErr
+	}
+
+	return nil
+}
+
+// deleteKratosIdentity removes the Kratos identity identified by id via the
+// Admin API (DELETE {adminURL}/admin/identities/{id}).
+//
+// Used by migrateUser to roll back identity creation when the follow-up
+// SetKratosIdentityID call fails, so a failed migration attempt never leaves
+// behind an identity with no corresponding local-user link.
+//
+// # Errors
+// Returns an error if the request cannot be built or sent, or if the Admin
+// API responds with a status other than 204 (already deleted/never existed)
+// or 404 (already gone).
+func deleteKratosIdentity(ctx context.Context, adminURL string, httpClient *http.Client, id string) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, adminURL+"/admin/identities/"+id, nil)
+	if err != nil {
+		return fmt.Errorf("create delete request: %w", err)
+	}
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("send delete request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("kratos admin delete identity failed: status %d: %s", resp.StatusCode, string(body))
 	}
 
 	return nil

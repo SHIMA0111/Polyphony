@@ -25,6 +25,8 @@ func newRBACContext(userID, roomID string) (echo.Context, *httptest.ResponseReco
 	return c, rec
 }
 
+// TestRequireRoleReaderDeniedInvokeAI proves that RequireRole returns 403 for
+// a room.RoleReader member attempting an action they are not authorized for.
 func TestRequireRoleReaderDeniedInvokeAI(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	repo.SeedMember("room-1", "user-1", string(domainroom.RoleReader))
@@ -41,6 +43,10 @@ func TestRequireRoleReaderDeniedInvokeAI(t *testing.T) {
 	}
 }
 
+// TestRequireRoleGuestDeniedInvokeAIButAllowedSendMessage proves that
+// RequireRole enforces per-action authorization independently: the same
+// room.RoleGuest member is denied ActionInvokeAI but allowed
+// ActionSendMessage.
 func TestRequireRoleGuestDeniedInvokeAIButAllowedSendMessage(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	repo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
@@ -66,6 +72,9 @@ func TestRequireRoleGuestDeniedInvokeAIButAllowedSendMessage(t *testing.T) {
 	}
 }
 
+// TestRequireRoleAdminAllowedManageMembersDeniedDeleteRoom proves that a
+// room.RoleAdmin member is allowed ActionManageMembers but still denied
+// ActionDeleteRoom (reserved for room.RoleMaster).
 func TestRequireRoleAdminAllowedManageMembersDeniedDeleteRoom(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	repo.SeedMember("room-1", "user-1", string(domainroom.RoleAdmin))
@@ -89,6 +98,8 @@ func TestRequireRoleAdminAllowedManageMembersDeniedDeleteRoom(t *testing.T) {
 	}
 }
 
+// TestRequireRoleMasterAllowedEverything proves that a room.RoleMaster
+// member is allowed every domainroom.Action RequireRole is exercised with.
 func TestRequireRoleMasterAllowedEverything(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	repo.SeedMember("room-1", "user-1", string(domainroom.RoleMaster))
@@ -112,6 +123,9 @@ func TestRequireRoleMasterAllowedEverything(t *testing.T) {
 	}
 }
 
+// TestRequireRoleNonMemberReturns403NotFound proves that RequireRole returns
+// 403 (never 404) for a caller with no room membership at all, so a
+// non-member can never distinguish a forbidden room from a nonexistent one.
 func TestRequireRoleNonMemberReturns403NotFound(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	// No membership seeded for user-1 in room-1 at all.
@@ -126,6 +140,8 @@ func TestRequireRoleNonMemberReturns403NotFound(t *testing.T) {
 	}
 }
 
+// TestAuthorize proves that Authorize allows a room.RoleMember to invoke AI
+// but forbids a room.RoleGuest from doing the same.
 func TestAuthorize(t *testing.T) {
 	if err := Authorize(domainroom.RoleMember, domainroom.ActionInvokeAI); err != nil {
 		t.Fatalf("expected member to be authorized to invoke AI, got %v", err)

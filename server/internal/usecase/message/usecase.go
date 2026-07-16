@@ -17,7 +17,6 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
 
 const defaultContextMessages = 50
@@ -73,8 +72,8 @@ func (u *MessageUsecase) SendMessage(ctx context.Context, userID, roomID, conten
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, room.ActionSendMessage); err != nil {
-		return nil, err
+	if !member.Role.Allows(room.ActionSendMessage) {
+		return nil, domain.ErrForbidden
 	}
 
 	seq, err := u.msgRepo.ReserveSequenceRange(ctx, roomID, 1)
@@ -159,8 +158,8 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
-		return nil, err
+	if !member.Role.Allows(room.ActionInvokeAI) {
+		return nil, domain.ErrForbidden
 	}
 
 	// Reserve both sequence numbers atomically as one range before creating
@@ -254,8 +253,8 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, room.ActionInvokeAI); err != nil {
-		return nil, err
+	if !member.Role.Allows(room.ActionInvokeAI) {
+		return nil, domain.ErrForbidden
 	}
 
 	// Verify target message exists and belongs to the room

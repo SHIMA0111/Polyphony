@@ -27,6 +27,12 @@ impl GrpcCompletionService {
     ///
     /// # Arguments
     /// * `use_case` — Shared domain service implementing `CompletionUseCase`.
+    ///
+    /// # Returns
+    /// A `GrpcCompletionService` ready to be registered with `CompletionServiceServer`.
+    ///
+    /// # Errors
+    /// Never fails — construction is infallible.
     pub fn new(use_case: Arc<dyn CompletionUseCase>) -> Self {
         Self { use_case }
     }

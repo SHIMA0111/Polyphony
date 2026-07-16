@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation"
 import { HydrationBoundary, dehydrate } from "@tanstack/react-query"
 import { getQueryClient } from "@/lib/query-client"
-import { serverHttpClient } from "@/lib/http-client.server"
+import { HttpError, serverHttpClient } from "@/lib/http-client.server"
 import { getRoomQueryOptions } from "@/features/rooms/api/get-room"
 import { getMessagesQueryOptions } from "@/features/messages/api/get-messages"
 import { getModelsQueryOptions } from "@/features/messages/api/get-models"
@@ -15,9 +15,12 @@ import { ChatRoom } from "@/features/messages/components/ChatRoom"
  * on first navigation into a room.
  *
  * The room itself is fetched with `fetchQuery` (not `prefetchQuery`, which
- * swallows query errors by design) inside a `try/catch` so a 404/failed
- * fetch can trigger `notFound()`, rendering this route's `not-found.tsx`
- * instead of a chat UI with no room to show.
+ * swallows query errors by design) inside a `try/catch` so a genuine 404
+ * (room doesn't exist / was deleted) can trigger `notFound()`, rendering
+ * this route's `not-found.tsx` instead of a chat UI with no room to show.
+ * Every other failure (5xx, network error, ...) is rethrown so it reaches
+ * the nearest `error.tsx` boundary instead of being misreported as a
+ * missing room.
  */
 export default async function ChatRoomPage({
   params,
@@ -29,8 +32,11 @@ export default async function ChatRoomPage({
 
   try {
     await queryClient.fetchQuery(getRoomQueryOptions(roomId, serverHttpClient.get))
-  } catch {
-    notFound()
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 404) {
+      notFound()
+    }
+    throw err
   }
 
   await Promise.all([

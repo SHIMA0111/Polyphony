@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -14,6 +16,13 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/wsticket"
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
 )
+
+// wsWriteTimeout bounds how long a single outbound event write (Handle's
+// wsjson.Write call) may block. Without a deadline, a slow or stalled peer
+// (e.g. a client that stopped reading but never closed the TCP connection)
+// would let a write hang indefinitely, tying up the goroutine and the
+// underlying event.MessageHub subscription for that connection.
+const wsWriteTimeout = 5 * time.Second
 
 // wsEventFrame is the JSON wire frame forwarded to a connected WebSocket
 // client for every event.RoomEvent delivered to it. The top-level "type" and
@@ -162,7 +171,11 @@ func (h *WebSocketHandler) Handle(c echo.Context) error {
 				RoomID:  ev.RoomID,
 				Message: toMessageResponse(ev.Message),
 			}
-			if err := wsjson.Write(readCtx, conn, frame); err != nil {
+
+			writeCtx, cancel := context.WithTimeout(readCtx, wsWriteTimeout)
+			err := wsjson.Write(writeCtx, conn, frame)
+			cancel()
+			if err != nil {
 				return nil
 			}
 		}

@@ -28,7 +28,7 @@ export function MarkdownContent({ content }: MarkdownContentProps) {
     // wrapper here would double-wrap fenced blocks.
     pre: ({ children }) => <>{children}</>,
     code({ className, children }) {
-      const match = /language-(\w+)/.exec(className ?? "")
+      const match = /language-(\S+)/.exec(className ?? "")
       const text = String(children).replace(/\n$/, "")
 
       if (match) {

@@ -71,11 +71,11 @@ func main() {
 	for _, u := range users {
 		if err := migrateUser(ctx, adminURL, httpClient, userRepo, u); err != nil {
 			failed++
-			slog.Error("failed to migrate user to kratos", "user_id", u.ID, "email", u.Email, "error", err)
+			slog.Error("failed to migrate user to kratos", "user_id", u.ID, "error", err)
 			continue
 		}
 		migrated++
-		slog.Info("migrated user to kratos", "user_id", u.ID, "email", u.Email)
+		slog.Info("migrated user to kratos", "user_id", u.ID)
 	}
 
 	slog.Info("kratosmigrate complete", "total", len(users), "migrated", migrated, "failed", failed)

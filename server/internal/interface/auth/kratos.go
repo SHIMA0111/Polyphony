@@ -185,21 +185,7 @@ func (s *KratosAuthService) Register(ctx context.Context, email, username, passw
 		return nil, fmt.Errorf("kratos registration succeeded but returned no session_token: is the registration flow's after.password.hooks missing the session hook?")
 	}
 
-	now := time.Now()
-	identityID := result.Identity.ID
-	u := &user.User{
-		ID:               uuid.New().String(),
-		Email:            email,
-		Username:         username,
-		PasswordHash:     kratosManagedPasswordHash,
-		KratosIdentityID: &identityID,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}
-	if err := s.userRepo.Create(ctx, u); err != nil {
-		return nil, err
-	}
-	if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {
+	if _, err := s.ensureLocalUser(ctx, result.Identity.ID, email, username); err != nil {
 		return nil, err
 	}
 
@@ -240,34 +226,107 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 	}
 
 	identity := result.Session.Identity
-	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, identity.ID)
-	if err != nil {
+	if _, err := s.userRepo.GetByKratosIdentityID(ctx, identity.ID); err != nil {
 		if !errors.Is(err, domain.ErrNotFound) {
 			return nil, err
 		}
 
-		now := time.Now()
-		identityID := identity.ID
-		u := &user.User{
-			ID:               uuid.New().String(),
-			Email:            identity.Traits.Email,
-			Username:         identity.Traits.Username,
-			PasswordHash:     kratosManagedPasswordHash,
-			KratosIdentityID: &identityID,
-			CreatedAt:        now,
-			UpdatedAt:        now,
-		}
-		if err := s.userRepo.Create(ctx, u); err != nil {
+		if _, err := s.ensureLocalUser(ctx, identity.ID, identity.Traits.Email, identity.Traits.Username); err != nil {
 			return nil, err
 		}
-		if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {
-			return nil, err
-		}
-		localUser = u
 	}
-	_ = localUser // resolved for parity with the interface contract; not needed in the returned TokenPair
 
 	return &domainauth.TokenPair{AccessToken: result.SessionToken, TokenType: "Bearer"}, nil
+}
+
+// ensureLocalUser resolves the local users row for a Kratos identity
+// (identityID, with the given email/username traits), creating or relinking
+// it as needed:
+//
+//   - If a local user already exists matching email (falling back to
+//     username) and has no kratos_identity_id yet, it is linked to
+//     identityID via SetKratosIdentityID and returned. This is the "re-login
+//     of a pre-Kratos local user" path: a users row created by
+//     SimpleJWTService before AUTH_MODE switched to "kratos", or one
+//     created directly via the Kratos Admin API (bypassing Register)
+//     without being linked yet. Without this lookup, this path would
+//     instead fall through to Create below, which — for a genuinely
+//     pre-existing email/username — fails on the unique constraint (or,
+//     absent that constraint, would create a duplicate local account for
+//     the same person).
+//   - A local user matching email/username but already linked to a
+//     *different* Kratos identity is treated as no match (falls through to
+//     Create), since relinking it here would silently reassign someone
+//     else's account.
+//   - Otherwise, a brand new local user row is created, with a
+//     kratos-managed placeholder password hash, linked to identityID.
+//
+// Used by both Register (a Kratos-side registration for an email/username
+// that already has a local-only, unlinked user record) and Login's
+// self-heal path (a Kratos identity with no local link yet).
+func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, email, username string) (*user.User, error) {
+	existing, err := s.lookupUnlinkedLocalUser(ctx, email, username)
+	if err != nil {
+		return nil, err
+	}
+
+	if existing != nil {
+		if err := s.userRepo.SetKratosIdentityID(ctx, existing.ID, identityID); err != nil {
+			return nil, err
+		}
+		linked := identityID
+		existing.KratosIdentityID = &linked
+		return existing, nil
+	}
+
+	now := time.Now()
+	u := &user.User{
+		ID:               uuid.New().String(),
+		Email:            email,
+		Username:         username,
+		PasswordHash:     kratosManagedPasswordHash,
+		KratosIdentityID: &identityID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := s.userRepo.Create(ctx, u); err != nil {
+		return nil, err
+	}
+	if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// lookupUnlinkedLocalUser looks up an existing local user matching email,
+// falling back to username, that has no kratos_identity_id yet. Returns
+// (nil, nil) — not an error — if neither matches, or if the only match
+// already has a (necessarily different, since the caller already checked
+// GetByKratosIdentityID) Kratos identity linked.
+func (s *KratosAuthService) lookupUnlinkedLocalUser(ctx context.Context, email, username string) (*user.User, error) {
+	byEmail, err := s.userRepo.GetByEmail(ctx, email)
+	if err == nil {
+		if byEmail.KratosIdentityID == nil {
+			return byEmail, nil
+		}
+		return nil, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return nil, err
+	}
+
+	byUsername, err := s.userRepo.GetByUsername(ctx, username)
+	if err == nil {
+		if byUsername.KratosIdentityID == nil {
+			return byUsername, nil
+		}
+		return nil, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return nil, err
+	}
+
+	return nil, nil
 }
 
 // ValidateToken validates a token against Kratos's GET /sessions/whoami
@@ -316,7 +375,18 @@ func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*d
 
 	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, result.Identity.ID)
 	if err != nil {
-		return nil, domain.ErrInvalidToken
+		// Only "no local user linked to this identity yet" is a genuine
+		// invalid-token condition (from the caller's point of view: the
+		// presented session simply doesn't map to anyone). Any other
+		// repository failure (e.g. a database outage) is a server-side
+		// problem, not evidence of an invalid token — flattening it to
+		// domain.ErrInvalidToken would make interface/middleware surface a
+		// misleading 401 instead of a 5xx for what is really an
+		// infrastructure failure.
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, domain.ErrInvalidToken
+		}
+		return nil, fmt.Errorf("resolve local user for kratos identity: %w", err)
 	}
 
 	return &domainauth.Claims{UserID: localUser.ID}, nil

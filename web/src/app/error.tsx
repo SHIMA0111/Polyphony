@@ -14,7 +14,16 @@ import { toaster } from "@/components/ui/toaster"
  * even if the user's attention isn't on the full-page fallback), in addition
  * to rendering the fallback itself with a "Try again" button that calls
  * `reset()` to attempt to re-render the segment.
+ *
+ * `error.message` is deliberately never rendered (it can carry internal
+ * details — stack traces, upstream error text — that shouldn't reach end
+ * users); both UI surfaces below show a fixed generic message instead.
+ * `console.error(error)` still logs the full error (including `digest`, the
+ * ID Next.js correlates with its server-side log entry) for local/CI
+ * debugging. No telemetry sink is wired up yet (Phase 23).
  */
+const GENERIC_ERROR_MESSAGE = "An unexpected error occurred. Please try again."
+
 export default function Error({
   error,
   reset,
@@ -23,10 +32,11 @@ export default function Error({
   reset: () => void
 }) {
   useEffect(() => {
+    console.error(error)
     toaster.create({
       type: "error",
       title: "Something went wrong",
-      description: error.message || "An unexpected error occurred.",
+      description: GENERIC_ERROR_MESSAGE,
     })
   }, [error])
 
@@ -40,7 +50,7 @@ export default function Error({
         </Card.Header>
         <Card.Body>
           <Text textAlign="center" color="fg.muted" mb={6}>
-            {error.message || "An unexpected error occurred. Please try again."}
+            {GENERIC_ERROR_MESSAGE}
           </Text>
           <Button
             colorPalette="blue"

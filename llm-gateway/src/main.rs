@@ -45,6 +45,20 @@ async fn main() {
 
     let router = build_router(state.clone());
 
+    // `shutdown_signal()` resolves at most once, but both the REST and gRPC servers
+    // each need their own graceful-shutdown future. A `watch` channel lets any number
+    // of clones observe the same one-shot signal: the sender task awaits it once and
+    // flips the shared value, and each receiver (already subscribed before the flip)
+    // wakes on that change regardless of exactly when the signal fires.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let signal_task = async move {
+        shutdown_signal().await;
+        // No listeners left is not an error here — both servers may have already
+        // exited for other reasons.
+        let _ = shutdown_tx.send(true);
+    };
+
+    let rest_shutdown_rx = shutdown_rx.clone();
     let rest_server = async {
         let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port))
             .await
@@ -53,7 +67,7 @@ async fn main() {
         tracing::info!(port = config.port, "LLM Gateway (REST) listening");
 
         axum::serve(listener, router)
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(wait_for_shutdown(rest_shutdown_rx))
             .await
             .expect("REST server error");
     };
@@ -62,12 +76,24 @@ async fn main() {
     let grpc_server = async move {
         tracing::info!(port = config.grpc_port, "LLM Gateway (gRPC) listening");
 
-        serve_grpc(state, grpc_addr)
+        serve_grpc(state, grpc_addr, wait_for_shutdown(shutdown_rx))
             .await
             .expect("gRPC server error");
     };
 
-    tokio::join!(rest_server, grpc_server);
+    tokio::join!(signal_task, rest_server, grpc_server);
+}
+
+/// Waits until `rx` observes a `true` value, i.e. until the shared shutdown signal has
+/// fired.
+///
+/// Used to derive independent graceful-shutdown futures for the REST and gRPC servers
+/// from a single `shutdown_signal()` call, since that underlying signal can only be
+/// awaited once.
+async fn wait_for_shutdown(mut rx: tokio::sync::watch::Receiver<bool>) {
+    // `wait_for` also checks the currently held value first, so a signal that already
+    // fired before this receiver started waiting is not missed.
+    let _ = rx.wait_for(|shutdown| *shutdown).await;
 }
 
 /// Waits for a `Ctrl+C` (SIGINT) or, on Unix, a `SIGTERM` signal, whichever comes

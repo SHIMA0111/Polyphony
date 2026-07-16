@@ -103,6 +103,7 @@ export function MessageBubble({
             fontSize="xs"
             opacity={message.status === "failed" ? 1 : 0}
             _groupHover={{ opacity: 1 }}
+            _focusVisible={{ opacity: 1 }}
             transition="opacity 0.2s"
             onClick={() => onRegenerate(message.id)}
             loading={isRegenerating}

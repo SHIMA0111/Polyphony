@@ -128,7 +128,12 @@ async fn start_test_server_and_connect() -> Channel {
     let state: Arc<dyn CompletionUseCase> = Arc::new(StubUseCase::new());
 
     tokio::spawn(async move {
-        serve_grpc(state, addr).await.expect("gRPC server error");
+        // The test server runs for the lifetime of the test process (the spawned task
+        // is simply dropped at process exit), so a `pending` shutdown future — one
+        // that never resolves — is the correct "never shut down" signal here.
+        serve_grpc(state, addr, std::future::pending())
+            .await
+            .expect("gRPC server error");
     });
 
     // Poll until the server accepts connections rather than sleeping a fixed amount,

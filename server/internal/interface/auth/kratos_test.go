@@ -294,6 +294,53 @@ func TestKratosLoginSelfHeal(t *testing.T) {
 	}
 }
 
+// TestKratosLoginRelinksPreexistingUnlinkedUser proves that Login relinks a
+// pre-existing local user (matching email, with a nil kratos_identity_id —
+// e.g. a SimpleJWT-era row, or one created directly via the Kratos Admin API
+// without going through Register) rather than creating a duplicate second
+// user row for the same person: the user count stays 1, and the identity ID
+// ends up set on the original row.
+func TestKratosLoginRelinksPreexistingUnlinkedUser(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	identityID := uuid.New().String()
+	f.loginSubmitBody = kratosLoginRespDTO{
+		SessionToken: "relink-session-token",
+		Session: struct {
+			Identity kratosIdentityDTO `json:"identity"`
+		}{Identity: kratosIdentityDTO{ID: identityID, Traits: kratosTraitsDTO{Email: "f@example.com", Username: "fuser"}}},
+	}
+
+	userRepo := &mocks.UserRepo{}
+	preexisting := newSeedUser("f@example.com", "fuser")
+	if err := userRepo.Create(context.Background(), preexisting); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	svc := newTestKratosService(f, userRepo)
+
+	pair, err := svc.Login(context.Background(), "f@example.com", "Str0ngP@ss1")
+	if err != nil {
+		t.Fatalf("Login failed: %v", err)
+	}
+	if pair.AccessToken != "relink-session-token" {
+		t.Errorf("unexpected token pair: %+v", pair)
+	}
+
+	if got := len(userRepo.Users); got != 1 {
+		t.Errorf("expected relinking not to create a second user, got %d users", got)
+	}
+
+	got, err := userRepo.GetByID(context.Background(), preexisting.ID)
+	if err != nil {
+		t.Fatalf("get preexisting user: %v", err)
+	}
+	if got.KratosIdentityID == nil || *got.KratosIdentityID != identityID {
+		t.Fatalf("expected preexisting user to be linked to identity %q, got %+v", identityID, got.KratosIdentityID)
+	}
+}
+
 // TestKratosLoginInvalidCredentials proves that a 400 response from the
 // login flow maps to domain.ErrInvalidCredentials.
 func TestKratosLoginInvalidCredentials(t *testing.T) {
@@ -382,6 +429,48 @@ func TestKratosValidateTokenInvalid(t *testing.T) {
 	_, err := svc.ValidateToken(context.Background(), "expired-token")
 	if !errors.Is(err, domain.ErrInvalidToken) {
 		t.Fatalf("expected domain.ErrInvalidToken, got %v", err)
+	}
+}
+
+// repoFailureUserRepo is a minimal domainuser.UserRepository test double
+// whose GetByKratosIdentityID always fails with a fixed, non-ErrNotFound
+// error (e.g. simulating a database outage). Embedding the (nil) interface
+// means every other method panics if called — fine here, since
+// ValidateToken only ever calls GetByKratosIdentityID.
+type repoFailureUserRepo struct {
+	domainuser.UserRepository
+	err error
+}
+
+func (r *repoFailureUserRepo) GetByKratosIdentityID(_ context.Context, _ string) (*domainuser.User, error) {
+	return nil, r.err
+}
+
+// TestKratosValidateTokenRepoFailureIsNotInvalidToken proves that
+// ValidateToken does not flatten a genuine repository failure (as opposed to
+// "no user linked to this identity") into domain.ErrInvalidToken: the
+// caller (interface/middleware.JWTAuth) relies on this distinction to
+// surface a 5xx instead of misreporting an infrastructure failure as an
+// invalid/expired token.
+func TestKratosValidateTokenRepoFailureIsNotInvalidToken(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	f.whoamiBody = kratosWhoamiRespDTO{Identity: kratosIdentityDTO{ID: uuid.New().String()}}
+
+	repoErr := errors.New("database is unreachable")
+	svc := newTestKratosService(f, nil)
+	svc.userRepo = &repoFailureUserRepo{err: repoErr}
+
+	_, err := svc.ValidateToken(context.Background(), "opaque-native-token")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, domain.ErrInvalidToken) {
+		t.Fatalf("expected a non-ErrInvalidToken error wrapping the repo failure, got %v", err)
+	}
+	if !errors.Is(err, repoErr) {
+		t.Fatalf("expected the returned error to wrap the original repo failure, got %v", err)
 	}
 }
 

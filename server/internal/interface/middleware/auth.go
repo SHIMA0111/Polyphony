@@ -2,11 +2,13 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
 )
 
@@ -43,7 +45,10 @@ type errorResponse struct {
 // It stores the authenticated user ID in the Echo context for downstream
 // handlers via GetUserID. If neither the header nor the named cookie is
 // present, the header is malformed, or the resolved token/cookie is
-// invalid/expired, it returns HTTP 401.
+// invalid/expired (domain.ErrInvalidToken), it returns HTTP 401. Any other
+// error from ValidateToken (e.g. a repository failure while resolving the
+// local user) is a server-side problem, not evidence of an invalid token, so
+// it is logged and returns HTTP 500 instead of being misreported as a 401.
 func JWTAuth(tokenValidator auth.TokenValidator, cookieName string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -57,7 +62,11 @@ func JWTAuth(tokenValidator auth.TokenValidator, cookieName string) echo.Middlew
 
 			claims, err := tokenValidator.ValidateToken(c.Request().Context(), token)
 			if err != nil {
-				return c.JSON(http.StatusUnauthorized, errorResponse{Message: "invalid or expired token"})
+				if errors.Is(err, domain.ErrInvalidToken) {
+					return c.JSON(http.StatusUnauthorized, errorResponse{Message: "invalid or expired token"})
+				}
+				GetLogger(c).Error("token validation failed", "error", err)
+				return c.JSON(http.StatusInternalServerError, errorResponse{Message: "internal server error"})
 			}
 
 			c.Set(userIDKey, claims.UserID)

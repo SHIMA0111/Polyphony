@@ -16,6 +16,13 @@ import "time"
 type Attachment struct {
 	// ID is the attachment's unique identifier.
 	ID string
+	// RoomID is the ID of the room this attachment was uploaded into (set
+	// at RequestUpload time from the room-scoped upload endpoint). It never
+	// changes after creation, and AttachToMessage enforces that a message
+	// can only be attached to an attachment whose RoomID matches the
+	// message's own room, so an attachment can never be linked to a message
+	// in a different room than the one it was uploaded into.
+	RoomID string
 	// MessageID is the ID of the message this attachment is linked to, or
 	// nil if it has not yet been attached to any message.
 	MessageID *string

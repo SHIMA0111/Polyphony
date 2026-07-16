@@ -6,9 +6,12 @@ import (
 )
 
 // withRequiredEnv sets the two required environment variables for the
-// duration of the test and clears them afterwards. It also clears the
-// optional DB_* duration variables so tests are isolated from any values
-// inherited from the surrounding environment.
+// duration of the test and clears them afterwards. It also clears every
+// optional env var Load reads (the DB_* duration variables, CORS_ORIGINS,
+// the S3_* variables, WS_TICKET_SECRET, AUTH_MODE, and the KRATOS_*
+// variables) so tests are isolated from any values inherited from the
+// surrounding environment (e.g. a developer's shell, or a docker-compose
+// `environment:` block set outside the test process).
 func withRequiredEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/db")
@@ -16,6 +19,18 @@ func withRequiredEnv(t *testing.T) {
 	t.Setenv("DB_MAX_CONN_LIFETIME", "")
 	t.Setenv("DB_MAX_CONN_IDLE_TIME", "")
 	t.Setenv("DB_HEALTH_CHECK_PERIOD", "")
+	t.Setenv("CORS_ORIGINS", "")
+	t.Setenv("S3_ENDPOINT", "")
+	t.Setenv("S3_REGION", "")
+	t.Setenv("S3_BUCKET", "")
+	t.Setenv("S3_ACCESS_KEY", "")
+	t.Setenv("S3_SECRET_KEY", "")
+	t.Setenv("S3_FORCE_PATH_STYLE", "")
+	t.Setenv("WS_TICKET_SECRET", "")
+	t.Setenv("AUTH_MODE", "")
+	t.Setenv("KRATOS_PUBLIC_URL", "")
+	t.Setenv("KRATOS_ADMIN_URL", "")
+	t.Setenv("KRATOS_COOKIE_NAME", "")
 }
 
 // TestLoadDBDurationDefaults verifies Load falls back to the documented
@@ -94,6 +109,55 @@ func TestLoadMissingRequiredVars(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected Load to fail when DATABASE_URL and JWT_SECRET are unset")
+	}
+}
+
+// TestLoadCORSOriginsDefault verifies Load falls back to the documented
+// default CORS_ORIGINS value when unset.
+func TestLoadCORSOriginsDefault(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CORSOrigins != "http://localhost:3000" {
+		t.Errorf("expected default CORSOrigins, got %q", cfg.CORSOrigins)
+	}
+}
+
+// TestLoadCORSOriginsWildcardRejected verifies Load fails fast when
+// CORS_ORIGINS contains a literal "*" entry — alone, or mixed in with other
+// origins, or with surrounding whitespace — since interface/app/router.go
+// always enables AllowCredentials, and browsers reject a wildcard origin
+// combined with credentialed requests.
+func TestLoadCORSOriginsWildcardRejected(t *testing.T) {
+	for _, val := range []string{"*", "http://localhost:3000,*", " * "} {
+		t.Run(val, func(t *testing.T) {
+			withRequiredEnv(t)
+			t.Setenv("CORS_ORIGINS", val)
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected Load to fail for CORS_ORIGINS=%q", val)
+			}
+		})
+	}
+}
+
+// TestLoadCORSOriginsNonWildcardAccepted verifies Load accepts a normal,
+// non-wildcard CORS_ORIGINS value (including one with multiple origins, and
+// one containing "*" only as a substring of a real origin, not a standalone
+// entry).
+func TestLoadCORSOriginsNonWildcardAccepted(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("CORS_ORIGINS", "https://app.example.com,https://admin.example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CORSOrigins != "https://app.example.com,https://admin.example.com" {
+		t.Errorf("expected overridden CORSOrigins, got %q", cfg.CORSOrigins)
 	}
 }
 

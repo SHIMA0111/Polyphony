@@ -11,7 +11,6 @@ import (
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
 
 // RoomUsecase provides room-related business logic.
@@ -78,8 +77,8 @@ func (u *RoomUsecase) UpdateRoom(ctx context.Context, userID, roomID, name, desc
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
-		return nil, err
+	if !member.Role.Allows(domainroom.ActionManageRoom) {
+		return nil, domain.ErrForbidden
 	}
 
 	rm, err := u.roomRepo.GetByID(ctx, roomID)
@@ -106,8 +105,8 @@ func (u *RoomUsecase) DeleteRoom(ctx context.Context, userID, roomID string) err
 	if err != nil {
 		return err
 	}
-	if err := middleware.Authorize(member.Role, domainroom.ActionDeleteRoom); err != nil {
-		return err
+	if !member.Role.Allows(domainroom.ActionDeleteRoom) {
+		return domain.ErrForbidden
 	}
 
 	return u.roomRepo.Delete(ctx, roomID)

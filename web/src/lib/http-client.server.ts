@@ -20,6 +20,23 @@ import { headers } from "next/headers"
 
 const APP_INTERNAL_URL = process.env.APP_INTERNAL_URL ?? "http://localhost:3000"
 
+/**
+ * Error thrown by `serverHttpClient.get` when the proxied request resolves
+ * with a non-2xx status, carrying the upstream HTTP status code so callers
+ * can distinguish "not found" (safe to map to Next's `notFound()`) from
+ * every other failure (which should propagate to the nearest `error.tsx`
+ * boundary instead of being misreported as a 404).
+ */
+export class HttpError extends Error {
+  readonly status: number
+
+  constructor(status: number) {
+    super(`Request failed: ${status}`)
+    this.name = "HttpError"
+    this.status = status
+  }
+}
+
 async function request<T>(path: string): Promise<T> {
   const incoming = await headers()
   const res = await fetch(`${APP_INTERNAL_URL}/api/proxy${path}`, {
@@ -28,7 +45,7 @@ async function request<T>(path: string): Promise<T> {
   })
 
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status}`)
+    throw new HttpError(res.status)
   }
 
   if (res.status === 204) {

@@ -21,16 +21,16 @@ type ObjectStorage struct {
 	ShouldErr bool
 
 	// PresignUploadFunc, if set, overrides PresignUpload entirely.
-	PresignUploadFunc func(ctx context.Context, key, contentType string, expires time.Duration) (string, error)
+	PresignUploadFunc func(ctx context.Context, key, contentType string, sizeBytes int64, expires time.Duration) (string, error)
 	// PresignViewFunc, if set, overrides PresignView entirely.
 	PresignViewFunc func(ctx context.Context, key string, expires time.Duration) (string, error)
 }
 
 // PresignUpload returns a presigned upload URL. See the ObjectStorage doc
 // comment for how ShouldErr and PresignUploadFunc interact.
-func (s *ObjectStorage) PresignUpload(ctx context.Context, key, contentType string, expires time.Duration) (string, error) {
+func (s *ObjectStorage) PresignUpload(ctx context.Context, key, contentType string, sizeBytes int64, expires time.Duration) (string, error) {
 	if s.PresignUploadFunc != nil {
-		return s.PresignUploadFunc(ctx, key, contentType, expires)
+		return s.PresignUploadFunc(ctx, key, contentType, sizeBytes, expires)
 	}
 	if s.ShouldErr {
 		return "", fmt.Errorf("mock object storage: presign upload error")

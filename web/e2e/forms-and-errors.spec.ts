@@ -41,6 +41,8 @@ test.describe("form validation, toasts, and the room not-found page", () => {
     await page.goto("/register")
 
     await page.getByPlaceholder("Create a password").fill("correcthorse1")
+    await expect(page.getByText(/Low|Medium|High/)).toBeVisible()
+
     await page.getByPlaceholder("Confirm your password").fill("mismatch1")
 
     const mismatchAlert = page

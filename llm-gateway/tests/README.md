@@ -1,7 +1,7 @@
 # `llm-gateway` integration test harness
 
-This directory holds network-free, deterministic HTTP-level integration tests, split
-into two test binaries by what they exercise:
+This directory holds network-free (or, for `grpc_test.rs`, loopback-only),
+deterministic integration tests, split into three test binaries by what they exercise:
 
 - **`router_test.rs`** — drives the fully assembled `axum::Router` (from
   `adapters::inbound::rest::router::build_router`) through
@@ -16,6 +16,17 @@ into two test binaries by what they exercise:
   URI). No real network call ever leaves the test process. Use this file's pattern —
   or a sibling file with the same construction/assertion style — for new outbound
   provider adapters.
+- **`grpc_test.rs`** — drives the gRPC inbound adapter
+  (`adapters::inbound::grpc`) end-to-end: it spins up a real `tonic` server
+  (`serve_grpc`, given a `std::future::pending()` shutdown future so it runs for the
+  test's lifetime) backed by the same kind of `StubUseCase` test double as
+  `router_test.rs`, connects a `tonic::transport::Channel` to a fixed loopback port,
+  and exercises `CompletionService`, `ModelsService`, and the standard
+  `grpc.health.v1.Health` service via the low-level `tonic::client::Grpc` API (no
+  generated client exists since `build.rs` only generates server stubs). All
+  assertions share one server instance/port inside a single `#[tokio::test]` rather
+  than one server per test, so the fixed port is never raced by cargo's parallel test
+  execution. Use this file's pattern for new gRPC services or RPCs.
 
 ## Conventions both files follow
 

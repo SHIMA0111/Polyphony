@@ -20,9 +20,16 @@ import (
 // seeding a mocks.AttachmentRepo via Create, bypassing RequestUpload.
 // messageID is nil (unlinked) if empty.
 func newAttachmentFixture(id, messageID string) *domainattachment.Attachment {
+	return newAttachmentFixtureInRoom(id, "room-1", messageID)
+}
+
+// newAttachmentFixtureInRoom is newAttachmentFixture with an explicit
+// RoomID, for tests exercising cross-room attach attempts.
+func newAttachmentFixtureInRoom(id, roomID, messageID string) *domainattachment.Attachment {
 	a := &domainattachment.Attachment{
 		ID:        id,
-		S3Key:     "attachments/room-1/" + id,
+		RoomID:    roomID,
+		S3Key:     "attachments/" + roomID + "/" + id,
 		MimeType:  "image/png",
 		SizeBytes: 1024,
 		CreatedAt: time.Now(),
@@ -107,6 +114,31 @@ func TestRequestUploadHandler400TooLarge(t *testing.T) {
 	}
 }
 
+func TestRequestUploadHandler400InvalidSize(t *testing.T) {
+	for _, body := range []string{
+		`{"mime_type":"image/png","size_bytes":0}`,
+		`{"mime_type":"image/png","size_bytes":-1}`,
+	} {
+		e, h, _, _ := setupAttachmentTest(true)
+
+		req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/attachments/upload-url",
+			strings.NewReader(body))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId")
+		c.SetParamValues("room-1")
+		c.Set("user_id", "user-1")
+
+		if err := h.RequestUpload(c); err != nil {
+			t.Fatalf("body=%s: RequestUpload error: %v", body, err)
+		}
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body=%s: expected 400, got %d", body, rec.Code)
+		}
+	}
+}
+
 func TestRequestUploadHandler403(t *testing.T) {
 	e, h, _, _ := setupAttachmentTest(false)
 
@@ -185,6 +217,40 @@ func TestAttachHandler409AlreadyLinked(t *testing.T) {
 	}
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAttachHandler404CrossRoom proves that attaching an attachment
+// uploaded into a different room returns 404 (mapped from
+// domain.ErrNotFound), not a successful link.
+func TestAttachHandler404CrossRoom(t *testing.T) {
+	e, h, attachmentRepo, msgRepo := setupAttachmentTest(true)
+	ctx := context.Background()
+
+	senderID := "user-1"
+	msgRepo.Messages = map[string]*domainmessage.Message{
+		"msg-1": {ID: "msg-1", RoomID: "room-1", SenderID: &senderID},
+	}
+	// Attachment uploaded into "room-2", not the "room-1" the message
+	// belongs to.
+	if err := attachmentRepo.Create(ctx, newAttachmentFixtureInRoom("att-1", "room-2", "")); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/msg-1/attachments",
+		strings.NewReader(`{"attachment_id":"att-1"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId", "messageId")
+	c.SetParamValues("room-1", "msg-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.Attach(c); err != nil {
+		t.Fatalf("Attach error: %v", err)
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

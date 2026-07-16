@@ -47,6 +47,11 @@ var (
 	// ErrAttachmentTooLarge indicates an attachment upload was requested
 	// with a declared size exceeding the maximum allowed.
 	ErrAttachmentTooLarge = errors.New("attachment too large")
+
+	// ErrInvalidAttachmentSize indicates an attachment upload was requested
+	// with a declared size that is not a positive number of bytes (zero or
+	// negative).
+	ErrInvalidAttachmentSize = errors.New("invalid attachment size")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.

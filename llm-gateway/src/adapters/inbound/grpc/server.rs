@@ -4,6 +4,7 @@
 //! `grpc.health.v1.Health` service from a single `tonic` transport, all backed by the
 //! same `Arc<dyn CompletionUseCase>` instance the REST router uses.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -14,7 +15,7 @@ use super::models_service::GrpcModelsService;
 use super::pb::completion_service_server::CompletionServiceServer;
 use super::pb::models_service_server::ModelsServiceServer;
 
-/// Starts the gRPC server and serves it on `addr` until the process is terminated.
+/// Starts the gRPC server and serves it on `addr` until `shutdown` resolves.
 ///
 /// Mirrors the REST `GET /health` liveness-only philosophy: both gRPC services are
 /// marked `Serving` unconditionally at startup (no deep dependency checks, e.g.
@@ -25,14 +26,23 @@ use super::pb::models_service_server::ModelsServiceServer;
 /// * `state` — Shared domain service implementing `CompletionUseCase`, the same
 ///   instance injected into the REST router.
 /// * `addr` — Socket address to bind and listen on.
+/// * `shutdown` — Future that, once it resolves, triggers a graceful shutdown (no new
+///   connections accepted, in-flight RPCs allowed to complete). Callers that also run a
+///   REST server should derive both shutdown futures from a single signal source (e.g.
+///   a `tokio::sync::watch` channel), since a one-shot signal future such as
+///   `shutdown_signal()` can only be awaited once.
 ///
 /// # Errors
 /// Returns `tonic::transport::Error` if the server fails to bind `addr` or the
 /// transport encounters a fatal error while serving.
-pub async fn serve_grpc(
+pub async fn serve_grpc<F>(
     state: Arc<dyn CompletionUseCase>,
     addr: SocketAddr,
-) -> Result<(), tonic::transport::Error> {
+    shutdown: F,
+) -> Result<(), tonic::transport::Error>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     let (health_reporter, health_service) = tonic_health::server::health_reporter();
 
     health_reporter
@@ -49,6 +59,6 @@ pub async fn serve_grpc(
         .add_service(health_service)
         .add_service(completion_svc)
         .add_service(models_svc)
-        .serve(addr)
+        .serve_with_shutdown(addr, shutdown)
         .await
 }

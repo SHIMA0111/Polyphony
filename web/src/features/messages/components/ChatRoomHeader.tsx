@@ -30,22 +30,24 @@ export function ChatRoomHeader({ roomName }: ChatRoomHeaderProps) {
       h={16}
       flexShrink={0}
     >
-      <Link href="/rooms">
-        <Button
-          variant="ghost"
-          size="sm"
-          p={0}
-          display={{ base: "flex", md: "none" }}
-        >
+      <Button
+        asChild
+        variant="ghost"
+        size="sm"
+        p={0}
+        display={{ base: "flex", md: "none" }}
+        aria-label="Back to rooms"
+      >
+        <Link href="/rooms">
           <ChevronLeft size={20} />
-        </Button>
-      </Link>
+        </Link>
+      </Button>
       <Box flex={1} minW={0}>
         <Heading size="md" truncate>
           {roomName ?? "Chat Room"}
         </Heading>
       </Box>
-      <Button variant="ghost" size="sm" p={0}>
+      <Button variant="ghost" size="sm" p={0} aria-label="Room settings">
         <MoreVertical size={20} />
       </Button>
     </Flex>

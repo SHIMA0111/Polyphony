@@ -26,6 +26,12 @@ impl GrpcModelsService {
     ///
     /// # Arguments
     /// * `use_case` — Shared domain service implementing `CompletionUseCase`.
+    ///
+    /// # Returns
+    /// A `GrpcModelsService` ready to be registered with `ModelsServiceServer`.
+    ///
+    /// # Errors
+    /// Never fails — construction is infallible.
     pub fn new(use_case: Arc<dyn CompletionUseCase>) -> Self {
         Self { use_case }
     }
@@ -52,6 +58,11 @@ fn domain_model_to_proto(m: DomainModelInfo) -> ModelInfo {
 #[tonic::async_trait]
 impl ModelsService for GrpcModelsService {
     /// Returns all available models across all configured providers.
+    ///
+    /// # Returns
+    /// A `ListModelsResponse` containing every model surfaced by every configured
+    /// provider, converted from the domain `ModelInfo` shape via
+    /// `domain_model_to_proto`.
     ///
     /// # Errors
     /// Never returns an error today — `CompletionUseCase::list_models` is infallible.

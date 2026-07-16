@@ -60,6 +60,7 @@ func TestAttachmentRepository_CreateAndGetByID(t *testing.T) {
 
 	a := &domainattachment.Attachment{
 		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
 		MessageID: nil,
 		S3Key:     "attachments/" + rm.ID + "/" + uuid.New().String(),
 		MimeType:  "image/png",
@@ -77,7 +78,7 @@ func TestAttachmentRepository_CreateAndGetByID(t *testing.T) {
 	if got.MessageID != nil {
 		t.Fatalf("expected nil MessageID, got %v", *got.MessageID)
 	}
-	if got.S3Key != a.S3Key || got.MimeType != a.MimeType || got.SizeBytes != a.SizeBytes {
+	if got.RoomID != a.RoomID || got.S3Key != a.S3Key || got.MimeType != a.MimeType || got.SizeBytes != a.SizeBytes {
 		t.Fatalf("round-tripped attachment mismatch: got %+v, want %+v", got, a)
 	}
 }
@@ -112,6 +113,7 @@ func TestAttachmentRepository_AttachToMessage(t *testing.T) {
 
 	a := &domainattachment.Attachment{
 		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
 		S3Key:     "attachments/" + rm.ID + "/" + uuid.New().String(),
 		MimeType:  "image/jpeg",
 		SizeBytes: 2048,
@@ -121,7 +123,7 @@ func TestAttachmentRepository_AttachToMessage(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	linked, err := attachmentRepo.AttachToMessage(ctx, a.ID, msg.ID)
+	linked, err := attachmentRepo.AttachToMessage(ctx, a.ID, msg.ID, rm.ID)
 	if err != nil {
 		t.Fatalf("AttachToMessage failed: %v", err)
 	}
@@ -157,6 +159,7 @@ func TestAttachmentRepository_AttachToMessageAlreadyLinked(t *testing.T) {
 
 	a := &domainattachment.Attachment{
 		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
 		S3Key:     "attachments/" + rm.ID + "/" + uuid.New().String(),
 		MimeType:  "image/gif",
 		SizeBytes: 512,
@@ -165,11 +168,11 @@ func TestAttachmentRepository_AttachToMessageAlreadyLinked(t *testing.T) {
 	if err := attachmentRepo.Create(ctx, a); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	if _, err := attachmentRepo.AttachToMessage(ctx, a.ID, firstMsg.ID); err != nil {
+	if _, err := attachmentRepo.AttachToMessage(ctx, a.ID, firstMsg.ID, rm.ID); err != nil {
 		t.Fatalf("first AttachToMessage failed: %v", err)
 	}
 
-	_, err := attachmentRepo.AttachToMessage(ctx, a.ID, secondMsg.ID)
+	_, err := attachmentRepo.AttachToMessage(ctx, a.ID, secondMsg.ID, rm.ID)
 	if !errors.Is(err, domain.ErrAttachmentAlreadyLinked) {
 		t.Fatalf("expected domain.ErrAttachmentAlreadyLinked, got %v", err)
 	}
@@ -198,9 +201,54 @@ func TestAttachmentRepository_AttachToMessageNotFound(t *testing.T) {
 	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "attach-missing-owner")
 	msg := seedMessage(ctx, t, msgRepo, rm.ID, rm.OwnerID)
 
-	_, err := attachmentRepo.AttachToMessage(ctx, uuid.New().String(), msg.ID)
+	_, err := attachmentRepo.AttachToMessage(ctx, uuid.New().String(), msg.ID, rm.ID)
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected domain.ErrNotFound, got %v", err)
+	}
+}
+
+// TestAttachmentRepository_AttachToMessageCrossRoom proves that attaching an
+// attachment to a message in a *different* room than the one the attachment
+// was uploaded into returns domain.ErrNotFound (indistinguishable from a
+// missing attachment ID) rather than succeeding, and leaves the attachment
+// unlinked.
+func TestAttachmentRepository_AttachToMessageCrossRoom(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	attachmentRepo := NewAttachmentRepository(pool)
+
+	roomA := seedUserAndRoom(ctx, t, userRepo, roomRepo, "attach-cross-room-a")
+	roomB := seedUserAndRoom(ctx, t, userRepo, roomRepo, "attach-cross-room-b")
+	msgInRoomA := seedMessage(ctx, t, msgRepo, roomA.ID, roomA.OwnerID)
+
+	// Attachment uploaded into roomB, not roomA.
+	a := &domainattachment.Attachment{
+		ID:        uuid.New().String(),
+		RoomID:    roomB.ID,
+		S3Key:     "attachments/" + roomB.ID + "/" + uuid.New().String(),
+		MimeType:  "image/png",
+		SizeBytes: 1024,
+		CreatedAt: time.Now(),
+	}
+	if err := attachmentRepo.Create(ctx, a); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err := attachmentRepo.AttachToMessage(ctx, a.ID, msgInRoomA.ID, roomA.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound for a cross-room attach attempt, got %v", err)
+	}
+
+	got, err := attachmentRepo.GetByID(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.MessageID != nil {
+		t.Fatalf("expected attachment to remain unlinked after cross-room attach attempt, got %v", *got.MessageID)
 	}
 }
 
@@ -223,6 +271,7 @@ func TestAttachmentRepository_ListByMessageID(t *testing.T) {
 	// Unlinked attachment: must not appear in the list.
 	unlinked := &domainattachment.Attachment{
 		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
 		S3Key:     "attachments/" + rm.ID + "/unlinked",
 		MimeType:  "image/png",
 		SizeBytes: 1,
@@ -235,6 +284,7 @@ func TestAttachmentRepository_ListByMessageID(t *testing.T) {
 	// Attachment linked to a different message: must not appear in the list.
 	otherLinked := &domainattachment.Attachment{
 		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
 		S3Key:     "attachments/" + rm.ID + "/other",
 		MimeType:  "image/png",
 		SizeBytes: 1,
@@ -243,13 +293,14 @@ func TestAttachmentRepository_ListByMessageID(t *testing.T) {
 	if err := attachmentRepo.Create(ctx, otherLinked); err != nil {
 		t.Fatalf("Create otherLinked failed: %v", err)
 	}
-	if _, err := attachmentRepo.AttachToMessage(ctx, otherLinked.ID, otherMsg.ID); err != nil {
+	if _, err := attachmentRepo.AttachToMessage(ctx, otherLinked.ID, otherMsg.ID, rm.ID); err != nil {
 		t.Fatalf("AttachToMessage otherLinked failed: %v", err)
 	}
 
 	// Two attachments linked to the target message, created in order.
 	first := &domainattachment.Attachment{
 		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
 		S3Key:     "attachments/" + rm.ID + "/first",
 		MimeType:  "image/png",
 		SizeBytes: 1,
@@ -258,12 +309,13 @@ func TestAttachmentRepository_ListByMessageID(t *testing.T) {
 	if err := attachmentRepo.Create(ctx, first); err != nil {
 		t.Fatalf("Create first failed: %v", err)
 	}
-	if _, err := attachmentRepo.AttachToMessage(ctx, first.ID, targetMsg.ID); err != nil {
+	if _, err := attachmentRepo.AttachToMessage(ctx, first.ID, targetMsg.ID, rm.ID); err != nil {
 		t.Fatalf("AttachToMessage first failed: %v", err)
 	}
 
 	second := &domainattachment.Attachment{
 		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
 		S3Key:     "attachments/" + rm.ID + "/second",
 		MimeType:  "image/png",
 		SizeBytes: 1,
@@ -272,7 +324,7 @@ func TestAttachmentRepository_ListByMessageID(t *testing.T) {
 	if err := attachmentRepo.Create(ctx, second); err != nil {
 		t.Fatalf("Create second failed: %v", err)
 	}
-	if _, err := attachmentRepo.AttachToMessage(ctx, second.ID, targetMsg.ID); err != nil {
+	if _, err := attachmentRepo.AttachToMessage(ctx, second.ID, targetMsg.ID, rm.ID); err != nil {
 		t.Fatalf("AttachToMessage second failed: %v", err)
 	}
 

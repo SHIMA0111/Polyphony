@@ -83,13 +83,17 @@ func NewAttachmentUsecase(
 }
 
 // RequestUpload verifies the caller is a member of roomID, validates
-// mimeType against the supported allow-list and sizeBytes against
-// MaxAttachmentSizeBytes, persists a new Attachment row (not yet linked to
-// any message), and returns an UploadTicket containing a presigned PUT URL
-// valid for 15 minutes.
+// mimeType against the supported allow-list and sizeBytes (must be positive
+// and no larger than MaxAttachmentSizeBytes), persists a new Attachment row
+// scoped to roomID (not yet linked to any message), and returns an
+// UploadTicket containing a presigned PUT URL valid for 15 minutes. The
+// presigned URL itself binds sizeBytes as a required Content-Length (see
+// domain/storage.ObjectStorage.PresignUpload), so the enforcement holds even
+// if the client bypasses this API and uploads directly.
 //
 // It returns domain.ErrForbidden if the caller is not a room member,
-// domain.ErrUnsupportedMimeType if mimeType is not in the allow-list, and
+// domain.ErrUnsupportedMimeType if mimeType is not in the allow-list,
+// domain.ErrInvalidAttachmentSize if sizeBytes is not positive, and
 // domain.ErrAttachmentTooLarge if sizeBytes exceeds MaxAttachmentSizeBytes.
 func (u *AttachmentUsecase) RequestUpload(ctx context.Context, userID, roomID, mimeType string, sizeBytes int64) (*UploadTicket, error) {
 	if err := u.checkMembership(ctx, roomID, userID); err != nil {
@@ -98,6 +102,9 @@ func (u *AttachmentUsecase) RequestUpload(ctx context.Context, userID, roomID, m
 
 	if !allowedMimeTypes[mimeType] {
 		return nil, domain.ErrUnsupportedMimeType
+	}
+	if sizeBytes <= 0 {
+		return nil, domain.ErrInvalidAttachmentSize
 	}
 	if sizeBytes > MaxAttachmentSizeBytes {
 		return nil, domain.ErrAttachmentTooLarge
@@ -108,6 +115,7 @@ func (u *AttachmentUsecase) RequestUpload(ctx context.Context, userID, roomID, m
 
 	a := &domainattachment.Attachment{
 		ID:        attachmentID,
+		RoomID:    roomID,
 		MessageID: nil,
 		S3Key:     s3Key,
 		MimeType:  mimeType,
@@ -118,7 +126,7 @@ func (u *AttachmentUsecase) RequestUpload(ctx context.Context, userID, roomID, m
 		return nil, err
 	}
 
-	uploadURL, err := u.storage.PresignUpload(ctx, s3Key, mimeType, uploadURLExpiry)
+	uploadURL, err := u.storage.PresignUpload(ctx, s3Key, mimeType, sizeBytes, uploadURLExpiry)
 	if err != nil {
 		slog.Default().Error("presign upload failed", "error", err, "s3_key", s3Key)
 		return nil, err
@@ -133,11 +141,14 @@ func (u *AttachmentUsecase) RequestUpload(ctx context.Context, userID, roomID, m
 }
 
 // AttachToMessage links a previously-uploaded attachment to an existing
-// message. Only the message's own sender may attach to it. It returns
+// message. Only the message's own sender may attach to it, and the
+// attachment must have been uploaded into the same room as the message
+// (enforced atomically by attachmentRepo.AttachToMessage's UPDATE
+// predicate, closing the race between this check and the write). It returns
 // domain.ErrForbidden if the caller is not a room member or is not the
 // message's sender, domain.ErrNotFound if the message does not belong to
-// roomID, and domain.ErrAttachmentAlreadyLinked if the attachment is already
-// linked.
+// roomID or the attachment does not exist/belongs to a different room, and
+// domain.ErrAttachmentAlreadyLinked if the attachment is already linked.
 func (u *AttachmentUsecase) AttachToMessage(ctx context.Context, userID, roomID, messageID, attachmentID string) (*domainattachment.Attachment, error) {
 	if err := u.checkMembership(ctx, roomID, userID); err != nil {
 		return nil, err
@@ -154,7 +165,7 @@ func (u *AttachmentUsecase) AttachToMessage(ctx context.Context, userID, roomID,
 		return nil, domain.ErrForbidden
 	}
 
-	return u.attachmentRepo.AttachToMessage(ctx, attachmentID, messageID)
+	return u.attachmentRepo.AttachToMessage(ctx, attachmentID, messageID, roomID)
 }
 
 // ListAttachments verifies the caller is a room member and that messageID

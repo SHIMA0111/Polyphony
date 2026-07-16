@@ -46,6 +46,8 @@ func TestGetRoomNotMember(t *testing.T) {
 	}
 }
 
+// TestGetRoomReturnsRole verifies GetRoom returns the caller's own
+// membership role (e.g. domainroom.RoleGuest) alongside the room.
 func TestGetRoomReturnsRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -66,6 +68,9 @@ func TestGetRoomReturnsRole(t *testing.T) {
 	}
 }
 
+// TestUpdateRoomMemberForbidden verifies UpdateRoom returns
+// domain.ErrForbidden for a plain domainroom.RoleMember, who lacks the
+// ActionManageRoom permission.
 func TestUpdateRoomMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -84,6 +89,8 @@ func TestUpdateRoomMemberForbidden(t *testing.T) {
 	}
 }
 
+// TestUpdateRoomAdminAllowed verifies UpdateRoom succeeds for a
+// domainroom.RoleAdmin member, who holds ActionManageRoom permission.
 func TestUpdateRoomAdminAllowed(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -105,6 +112,9 @@ func TestUpdateRoomAdminAllowed(t *testing.T) {
 	}
 }
 
+// TestDeleteRoomAdminForbidden verifies DeleteRoom returns
+// domain.ErrForbidden for a domainroom.RoleAdmin member: deleting a room is
+// reserved for domainroom.RoleMaster (the ActionDeleteRoom permission).
 func TestDeleteRoomAdminForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -159,6 +169,8 @@ func TestListRoomsEmpty(t *testing.T) {
 	}
 }
 
+// TestListRoomsIncludesRole verifies ListRooms returns each room paired with
+// the caller's own membership role.
 func TestListRoomsIncludesRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)

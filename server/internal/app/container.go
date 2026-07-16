@@ -60,9 +60,11 @@ type Container struct {
 	Logger *slog.Logger
 
 	// Repositories
-	UserRepo       domainuser.UserRepository
-	RoomRepo       domainroom.RoomRepository
-	MsgRepo        domainmessage.MessageRepository
+	UserRepo domainuser.UserRepository
+	RoomRepo domainroom.RoomRepository
+	MsgRepo  domainmessage.MessageRepository
+	// AttachmentRepo is the domain/attachment.AttachmentRepository backing
+	// AttachmentUC's presign/link/list operations.
 	AttachmentRepo domainattachment.AttachmentRepository
 
 	// Services / Gateways
@@ -78,22 +80,30 @@ type Container struct {
 	MessageHub event.MessageHub
 
 	// Use cases
-	AuthUC       *authusecase.AuthUsecase
-	RoomUC       *roomusecase.RoomUsecase
-	MsgUC        *msgusecase.MessageUsecase
-	UserUC       *userusecase.UserUsecase
+	AuthUC *authusecase.AuthUsecase
+	RoomUC *roomusecase.RoomUsecase
+	MsgUC  *msgusecase.MessageUsecase
+	UserUC *userusecase.UserUsecase
+	// AttachmentUC implements the attachment presign/link/list business
+	// logic (see usecase/attachment.AttachmentUsecase).
 	AttachmentUC *attachmentusecase.AttachmentUsecase
-	ModelUC      *modelusecase.ModelUsecase
+	// ModelUC lists available AI models across all configured providers via
+	// LLMGateway (see usecase/model.ModelUsecase).
+	ModelUC *modelusecase.ModelUsecase
 
 	// Handlers
-	HealthHandler     *handler.HealthHandler
-	AuthHandler       *handler.AuthHandler
-	RoomHandler       *handler.RoomHandler
-	MessageHandler    *handler.MessageHandler
-	ModelHandler      *handler.ModelHandler
-	UserHandler       *handler.UserHandler
+	HealthHandler  *handler.HealthHandler
+	AuthHandler    *handler.AuthHandler
+	RoomHandler    *handler.RoomHandler
+	MessageHandler *handler.MessageHandler
+	ModelHandler   *handler.ModelHandler
+	UserHandler    *handler.UserHandler
+	// AttachmentHandler serves the presigned-upload/attach/list attachment
+	// endpoints, delegating to AttachmentUC.
 	AttachmentHandler *handler.AttachmentHandler
-	WebSocketHandler  *handler.WebSocketHandler
+	// WebSocketHandler serves the ticket-issuance and connection-upgrade
+	// endpoints that push real-time event.RoomEvent updates to clients.
+	WebSocketHandler *handler.WebSocketHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,

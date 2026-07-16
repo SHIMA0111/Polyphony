@@ -40,6 +40,8 @@ services:
         condition: service_completed_successfully
       llm-gateway:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
   db:
     image: postgres:17-alpine

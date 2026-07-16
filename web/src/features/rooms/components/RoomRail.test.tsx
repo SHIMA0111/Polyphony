@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
+import userEvent from "@testing-library/user-event"
+import { HttpResponse, http } from "msw"
+import { server } from "@/test/msw/server"
 import { render, screen, waitFor } from "@/test/render"
 import { fixtureRooms } from "@/features/rooms/api/handlers"
 import { RoomRail } from "./RoomRail"
@@ -53,5 +56,33 @@ describe("RoomRail", () => {
         screen.getByRole("link", { name: room.name }),
       ).not.toHaveAttribute("aria-current")
     }
+  })
+
+  it("renders a compact error state with a retry action when the rooms query fails", async () => {
+    useParamsMock.mockReturnValue({})
+    let requestCount = 0
+    server.use(
+      http.get("/api/proxy/rooms", () => {
+        requestCount += 1
+        return HttpResponse.json(
+          { message: "Internal Server Error" },
+          { status: 500 },
+        )
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<RoomRail />)
+
+    await waitFor(() =>
+      expect(screen.getByText(/couldn't load rooms/i)).toBeInTheDocument(),
+    )
+    const retryButton = screen.getByRole("button", { name: /retry/i })
+    expect(retryButton).toBeInTheDocument()
+    const requestsBeforeRetry = requestCount
+
+    await user.click(retryButton)
+
+    await waitFor(() => expect(requestCount).toBeGreaterThan(requestsBeforeRetry))
   })
 })

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -114,6 +115,17 @@ func Load() (*Config, error) {
 	if corsOrigins == "" {
 		corsOrigins = "http://localhost:3000"
 	}
+	if containsWildcardOrigin(corsOrigins) {
+		// interface/app/router.go always sets AllowCredentials: true on the
+		// CORS middleware (required so the browser can send/receive the
+		// Kratos session cookie), and browsers refuse to honor
+		// Access-Control-Allow-Origin: * together with
+		// Access-Control-Allow-Credentials: true — so a "*" here would not
+		// just be an overly permissive origin list, it would silently break
+		// every credentialed cross-origin request. Fail fast at startup
+		// rather than as a hard-to-diagnose CORS error in the browser.
+		return nil, fmt.Errorf(`CORS_ORIGINS must not contain "*" when credentials are enabled, got %q`, corsOrigins)
+	}
 
 	dbMaxConnLifetime := parseDurationEnv("DB_MAX_CONN_LIFETIME", defaultDBMaxConnLifetime)
 	dbMaxConnIdleTime := parseDurationEnv("DB_MAX_CONN_IDLE_TIME", defaultDBMaxConnIdleTime)
@@ -193,6 +205,19 @@ func Load() (*Config, error) {
 		KratosAdminURL:      kratosAdminURL,
 		KratosCookieName:    kratosCookieName,
 	}, nil
+}
+
+// containsWildcardOrigin reports whether corsOrigins (a comma-separated list,
+// matching the CORS_ORIGINS format interface/app/router.go splits on ",")
+// contains a literal "*" entry, after trimming surrounding whitespace from
+// each entry.
+func containsWildcardOrigin(corsOrigins string) bool {
+	for _, origin := range strings.Split(corsOrigins, ",") {
+		if strings.TrimSpace(origin) == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseDurationEnv reads the given environment variable and parses it as a
