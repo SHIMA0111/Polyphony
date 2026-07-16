@@ -71,10 +71,14 @@ func visibleTo(msg *message.Message, requestingUserID string) bool {
 }
 
 // ListByRoom returns messages in a room, ignoring the cursor (this fake does
-// not implement true cursor-based pagination), truncated to limit entries.
-// Soft-deleted messages (IsDeleted == true) are excluded, mirroring the
-// postgres.MessageRepository behavior. A private message not owned by
-// requestingUserID is also excluded (see visibleTo).
+// not implement true cursor-based pagination), ordered sequence-descending
+// (newest first, mirroring postgres.MessageRepository.ListByRoom's
+// ORDER BY sequence DESC -- callers such as
+// MessageUsecase.assembleAIContext rely on this ordering to bucket the
+// newest N entries as the "recent, always verbatim" tail), truncated to
+// limit entries. Soft-deleted messages (IsDeleted == true) are excluded,
+// mirroring the postgres.MessageRepository behavior. A private message not
+// owned by requestingUserID is also excluded (see visibleTo).
 func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int, requestingUserID string) (*message.CursorPage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -85,6 +89,9 @@ func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int,
 			msgs = append(msgs, msg)
 		}
 	}
+	sort.Slice(msgs, func(i, j int) bool {
+		return msgs[i].Sequence > msgs[j].Sequence
+	})
 	if len(msgs) > limit {
 		msgs = msgs[:limit]
 	}
@@ -92,9 +99,12 @@ func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int,
 }
 
 // ListByRoomUpTo returns up to limit messages in a room with sequence
-// <= maxSequence. Soft-deleted messages (IsDeleted == true) are excluded,
-// mirroring the postgres.MessageRepository behavior. A private message not
-// owned by requestingUserID is also excluded (see visibleTo).
+// <= maxSequence, ordered sequence-descending (newest first, mirroring
+// postgres.MessageRepository.ListByRoomUpTo -- see ListByRoom's doc comment
+// for why this ordering matters to callers). Soft-deleted messages
+// (IsDeleted == true) are excluded, mirroring the postgres.MessageRepository
+// behavior. A private message not owned by requestingUserID is also
+// excluded (see visibleTo).
 func (m *MessageRepo) ListByRoomUpTo(_ context.Context, roomID string, maxSequence int64, limit int, requestingUserID string) ([]*message.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -105,6 +115,9 @@ func (m *MessageRepo) ListByRoomUpTo(_ context.Context, roomID string, maxSequen
 			msgs = append(msgs, msg)
 		}
 	}
+	sort.Slice(msgs, func(i, j int) bool {
+		return msgs[i].Sequence > msgs[j].Sequence
+	})
 	if len(msgs) > limit {
 		msgs = msgs[:limit]
 	}

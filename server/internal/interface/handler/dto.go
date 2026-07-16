@@ -192,6 +192,16 @@ type UpdateMessageExcludeRequest struct {
 // or "private"; a "private" message is returned by GET
 // /rooms/:roomId/messages only to its own sender (see
 // SendAIMessageRequest.Private).
+//
+// UsedContextSummary reports whether the AI response's context included a
+// summary of older room history in place of the raw messages it replaces
+// (see usecase/message.MessageUsecase.assembleAIContext, Step 50). It is a
+// one-time, request-scoped signal describing how a message was *generated*,
+// not a persisted property of the message row: it defaults to false and is
+// only ever set to true by the SendAI/RegenerateAI handlers, on the AI
+// message they just produced. List/Send/historical reads (and a
+// regenerated/refetched view of the same message later) always report
+// false.
 type MessageResponse struct {
 	ID                    string    `json:"id"`
 	RoomID                string    `json:"room_id"`
@@ -206,6 +216,7 @@ type MessageResponse struct {
 	Visibility            string    `json:"visibility"`
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
+	UsedContextSummary    bool      `json:"used_context_summary"`
 }
 
 // SendAIMessageResponse is the response body for POST /rooms/:roomId/messages/ai.

@@ -36,12 +36,20 @@ type LLMGateway struct {
 	ListModelsFunc func(ctx context.Context) ([]ai.ModelInfo, error)
 	// EstimateTokensFunc, if set, overrides EstimateTokens entirely.
 	EstimateTokensFunc func(ctx context.Context, req *ai.TokenEstimateRequest) (*ai.TokenEstimateResponse, error)
+
+	// CompleteCallCount counts every Complete invocation (regardless of
+	// which of CompleteFunc/ShouldErr/CompletionResponse served it), so
+	// tests can assert exactly how many completion calls a usecase method
+	// made -- e.g. that context summarization issues exactly one extra
+	// Complete call beyond the final answer-generating one.
+	CompleteCallCount int
 }
 
 // Complete sends a completion request and returns the response. See the
 // LLMGateway doc comment for how ShouldErr, CompletionResponse, and
 // CompleteFunc interact.
 func (g *LLMGateway) Complete(ctx context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+	g.CompleteCallCount++
 	if g.CompleteFunc != nil {
 		return g.CompleteFunc(ctx, req)
 	}

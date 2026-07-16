@@ -89,9 +89,12 @@ func (h *MessageHandler) List(c echo.Context) error {
 // SendAI handles POST /rooms/:roomId/messages/ai. It sends a user message and
 // invokes the LLM Gateway to generate an AI response. The request body may
 // optionally specify a model name. On success it returns HTTP 201 with a
-// SendAIMessageResponse containing both the user message and the AI message.
-// Check ai_message.status to determine if the LLM call succeeded ("completed")
-// or failed ("failed"). It returns HTTP 400 for invalid input, HTTP 403 if the
+// SendAIMessageResponse containing both the user message and the AI message;
+// the AI message's used_context_summary reports whether its context included
+// a summary of older room history (see MessageResponse.UsedContextSummary and
+// usecase/message.MessageUsecase.assembleAIContext, Step 50). Check
+// ai_message.status to determine if the LLM call succeeded ("completed") or
+// failed ("failed"). It returns HTTP 400 for invalid input, HTTP 403 if the
 // user lacks permission, HTTP 404 if the room is not found, and HTTP 502 if the
 // AI service encounters an error.
 func (h *MessageHandler) SendAI(c echo.Context) error {
@@ -112,9 +115,12 @@ func (h *MessageHandler) SendAI(c echo.Context) error {
 		return handleMessageError(c, err)
 	}
 
+	aiResp := toMessageResponse(result.AIMessage)
+	aiResp.UsedContextSummary = result.UsedContextSummary
+
 	return c.JSON(http.StatusCreated, SendAIMessageResponse{
 		UserMessage: toMessageResponse(result.HumanMessage),
-		AIMessage:   toMessageResponse(result.AIMessage),
+		AIMessage:   aiResp,
 	})
 }
 
@@ -122,7 +128,10 @@ func (h *MessageHandler) SendAI(c echo.Context) error {
 // It regenerates an AI response for an existing human message. The request body
 // may optionally specify a different model. The target message must be of type
 // "human"; otherwise HTTP 400 is returned. On success it returns HTTP 200 with
-// the new AI MessageResponse.
+// the new AI MessageResponse, whose used_context_summary reports whether its
+// context included a summary of older room history (see
+// MessageResponse.UsedContextSummary and
+// usecase/message.MessageUsecase.assembleAIContext, Step 50).
 func (h *MessageHandler) RegenerateAI(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")
@@ -133,12 +142,15 @@ func (h *MessageHandler) RegenerateAI(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
 	}
 
-	msg, err := h.usecase.RegenerateAIMessage(c.Request().Context(), userID, roomID, messageID, req.Model)
+	msg, usedSummary, err := h.usecase.RegenerateAIMessage(c.Request().Context(), userID, roomID, messageID, req.Model)
 	if err != nil {
 		return handleMessageError(c, err)
 	}
 
-	return c.JSON(http.StatusOK, toMessageResponse(msg))
+	resp := toMessageResponse(msg)
+	resp.UsedContextSummary = usedSummary
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 // Delete handles DELETE /rooms/:roomId/messages/:messageId. It soft-deletes

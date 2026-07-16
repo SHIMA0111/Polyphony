@@ -53,6 +53,18 @@ export interface Message {
    * `MessageInput`'s token meter filters these out of its estimate payload.
    */
   exclude_from_ai: boolean
+  /**
+   * `true` when this AI message's context included a summary of older room
+   * history in place of the raw messages it replaces (Step 50's context
+   * summarization; see `server/internal/interface/handler/dto.go`'s
+   * `MessageResponse.UsedContextSummary`). This is a one-time,
+   * request-scoped signal describing how the message was *generated*, not a
+   * persisted property: it is only ever `true` on the fresh response body
+   * from `POST /rooms/:roomId/messages/ai` or the regenerate endpoint --
+   * historical messages returned by `GET /rooms/:roomId/messages` (and a
+   * later refetch of the same message) always report `false`.
+   */
+  used_context_summary: boolean
   created_at: string
   updated_at: string
 }

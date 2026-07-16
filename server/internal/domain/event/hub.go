@@ -55,6 +55,17 @@ type RoomEvent struct {
 
 	// OccurredAt is when the event occurred.
 	OccurredAt time.Time
+
+	// UsedContextSummary reports whether Message (when it is a
+	// newly-produced AI message) was generated from a context that included
+	// a cached/freshly-computed summary of older room history in place of
+	// the raw messages it replaces (see
+	// usecase/message.MessageUsecase.assembleAIContext, Step 50). It is
+	// always false for a human message or any event that is not the direct
+	// result of an AI invocation -- like Message, it is a one-time,
+	// request-scoped signal describing how this particular AI response was
+	// generated, not a persisted message property.
+	UsedContextSummary bool
 }
 
 // MessageHub is the port through which MessageUsecase publishes room
