@@ -62,19 +62,20 @@
 ## Web Frontend (Next.js)
 
 - [x] Initialize Next.js project (`web/`), Bulletproof React directory structure
-- [x] `src/lib/api.ts` — API client configuration
+- [x] `src/lib/api.ts` — API client configuration (superseded by Step 4/9's typed `httpClient` + BFF proxy; see note
+      below)
 - [x] `src/features/auth/` — Login & registration
   - [x] `components/LoginForm.tsx`
   - [x] `components/RegisterForm.tsx`
-  - [ ] `api/actions.ts` — Server Actions
+  - [ ] `api/actions.ts` — Server Actions (superseded, see note below)
 - [x] `src/features/rooms/` — Room listing & creation
   - [x] `components/RoomList.tsx`
   - [x] `components/CreateRoomForm.tsx`
-  - [ ] `api/actions.ts`
+  - [ ] `api/actions.ts` (superseded, see note below)
 - [x] `src/features/messages/` — Chat screen
   - [x] `components/MessageList.tsx`
   - [x] `components/MessageInput.tsx`
-  - [ ] `api/actions.ts`
+  - [ ] `api/actions.ts` (superseded, see note below)
 - [x] `src/app/` — Routing
   - [x] `(auth)/login/page.tsx`
   - [x] `(auth)/register/page.tsx`
@@ -100,3 +101,14 @@
 ## Integration Test
 
 - [x] End-to-end flow via Docker Compose: register → login → create room → send message → get AI response
+
+## Note (reconciled at Step 60): `api/actions.ts` Server Actions
+
+Verified against `web/src` (`find web/src -iname '*actions*'` returns nothing): no `api/actions.ts` Server Actions
+files exist anywhere in the codebase, and this is a deliberate, permanent architectural decision rather than an
+unfinished item. `docs/tasks/README.md`'s "Target Architecture" section documents the actual data-layer path taken
+instead: Step 4 introduced httpOnly-cookie BFF auth plus a catch-all `app/api/proxy/[...path]` Route Handler, and
+Step 9 migrated the whole web app onto TanStack Query with per-feature `api`/`types` modules (thin `httpClient`
+fetch functions + query/mutation hooks) rather than Next.js Server Actions. These three checkboxes are left
+unchecked to reflect that Server Actions specifically were never built, but they should be read as superseded by a
+better-fitting pattern, not as an outstanding gap — no further action is expected here.

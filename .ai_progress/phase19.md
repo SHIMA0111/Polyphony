@@ -1,12 +1,53 @@
-# Phase 19: Streaming AI Responses (Step 54: web rendering)
+# Phase 19: Streaming AI Responses
 
-Tracks `docs/tasks/step54.md`'s scope: the web-side last mile of Phase 19
-("Streaming AI Responses"). The gateway `stream()` port and the Go
-API's WS chunk forwarding (`token_chunk`/`message_updated` frames,
-`POST /rooms/:roomId/messages/ai/stream`) were delivered by Step 51; this
-step teaches the TanStack Query message cache and the AI message bubble to
-consume those events, render them live, finalize on completion, and fall
-back gracefully to the non-streaming path when no chunk events arrive.
+**Goal** (`phases.md` Phase 19): AI responses are displayed incrementally, token by token. Delivered across three
+steps: Step 43 (real SSE streaming for all three gateway providers), Step 51 (Go consumes the gateway stream and
+forwards chunks over WebSocket), and Step 54 (the web-side last mile — reconciled here at Step 60; Steps 43 and 51
+had not previously been given their own tracked sections in this file, only mentioned in passing).
+
+Step 54 tracks `docs/tasks/step54.md`'s scope: the web-side last mile of Phase 19. The gateway `stream()` port and
+the Go API's WS chunk forwarding (`token_chunk`/`message_updated` frames, `POST
+/rooms/:roomId/messages/ai/stream`) were delivered by Step 51 (own section added below); this step teaches the
+TanStack Query message cache and the AI message bubble to consume those events, render them live, finalize on
+completion, and fall back gracefully to the non-streaming path when no chunk events arrive.
+
+---
+
+## Step 43: Rust streaming SSE for all providers + stream endpoint
+
+- [x] Streaming-capable dependencies added to `llm-gateway/Cargo.toml` (`async-stream`/`eventsource-stream` or
+      equivalent)
+- [x] `openai/stream.rs`, `anthropic/stream.rs`, `gemini/stream.rs` implemented for real (each provider's own SSE
+      event shape: OpenAI's `data:` chunks + `[DONE]` sentinel, Anthropic's dispatch-on-`data.type`, Gemini's
+      synthetic-`id` fallback), replacing the Step 26 non-streaming placeholder
+- [x] New SSE inbound endpoint (`POST /completions/stream`) added as new files, without touching the existing
+      `request.rs`/`response.rs` (owned by the concurrent Vision step)
+- [x] Existing per-provider wiremock tests extended with streaming cases; `router_test.rs`'s `StubUseCase` extended
+      with a scripted `stream()` implementation
+- [x] rustdoc on every new/changed public item across the three `stream.rs` files
+
+## Step 51: Go consume gateway stream + WS chunk forwarding
+
+- [x] `domain/ai.LLMGateway.Stream(ctx, req) (<-chan StreamResult, error)` — synchronous-dispatch-failure vs.
+      channel-drain-until-close contract precisely GoDoc'd
+- [x] `gateway.LLMClient`/`GRPCClient` both implement `Stream`; new `llm_client_test.go` (httptest-based SSE
+      parsing test)
+- [x] `domain/event.hub.go`: additive per-user targeted `token_chunk` event type (Step 7's existing constants
+      untouched)
+- [x] `websocket_handler.go` (Step 15's file, extended additively) forwards chunk events to the sender's connection
+- [x] `domain/message.MessageStatusStreaming` — placeholder AI message status between stream-start and
+      completion/failure; no schema migration needed (`messages.status` has no `CHECK` constraint)
+- [x] `MessageUsecase`/`MessageHandler`: `POST /rooms/:roomId/messages/ai/stream` registered as one additive route
+- [x] Every existing `ai.LLMGateway` mock extended with a configurable `Stream` method
+- [x] Unit tests for the full stream lifecycle (chunk-by-chunk delivery, completion finalizes the message, mid-stream
+      provider error still finalizes as `failed`)
+
+### Verification run in this worktree (Step 60, Steps 43/51)
+
+- [x] `cd llm-gateway && cargo build --all-targets && cargo clippy --all-targets -- -D warnings && cargo test`
+- [x] `cd server && go build ./... && go vet ./... && go test ./... && go test -tags=integration ./...`
+- [ ] Live SSE-over-WebSocket end-to-end streaming smoke test against the compose stack — requires the full E2E
+      stack; skipped (post-merge integration review)
 
 ## Scope
 

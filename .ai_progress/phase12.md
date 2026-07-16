@@ -1,8 +1,10 @@
-# Phase 12: MinIO Object Storage + Attachments + Presigned Upload Endpoints
+# Phase 12: Image Upload + Vision
 
-**Goal**: Object storage (MinIO) plus a Go-side attachment domain/usecase/handler stack so a client can upload an
-image directly to MinIO and link it to a message, without the API server ever touching file bytes. This lands only
-the storage/attachment half of Phase 12 ("Image Upload + Vision"); vision/multimodal completion mapping is Step 39.
+**Goal** (`phases.md` Phase 12): Upload images and have AI perform image recognition. Delivered across three steps:
+Step 12 (MinIO object storage + attachment domain/usecase/handler stack — a client uploads directly to MinIO and
+links the object to a message, the API server never touches file bytes), Step 39 (Vision/multimodal completion
+mapping across the gateway and Go DTOs), and Step 45 (web image upload UI + Vision send). Steps 39 and 45 are
+reconciled into this file at Step 60; they had not previously been tracked here.
 
 ---
 
@@ -79,3 +81,41 @@ the storage/attachment half of Phase 12 ("Image Upload + Vision"); vision/multim
       compose stack on fixed ports)
 - [ ] End-to-end curl verification (steps 5-10 of docs/tasks/step12.md) — skipped (requires the running compose
       stack); left for the post-merge integration review
+
+## Step 39: Vision multimodal plumbing (gateway content-parts mapping + Go DTOs)
+
+- [x] Gateway domain: reuses Step 3's `MessageContent::Text | Parts` / `ContentPart::Text | ImageUrl |
+      ImageBase64` — no reshaping, only extended where a provider mapping genuinely needed a new variant
+- [x] REST DTOs (`llm-gateway/src/adapters/inbound/rest/{request,response}.rs`): `content` accepts either a plain
+      string (backward compatible) or an array of part objects, via `#[serde(untagged)]`
+- [x] gRPC proto extended with an equivalent `oneof content` shape where the gRPC adapter already existed
+- [x] Per-provider `request.rs` submodules (OpenAI/Anthropic/Gemini) map `ContentPart`s to each provider's
+      multimodal wire format; unmappable parts return the existing `DomainError::InvalidRequest`
+- [x] Go: attachment lookup + content-part building so a message referencing `message_attachments` rows is sent to
+      the gateway as multimodal content
+- [x] Provider-level tests: `test_complete_with_image_content_sends_{openai,anthropic,gemini}_multimodal_body`
+      (confirmed passing in this worktree's `cargo test` run above)
+
+## Step 45: Web image upload + attachment UI + Vision send
+
+- [x] `web/src/features/messages/api/` — attachment request/attach/list methods mirroring Step 12's three endpoints
+- [x] `web/src/features/messages/lib/upload-attachment.ts` — `XMLHttpRequest`-based direct-to-storage `PUT` with
+      upload-progress reporting (not `fetch`, which has no reliable progress event)
+- [x] `web/src/features/messages/hooks/use-attachment-staging.ts` — client-side pending-attachment list
+      (upload/preview/progress/error state), same MIME allow-list + 10 MiB cap enforced client-side as Step 12's
+      usecase enforces server-side
+- [x] `MessageInput.tsx`: attach affordances (file picker, staged-attachment chips, per-file error display)
+- [x] Send-with-attachments sequencing in the chat-room orchestration hook
+- [x] `MessageAttachments.tsx` (thumbnails inside `MessageBubble.tsx`) + `AttachmentLightbox.tsx` (Chakra `Dialog`
+      compound component, full-resolution view)
+- [x] Tests: staging hook, upload helper, thumbnail rendering, lightbox open/close
+
+## Verification run in this worktree (Step 60)
+
+- [x] `cd llm-gateway && cargo build --all-targets && cargo clippy --all-targets -- -D warnings && cargo test`
+      (includes the three `*_with_image_content_sends_*_multimodal_body` provider tests)
+- [x] `cd server && go build ./... && go vet ./... && go test ./... && go test -tags=integration ./...`
+- [x] `cd web && bun install && bun run lint && bunx tsc --noEmit && bunx vitest run`
+- [ ] `web/e2e/attachments.spec.ts` / `web/e2e/regression/advanced-ai/vision-attachments.spec.ts` against the live
+      compose stack (real MinIO + a real/stubbed Vision-capable model) — requires the full E2E stack; skipped
+      (post-merge integration review)

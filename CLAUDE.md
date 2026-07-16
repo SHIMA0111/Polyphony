@@ -68,12 +68,15 @@ Create `.ai_progress/phaseX.md` when starting each phase, and track tasks with c
 
 ## Interface Swap Points
 
-| Abstraction | Initial Implementation | Swap Phase |
-|-------------|----------------------|------------|
-| `AuthService` | SimpleJWT (argon2+JWT) | Phase 9 (Kratos) |
-| `MessageHub` | InProcessHub | Phase 10 (Redis) |
-| `LLMClient` | REST client | Phase 8 (gRPC) |
-| Infrastructure | Docker Compose | Phase 21 (AWS) |
+All three application-level swaps below are fully implemented on both sides and selectable at runtime via env var; see `phases.md`'s "Interface Swap Points" table for the full description column.
+
+| Abstraction | Initial Implementation | Swap Phase | Status |
+|-------------|----------------------|------------|--------|
+| `AuthService` | SimpleJWT (argon2+JWT) | Phase 9 (Kratos) | Done — `AUTH_MODE=simple_jwt\|kratos` |
+| `MessageHub` | InProcessHub | Phase 10 (Redis) | Done — `MESSAGE_HUB_DRIVER=inprocess\|redis` |
+| `LLMClient` | REST client | Phase 8 (gRPC) | Done — `LLM_GATEWAY_TRANSPORT=rest\|grpc` |
+| Rate limiting | None | Phase 10 (Redis, swap-adjacent) | Done — Redis Token Bucket, no driver swap |
+| Infrastructure | Docker Compose | Phase 21 (AWS) | Out of this repo's scope |
 
 ## UI Development Workflow
 

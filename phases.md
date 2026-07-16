@@ -189,47 +189,67 @@ llm-gateway/src/
 
 ## Phase Overview
 
-| # | Theme | Goal |
-|---|-------|------|
-| 1 | Project skeleton + minimal AI chat | A single user can chat with AI |
-| 2 | WebSocket + real-time | Messages displayed in real-time |
-| 3 | Invitations + member management | Users can be invited to rooms |
-| 4 | Basic RBAC | 3 roles: reader/member/master |
-| 5 | AI context control | Per-message AI exclusion, token estimation |
-| 6 | Multi-provider (Anthropic) | Second AI provider |
-| 7 | Multi-provider (Gemini) + model selection UI | Users can choose models |
-| 8 | gRPC + LLM Gateway hardening | Retries, health checks, model metadata |
-| 9 | Ory Kratos adoption | Migrate to production auth |
-| 10 | Redis + multi-instance | WebSocket Pub/Sub, rate limiting |
-| 11 | Full RBAC | 5-tier permissions with guest/admin |
-| 12 | Image upload + Vision | S3, multimodal AI |
-| 13 | Group management + batch invitations | Invite by group |
-| 14 | Private AI mode | AI responses visible only to sender |
-| 15 | OAuth social login | Google/GitHub integration |
-| 16 | Token balance management | Usage tracking, balance checks |
-| 17 | Stripe billing | Subscriptions + on-demand purchases |
-| 18 | Context summarization | Summarize old history with AI → cache |
-| 19 | Streaming AI responses | Tokens displayed incrementally |
-| 20 | Room fork | Async batch copy |
-| 21 | AWS infrastructure (Terraform) | VPC, ECS, Aurora, ElastiCache |
-| 22 | CI/CD + staging | GitHub Actions, ECR, ECS deploy |
-| 23 | Monitoring + production ops | CloudWatch, WAF, partitioning, k6 |
-| 24 | Flutter mobile app | iOS/Android support |
-| 25 | Mobile billing + push notifications | App Store/Google Play integration |
-| 26+ | Enterprise (future) | SSO/SAML, admin dashboard, Ollama/vLLM |
+The **Status** column reflects the actually-merged state of this repository (the "Web complete version" build plan in `docs/tasks/`, steps 1-60), not aspirational planning. "Implemented" means the phase's server/gateway/web scope and DB changes described in [Phase Details](#phase-details) below are merged and exercised by the automated test suites (`go test`, `cargo test`, `bunx vitest run`, and the Playwright E2E suite under `web/e2e/`). Phases 21-26 remain future/out-of-scope for this repository per the project's binding scope decision (AWS/Terraform/CI-CD/monitoring and the Flutter mobile app are excluded; see [Deviations from this plan](#deviations-from-this-plan)).
+
+| # | Theme | Goal | Status |
+|---|-------|------|--------|
+| 1 | Project skeleton + minimal AI chat | A single user can chat with AI | Implemented |
+| 2 | WebSocket + real-time | Messages displayed in real-time | Implemented |
+| 3 | Invitations + member management | Users can be invited to rooms | Implemented |
+| 4 | Basic RBAC | 3 roles: reader/member/master | Implemented (merged with Phase 11, see deviations) |
+| 5 | AI context control | Per-message AI exclusion, token estimation | Implemented |
+| 6 | Multi-provider (Anthropic) | Second AI provider | Implemented |
+| 7 | Multi-provider (Gemini) + model selection UI | Users can choose models | Implemented |
+| 8 | gRPC + LLM Gateway hardening | Retries, health checks, model metadata | Implemented |
+| 9 | Ory Kratos adoption | Migrate to production auth | Implemented |
+| 10 | Redis + multi-instance | WebSocket Pub/Sub, rate limiting | Implemented |
+| 11 | Full RBAC | 5-tier permissions with guest/admin | Implemented (merged with Phase 4, see deviations) |
+| 12 | Image upload + Vision | S3, multimodal AI | Implemented |
+| 13 | Group management + batch invitations | Invite by group | Implemented |
+| 14 | Private AI mode | AI responses visible only to sender | Implemented |
+| 15 | OAuth social login | Google/GitHub integration | Implemented (dex mock OIDC + Hydra demo client, see deviations) |
+| 16 | Token balance management | Usage tracking, balance checks | Implemented |
+| 17 | Stripe billing | Subscriptions + on-demand purchases | Implemented |
+| 18 | Context summarization | Summarize old history with AI → cache | Implemented |
+| 19 | Streaming AI responses | Tokens displayed incrementally | Implemented |
+| 20 | Room fork | Async batch copy | Implemented |
+| 21 | AWS infrastructure (Terraform) | VPC, ECS, Aurora, ElastiCache | Out of repo scope |
+| 22 | CI/CD + staging | GitHub Actions, ECR, ECS deploy | Out of repo scope |
+| 23 | Monitoring + production ops | CloudWatch, WAF, partitioning, k6 | Out of repo scope |
+| 24 | Flutter mobile app | iOS/Android support | Out of repo scope |
+| 25 | Mobile billing + push notifications | App Store/Google Play integration | Out of repo scope |
+| 26+ | Enterprise (future) | SSO/SAML, admin dashboard, Ollama/vLLM | Future |
+
+---
+
+## Deviations from this plan
+
+Phases 2-20 (the "Web complete version" scope) are fully implemented, verified by the full local E2E gate (`task test:e2e:down && task test:e2e:up && task test:e2e`, see `README.md`'s "Running the E2E suite" section). During implementation, a small number of deliberate deviations from this document's original phase-by-phase description were made, all agreed as settled plan-wide decisions rather than open questions:
+
+1. **5-tier RBAC delivered as a single merge, not two steps.** Phase 4 ("Basic RBAC — 3 roles: reader/member/master") and Phase 11 ("Full RBAC — 5-tier") were implemented together as one typed 5-tier `room.Role` enum (`Reader → Guest → Member → Admin → Master`) backed by a single RBAC middleware from the start, rather than shipping a 3-role version first and expanding it in a later phase. There was never an intermediate 3-role-only state in the merged codebase.
+2. **OAuth social login verified against a mock OIDC provider, not real Google/GitHub.** Phase 15's Google/GitHub OAuth is wired end-to-end through Kratos's `oidc` self-service method, but is verified locally and by the Playwright suite (`web/e2e/oauth-dex.spec.ts`) against a `dex` (dexidp/dex) mock OIDC provider rather than real external Google/GitHub OAuth apps, which require manual, non-reproducible console registration. Real-provider configuration (client ID/secret env vars) is present and documented in `.env.example` but unexercised by automation.
+3. **Ory Hydra ships with a first-party demo client, not an external third-party consumer.** Ory Hydra is a fully working OAuth2/OIDC provider (Phase 15) fronted by Kratos-backed login/consent, verified by `web/e2e/oauth-hydra.spec.ts`, but its demonstration client (`HYDRA_DEMO_CLIENT_ID`/`HYDRA_DEMO_CLIENT_SECRET` in `.env.example`) is a first-party demo client rather than a separate external third-party consumer application.
+
+Two additional, narrower deviations were identified and accepted during the Step 60 final E2E gate:
+
+4. **The "summary was used" indicator is a request-scoped signal, not a persisted historical fact.** Phase 18 calls for the web frontend to "indicate when summaries are used." `MessageResponse.used_context_summary` (`server/internal/interface/handler/dto.go`) is set to `true` only on the AI message a `SendAI`/`RegenerateAI` call itself just produced; it is not a stored column on the `messages` row, so any later fetch of that same message (a page reload, a different client, `ListMessages`) reports `false` even though the summary was in fact used for that message's generation. This satisfies the phase goal for the live session that triggered the AI call, but not for a durable "this reply used a summary" badge visible to later viewers. Persisting the flag as a column is a possible future enhancement, not a bug — recorded here as an accepted, documented limitation rather than left as a silent gap between the phase description and the implementation.
+5. **Stripe Checkout/webhook/cancel E2E legs self-skip without real Stripe test-mode credentials.** The `test` Docker Compose profile has no `STRIPE_*` configuration and no webhook-forwarding service, so `web/e2e/regression/billing.spec.ts`'s full Checkout-journey assertions (`test.skip()` after exercising everything reachable without live credentials: the Stripe-API-free plan catalog, the empty-state page, and the checkout-session error path) do not run in a default local or CI-less environment. This is the accepted steady state, not a gate failure — see `web/e2e/regression/README.md` for the exact environment variables and `stripe listen` setup needed to exercise the full journey locally, and `README.md`'s "Running the E2E suite" section for a pointer to it.
+
+Phase 1 and Phases 21-26 are unchanged by this reconciliation; Phases 21-26 remain intentionally out of this repository's scope.
 
 ---
 
 ## Interface Swap Points
 
-The following abstractions keep the initial implementation simple while allowing production-quality swaps in later phases.
+The following abstractions keep the initial implementation simple while allowing production-quality swaps in later phases. All three application-level swaps (`AuthService`, `MessageHub`, `LLMClient`) are **fully implemented on both sides** and selectable at runtime via environment configuration — this is not a "swap pending" table anymore, it documents which env var selects which implementation.
 
-| Abstraction | Initial Implementation | Swap Timing | Description |
-|-------------|----------------------|-------------|-------------|
-| `AuthService` | SimpleJWT (argon2+JWT) | Phase 9 (Kratos) | Auth & session management. Phase 1: argon2 password hashing, JWT token issuance. Phase 9: swap to Ory Kratos session verification |
-| `MessageHub` | InProcessHub | Phase 10 (Redis) | WebSocket message delivery. Phase 2: in-process hub. Phase 10: swap to Redis Pub/Sub for multi-instance support |
-| `LLMClient` | REST client | Phase 8 (gRPC) | LLM Gateway communication. Phase 1: simple REST client. Phase 8: swap to gRPC client |
-| Infra | Docker Compose | Phase 21 (AWS) | Runtime environment. Docker Compose during development. Phase 21: migrate to AWS via Terraform (ECS Fargate, Aurora, ElastiCache) |
+| Abstraction | Initial Implementation | Final/Swapped Implementation | Swap Status | Description |
+|-------------|----------------------|-------------------------------|-------------|-------------|
+| `AuthService` | SimpleJWT (argon2+JWT) | Ory Kratos session verification | **Done** (Phase 9). Selectable via `AUTH_MODE` (`simple_jwt` \| `kratos`; compose default is `kratos`) | Auth & session management. Phase 1: argon2 password hashing, JWT token issuance. Phase 9: `KratosAuthService` verifies Kratos session cookies; `simple_jwt` remains a supported opt-out for environments without a Kratos deployment |
+| `MessageHub` | InProcessHub | RedisHub (Redis Pub/Sub) | **Done** (Phase 10). Selectable via `MESSAGE_HUB_DRIVER` (`inprocess` \| `redis`) | WebSocket message delivery. Phase 2: in-process hub, single-instance only. Phase 10: `RedisHub` publishes/subscribes over Redis so multiple API instances share delivery; the `event.MessageHub` port is unchanged by either adapter |
+| `LLMClient` | REST client | gRPC client (tonic) | **Done** (Phase 8). Selectable via `LLM_GATEWAY_TRANSPORT` (`rest` \| `grpc`) | LLM Gateway communication. Phase 1: simple REST client. Phase 8: gRPC client with retries (exponential backoff) and health checks; both transports remain implemented against the same `domain/ai.LLMGateway` interface |
+| Rate limiting *(new, swap-adjacent)* | None | Redis Token Bucket | **Done** (Phase 10, introduced alongside the `MessageHub` Redis swap). Configurable thresholds, no driver swap (Redis-only) | Not part of the original swap-point table — added here because it shares Phase 10's Redis dependency. Per-route/per-user rate limiting middleware backed by Redis; also caches Kratos session verification results (Phase 10) to avoid a Kratos round trip per request |
+| Infra | Docker Compose | AWS (ECS Fargate, Aurora Serverless v2, ElastiCache) via Terraform | **Out of this repo's scope** (Phase 21) | Runtime environment. Docker Compose is the only environment this repository implements and verifies; the Phase 21 AWS/Terraform migration is excluded from this codebase per the project's binding scope decision (see Phase Overview above) |
 
 ---
 

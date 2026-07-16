@@ -173,6 +173,13 @@ tasks:
       - bun run e2e/seed/cli.ts
 
   test:e2e:
+    # This is the authoritative full-suite E2E gate (Step 60): a clean
+    # `test:e2e:down && test:e2e:up && test:e2e` run is expected to pass
+    # 100% of specs with zero flaky-after-retry results before merging.
+    # `test`/`test:server`/`test:gateway` above are fast, compose-free
+    # unit-only tasks and deliberately do NOT depend on this task (Step 10's
+    # original separation) — run this task explicitly when you need the
+    # full-stack signal, not as a side effect of the plain `test` task.
     desc: Run Playwright E2E specs against the seeded test stack
     dir: web
     deps: [test:e2e:up]

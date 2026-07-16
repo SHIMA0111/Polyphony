@@ -1,6 +1,10 @@
-# Phase 20: Room Fork (Step 32)
+# Phase 20: Room Fork
 
-Tracks `docs/tasks/step32.md`'s scope: schema for `forked_from_room_id`/
+**Goal** (`phases.md` Phase 20): Copy a room's conversation to a new room to create a branch. Delivered across two
+steps: Step 32 (server) and Step 52 (web room fork UI — reconciled into this file at Step 60; it had not
+previously been tracked here).
+
+Step 32 tracks `docs/tasks/step32.md`'s scope: schema for `forked_from_room_id`/
 `is_archived`/`room_fork_jobs`, bulk-copy repository primitives, the
 goroutine-based fork worker, the fork/fork-job-status endpoints, and the
 archived-room guard on new message posts.
@@ -82,3 +86,26 @@ archived-room guard on new message posts.
 - [ ] `task up` + curl smoke test against the running compose stack
       (skipped — requires the full Docker Compose stack on fixed ports;
       left for the post-merge integration review)
+
+## Step 52: Web room fork UI
+
+- [x] `web/src/features/rooms/types.ts`: `is_archived`/`forked_from_room_id` on `Room`; `ForkJob`/`RoomForkResponse`
+      types mirroring Step 32's DTOs exactly
+- [x] `forkRoom(roomId)` / `getForkJobStatus(roomId, jobId)` added to the rooms feature's existing typed API client
+      module (no second parallel client introduced)
+- [x] `useForkJobPolling` — polls fork-job status on a short interval, stopping once `status` is terminal
+      (`completed`/`failed`)
+- [x] `RoomSettingsDrawer.tsx`: "Fork room" section (admin/master only, same `canManage` gate as other admin
+      actions), inline progress view driven by `useForkJobPolling`, "Open forked room" link on completion,
+      "Try again" on failure
+- [x] `ChatRoom.tsx`: archived-room read-only banner (no `MessageInput` rendered) when `room.is_archived`; clears
+      automatically on next mount/room-id-change re-fetch, no extra background poll on every open room
+- [x] Component tests: fork section visibility by role, click-to-fork → progress view, terminal completed/failed
+      states
+- [x] `web/e2e/room-fork.spec.ts` / `web/e2e/regression/room-fork.spec.ts`
+
+### Verification run in this worktree (Step 60, Step 52)
+
+- [x] `cd web && bun install && bun run lint && bunx tsc --noEmit && bunx vitest run`
+- [ ] `web/e2e/room-fork.spec.ts` against the live compose stack — requires the full E2E stack; skipped (post-merge
+      integration review)

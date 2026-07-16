@@ -1,7 +1,9 @@
-# Phase 2: Event-Driven Messaging Core
+# Phase 2: WebSocket + Real-time
 
-**Goal**: Message creation/update flows in the Go API are event-driven and race-free, ahead of realtime (WebSocket)
-and Redis-backed fan-out work in later steps.
+**Goal** (`phases.md` Phase 2): Messages are delivered to all members in real-time. Delivered across three steps:
+Step 7 (Go event-driven messaging core, the `MessageHub` port + atomic sequencing this phase's realtime delivery
+is built on), Step 15 (the actual WebSocket endpoint), and Step 35 (the web WebSocket client — reconciled into this
+file at Step 60; it had not previously been tracked here).
 
 ---
 
@@ -109,3 +111,24 @@ and Redis-backed fan-out work in later steps.
 - [x] `cd server && go test ./...` (full suite, no regressions)
 - [ ] Manual end-to-end smoke check (`task up` + `curl`/`websocat` against `localhost:8080`) — requires the
       fixed-port compose stack; skipped per this run's constraints (post-merge integration review).
+
+## Step 35: Web WebSocket client + live cache merge
+
+- [x] `web/src/features/messages/hooks/use-room-socket.ts` — `useRoomSocket(roomId)`: connects to `GET
+      /rooms/:roomId/ws` using a freshly-issued ticket (`POST /ws/ticket`), reconnects with backoff on abnormal
+      close, no-ops in `NEXT_PUBLIC_MOCK_API=true` mode
+- [x] `web/src/features/messages/lib/merge-message-event.ts` — merges incoming `message_created`/`message_updated`
+      events into the TanStack Query message cache (create/update/dedupe/out-of-order-arrival handling)
+- [x] `web/src/features/messages/components/ConnectionStatus.tsx` — connected/reconnecting/offline indicator
+      (Chakra `Badge` + the existing shared `Tooltip` snippet, no new snippet added)
+- [x] `ChatRoom.tsx`: one-line hook mount + one-line indicator render in the existing header, no other changes to
+      send/regenerate logic
+- [x] Unit tests: `use-room-socket.test.ts` (hand-rolled fake `WebSocket`, connect/merge/reconnect-backoff/mock-mode
+      no-op cases), `merge-message-event.test.ts` (create/update/duplicate/out-of-order cases)
+
+### Verification run this step (Step 60)
+
+- [x] `cd web && bun install && bun run lint && bunx tsc --noEmit && bunx vitest run` (includes
+      `use-room-socket.test.ts` and `merge-message-event.test.ts`)
+- [ ] Live WebSocket connection against the compose stack (`task test:e2e:up` + a real browser) — requires the
+      full E2E stack; skipped (post-merge integration review)
