@@ -146,10 +146,17 @@ tasks:
       # issuer URL still resolves for `kratos-e2e` unchanged; only the
       # host-published port differs, which `web/playwright.config.ts`'s
       # `--host-resolver-rules` mapping accounts for.
+      #
+      # `minio-e2e`/`minio-init-e2e` (their own `profiles: ["test"]`
+      # services, distinct from the dev `minio`/`minio-init` services) give
+      # this stack its own object storage on host port 9002, so
+      # `attachments.spec.ts` never depends on whatever happens to be
+      # listening on the dev stack's port 9000 (wave-6 review finding).
       - >-
         docker compose -p polyphony-e2e --profile test up -d --build
         db-e2e dex-e2e migrate-e2e llm-stub llm-gateway-e2e api-e2e web-e2e
         kratos-db-e2e kratos-migrate-e2e kratos-e2e mailslurper-e2e redis-e2e
+        minio-e2e minio-init-e2e
 
   test:e2e:seed:
     desc: Seed the idempotent E2E fixture user + room against the running test stack
