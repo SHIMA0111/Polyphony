@@ -21,7 +21,7 @@ import (
 func TestRoomHandlerUpdateSettings(t *testing.T) {
 	t.Run("200 admin sets ai_provider and ai_model", func(t *testing.T) {
 		repo := &mocks.RoomRepo{}
-		uc := roomusecase.NewRoomUsecase(repo)
+		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 		h := NewRoomHandler(uc)
 		e := echo.New()
 
@@ -65,7 +65,7 @@ func TestRoomHandlerUpdateSettings(t *testing.T) {
 
 	t.Run("403 member caller", func(t *testing.T) {
 		repo := &mocks.RoomRepo{}
-		uc := roomusecase.NewRoomUsecase(repo)
+		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 		h := NewRoomHandler(uc)
 		e := echo.New()
 
@@ -96,7 +96,7 @@ func TestRoomHandlerUpdateSettings(t *testing.T) {
 
 	t.Run("400 malformed body", func(t *testing.T) {
 		repo := &mocks.RoomRepo{}
-		uc := roomusecase.NewRoomUsecase(repo)
+		uc := roomusecase.NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{})
 		h := NewRoomHandler(uc)
 		e := echo.New()
 

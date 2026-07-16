@@ -1,0 +1,128 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/roomfork"
+)
+
+// RoomForkRepository implements the roomfork.ForkJobRepository interface
+// using PostgreSQL, persisting Job rows in room_fork_jobs.
+type RoomForkRepository struct {
+	pool *pgxpool.Pool
+}
+
+// NewRoomForkRepository creates a new RoomForkRepository backed by the
+// given connection pool.
+func NewRoomForkRepository(pool *pgxpool.Pool) *RoomForkRepository {
+	return &RoomForkRepository{pool: pool}
+}
+
+// roomForkJobColumns lists room_fork_jobs' columns in the fixed order every
+// SELECT/scan in this file relies on.
+const roomForkJobColumns = `id, source_room_id, new_room_id, status, total_messages, copied_messages, error_message, created_at, updated_at`
+
+// scanForkJob scans a room_fork_jobs row into a roomfork.Job struct.
+func scanForkJob(scanner interface{ Scan(dest ...any) error }) (*roomfork.Job, error) {
+	var job roomfork.Job
+	var status string
+	err := scanner.Scan(&job.ID, &job.SourceRoomID, &job.NewRoomID, &status, &job.TotalMessages, &job.CopiedMessages, &job.ErrorMessage, &job.CreatedAt, &job.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	job.Status = roomfork.Status(status)
+	return &job, nil
+}
+
+// Create persists a new Job row.
+func (r *RoomForkRepository) Create(ctx context.Context, job *roomfork.Job) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO room_fork_jobs (id, source_room_id, new_room_id, status, total_messages, copied_messages, error_message, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		job.ID, job.SourceRoomID, job.NewRoomID, string(job.Status), job.TotalMessages, job.CopiedMessages, job.ErrorMessage, job.CreatedAt, job.UpdatedAt,
+	)
+	return err
+}
+
+// GetByID retrieves a Job by its unique identifier. It returns
+// domain.ErrNotFound if it does not exist.
+func (r *RoomForkRepository) GetByID(ctx context.Context, id string) (*roomfork.Job, error) {
+	row := r.pool.QueryRow(ctx, `SELECT `+roomForkJobColumns+` FROM room_fork_jobs WHERE id = $1`, id)
+	job, err := scanForkJob(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return job, nil
+}
+
+// MarkRunning transitions a Job to StatusRunning and records
+// totalMessages. It returns domain.ErrNotFound if the job does not exist.
+func (r *RoomForkRepository) MarkRunning(ctx context.Context, id string, totalMessages int64) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE room_fork_jobs SET status = $1, total_messages = $2, updated_at = NOW() WHERE id = $3`,
+		string(roomfork.StatusRunning), totalMessages, id,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// UpdateProgress sets copiedMessages on a Job. It returns
+// domain.ErrNotFound if the job does not exist.
+func (r *RoomForkRepository) UpdateProgress(ctx context.Context, id string, copiedMessages int64) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE room_fork_jobs SET copied_messages = $1, updated_at = NOW() WHERE id = $2`,
+		copiedMessages, id,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// MarkCompleted transitions a Job to the terminal StatusCompleted state.
+// It returns domain.ErrNotFound if the job does not exist.
+func (r *RoomForkRepository) MarkCompleted(ctx context.Context, id string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE room_fork_jobs SET status = $1, updated_at = NOW() WHERE id = $2`,
+		string(roomfork.StatusCompleted), id,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// MarkFailed transitions a Job to the terminal StatusFailed state and
+// records errMsg. It returns domain.ErrNotFound if the job does not exist.
+func (r *RoomForkRepository) MarkFailed(ctx context.Context, id string, errMsg string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE room_fork_jobs SET status = $1, error_message = $2, updated_at = NOW() WHERE id = $3`,
+		string(roomfork.StatusFailed), errMsg, id,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}

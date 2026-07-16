@@ -49,6 +49,14 @@ type RoomRepository interface {
 	// persistence operation.
 	UpdateMemberRole(ctx context.Context, roomID, userID string, role Role) error
 
+	// SetArchived flips a room's is_archived flag. It is a narrow, dedicated
+	// setter (rather than routing through Update) so the room-fork worker
+	// (usecase/room.RoomUsecase.runForkJob) can flip archival status
+	// without racing a concurrent room-settings edit (Update) that loads,
+	// mutates, and writes back a whole Room struct. Returns
+	// domain.ErrNotFound if the room does not exist.
+	SetArchived(ctx context.Context, roomID string, archived bool) error
+
 	// TransferOwnership atomically updates rooms.owner_id to newOwnerID,
 	// sets the new owner's room_members.role to RoleMaster, and sets the
 	// previous owner's (oldOwnerID) room_members.role to RoleAdmin, all

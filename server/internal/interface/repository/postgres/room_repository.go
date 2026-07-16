@@ -34,9 +34,9 @@ func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO rooms (id, name, description, owner_id, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		rm.ID, rm.Name, rm.Description, rm.OwnerID, rm.CreatedAt, rm.UpdatedAt,
+		`INSERT INTO rooms (id, name, description, owner_id, forked_from_room_id, is_archived, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		rm.ID, rm.Name, rm.Description, rm.OwnerID, rm.ForkedFromRoomID, rm.IsArchived, rm.CreatedAt, rm.UpdatedAt,
 	)
 	if err != nil {
 		return err
@@ -66,8 +66,8 @@ func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 func (r *RoomRepository) GetByID(ctx context.Context, id string) (*room.Room, error) {
 	var rm room.Room
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, name, description, owner_id, ai_context_cutoff_at, ai_provider, ai_model, created_at, updated_at FROM rooms WHERE id = $1`, id,
-	).Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.AIProvider, &rm.AIModel, &rm.CreatedAt, &rm.UpdatedAt)
+		`SELECT id, name, description, owner_id, ai_context_cutoff_at, ai_provider, ai_model, forked_from_room_id, is_archived, created_at, updated_at FROM rooms WHERE id = $1`, id,
+	).Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.AIProvider, &rm.AIModel, &rm.ForkedFromRoomID, &rm.IsArchived, &rm.CreatedAt, &rm.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
@@ -80,7 +80,7 @@ func (r *RoomRepository) GetByID(ctx context.Context, id string) (*room.Room, er
 // ListByUserID returns all rooms that the given user is a member of, ordered by creation time descending.
 func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*room.Room, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_context_cutoff_at, r.ai_provider, r.ai_model, r.created_at, r.updated_at
+		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_context_cutoff_at, r.ai_provider, r.ai_model, r.forked_from_room_id, r.is_archived, r.created_at, r.updated_at
 		 FROM rooms r
 		 INNER JOIN room_members rm ON r.id = rm.room_id
 		 WHERE rm.user_id = $1
@@ -94,7 +94,7 @@ func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*ro
 	var rooms []*room.Room
 	for rows.Next() {
 		var rm room.Room
-		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.AIProvider, &rm.AIModel, &rm.CreatedAt, &rm.UpdatedAt); err != nil {
+		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.AIProvider, &rm.AIModel, &rm.ForkedFromRoomID, &rm.IsArchived, &rm.CreatedAt, &rm.UpdatedAt); err != nil {
 			return nil, err
 		}
 		rooms = append(rooms, &rm)
@@ -108,7 +108,7 @@ func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*ro
 // lookups per room).
 func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string) ([]*room.RoomWithRole, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_provider, r.ai_model, r.created_at, r.updated_at, rm.role
+		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_provider, r.ai_model, r.forked_from_room_id, r.is_archived, r.created_at, r.updated_at, rm.role
 		 FROM rooms r
 		 INNER JOIN room_members rm ON r.id = rm.room_id
 		 WHERE rm.user_id = $1
@@ -123,7 +123,7 @@ func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string
 	for rows.Next() {
 		var rm room.Room
 		var roleStr string
-		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIProvider, &rm.AIModel, &rm.CreatedAt, &rm.UpdatedAt, &roleStr); err != nil {
+		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIProvider, &rm.AIModel, &rm.ForkedFromRoomID, &rm.IsArchived, &rm.CreatedAt, &rm.UpdatedAt, &roleStr); err != nil {
 			return nil, err
 		}
 		result = append(result, &room.RoomWithRole{Room: &rm, Role: room.Role(roleStr)})
@@ -132,12 +132,31 @@ func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string
 }
 
 // Update updates the name, description, ai_context_cutoff_at, ai_provider,
-// ai_model, and updated_at fields of a room. It returns domain.ErrNotFound
-// if the room does not exist.
+// ai_model, is_archived, and updated_at fields of a room. It never touches
+// forked_from_room_id, which is write-once at Create time. It returns
+// domain.ErrNotFound if the room does not exist.
 func (r *RoomRepository) Update(ctx context.Context, rm *room.Room) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE rooms SET name = $1, description = $2, ai_context_cutoff_at = $3, ai_provider = $4, ai_model = $5, updated_at = $6 WHERE id = $7`,
-		rm.Name, rm.Description, rm.AIContextCutoffAt, rm.AIProvider, rm.AIModel, rm.UpdatedAt, rm.ID,
+		`UPDATE rooms SET name = $1, description = $2, ai_context_cutoff_at = $3, ai_provider = $4, ai_model = $5, is_archived = $6, updated_at = $7 WHERE id = $8`,
+		rm.Name, rm.Description, rm.AIContextCutoffAt, rm.AIProvider, rm.AIModel, rm.IsArchived, rm.UpdatedAt, rm.ID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// SetArchived flips a room's is_archived flag via a single dedicated
+// UPDATE, without loading or rewriting any other column — see
+// room.RoomRepository.SetArchived's GoDoc for why this is kept separate
+// from Update. It returns domain.ErrNotFound if the room does not exist.
+func (r *RoomRepository) SetArchived(ctx context.Context, roomID string, archived bool) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE rooms SET is_archived = $1, updated_at = NOW() WHERE id = $2`,
+		archived, roomID,
 	)
 	if err != nil {
 		return err

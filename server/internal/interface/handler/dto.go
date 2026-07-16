@@ -70,7 +70,11 @@ type UpdateRoomSettingsRequest struct {
 // when the room has no per-room AI default configured (see
 // UpdateRoomSettingsRequest / PATCH /rooms/:roomId/settings), in which case
 // AI requests fall through to the deployment-wide default
-// (Config.DefaultAIModel).
+// (Config.DefaultAIModel). ForkedFromRoomID is nil unless this room was
+// created via POST /rooms/:roomId/fork, in which case it names the source
+// room. IsArchived is true from the moment a fork of this room is created
+// until its background copy job (see ForkJobResponse) completes; while
+// true, POST .../messages and .../messages/ai on this room return HTTP 409.
 type RoomResponse struct {
 	ID                string     `json:"id"`
 	Name              string     `json:"name"`
@@ -80,6 +84,8 @@ type RoomResponse struct {
 	AIContextCutoffAt *time.Time `json:"ai_context_cutoff_at"`
 	AIProvider        *string    `json:"ai_provider"`
 	AIModel           *string    `json:"ai_model"`
+	ForkedFromRoomID  *string    `json:"forked_from_room_id"`
+	IsArchived        bool       `json:"is_archived"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
@@ -115,6 +121,33 @@ type ChangeMemberRoleRequest struct {
 // member of the room.
 type TransferOwnershipRequest struct {
 	NewOwnerID string `json:"new_owner_id"`
+}
+
+// ForkJobResponse is the JSON representation of a room fork job's progress
+// (see roomusecase.RoomUsecase.ForkRoom/GetForkJobStatus). Status is one of
+// "pending", "running", "completed", or "failed" (the plain string value of
+// roomfork.Status). TotalMessages is 0 while Status == "pending".
+// ErrorMessage is non-nil only when Status == "failed".
+type ForkJobResponse struct {
+	ID             string    `json:"id"`
+	SourceRoomID   string    `json:"source_room_id"`
+	NewRoomID      string    `json:"new_room_id"`
+	Status         string    `json:"status"`
+	TotalMessages  int64     `json:"total_messages"`
+	CopiedMessages int64     `json:"copied_messages"`
+	ErrorMessage   *string   `json:"error_message"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// RoomForkResponse is the response body for POST /rooms/:roomId/fork: the
+// newly created (archived) room paired with the room-fork Job tracking the
+// background copy into it. Poll GET /rooms/:roomId/fork-jobs/:jobId with
+// Job.ID until Status == "completed", at which point NewRoom.IsArchived (as
+// last observed here) has flipped to false server-side.
+type RoomForkResponse struct {
+	Job     ForkJobResponse `json:"job"`
+	NewRoom RoomResponse    `json:"new_room"`
 }
 
 // --- Message DTOs ---

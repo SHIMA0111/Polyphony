@@ -430,3 +430,144 @@ func roomListContainsAISettings(rooms []*domainroom.Room, roomID, provider, mode
 	}
 	return false
 }
+
+// TestRoomRepositorySetArchived proves that SetArchived flips is_archived
+// via its single dedicated UPDATE (leaving every other column untouched)
+// and returns domain.ErrNotFound for a nonexistent room, without ever
+// touching forked_from_room_id.
+func TestRoomRepositorySetArchived(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := &domainuser.User{
+		ID:           uuid.New().String(),
+		Email:        "set-archived-owner@example.com",
+		Username:     "set-archived-owner",
+		PasswordHash: "hash",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if err := userRepo.Create(ctx, owner); err != nil {
+		t.Fatalf("create owner user: %v", err)
+	}
+
+	rm := &domainroom.Room{
+		ID:          uuid.New().String(),
+		Name:        "Archivable Room",
+		Description: "",
+		OwnerID:     owner.ID,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	if err := roomRepo.SetArchived(ctx, rm.ID, true); err != nil {
+		t.Fatalf("SetArchived(true) failed: %v", err)
+	}
+	got, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if !got.IsArchived {
+		t.Fatal("expected is_archived true after SetArchived(true)")
+	}
+	if got.Name != rm.Name {
+		t.Fatalf("expected SetArchived to leave name untouched, got %q", got.Name)
+	}
+
+	if err := roomRepo.SetArchived(ctx, rm.ID, false); err != nil {
+		t.Fatalf("SetArchived(false) failed: %v", err)
+	}
+	got, err = roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.IsArchived {
+		t.Fatal("expected is_archived false after SetArchived(false)")
+	}
+
+	if err := roomRepo.SetArchived(ctx, uuid.New().String(), true); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for a nonexistent room, got %v", err)
+	}
+}
+
+// TestRoomRepositoryForkedFromRoomIDRoundTrip proves that
+// forked_from_room_id is persisted at Create time, read back by GetByID/
+// ListByUserID/ListByUserIDWithRole, and left untouched by Update (it is
+// write-once).
+func TestRoomRepositoryForkedFromRoomIDRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := &domainuser.User{
+		ID:           uuid.New().String(),
+		Email:        "fork-link-owner@example.com",
+		Username:     "fork-link-owner",
+		PasswordHash: "hash",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if err := userRepo.Create(ctx, owner); err != nil {
+		t.Fatalf("create owner user: %v", err)
+	}
+
+	source := &domainroom.Room{
+		ID:          uuid.New().String(),
+		Name:        "Source Room",
+		Description: "",
+		OwnerID:     owner.ID,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	if err := roomRepo.Create(ctx, source); err != nil {
+		t.Fatalf("create source room: %v", err)
+	}
+
+	fork := &domainroom.Room{
+		ID:               uuid.New().String(),
+		Name:             "Source Room (Fork)",
+		Description:      "",
+		OwnerID:          owner.ID,
+		ForkedFromRoomID: &source.ID,
+		IsArchived:       true,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+	if err := roomRepo.Create(ctx, fork); err != nil {
+		t.Fatalf("create fork room: %v", err)
+	}
+
+	got, err := roomRepo.GetByID(ctx, fork.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.ForkedFromRoomID == nil || *got.ForkedFromRoomID != source.ID {
+		t.Fatalf("expected forked_from_room_id %s, got %v", source.ID, got.ForkedFromRoomID)
+	}
+	if !got.IsArchived {
+		t.Fatal("expected is_archived true")
+	}
+
+	// Update never touches forked_from_room_id, even if the in-memory
+	// struct's field were (incorrectly) cleared before calling it.
+	got.Name = "Renamed Fork"
+	got.ForkedFromRoomID = nil
+	if err := roomRepo.Update(ctx, got); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+	afterUpdate, err := roomRepo.GetByID(ctx, fork.ID)
+	if err != nil {
+		t.Fatalf("GetByID after update failed: %v", err)
+	}
+	if afterUpdate.ForkedFromRoomID == nil || *afterUpdate.ForkedFromRoomID != source.ID {
+		t.Fatalf("expected forked_from_room_id to remain %s after Update, got %v", source.ID, afterUpdate.ForkedFromRoomID)
+	}
+}

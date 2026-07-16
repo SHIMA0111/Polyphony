@@ -21,6 +21,7 @@ func TestSendMessage(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -72,6 +73,7 @@ func TestSendMessageGuestAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -137,6 +139,7 @@ func TestListMessages(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -399,6 +402,7 @@ func TestRegenerateAIMessageNotMember(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -817,6 +821,7 @@ func TestDeleteMessageSenderCanDeleteOwnMessage(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -836,6 +841,7 @@ func TestDeleteMessageNonSenderNonAdminForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-1", "user-2", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -855,6 +861,7 @@ func TestDeleteMessageAdminCanDeleteAnotherMembersMessage(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-1", "user-2", string(domainroom.RoleAdmin))
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -874,6 +881,7 @@ func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-2", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -894,6 +902,7 @@ func TestSetExcludeFromAIMemberAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -916,6 +925,7 @@ func TestSetExcludeFromAIAdminAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleAdmin))
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -934,6 +944,7 @@ func TestSetExcludeFromAIMasterAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleMaster))
+	roomRepo.SeedRoom("room-1", nil)
 
 	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
 	ctx := context.Background()
@@ -1374,5 +1385,43 @@ func TestSendAIMessagePrivateWSDeliveryTargetsOnlySender(t *testing.T) {
 	}
 	if !seen[result.HumanMessage.ID] || !seen[result.AIMessage.ID] {
 		t.Fatal("expected events for both the human and AI private messages")
+	}
+}
+
+// --- Archived room guard (Step 32: room fork) ---
+
+// TestSendMessageArchivedRoom asserts that SendMessage rejects a new post
+// into an archived room with domain.ErrArchivedRoom, before reserving any
+// sequence number.
+func TestSendMessageArchivedRoom(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.Rooms["room-1"] = &domainroom.Room{ID: "room-1", IsArchived: true}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
+	if err != domain.ErrArchivedRoom {
+		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+}
+
+// TestSendAIMessageArchivedRoom asserts that SendAIMessage rejects a new
+// post into an archived room with domain.ErrArchivedRoom, before reserving
+// any sequence number or invoking the LLM Gateway.
+func TestSendAIMessageArchivedRoom(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.Rooms["room-1"] = &domainroom.Room{ID: "room-1", IsArchived: true}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	_, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
+	if err != domain.ErrArchivedRoom {
+		t.Fatalf("expected ErrArchivedRoom, got %v", err)
 	}
 }

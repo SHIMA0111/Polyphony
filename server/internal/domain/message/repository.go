@@ -63,4 +63,28 @@ type MessageRepository interface {
 	// step, so no other message can be interleaved between them. Returns
 	// ErrNotFound if the room has no sequence counter row.
 	ReserveSequenceRange(ctx context.Context, roomID string, count int64) (int64, error)
+
+	// CountByRoom returns the total number of messages (including
+	// soft-deleted and private ones — this is a structural count, not a
+	// visibility-filtered read) in roomID. It drives
+	// room_fork_jobs.total_messages, letting a room-fork job report overall
+	// progress before it copies a single message.
+	CountByRoom(ctx context.Context, roomID string) (int64, error)
+
+	// ListByRoomAfter returns up to limit messages in roomID with
+	// sequence > afterSequence, ordered ascending by sequence (oldest
+	// first) — the forward-cursor counterpart to ListByRoomUpTo's
+	// newest-first pagination. It ignores soft-delete/visibility/
+	// exclude-from-ai flags entirely (unlike every other read method on
+	// this interface): a room fork (usecase/room.RoomUsecase.runForkJob)
+	// copies the full, unfiltered conversation into the destination room,
+	// independent of any AI-context filtering rule.
+	ListByRoomAfter(ctx context.Context, roomID string, afterSequence int64, limit int) ([]*Message, error)
+
+	// CreateBatch persists msgs atomically: either every message in msgs is
+	// committed, or (on any single insert failure) none are. This is what
+	// lets a room-fork job's per-batch progress counter
+	// (room_fork_jobs.copied_messages) only ever advance by whole,
+	// successfully-committed batches, never a partially-copied batch.
+	CreateBatch(ctx context.Context, msgs []*Message) error
 }

@@ -265,3 +265,212 @@ func TestMessageRepository_PrivateVisibilityFiltering(t *testing.T) {
 		t.Fatal("expected owner ListByRoom to include the private message")
 	}
 }
+
+// TestMessageRepository_CountByRoom proves CountByRoom returns the total
+// number of messages in a room, ignoring soft-delete/visibility.
+func TestMessageRepository_CountByRoom(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "count-by-room-owner")
+
+	count, err := msgRepo.CountByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("CountByRoom (empty room) failed: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 messages in a fresh room, got %d", count)
+	}
+
+	now := time.Now()
+	for i := int64(1); i <= 3; i++ {
+		msg := &domainmessage.Message{
+			ID:         uuid.New().String(),
+			RoomID:     rm.ID,
+			SenderID:   &rm.OwnerID,
+			Content:    "msg",
+			Type:       domainmessage.MessageTypeHuman,
+			Status:     domainmessage.MessageStatusCompleted,
+			Sequence:   i,
+			Visibility: domainmessage.MessageVisibilityPublic,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if err := msgRepo.Create(ctx, msg); err != nil {
+			t.Fatalf("create message %d: %v", i, err)
+		}
+	}
+
+	count, err = msgRepo.CountByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("CountByRoom failed: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected 3 messages, got %d", count)
+	}
+
+	// Soft-deleting one message must not change the count (CountByRoom is a
+	// structural count, unlike ListByRoom/ListByRoomUpTo).
+	var firstID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM messages WHERE room_id = $1 AND sequence = 1`, rm.ID).Scan(&firstID); err != nil {
+		t.Fatalf("query first message id: %v", err)
+	}
+	if err := msgRepo.Delete(ctx, firstID); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	count, err = msgRepo.CountByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("CountByRoom after delete failed: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected CountByRoom to still be 3 after a soft-delete, got %d", count)
+	}
+}
+
+// TestMessageRepository_ListByRoomAfter proves ListByRoomAfter returns
+// messages strictly after afterSequence, in ascending order, respecting
+// limit — the oldest-first counterpart to ListByRoomUpTo.
+func TestMessageRepository_ListByRoomAfter(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "list-after-owner")
+
+	now := time.Now()
+	var ids []string
+	for i := int64(1); i <= 5; i++ {
+		msg := &domainmessage.Message{
+			ID:         uuid.New().String(),
+			RoomID:     rm.ID,
+			SenderID:   &rm.OwnerID,
+			Content:    "msg",
+			Type:       domainmessage.MessageTypeHuman,
+			Status:     domainmessage.MessageStatusCompleted,
+			Sequence:   i,
+			Visibility: domainmessage.MessageVisibilityPublic,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if err := msgRepo.Create(ctx, msg); err != nil {
+			t.Fatalf("create message %d: %v", i, err)
+		}
+		ids = append(ids, msg.ID)
+	}
+
+	// afterSequence=2, limit=2 should return sequences 3 and 4, ascending.
+	page, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 2, 2)
+	if err != nil {
+		t.Fatalf("ListByRoomAfter failed: %v", err)
+	}
+	if len(page) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(page))
+	}
+	if page[0].Sequence != 3 || page[1].Sequence != 4 {
+		t.Fatalf("expected sequences [3 4] ascending, got [%d %d]", page[0].Sequence, page[1].Sequence)
+	}
+	if page[0].ID != ids[2] || page[1].ID != ids[3] {
+		t.Fatal("expected IDs to match the messages created at sequences 3 and 4")
+	}
+
+	// afterSequence=0 with a limit larger than the room's message count
+	// returns everything, still ascending.
+	all, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("ListByRoomAfter (all) failed: %v", err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(all))
+	}
+	for i, m := range all {
+		if m.Sequence != int64(i+1) {
+			t.Fatalf("expected ascending sequence %d at index %d, got %d", i+1, i, m.Sequence)
+		}
+	}
+
+	// afterSequence beyond the last message returns an empty slice (the
+	// fork worker's loop-termination condition).
+	empty, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 5, 100)
+	if err != nil {
+		t.Fatalf("ListByRoomAfter (beyond end) failed: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected 0 messages after the last sequence, got %d", len(empty))
+	}
+}
+
+// TestMessageRepository_CreateBatch proves CreateBatch persists every
+// message in a single transaction and rolls back entirely on a failure
+// partway through (no partial batch persisted).
+func TestMessageRepository_CreateBatch(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "create-batch-owner")
+
+	now := time.Now()
+	batch := make([]*domainmessage.Message, 4)
+	for i := range batch {
+		batch[i] = &domainmessage.Message{
+			ID:         uuid.New().String(),
+			RoomID:     rm.ID,
+			SenderID:   &rm.OwnerID,
+			Content:    "batched",
+			Type:       domainmessage.MessageTypeHuman,
+			Status:     domainmessage.MessageStatusCompleted,
+			Sequence:   int64(i + 1),
+			Visibility: domainmessage.MessageVisibilityPublic,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+	}
+	if err := msgRepo.CreateBatch(ctx, batch); err != nil {
+		t.Fatalf("CreateBatch failed: %v", err)
+	}
+
+	count, err := msgRepo.CountByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("CountByRoom failed: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("expected 4 messages after CreateBatch, got %d", count)
+	}
+
+	// A batch with a duplicate (room_id, sequence) partway through must
+	// roll back entirely: none of the batch's messages should be persisted,
+	// including the ones before the conflicting entry.
+	failingBatch := []*domainmessage.Message{
+		{
+			ID: uuid.New().String(), RoomID: rm.ID, SenderID: &rm.OwnerID, Content: "ok",
+			Type: domainmessage.MessageTypeHuman, Status: domainmessage.MessageStatusCompleted,
+			Sequence: 100, Visibility: domainmessage.MessageVisibilityPublic, CreatedAt: now, UpdatedAt: now,
+		},
+		{
+			ID: uuid.New().String(), RoomID: rm.ID, SenderID: &rm.OwnerID, Content: "duplicate sequence",
+			Type: domainmessage.MessageTypeHuman, Status: domainmessage.MessageStatusCompleted,
+			Sequence: 1, Visibility: domainmessage.MessageVisibilityPublic, CreatedAt: now, UpdatedAt: now, // conflicts with batch[0]
+		},
+	}
+	if err := msgRepo.CreateBatch(ctx, failingBatch); err == nil {
+		t.Fatal("expected CreateBatch to fail on a duplicate (room_id, sequence), got nil")
+	}
+
+	count, err = msgRepo.CountByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("CountByRoom after failed batch failed: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("expected CreateBatch's failure to roll back entirely (still 4 messages), got %d", count)
+	}
+}

@@ -22,6 +22,8 @@ CREATE TABLE rooms (
     ai_context_cutoff_at TIMESTAMPTZ,
     ai_provider VARCHAR(50) NULL,
     ai_model VARCHAR(100) NULL,
+    forked_from_room_id UUID NULL REFERENCES rooms(id) ON DELETE SET NULL,
+    is_archived BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -166,3 +168,17 @@ CREATE TABLE payment_history (
 );
 
 CREATE INDEX idx_payment_history_user_id ON payment_history(user_id, created_at DESC);
+
+CREATE TABLE room_fork_jobs (
+    id UUID PRIMARY KEY,
+    source_room_id UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    new_room_id UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    total_messages BIGINT NOT NULL DEFAULT 0,
+    copied_messages BIGINT NOT NULL DEFAULT 0,
+    error_message TEXT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_room_fork_jobs_new_room ON room_fork_jobs(new_room_id);
