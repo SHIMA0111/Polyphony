@@ -6,14 +6,16 @@ import { LogOut, Pen, Settings } from "lucide-react"
 import { useLogout } from "@/features/auth/hooks/use-logout"
 import { RoomRail } from "@/features/rooms/components/RoomRail"
 import { InvitationsBellButton } from "@/features/members/components/InvitationsBellButton"
+import { BalanceBadge } from "@/features/billing/components/BalanceBadge"
 
 /**
  * Persistent shell for every route under the `(main)` route group
  * (`/rooms` and `/rooms/[roomId]`).
  *
- * Renders a top bar (logo mark, "Polyphony" heading, and the avatar
- * `Menu.Root` with Settings/Logout — moved here from `RoomList` so it mounts
- * once instead of once per page) above a two-region body: the
+ * Renders a top bar (logo mark, "Polyphony" heading, the `BalanceBadge`
+ * token-balance widget, and the avatar `Menu.Root` with Settings/Logout —
+ * moved here from `RoomList` so it mounts once instead of once per page)
+ * above a two-region body: the
  * always-mounted `RoomRail` room-list rail and a content pane wrapping
  * `children` (`RoomList` at `/rooms`, `ChatRoom` at `/rooms/[roomId]`).
  * Navigating between `(main)` routes only swaps `children` via Next.js
@@ -64,8 +66,12 @@ export default function MainLayout({
             </Heading>
           </Flex>
 
-          <Flex align="center" gap={2}>
+          <Flex align="center" gap={3}>
             <InvitationsBellButton />
+            {/* Persistent balance widget, immediately left of the avatar
+                menu — its own slot, distinct from any other same-wave
+                top-bar insertion anchored between the logo and this menu. */}
+            <BalanceBadge />
 
             <Menu.Root>
               <Menu.Trigger asChild>

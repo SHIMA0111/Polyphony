@@ -1,5 +1,6 @@
 import { http, HttpResponse } from "msw"
 import { describe, expect, it, vi } from "vitest"
+import userEvent from "@testing-library/user-event"
 import { server } from "@/test/msw/server"
 import { render, screen, waitFor } from "@/test/render"
 import type { Message, ModelInfo, TokenEstimateResponse } from "@/features/messages/types"
@@ -114,5 +115,58 @@ describe("MessageInput token meter", () => {
     })
 
     expect(capturedContents).toEqual(["Included message"])
+  })
+})
+
+/**
+ * Component-level tests for `MessageInput`'s Step 48 `aiError` prop: an
+ * additive, default-preserving optional prop rendering a short inline error
+ * line (with a link to `/billing/usage`) when set, and cleared locally on
+ * the next input change — none of this changes `onSend`/`onSendWithAI`'s
+ * existing try/finally structure.
+ */
+describe("MessageInput aiError", () => {
+  it("renders no inline error by default", () => {
+    render(
+      <MessageInput onSend={vi.fn()} onSendWithAI={vi.fn()} models={models} />,
+    )
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("renders the inline error with a link to /billing/usage when aiError is set", () => {
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        onSendWithAI={vi.fn()}
+        models={models}
+        aiError="Insufficient token balance."
+      />,
+    )
+
+    const alert = screen.getByRole("alert")
+    expect(alert).toHaveTextContent("Insufficient token balance.")
+    expect(screen.getByRole("link", { name: "Usage" })).toHaveAttribute(
+      "href",
+      "/billing/usage",
+    )
+  })
+
+  it("dismisses the inline error locally once the user types again", async () => {
+    const user = userEvent.setup()
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        onSendWithAI={vi.fn()}
+        models={models}
+        aiError="Insufficient token balance."
+      />,
+    )
+
+    expect(screen.getByRole("alert")).toBeInTheDocument()
+
+    await user.type(screen.getByPlaceholderText("Ask me anything..."), "x")
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 })

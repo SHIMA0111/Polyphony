@@ -28,6 +28,7 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
     handleSendWithAI,
     handleRegenerate,
     handleRetry,
+    aiError,
   } = useChatRoom(roomId)
   const connectionStatus = useRoomSocket(roomId)
 
@@ -69,6 +70,7 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
           models={models}
           canInvokeAI={canInvokeAI(viewerRole)}
           messages={messages}
+          aiError={aiError}
         />
       ) : (
         <Text textAlign="center" fontSize="xs" color="fg.muted" py={4}>

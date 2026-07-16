@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef, useCallback, useEffect } from "react"
+import Link from "next/link"
 import { Box, Button, Flex, Separator, Spacer, Text } from "@chakra-ui/react"
 import { ArrowUp, Sparkles } from "lucide-react"
 import { estimateTokens } from "@/features/messages/api/estimate-tokens"
@@ -33,6 +34,14 @@ interface MessageInputProps {
    * don't need to pass anything.
    */
   messages?: Message[]
+  /**
+   * Set by `ChatRoom`/`useChatRoom` when the most recent "Send with AI" was
+   * rejected with HTTP 402 (insufficient token balance); rendered as an
+   * inline error line beneath the button row with a link to `/billing/usage`.
+   * `undefined`/`null` (the default) renders nothing, so every other caller
+   * of this component is unaffected.
+   */
+  aiError?: string | null
 }
 
 const EMPTY_MESSAGES: Message[] = []
@@ -44,16 +53,37 @@ export function MessageInput({
   disabled,
   canInvokeAI = true,
   messages = EMPTY_MESSAGES,
+  aiError,
 }: MessageInputProps) {
   const [input, setInput] = useState("")
   const [isSending, setIsSending] = useState(false)
   const [selectedModel, setSelectedModel] = useState<ModelInfo | null>(null)
   const [estimatedTokens, setEstimatedTokens] = useState<number | null>(null)
+  // Locally dismisses the `aiError` prop once the user starts typing again
+  // or attempts another send, so a resolved error doesn't linger on screen
+  // even though `useChatRoom` only clears its own `aiError` state at the
+  // *start* of the next `handleSendWithAI` call.
+  const [aiErrorDismissed, setAiErrorDismissed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   // Guards against an older, slower estimate response overwriting a newer
   // one that already resolved (no built-in request cancellation for a plain
   // `fetch`-backed call here).
   const estimateRequestIdRef = useRef(0)
+
+  // A new (truthy) `aiError` always un-dismisses — it represents a fresh
+  // rejection, not the one just dismissed.
+  useEffect(() => {
+    if (aiError) {
+      setAiErrorDismissed(false)
+    }
+  }, [aiError])
+
+  const displayedAiError = aiErrorDismissed ? null : (aiError ?? null)
+
+  const handleInputChange = useCallback((value: string) => {
+    setInput(value)
+    setAiErrorDismissed(true)
+  }, [])
 
   // Set default model when models are loaded
   useEffect(() => {
@@ -119,6 +149,7 @@ export function MessageInput({
   const handleSend = useCallback(async () => {
     const content = input.trim()
     if (!content || isSending) return
+    setAiErrorDismissed(true)
     setIsSending(true)
     try {
       await onSend(content)
@@ -137,6 +168,7 @@ export function MessageInput({
   const handleSendWithAI = useCallback(async () => {
     const content = input.trim()
     if (!content || isSending || !selectedModel) return
+    setAiErrorDismissed(true)
     setIsSending(true)
     try {
       await onSendWithAI(content, selectedModel.id)
@@ -182,7 +214,7 @@ export function MessageInput({
             <textarea
               ref={textareaRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => handleInputChange(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask me anything..."
               disabled={disabled || isSending}
@@ -252,6 +284,16 @@ export function MessageInput({
             )}
           </Flex>
         </Box>
+
+        {displayedAiError && (
+          <Text role="alert" textAlign="center" fontSize="xs" color="fg.error">
+            {displayedAiError} Visit{" "}
+            <Link href="/billing/usage" style={{ textDecoration: "underline" }}>
+              Usage
+            </Link>{" "}
+            to check your balance.
+          </Text>
+        )}
 
         {/* Hint text */}
         <Text textAlign="center" fontSize="xs" color="fg.muted">
