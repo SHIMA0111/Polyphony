@@ -143,8 +143,17 @@ test("AI reply renders incrementally via token_chunk WS frames and settles on th
   // keeps the typed text until the server acknowledges the send.
   await expect(page.getByText(messageContent).first()).toBeVisible()
 
-  // Thinking state: the AI bubble renders with no content yet.
-  await expect(page.getByLabel("AI is thinking")).toBeVisible()
+  // Thinking state: the AI bubble renders with no content yet -- but tolerate
+  // the deterministic llm-stub streaming and finalizing the whole reply
+  // before this assertion is evaluated (observed live in the wave-9
+  // integration review: a strict must-observe-the-transient-state `expect`
+  // here timed out because the stream had already settled). The
+  // MutationObserver capture below is what actually proves the thinking ->
+  // partial -> final progression happened; this assertion only needs to
+  // confirm the reply is in flight *or* already done.
+  await expect(
+    page.getByLabel("AI is thinking").or(page.getByText(FINAL_TEXT)),
+  ).toBeVisible()
 
   // Finalized state: the stub's full canned text eventually renders.
   await expect(page.getByText(FINAL_TEXT)).toBeVisible({ timeout: 20_000 })

@@ -26,7 +26,11 @@ interface MemberPanelProps {
  * `room.role` rather than re-deriving it by scanning the member list.
  */
 export function MemberPanel({ room, open, onOpenChange }: MemberPanelProps) {
-  const membersQuery = useMembers(room.id)
+  // `enabled: open` — see `useMembers`'s `UseMembersOptions.enabled` docstring:
+  // this panel never unmounts between opens (it's rendered unconditionally
+  // by `MemberAvatarStack`), so tying `enabled` to the drawer's own open
+  // state is what actually makes every re-open fetch fresh data.
+  const membersQuery = useMembers(room.id, { enabled: open })
   const members = membersQuery.data?.members ?? []
 
   return (
