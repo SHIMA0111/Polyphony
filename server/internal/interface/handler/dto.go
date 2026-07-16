@@ -470,6 +470,87 @@ type TokenTransactionListResponse struct {
 	NextCursor   *string                    `json:"next_cursor"`
 }
 
+// CreateCheckoutSessionRequest is the request body for
+// POST /billing/checkout-session. Type is "subscription" (PlanCode
+// required) or "token_purchase" (PackageCode required).
+type CreateCheckoutSessionRequest struct {
+	Type        string `json:"type"`
+	PlanCode    string `json:"plan_code,omitempty"`
+	PackageCode string `json:"package_code,omitempty"`
+}
+
+// CheckoutSessionResponse is the response body for
+// POST /billing/checkout-session: a Stripe-hosted Checkout page URL to
+// redirect the user to.
+type CheckoutSessionResponse struct {
+	CheckoutURL string `json:"checkout_url"`
+}
+
+// BillingPortalRequest is the request body for POST /billing/portal-session.
+type BillingPortalRequest struct {
+	ReturnURL string `json:"return_url"`
+}
+
+// BillingPortalResponse is the response body for
+// POST /billing/portal-session: a Stripe-hosted Billing Portal URL.
+type BillingPortalResponse struct {
+	PortalURL string `json:"portal_url"`
+}
+
+// SubscriptionResponse is the JSON response representation of a user's
+// Subscription, returned by GET /billing/subscription and
+// POST /billing/subscription/cancel. Field names match Step 53's web
+// contract exactly. CanceledAt is nil until the subscription has actually
+// ended (see billing.Subscription's CancelAtPeriodEnd/CanceledAt doc).
+type SubscriptionResponse struct {
+	Status                 string     `json:"status"`
+	PlanCode               string     `json:"plan_code"`
+	MonthlyTokenAllocation int64      `json:"monthly_token_allocation"`
+	CurrentPeriodStart     time.Time  `json:"current_period_start"`
+	CurrentPeriodEnd       time.Time  `json:"current_period_end"`
+	CancelAtPeriodEnd      bool       `json:"cancel_at_period_end"`
+	CanceledAt             *time.Time `json:"canceled_at"`
+}
+
+// PaymentRecordResponse is the JSON response representation of a single
+// payment_history row.
+type PaymentRecordResponse struct {
+	ID             string    `json:"id"`
+	Kind           string    `json:"kind"`
+	AmountCents    int64     `json:"amount_cents"`
+	Currency       string    `json:"currency"`
+	TokensCredited int64     `json:"tokens_credited"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// PaymentHistoryResponse is the response body for a paginated list of
+// payment records, returned by GET /billing/payments. NextCursor is nil
+// when there are no more pages.
+type PaymentHistoryResponse struct {
+	Payments   []PaymentRecordResponse `json:"payments"`
+	NextCursor *string                 `json:"next_cursor"`
+}
+
+// BillingPlanResponse is a single entry of the purchasable catalog served by
+// GET /billing/plans. Interval is "month" for a subscription plan or
+// "one_time" for a token package. stripe_price_id is deliberately not
+// exposed here.
+type BillingPlanResponse struct {
+	Code           string `json:"code"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	PriceCents     int64  `json:"price_cents"`
+	Currency       string `json:"currency"`
+	Interval       string `json:"interval"`
+	TokenAllowance int64  `json:"token_allowance"`
+}
+
+// BillingPlanListResponse is the response body for GET /billing/plans.
+type BillingPlanListResponse struct {
+	Plans []BillingPlanResponse `json:"plans"`
+}
+
 // --- Common DTOs ---
 
 // ErrorResponse is the standard error response body used across all handler

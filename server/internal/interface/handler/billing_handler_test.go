@@ -16,11 +16,12 @@ import (
 // setupBillingTest builds a BillingHandler backed by a real BillingUsecase
 // over mock repositories, mirroring how ModelHandler's tests build a real
 // ModelUsecase over a mocked ai.LLMGateway rather than mocking the usecase
-// layer itself.
+// layer itself. It leaves every Step 49 dependency at its zero value; tests
+// exercising Step 49 endpoints use setupStripeBillingTest instead.
 func setupBillingTest() (*echo.Echo, *BillingHandler, *mocks.BalanceRepo) {
 	balanceRepo := &mocks.BalanceRepo{}
 	roomRepo := &mocks.RoomRepo{}
-	uc := billingusecase.NewBillingUsecase(balanceRepo, roomRepo)
+	uc := billingusecase.NewBillingUsecase(balanceRepo, roomRepo, nil, nil, nil, nil, nil, "", "")
 	return echo.New(), NewBillingHandler(uc), balanceRepo
 }
 

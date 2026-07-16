@@ -415,3 +415,67 @@ func TestLoadWhoamiCacheTTLInvalidFallsBackToDefault(t *testing.T) {
 		t.Errorf("expected fallback to default WhoamiCacheTTL 30s, got %v", cfg.WhoamiCacheTTL)
 	}
 }
+
+func TestLoadStripeDefaults(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.StripeSecretKey != "" || cfg.StripeWebhookSecret != "" {
+		t.Errorf("expected empty Stripe secret/webhook secret by default, got %q / %q", cfg.StripeSecretKey, cfg.StripeWebhookSecret)
+	}
+	if len(cfg.StripePlans) != 0 || len(cfg.StripeTokenPackages) != 0 {
+		t.Errorf("expected no plans/packages by default, got %v / %v", cfg.StripePlans, cfg.StripeTokenPackages)
+	}
+	wantSuccess := "http://localhost:3000/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}"
+	if cfg.StripeCheckoutSuccessURL != wantSuccess {
+		t.Errorf("expected default success url %q, got %q", wantSuccess, cfg.StripeCheckoutSuccessURL)
+	}
+	wantCancel := "http://localhost:3000/billing/checkout/cancel"
+	if cfg.StripeCheckoutCancelURL != wantCancel {
+		t.Errorf("expected default cancel url %q, got %q", wantCancel, cfg.StripeCheckoutCancelURL)
+	}
+}
+
+func TestLoadStripePlansAndPackagesParsed(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("STRIPE_SECRET_KEY", "sk_test_123")
+	t.Setenv("STRIPE_WEBHOOK_SECRET", "whsec_123")
+	t.Setenv("STRIPE_PLANS_JSON", `[{"plan_code":"starter","price_id":"price_1","name":"Starter","description":"d","price_cents":500,"currency":"usd","monthly_token_allocation":100000}]`)
+	t.Setenv("STRIPE_TOKEN_PACKAGES_JSON", `[{"package_code":"topup_small","price_id":"price_2","name":"Small","description":"d2","price_cents":300,"currency":"usd","tokens":50000}]`)
+	t.Setenv("STRIPE_CHECKOUT_SUCCESS_URL", "https://example.com/success")
+	t.Setenv("STRIPE_CHECKOUT_CANCEL_URL", "https://example.com/cancel")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.StripeSecretKey != "sk_test_123" || cfg.StripeWebhookSecret != "whsec_123" {
+		t.Errorf("expected Stripe secret/webhook secret to be read from env, got %q / %q", cfg.StripeSecretKey, cfg.StripeWebhookSecret)
+	}
+	if len(cfg.StripePlans) != 1 || cfg.StripePlans[0].PlanCode != "starter" || cfg.StripePlans[0].MonthlyTokenAllocation != 100000 {
+		t.Fatalf("expected 1 parsed plan starter/100000, got %+v", cfg.StripePlans)
+	}
+	if len(cfg.StripeTokenPackages) != 1 || cfg.StripeTokenPackages[0].PackageCode != "topup_small" || cfg.StripeTokenPackages[0].Tokens != 50000 {
+		t.Fatalf("expected 1 parsed package topup_small/50000, got %+v", cfg.StripeTokenPackages)
+	}
+	if cfg.StripeCheckoutSuccessURL != "https://example.com/success" || cfg.StripeCheckoutCancelURL != "https://example.com/cancel" {
+		t.Errorf("expected overridden checkout URLs, got %q / %q", cfg.StripeCheckoutSuccessURL, cfg.StripeCheckoutCancelURL)
+	}
+}
+
+func TestLoadStripePlansInvalidJSONIgnoredNotFatal(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("STRIPE_PLANS_JSON", "not-valid-json")
+	t.Setenv("STRIPE_TOKEN_PACKAGES_JSON", "also-not-valid-json")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on invalid Stripe catalog JSON, got: %v", err)
+	}
+	if len(cfg.StripePlans) != 0 || len(cfg.StripeTokenPackages) != 0 {
+		t.Errorf("expected invalid JSON to be ignored (empty catalogs), got %v / %v", cfg.StripePlans, cfg.StripeTokenPackages)
+	}
+}

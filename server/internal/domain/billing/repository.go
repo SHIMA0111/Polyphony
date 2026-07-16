@@ -39,3 +39,54 @@ type BalanceRepository interface {
 	// cursor convention.
 	ListTransactions(ctx context.Context, userID, cursor string, limit int) (*TransactionPage, error)
 }
+
+// SubscriptionRepository defines persistence operations for a user's Stripe
+// subscription state (Step 49). There is at most one Subscription row per
+// user in this step's scope.
+type SubscriptionRepository interface {
+	// Create persists a new Subscription row.
+	Create(ctx context.Context, sub *Subscription) error
+
+	// GetByUserID returns userID's Subscription. It returns
+	// domain.ErrNotFound if the user has no subscription row.
+	GetByUserID(ctx context.Context, userID string) (*Subscription, error)
+
+	// GetByStripeSubscriptionID returns the Subscription matching the given
+	// Stripe subscription ID, used by webhook processing to map a
+	// customer.subscription.updated/.deleted/invoice.paid event back to its
+	// local row. It returns domain.ErrNotFound if no row matches.
+	GetByStripeSubscriptionID(ctx context.Context, stripeSubscriptionID string) (*Subscription, error)
+
+	// Update persists changes to an existing Subscription row (matched by
+	// ID). It returns domain.ErrNotFound if no row with that ID exists.
+	Update(ctx context.Context, sub *Subscription) error
+}
+
+// PaymentRepository defines persistence operations for the payment_history
+// ledger (Step 49), including the atomic "record payment + credit balance"
+// path Stripe webhook processing needs so a credited balance and its
+// payment record can never diverge.
+type PaymentRepository interface {
+	// Create inserts a payment_history row without crediting any balance.
+	// It is idempotent on the unique stripe_event_id constraint: if a row
+	// with the same payment.StripeEventID already exists (Stripe's
+	// at-least-once webhook delivery redelivering an already-processed
+	// event), it returns alreadyRecorded=true and nil error rather than
+	// erroring, so callers can treat replay as a successful no-op.
+	Create(ctx context.Context, payment *PaymentRecord) (alreadyRecorded bool, err error)
+
+	// CreateAndCredit atomically inserts payment (idempotent on
+	// stripe_event_id, exactly like Create) and, only when the row is newly
+	// inserted, credits userID's token balance by amount (a
+	// TransactionTypeCharge token_transactions row, via the same
+	// mutation logic BalanceRepository.CreditAndRecord uses) — both writes
+	// commit or roll back together in one DB transaction. If a
+	// payment_history row with the same StripeEventID already exists, it
+	// returns alreadyProcessed=true and leaves the balance untouched.
+	CreateAndCredit(ctx context.Context, payment *PaymentRecord, userID string, amount int64, description string) (alreadyProcessed bool, err error)
+
+	// ListByUserID returns a cursor-paginated page of userID's payment
+	// history, newest first, mirroring BalanceRepository.ListTransactions's
+	// cursor/limit convention.
+	ListByUserID(ctx context.Context, userID, cursor string, limit int) (*PaymentHistoryPage, error)
+}

@@ -93,13 +93,15 @@ type Container struct {
 	RateLimiter *redis_rate.Limiter
 
 	// Repositories
-	UserRepo       domainuser.UserRepository
-	RoomRepo       domainroom.RoomRepository
-	MsgRepo        domainmessage.MessageRepository
-	AttachmentRepo domainattachment.AttachmentRepository
-	InvitationRepo domaininvitation.InvitationRepository
-	BillingRepo    domainbilling.BalanceRepository
-	GroupRepo      domaingroup.GroupRepository
+	UserRepo         domainuser.UserRepository
+	RoomRepo         domainroom.RoomRepository
+	MsgRepo          domainmessage.MessageRepository
+	AttachmentRepo   domainattachment.AttachmentRepository
+	InvitationRepo   domaininvitation.InvitationRepository
+	BillingRepo      domainbilling.BalanceRepository
+	GroupRepo        domaingroup.GroupRepository
+	SubscriptionRepo domainbilling.SubscriptionRepository
+	PaymentRepo      domainbilling.PaymentRepository
 
 	// Services / Gateways
 	AuthService domainauth.AuthService
@@ -107,6 +109,12 @@ type Container struct {
 	// ObjectStorage is the domain/storage.ObjectStorage adapter (backed by
 	// MinIO/S3 via aws-sdk-go-v2) used to presign attachment upload/view URLs.
 	ObjectStorage domainstorage.ObjectStorage
+	// StripeGateway is the domain/billing.StripeGateway adapter used for
+	// Checkout/Billing Portal/webhook operations (Step 49). It is nil when
+	// Config.StripeSecretKey is empty — BillingUsecase's Stripe-dependent
+	// methods check for this and return domain.ErrStripeNotConfigured
+	// rather than the container failing to build.
+	StripeGateway domainbilling.StripeGateway
 	// MessageHub is the event.MessageHub used by MsgUC to broadcast
 	// message_created/message_updated events. It is exposed on the
 	// Container (rather than kept private) so later steps (e.g. Step 15's
@@ -162,6 +170,8 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	invitationRepo := postgres.NewInvitationRepository(pool)
 	billingRepo := postgres.NewBillingRepository(pool)
 	groupRepo := postgres.NewGroupRepository(pool)
+	subscriptionRepo := postgres.NewSubscriptionRepository(pool)
+	paymentRepo := postgres.NewPaymentRepository(pool)
 
 	// RedisClient/RateLimiter: constructed whenever Config.RedisURL is
 	// non-empty, independent of MessageHubDriver (see Container.RedisClient's
@@ -236,6 +246,40 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	objectStorage := ifstorage.NewS3Storage(
 		cfg.S3Endpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3ForcePathStyle,
 	)
+	// StripeGateway is left nil when STRIPE_SECRET_KEY is unconfigured (see
+	// CLAUDE.md's Token billing section and step49.md): BillingUsecase's
+	// checkout/portal/cancel methods check for nil and return
+	// domain.ErrStripeNotConfigured instead of the container failing to
+	// build, so local development without a Stripe test account still works
+	// for every other feature.
+	var stripeGateway domainbilling.StripeGateway
+	if cfg.StripeSecretKey != "" {
+		stripeGateway = gateway.NewStripeClient(cfg.StripeSecretKey, cfg.StripeWebhookSecret)
+	}
+	stripePlans := make([]domainbilling.Plan, len(cfg.StripePlans))
+	for i, p := range cfg.StripePlans {
+		stripePlans[i] = domainbilling.Plan{
+			Code:                   p.PlanCode,
+			StripePriceID:          p.PriceID,
+			Name:                   p.Name,
+			Description:            p.Description,
+			PriceCents:             p.PriceCents,
+			Currency:               p.Currency,
+			MonthlyTokenAllocation: p.MonthlyTokenAllocation,
+		}
+	}
+	stripeTokenPackages := make([]domainbilling.TokenPackage, len(cfg.StripeTokenPackages))
+	for i, p := range cfg.StripeTokenPackages {
+		stripeTokenPackages[i] = domainbilling.TokenPackage{
+			Code:          p.PackageCode,
+			StripePriceID: p.PriceID,
+			Name:          p.Name,
+			Description:   p.Description,
+			PriceCents:    p.PriceCents,
+			Currency:      p.Currency,
+			Tokens:        p.Tokens,
+		}
+	}
 	// MessageHub is the Phase 10 swap point (see CLAUDE.md's Interface Swap
 	// Points table): MESSAGE_HUB_DRIVER selects InProcessHub (default), which
 	// only fans out within this single process, or RedisHub, which fans out
@@ -259,7 +303,10 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
 	roomUC := roomusecase.NewRoomUsecase(roomRepo)
-	billingUC := billingusecase.NewBillingUsecase(billingRepo, roomRepo)
+	billingUC := billingusecase.NewBillingUsecase(
+		billingRepo, roomRepo, subscriptionRepo, paymentRepo, stripeGateway,
+		stripePlans, stripeTokenPackages, cfg.StripeCheckoutSuccessURL, cfg.StripeCheckoutCancelURL,
+	)
 	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub, billingUC, attachmentRepo, objectStorage, cfg.DefaultAIModel)
 	userUC := userusecase.NewUserUsecase(userRepo)
 	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
@@ -288,18 +335,21 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		RedisClient: redisClient,
 		RateLimiter: rateLimiter,
 
-		UserRepo:       userRepo,
-		RoomRepo:       roomRepo,
-		MsgRepo:        msgRepo,
-		AttachmentRepo: attachmentRepo,
-		InvitationRepo: invitationRepo,
-		BillingRepo:    billingRepo,
-		GroupRepo:      groupRepo,
+		UserRepo:         userRepo,
+		RoomRepo:         roomRepo,
+		MsgRepo:          msgRepo,
+		AttachmentRepo:   attachmentRepo,
+		InvitationRepo:   invitationRepo,
+		BillingRepo:      billingRepo,
+		GroupRepo:        groupRepo,
+		SubscriptionRepo: subscriptionRepo,
+		PaymentRepo:      paymentRepo,
 
 		AuthService:   authService,
 		LLMGateway:    llmGateway,
 		ObjectStorage: objectStorage,
 		MessageHub:    messageHub,
+		StripeGateway: stripeGateway,
 
 		AuthUC:       authUC,
 		RoomUC:       roomUC,

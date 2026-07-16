@@ -70,6 +70,29 @@ var (
 	// or below zero, so an AI invocation was rejected before calling the LLM
 	// Gateway. See usecase/billing.BillingUsecase.CheckBalance.
 	ErrInsufficientBalance = errors.New("insufficient token balance")
+
+	// ErrStripeNotConfigured indicates a Stripe-backed billing endpoint
+	// (checkout session creation, billing portal, subscription
+	// cancellation) was called without STRIPE_SECRET_KEY configured. It is
+	// mapped to HTTP 503, distinguishing "not set up yet" from a genuine
+	// client error. GET /billing/plans never returns this error — it is a
+	// pure config read that works even when Stripe is unconfigured.
+	ErrStripeNotConfigured = errors.New("stripe is not configured")
+
+	// ErrInvalidWebhookSignature indicates a Stripe webhook payload failed
+	// signature verification (unknown/wrong STRIPE_WEBHOOK_SECRET, or a
+	// tampered payload). POST /webhooks/stripe maps this to HTTP 400 — the
+	// only case in which that endpoint returns a non-200 status.
+	ErrInvalidWebhookSignature = errors.New("invalid stripe webhook signature")
+
+	// ErrSubscriptionAlreadyExists indicates a subscriptions row already
+	// exists for the given stripe_subscription_id (a unique-constraint
+	// violation on SubscriptionRepository.Create). In normal operation the
+	// webhook usecase avoids this by checking
+	// SubscriptionRepository.GetByStripeSubscriptionID before deciding
+	// whether to Create or Update; this sentinel only surfaces on a
+	// concurrent-redelivery race.
+	ErrSubscriptionAlreadyExists = errors.New("subscription already exists")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.
