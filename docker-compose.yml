@@ -46,6 +46,53 @@ services:
       timeout: 3s
       retries: 5
 
+  kratos:
+    image: oryd/kratos:v1.3.1
+    environment:
+      DSN: ${KRATOS_DSN:-postgres://kratos:kratos@kratos-db:5432/kratos?sslmode=disable}
+      SECRETS_COOKIE: ${KRATOS_COOKIE_SECRET:-change-me-32-byte-cookie-secret}
+      SECRETS_CIPHER: ${KRATOS_CIPHER_SECRET:-change-me-32-byte-cipher-secret}
+    command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
+    volumes:
+      - ./ory/kratos:/etc/config/kratos:ro
+    ports:
+      - "4433:4433"
+      - "4434:4434"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4434/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      kratos-migrate:
+        condition: service_completed_successfully
+
+  kratos-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${KRATOS_DB_USER:-kratos}
+      POSTGRES_PASSWORD: ${KRATOS_DB_PASSWORD:-kratos}
+      POSTGRES_DB: ${KRATOS_DB_NAME:-kratos}
+    volumes:
+      - kratos_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KRATOS_DB_USER:-kratos}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  kratos-migrate:
+    image: oryd/kratos:v1.3.1
+    environment:
+      DSN: ${KRATOS_DSN:-postgres://kratos:kratos@kratos-db:5432/kratos?sslmode=disable}
+    command: migrate sql -e --yes
+    volumes:
+      - ./ory/kratos:/etc/config/kratos:ro
+    depends_on:
+      kratos-db:
+        condition: service_healthy
+
   llm-gateway:
     build:
       context: ./llm-gateway
@@ -60,6 +107,18 @@ services:
       - "8081:8081"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  mailslurper:
+    image: oryd/mailslurper:latest-smtps
+    ports:
+      - "4436:4436"
+      - "4437:4437"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4436/"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -206,3 +265,4 @@ services:
 volumes:
   pgdata:
   pgdata-e2e:
+  kratos_pgdata:
