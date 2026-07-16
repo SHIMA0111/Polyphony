@@ -23,10 +23,15 @@ interface RouteContext {
  * `GET /models`, reachable without a session) and protected endpoints
  * (which get the Go API's own `401` when the cookie is absent or invalid).
  *
- * The upstream body is streamed back unchanged, but the only response
- * header forwarded is `Content-Type` — `Content-Encoding`/
+ * The upstream body is streamed back unchanged. Only `Content-Type` and
+ * `Retry-After` are forwarded from the upstream response — `Content-Encoding`/
  * `Transfer-Encoding` are intentionally dropped since the body was already
- * read and decoded here.
+ * read and decoded here. `Retry-After` is forwarded (Step 57's
+ * `rate-limiting.spec.ts` regression coverage) because
+ * `middleware.RateLimit` (Step 33) sets it on every HTTP 429 response and a
+ * caller cannot compute a sane backoff without it — omitting it silently
+ * turned every rate-limit-aware client into one that can't actually back off
+ * correctly.
  *
  * @param request - The incoming Next.js request.
  * @param context - Route context carrying the (Next 16 async) dynamic `path` segments.
@@ -63,6 +68,10 @@ async function proxy(
   const upstreamContentType = upstreamRes.headers.get("Content-Type")
   if (upstreamContentType) {
     responseHeaders["Content-Type"] = upstreamContentType
+  }
+  const upstreamRetryAfter = upstreamRes.headers.get("Retry-After")
+  if (upstreamRetryAfter) {
+    responseHeaders["Retry-After"] = upstreamRetryAfter
   }
 
   return new NextResponse(responseBody, {

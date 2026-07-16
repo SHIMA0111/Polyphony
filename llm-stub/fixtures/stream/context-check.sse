@@ -1,0 +1,11 @@
+data: {"id":"chatcmpl-e2e-context-check","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-context-check","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"This canned reply confirms "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-context-check","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"the AI send pipeline still completed "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-context-check","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"after the exclude, delete, and cutoff context controls were applied."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-context-check","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
