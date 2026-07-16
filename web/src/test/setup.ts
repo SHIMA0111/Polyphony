@@ -12,9 +12,11 @@ import { server } from "./msw/server"
  *   components and avoid cross-test leakage.
  * - Polyfill jsdom APIs real components in this repo rely on but jsdom does
  *   not implement:
- *   - `scrollIntoView`, used by
- *     `web/src/features/messages/components/MessageList.tsx`'s
- *     `endRef.current?.scrollIntoView(...)` effect.
+ *   - `scrollTo`, used by
+ *     `web/src/features/messages/hooks/use-near-bottom-scroll.ts` to move
+ *     the transcript container to its bottom.
+ *   - `scrollIntoView`, kept for any other component that scrolls an element
+ *     into view.
  *   - `matchMedia`, used transitively by `next-themes`' `ThemeProvider` via
  *     `web/src/components/ui/color-mode.tsx` -> `web/src/components/ui/provider.tsx`.
  * - Start/reset/stop the MSW Node server for the whole suite so fetches made
@@ -23,6 +25,7 @@ import { server } from "./msw/server"
  */
 
 window.HTMLElement.prototype.scrollIntoView = vi.fn()
+window.HTMLElement.prototype.scrollTo = vi.fn()
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
