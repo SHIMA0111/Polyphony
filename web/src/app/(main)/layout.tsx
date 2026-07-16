@@ -1,8 +1,9 @@
 "use client"
 
+import Link from "next/link"
 import { useParams } from "next/navigation"
 import { Avatar, Box, Button, Flex, Heading, Menu, Portal } from "@chakra-ui/react"
-import { LogOut, Pen } from "lucide-react"
+import { LogOut, Pen, Users } from "lucide-react"
 import { useLogout } from "@/features/auth/hooks/use-logout"
 import { RoomRail } from "@/features/rooms/components/RoomRail"
 import { InvitationsBellButton } from "@/features/members/components/InvitationsBellButton"
@@ -13,9 +14,9 @@ import { BalanceBadge } from "@/features/billing/components/BalanceBadge"
  * (`/rooms` and `/rooms/[roomId]`).
  *
  * Renders a top bar (logo mark, "Polyphony" heading, the `BalanceBadge`
- * token-balance widget, and the avatar `Menu.Root` with Logout — moved
- * here from `RoomList` so it mounts once instead of once per page) above
- * a two-region body: the
+ * token-balance widget, and the avatar `Menu.Root` with Groups/Logout —
+ * moved here from `RoomList` so it mounts once instead of once per page)
+ * above a two-region body: the
  * always-mounted `RoomRail` room-list rail and a content pane wrapping
  * `children` (`RoomList` at `/rooms`, `ChatRoom` at `/rooms/[roomId]`).
  * Navigating between `(main)` routes only swaps `children` via Next.js
@@ -91,6 +92,13 @@ export default function MainLayout({
               <Portal>
                 <Menu.Positioner>
                   <Menu.Content w="56">
+                    <Menu.Item value="groups" gap={2} asChild>
+                      <Link href="/groups">
+                        <Users size={16} />
+                        Groups
+                      </Link>
+                    </Menu.Item>
+                    <Menu.Separator />
                     <Menu.Item
                       value="logout"
                       color="fg.error"
