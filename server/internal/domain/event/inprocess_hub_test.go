@@ -170,7 +170,12 @@ func TestInProcessHubPublishNonBlockingOnFullChannel(t *testing.T) {
 //
 // This test hammers Publish concurrently with repeated Subscribe/unsubscribe
 // cycles on the same room so that race is likely to manifest under `go test
-// -race`. It must be run with -race to be meaningful (see the `test:
+// -race`. Publishers run continuously, coordinated by a stop channel that is
+// only closed once every subscribe/unsubscribe cycle below has finished, so
+// the race window spans the whole test instead of just its earliest cycles —
+// a fixed publish count could otherwise finish in milliseconds while later
+// subscriber cycles ran with no concurrent publishing at all. It must be
+// run with -race to be meaningful (see the `test:
 // go test -race ./internal/domain/event/...` verification step) — without
 // -race a panic may still occur but is less reliably triggered.
 func TestInProcessHubConcurrentPublishAndUnsubscribeIsRaceFree(t *testing.T) {
@@ -180,22 +185,30 @@ func TestInProcessHubConcurrentPublishAndUnsubscribeIsRaceFree(t *testing.T) {
 
 	const publishers = 4
 	const subscribeCycles = 8
-	const publishesPerPublisher = 200
 
-	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	var publishWG sync.WaitGroup
 
-	// Publishers continuously broadcast events to roomID.
+	// Publishers continuously broadcast events to roomID until stop is
+	// closed below, so publishing stays live for the full duration of the
+	// subscribe/unsubscribe cycles rather than racing only their early
+	// iterations.
 	for p := 0; p < publishers; p++ {
-		wg.Add(1)
+		publishWG.Add(1)
 		go func() {
-			defer wg.Done()
-			for i := 0; i < publishesPerPublisher; i++ {
-				hub.Publish(ctx, RoomEvent{
-					Type:       EventMessageCreated,
-					RoomID:     roomID,
-					Message:    &message.Message{ID: "msg-race"},
-					OccurredAt: time.Now(),
-				})
+			defer publishWG.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					hub.Publish(ctx, RoomEvent{
+						Type:       EventMessageCreated,
+						RoomID:     roomID,
+						Message:    &message.Message{ID: "msg-race"},
+						OccurredAt: time.Now(),
+					})
+				}
 			}
 		}()
 	}
@@ -203,10 +216,11 @@ func TestInProcessHubConcurrentPublishAndUnsubscribeIsRaceFree(t *testing.T) {
 	// Subscribers repeatedly subscribe, receive a couple of events (if any
 	// arrive before they unsubscribe), and unsubscribe, racing against the
 	// publishers above and against each other.
+	var subWG sync.WaitGroup
 	for s := 0; s < subscribeCycles; s++ {
-		wg.Add(1)
+		subWG.Add(1)
 		go func(userID string) {
-			defer wg.Done()
+			defer subWG.Done()
 			for i := 0; i < subscribeCycles; i++ {
 				ch, unsubscribe := hub.Subscribe(ctx, roomID, userID)
 
@@ -225,7 +239,9 @@ func TestInProcessHubConcurrentPublishAndUnsubscribeIsRaceFree(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		wg.Wait()
+		subWG.Wait()
+		close(stop)
+		publishWG.Wait()
 		close(done)
 	}()
 
