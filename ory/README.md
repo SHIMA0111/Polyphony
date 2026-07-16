@@ -240,6 +240,20 @@ chain.)
 encrypt data at rest and sign cookies, matching `KRATOS_CIPHER_SECRET`'s
 length requirement above.
 
+### IPv6 localhost shadowing
+
+`HYDRA_LOGIN_UI_URL`/`HYDRA_CONSENT_UI_URL` (and `ory/hydra/test-oauth-flow.ts`'s
+`WEB_BASE_URL`) default to `http://127.0.0.1:3000`, not `http://localhost:3000`.
+`localhost` resolves to whichever of `127.0.0.1` (IPv4) or `::1` (IPv6) the
+host's resolver returns first, and on a host where some unrelated process is
+already listening on `[::1]:3000`, a browser or script that defaults to
+`localhost` can silently hit that unrelated service instead of the
+Docker-published `web` container — which normally only publishes its port on
+the IPv4 loopback. This is easy to miss because the failure looks like "the
+wrong page loaded" rather than a connection error. If you override any of
+these variables yourself (or add a new one that points at the dev `web`
+service), prefer `127.0.0.1` over `localhost` for the same reason.
+
 ### `urls.login` / `urls.consent` and the new web routes
 
 Hydra never renders its own login/consent UI; it redirects the browser to

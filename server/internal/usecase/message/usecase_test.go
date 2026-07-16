@@ -1426,6 +1426,25 @@ func TestSendAIMessageArchivedRoom(t *testing.T) {
 	}
 }
 
+// TestSendAIMessageStreamArchivedRoom asserts that SendAIMessageStream
+// rejects a new post into an archived room with domain.ErrArchivedRoom,
+// before reserving any sequence number or invoking the LLM Gateway's
+// streaming endpoint, mirroring SendMessage/SendAIMessage's matching guard.
+func TestSendAIMessageStreamArchivedRoom(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.Rooms["room-1"] = &domainroom.Room{ID: "room-1", IsArchived: true}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	_, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if err != domain.ErrArchivedRoom {
+		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+}
+
 // --- SendAIMessageStream tests (Step 51) ---
 
 // collectUntilMessageUpdated drains sub, collecting every EventTokenChunk

@@ -95,8 +95,11 @@ services:
       DSN: ${HYDRA_DSN:-postgres://hydra:hydra@hydra-db:5432/hydra?sslmode=disable}
       SECRETS_SYSTEM: ${HYDRA_SYSTEM_SECRET:-change-me-32-byte-system-secret}
       URLS_SELF_ISSUER: ${HYDRA_PUBLIC_URL:-http://localhost:4444}/
-      URLS_LOGIN: ${HYDRA_LOGIN_UI_URL:-http://localhost:3000/oauth/login}
-      URLS_CONSENT: ${HYDRA_CONSENT_UI_URL:-http://localhost:3000/oauth/consent}
+      # 127.0.0.1, not localhost: avoids IPv6 localhost shadowing when
+      # something else on the host is already listening on [::1]:3000 (see
+      # ory/README.md's "IPv6 localhost shadowing" note).
+      URLS_LOGIN: ${HYDRA_LOGIN_UI_URL:-http://127.0.0.1:3000/oauth/login}
+      URLS_CONSENT: ${HYDRA_CONSENT_UI_URL:-http://127.0.0.1:3000/oauth/consent}
     command: serve all -c /etc/config/hydra/hydra.yml --dev
     volumes:
       - ./ory/hydra:/etc/config/hydra:ro

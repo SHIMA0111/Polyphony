@@ -48,7 +48,12 @@
 const HYDRA_PUBLIC_URL = process.env.HYDRA_PUBLIC_URL ?? "http://localhost:4444"
 const HYDRA_DEMO_CLIENT_ID = process.env.HYDRA_DEMO_CLIENT_ID
 const HYDRA_DEMO_CLIENT_SECRET = process.env.HYDRA_DEMO_CLIENT_SECRET
-const WEB_BASE_URL = process.env.WEB_BASE_URL ?? "http://localhost:3000"
+// 127.0.0.1, not localhost: on a host where something else is already
+// listening on [::1]:3000 (localhost's IPv6 resolution), a bare
+// "localhost:3000" default would silently hit that unrelated service
+// instead of the Docker-published web container bound to the IPv4 loopback
+// (see ory/README.md's "IPv6 localhost shadowing" note).
+const WEB_BASE_URL = process.env.WEB_BASE_URL ?? "http://127.0.0.1:3000"
 
 /** The demo client's registered redirect URI (see `task oauth:hydra:register-demo-client`). No real server needs to listen here — the flow never actually reaches it, it is only ever observed as a `Location` header value. */
 const REDIRECT_URI = "http://localhost:9999/callback"
