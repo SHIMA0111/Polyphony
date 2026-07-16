@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
 import { expect, test } from "@playwright/test"
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
+// NOTE: this spec must stay CommonJS-compatible (no `import.meta`):
+// Playwright transpiles e2e specs to CJS because web/package.json has no
+// `"type": "module"`, so the ambient CJS `__dirname` is used directly.
 
 /** `server/`, so `go run ./cmd/seed-tokens` below resolves relative to the
  * Go module root regardless of the shell's own working directory. */
@@ -97,12 +98,15 @@ test("attach an image and send it with AI", async ({ page }) => {
   })
   const sendWithAIButton = page.getByRole("button", { name: "Send with AI" })
 
-  // The chip appears immediately; "Send with AI" is enabled once the
-  // (fast, local MinIO) upload finishes.
+  // The chip appears immediately. The message text must be filled before
+  // asserting enablement: both send buttons stay disabled while the input
+  // is empty (`MessageInput`'s `isDisabled` includes `!input.trim()`), so
+  // "Send with AI" only becomes enabled once there is text AND the (fast,
+  // local MinIO) upload has finished.
   await expect(removeAttachmentButton).toBeVisible()
+  await page.getByPlaceholder("Ask me anything...").fill(messageContent)
   await expect(sendWithAIButton).toBeEnabled()
 
-  await page.getByPlaceholder("Ask me anything...").fill(messageContent)
   await sendWithAIButton.click()
 
   // Staging is reset() on a successful send, so the chip disappears.

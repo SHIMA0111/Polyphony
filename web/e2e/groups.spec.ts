@@ -89,7 +89,9 @@ test.describe("Group management", () => {
 
     // (c) Alice creates a group and adds Bob and Carol by exact username.
     await openGroupsFromAvatarMenu(alicePage)
-    await alicePage.getByRole("button", { name: "New group" }).click()
+    // `.first()`: `GroupList` renders two "New group" triggers on an empty
+    // list (header button + empty-state CTA), which trips strict mode.
+    await alicePage.getByRole("button", { name: "New group" }).first().click()
     await alicePage.getByPlaceholder("e.g., Design Team").fill(groupName)
     await alicePage
       .getByPlaceholder("What is this group for?")
