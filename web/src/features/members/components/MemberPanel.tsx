@@ -1,6 +1,7 @@
 "use client"
 
-import { Box, Drawer, Flex, Heading, Portal, Skeleton } from "@chakra-ui/react"
+import { Box, Drawer, Flex, Heading, IconButton, Portal, Skeleton } from "@chakra-ui/react"
+import { X } from "lucide-react"
 import { useMembers } from "../hooks/use-members"
 import { canManageMembers } from "../lib/roles"
 import { InviteDialog } from "./InviteDialog"
@@ -77,7 +78,11 @@ export function MemberPanel({ room, open, onOpenChange }: MemberPanelProps) {
                 </Box>
               )}
             </Drawer.Body>
-            <Drawer.CloseTrigger />
+            <Drawer.CloseTrigger asChild>
+              <IconButton aria-label="Close member panel" variant="ghost" size="sm">
+                <X size={16} />
+              </IconButton>
+            </Drawer.CloseTrigger>
           </Drawer.Content>
         </Drawer.Positioner>
       </Portal>

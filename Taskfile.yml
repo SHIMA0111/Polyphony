@@ -135,16 +135,21 @@ tasks:
       # `/api/kratos/*` proxy — can reach it (Step 44; see docker-compose.yml's
       # `kratos-e2e` block and ory/dex/config.yaml).
       #
-      # `dex` itself (Step 44) is *not* `profiles: ["test"]` — it is one of
-      # the few services shared verbatim between the dev and E2E stacks (see
-      # docker-compose.yml's top-of-file convention comment) — so it must be
-      # listed explicitly here too, exactly like every other service above;
-      # otherwise this explicit list (rather than `--profile test` alone)
-      # would leave it out of the `polyphony-e2e` project entirely.
+      # `dex-e2e` (its own `profiles: ["test"]` service, distinct from the
+      # dev `dex` service) publishes its own dedicated 8095 host port so it
+      # can run fully alongside a running dev stack's `dex` on 5556 — the two
+      # used to be the same shared, non-profiled `dex` service, which
+      # port-collided whenever both stacks ran at once (a wave-5 review
+      # finding: the second `up` left one `dex` container attached to no
+      # network). `dex-e2e` is aliased as `dex` inside this project's own
+      # network so `KRATOS_OIDC_PROVIDERS_JSON`'s hardcoded `http://dex:5556/dex`
+      # issuer URL still resolves for `kratos-e2e` unchanged; only the
+      # host-published port differs, which `web/playwright.config.ts`'s
+      # `--host-resolver-rules` mapping accounts for.
       - >-
         docker compose -p polyphony-e2e --profile test up -d --build
-        db-e2e migrate-e2e llm-stub llm-gateway-e2e api-e2e web-e2e
-        kratos-db-e2e kratos-migrate-e2e kratos-e2e mailslurper-e2e redis-e2e dex
+        db-e2e dex-e2e migrate-e2e llm-stub llm-gateway-e2e api-e2e web-e2e
+        kratos-db-e2e kratos-migrate-e2e kratos-e2e mailslurper-e2e redis-e2e
 
   test:e2e:seed:
     desc: Seed the idempotent E2E fixture user + room against the running test stack

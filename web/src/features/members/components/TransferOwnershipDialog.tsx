@@ -43,6 +43,19 @@ export function TransferOwnershipDialog({ room }: TransferOwnershipDialogProps) 
   return (
     <Dialog.Root
       open={open}
+      // `modal={false}` (with `trapFocus` re-asserted explicitly, since Zag
+      // derives `trapFocus`'s default from `modal`): this dialog nests
+      // inside `MemberPanel`'s `Drawer.Root`, which is already a modal
+      // (pointer-blocking + aria-hides its siblings). A second, independent
+      // modal layer here fought with the Drawer's over restoring
+      // `document.body`'s inert/pointer-events state on close — Escape and
+      // the drawer's own close trigger stopped responding afterwards (see
+      // the wave-5 review findings). Keeping `trapFocus` on preserves
+      // keyboard accessibility for this dialog without re-introducing the
+      // conflicting body-level pointer/aria-hidden guards; the outer Drawer
+      // already owns those for the whole panel.
+      modal={false}
+      trapFocus
       onOpenChange={(e) => {
         setOpen(e.open)
         if (!e.open) {

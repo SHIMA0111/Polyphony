@@ -310,7 +310,7 @@ services:
 
   # ---------------------------------------------------------------------------
   # E2E test profile (docs/tasks/step10.md): an isolated copy of the stack on
-  # alternate host ports (5433, 8090, 8091, 8092, 8093, 8094, 3001), plus a
+  # alternate host ports (5433, 8090, 8091, 8092, 8093, 8094, 8095, 3001), plus a
   # canned OpenAI-compatible LLM stub, for Playwright specs. Disabled by default;
   # only started with `--profile test` (see the `test:e2e:*` Taskfile tasks).
   # Kept as one contiguous, alphabetized-among-itself group rather than
@@ -375,6 +375,36 @@ services:
       retries: 5
     profiles: ["test"]
 
+  # A dedicated e2e-only dex, distinct from the dev `dex` service above:
+  # both are started under different Compose projects (default vs
+  # `-p polyphony-e2e`), and Compose's project isolation does not extend to
+  # host-published ports — two containers from two different projects both
+  # trying to bind the same fixed host port collide (wave-5 review finding).
+  # `networks.default.aliases` keeps this container reachable as `dex` from
+  # inside the e2e project's own network (matching `KRATOS_OIDC_PROVIDERS_JSON`'s
+  # hardcoded `http://dex:5556/dex` issuer/discovery URL used by `kratos-e2e`,
+  # and `ory/dex/config.yaml`'s own `issuer`), while its host-published port
+  # (8095, distinct from the dev `dex`'s 5556) lets Playwright's browser reach
+  # it too — see `web/playwright.config.ts`'s `--host-resolver-rules` mapping.
+  dex-e2e:
+    image: dexidp/dex:v2.43.1
+    volumes:
+      - ./ory/dex/config.yaml:/etc/dex/cfg/config.yaml:ro
+    command: dex serve /etc/dex/cfg/config.yaml
+    ports:
+      - "8095:5556"
+    networks:
+      default:
+        aliases:
+          - dex
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:5556/dex/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    profiles: ["test"]
+
   kratos-db-e2e:
     image: postgres:17-alpine
     environment:
@@ -400,8 +430,8 @@ services:
       SECRETS_COOKIE: e2e-32-byte-kratos-cookie-secret
       SECRETS_CIPHER: e2e-32-byte-kratos-cipher-secret
       # Step 44: same shared provider config as the dev `kratos` service (see
-      # .env.example) — dex is reachable from this project's own `dex`
-      # container via Docker's internal DNS either way.
+      # .env.example) — dex is reachable from this project's own `dex-e2e`
+      # container (aliased as `dex`) via Docker's internal DNS either way.
       SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS: ${KRATOS_OIDC_PROVIDERS_JSON}
       # Step 44: unlike every other e2e-facing endpoint (reached only through
       # web-e2e's same-origin `/api/kratos/*` proxy), the dex OIDC callback
@@ -440,7 +470,7 @@ services:
     depends_on:
       kratos-migrate-e2e:
         condition: service_completed_successfully
-      dex:
+      dex-e2e:
         condition: service_healthy
 
   kratos-migrate-e2e:

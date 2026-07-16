@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { sendAIMessage } from "../api/send-ai-message"
 import { toaster } from "@/components/ui/toaster"
 import {
+  findMessageInPages,
   markStatusInNewestPage,
   prependToNewestPage,
   removeFromNewestPage,
@@ -30,7 +31,16 @@ interface SendAIMessageContext {
  * mutation is invoked — no wait for the round trip.
  *
  * On success both optimistic entries are replaced by the real persisted
- * messages. Note that a *successful* HTTP response can still carry
+ * messages — unless either message's own WS `message_created` echo already
+ * won the race and merged the server copy into the cache first (routinely
+ * happens locally, since a WS frame can beat the POST response), in which
+ * case that optimistic entry is dropped instead of being swapped in too
+ * (checked independently per message, since the human and AI messages' WS
+ * frames can each arrive on their own schedule) — otherwise the swap would
+ * leave two copies of the same server message (see `mergeMessageEvent`'s
+ * dedup-by-id, which cannot recognize an optimistic entry as "the same
+ * message" since it has a different, client-generated id). Note that a
+ * *successful* HTTP response can still carry
  * `ai_message.status === "failed"` — `SendAIMessage` always persists a
  * human message plus an AI message row, saving `status: "failed"` on the AI
  * row when the LLM call itself failed (see
@@ -100,16 +110,21 @@ export function useSendAIMessage(roomId: string) {
     },
     onSuccess: (res, _vars, context) => {
       queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) => {
-        const withHuman = replaceInNewestPage(
-          old,
-          (m) => m.id === context.humanOptimisticId,
-          res.user_message,
-        )
-        return replaceInNewestPage(
-          withHuman,
-          (m) => m.id === context.aiOptimisticId,
-          res.ai_message,
-        )
+        const withHuman =
+          findMessageInPages(old, res.user_message.id) !== undefined
+            ? removeFromNewestPage(old, context.humanOptimisticId)
+            : replaceInNewestPage(
+                old,
+                (m) => m.id === context.humanOptimisticId,
+                res.user_message,
+              )
+        return findMessageInPages(withHuman, res.ai_message.id) !== undefined
+          ? removeFromNewestPage(withHuman, context.aiOptimisticId)
+          : replaceInNewestPage(
+              withHuman,
+              (m) => m.id === context.aiOptimisticId,
+              res.ai_message,
+            )
       })
     },
     onError: (error, _vars, context) => {

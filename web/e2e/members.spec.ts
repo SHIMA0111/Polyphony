@@ -122,13 +122,18 @@ test.describe("Members, invitations, and roles", () => {
     ).toHaveCount(0)
 
     // Reset the member drawer left open by steps (e)/(f) — inviteByUsername
-    // below starts from a closed drawer and re-opens it itself. A reload is
-    // used deliberately: after the nested TransferOwnershipDialog confirms,
-    // both Escape and a click on the drawer's own close trigger fail to
-    // dispatch (the click hangs in hit-testing — an overlay/pointer-events
-    // remnant of the nested dialog; flagged in the wave-5 review findings),
-    // so closing the drawer via UI is not reliably possible here.
-    await alicePage.reload()
+    // below starts from a closed drawer and re-opens it itself. Previously
+    // this required a full page reload: the nested TransferOwnershipDialog
+    // was a second modal layer competing with the Drawer's own
+    // pointer-events/aria-hidden guards, so neither Escape nor the drawer's
+    // own close trigger dispatched after confirming a transfer (see the
+    // wave-5 review findings). `TransferOwnershipDialog` now opens with
+    // `modal={false}`, so it no longer contends for that state and the
+    // drawer's close trigger — now labeled via `aria-label` — works here.
+    await alicePage
+      .getByRole("dialog", { name: "Members" })
+      .getByRole("button", { name: "Close member panel" })
+      .click()
     await expect(alicePage.getByRole("dialog", { name: "Members" })).toHaveCount(0)
 
     // (g) Alice (now admin) invites Carol with role `reader`; Carol sees no message input.

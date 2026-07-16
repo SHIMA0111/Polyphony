@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import { fixtureAiMessageResponse } from "@/features/messages/api/handlers"
+import { mergeMessageEvent } from "@/features/messages/lib/merge-message-event"
 import type { MessagesInfiniteData } from "@/features/messages/lib/message-cache"
 import { useSendAIMessage } from "./use-send-ai-message"
 
@@ -59,6 +60,57 @@ describe("useSendAIMessage", () => {
       fixtureAiMessageResponse.ai_message,
       fixtureAiMessageResponse.user_message,
     ])
+  })
+
+  it("drops both optimistic entries instead of duplicating them when their WS echoes merge into the cache before the POST resolves", async () => {
+    // Regression test (wave-5 review): the WS `message_created` frames for a
+    // just-sent human message and its AI reply routinely arrive before this
+    // mutation's own HTTP response locally. `mergeMessageEvent` can't
+    // recognize either optimistic entry as "the same message" (different,
+    // client-generated ids), so it prepends both server copies as new
+    // entries; `onSuccess` must then remove the optimistic entries rather
+    // than swap them for a *third* copy of each.
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai", async () => {
+        await delay(50)
+        return HttpResponse.json(fixtureAiMessageResponse, { status: 201 })
+      }),
+    )
+
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useSendAIMessage("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    const mutatePromise = result.current.mutateAsync({ content: "Hello, AI!" })
+
+    await waitFor(() => {
+      const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
+      expect(data?.pages[0]?.messages).toHaveLength(2)
+    })
+    queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) => {
+      const withHuman = mergeMessageEvent(old, {
+        type: "message_created",
+        room_id: "room-1",
+        message: fixtureAiMessageResponse.user_message,
+      })
+      return mergeMessageEvent(withHuman, {
+        type: "message_created",
+        room_id: "room-1",
+        message: fixtureAiMessageResponse.ai_message,
+      })
+    })
+
+    await mutatePromise
+
+    const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
+    expect(data?.pages[0]?.messages).toHaveLength(2)
+    expect(data?.pages[0]?.messages).toEqual(
+      expect.arrayContaining([
+        fixtureAiMessageResponse.ai_message,
+        fixtureAiMessageResponse.user_message,
+      ]),
+    )
   })
 
   it("rolls the human echo back to status: 'failed' and drops the AI placeholder when the request fails", async () => {
