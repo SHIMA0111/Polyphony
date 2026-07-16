@@ -1,8 +1,9 @@
 "use client"
 
+import Link from "next/link"
 import { useParams } from "next/navigation"
 import { Avatar, Box, Button, Flex, Heading, Menu, Portal } from "@chakra-ui/react"
-import { LogOut, Pen, Settings } from "lucide-react"
+import { LogOut, Pen, Settings, Users } from "lucide-react"
 import { useLogout } from "@/features/auth/hooks/use-logout"
 import { RoomRail } from "@/features/rooms/components/RoomRail"
 import { InvitationsBellButton } from "@/features/members/components/InvitationsBellButton"
@@ -94,6 +95,12 @@ export default function MainLayout({
                     <Menu.Item value="settings" gap={2}>
                       <Settings size={16} />
                       Settings
+                    </Menu.Item>
+                    <Menu.Item value="groups" gap={2} asChild>
+                      <Link href="/groups">
+                        <Users size={16} />
+                        Groups
+                      </Link>
                     </Menu.Item>
                     <Menu.Separator />
                     <Menu.Item
