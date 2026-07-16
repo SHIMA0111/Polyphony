@@ -24,7 +24,14 @@ test.describe("form validation, toasts, and the room not-found page", () => {
 
     await page.getByRole("button", { name: "Sign in" }).click()
 
-    await expect(page.getByRole("alert")).toHaveText("Email is required")
+    // Scope to the specific field alert: Next.js's own
+    // `__next-route-announcer__` also renders `role="alert"`, and the login
+    // form's submit-time validation surfaces both the email and password
+    // field errors simultaneously, so a bare `getByRole("alert")` hits a
+    // Playwright strict-mode violation (multiple matches).
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Email is required" }),
+    ).toBeVisible()
     expect(requests).toHaveLength(0)
   })
 
@@ -36,26 +43,37 @@ test.describe("form validation, toasts, and the room not-found page", () => {
     await page.getByPlaceholder("Create a password").fill("correcthorse1")
     await page.getByPlaceholder("Confirm your password").fill("mismatch1")
 
-    await expect(page.getByRole("alert")).toHaveText("Passwords do not match")
+    const mismatchAlert = page
+      .getByRole("alert")
+      .filter({ hasText: "Passwords do not match" })
+    await expect(mismatchAlert).toBeVisible()
 
     await page.getByPlaceholder("Confirm your password").fill("correcthorse1")
-    await expect(page.getByRole("alert")).toHaveCount(0)
+    await expect(mismatchAlert).toHaveCount(0)
   })
 
   test("registering with an email that is already in use shows an error toast", async ({
     page,
   }) => {
-    const runId = `${Date.now()}-${Math.floor(Math.random() * 100_000)}`
+    const runId = `${Date.now()}_${Math.floor(Math.random() * 100_000)}`
 
     await page.goto("/register")
     // The seeded fixture user's email is guaranteed to already exist.
     await page.getByPlaceholder("you@example.com").fill(FIXTURE_USER.email)
-    await page.getByPlaceholder("johndoe").fill(`dup-${runId}`)
+    // Underscores only: registerSchema's username regex
+    // (`/^[a-zA-Z0-9_]+$/`) rejects hyphens, which would otherwise fail
+    // client-side validation before any request (or toast) ever fires.
+    await page.getByPlaceholder("johndoe").fill(`dup_${runId}`)
     await page.getByPlaceholder("Create a password").fill("correcthorse1")
     await page.getByPlaceholder("Confirm your password").fill("correcthorse1")
     await page.getByRole("button", { name: "Create account" }).click()
 
-    await expect(page.getByRole("status")).toBeVisible()
+    // Assert via the toaster region (role="region", not the bare "status"
+    // role the individual toast carries) so this doesn't collide with any
+    // other status-role element on the page.
+    await expect(
+      page.getByRole("region", { name: /notifications/i }).getByText("Registration failed"),
+    ).toBeVisible()
   })
 
   test("creating a room with an empty name shows a role=alert error", async ({
@@ -70,7 +88,9 @@ test.describe("form validation, toasts, and the room not-found page", () => {
     await page.getByRole("button", { name: "New Room" }).first().click()
     await page.getByRole("button", { name: "Create room" }).click()
 
-    await expect(page.getByRole("alert")).toHaveText("Room name is required")
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Room name is required" }),
+    ).toBeVisible()
   })
 
   test("navigating to a non-existent room ID renders the not-found page", async ({

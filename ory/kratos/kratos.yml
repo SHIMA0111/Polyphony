@@ -40,6 +40,10 @@ selfservice:
   flows:
     registration:
       ui_url: http://localhost:3000/registration
+      after:
+        password:
+          hooks:
+            - hook: session
 
     login:
       ui_url: http://localhost:3000/login

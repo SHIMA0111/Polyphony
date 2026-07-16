@@ -174,6 +174,17 @@ func (s *KratosAuthService) Register(ctx context.Context, email, username, passw
 		return nil, fmt.Errorf("kratos registration failed: status %d: %s", status, string(body))
 	}
 
+	if result.SessionToken == "" {
+		// Kratos only returns a session_token on the registration flow's
+		// response when an `after` hook of type "session" is configured for
+		// the password method (see ory/kratos/kratos.yml). Without it, the
+		// flow succeeds (the identity is created) but the response contains
+		// only identity/continue_with and no usable session — returning an
+		// empty TokenPair here would surface as a misleading 201 with a
+		// blank access_token, so fail loudly instead.
+		return nil, fmt.Errorf("kratos registration succeeded but returned no session_token: is the registration flow's after.password.hooks missing the session hook?")
+	}
+
 	now := time.Now()
 	identityID := result.Identity.ID
 	u := &user.User{

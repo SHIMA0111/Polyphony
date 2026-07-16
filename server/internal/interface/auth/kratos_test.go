@@ -194,6 +194,35 @@ func TestKratosRegisterUsernameAlreadyExists(t *testing.T) {
 	}
 }
 
+// TestKratosRegisterMissingSessionToken proves that Register returns an
+// explicit error (rather than a TokenPair with an empty AccessToken) when
+// Kratos's registration flow response omits session_token, which happens in
+// a real Kratos deployment when selfservice.flows.registration.after's
+// password hooks do not include the "session" hook (see ory/kratos/kratos.yml).
+// The other fakeKratos-based tests always set a non-empty SessionToken, which
+// previously masked this gap.
+func TestKratosRegisterMissingSessionToken(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	identityID := uuid.New().String()
+	f.registrationSubmitBody = kratosRegistrationRespDTO{
+		SessionToken: "",
+		Identity:     kratosIdentityDTO{ID: identityID, Traits: kratosTraitsDTO{Email: "nohook@example.com", Username: "nohookuser"}},
+	}
+
+	userRepo := &mocks.UserRepo{}
+	svc := newTestKratosService(f, userRepo)
+
+	pair, err := svc.Register(context.Background(), "nohook@example.com", "nohookuser", "Str0ngP@ss1")
+	if err == nil {
+		t.Fatalf("expected an error when registration response has no session_token, got token pair: %+v", pair)
+	}
+	if pair != nil {
+		t.Errorf("expected a nil token pair on error, got: %+v", pair)
+	}
+}
+
 // TestKratosLoginExistingLink proves that Login resolves the local user via
 // an existing kratos_identity_id link without self-healing.
 func TestKratosLoginExistingLink(t *testing.T) {
