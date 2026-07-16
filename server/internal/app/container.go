@@ -22,6 +22,7 @@ import (
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
 	domainbilling "github.com/SHIMA0111/multi-user-ai/server/internal/domain/billing"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
+	domaingroup "github.com/SHIMA0111/multi-user-ai/server/internal/domain/group"
 	domaininvitation "github.com/SHIMA0111/multi-user-ai/server/internal/domain/invitation"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
@@ -39,6 +40,7 @@ import (
 	attachmentusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/attachment"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
 	billingusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/billing"
+	groupusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/group"
 	invitationusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/invitation"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
 	modelusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/model"
@@ -97,6 +99,7 @@ type Container struct {
 	AttachmentRepo domainattachment.AttachmentRepository
 	InvitationRepo domaininvitation.InvitationRepository
 	BillingRepo    domainbilling.BalanceRepository
+	GroupRepo      domaingroup.GroupRepository
 
 	// Services / Gateways
 	AuthService domainauth.AuthService
@@ -119,6 +122,7 @@ type Container struct {
 	ModelUC      *modelusecase.ModelUsecase
 	InvitationUC *invitationusecase.InvitationUsecase
 	BillingUC    *billingusecase.BillingUsecase
+	GroupUC      *groupusecase.GroupUsecase
 
 	// Handlers
 	HealthHandler     *handler.HealthHandler
@@ -132,6 +136,7 @@ type Container struct {
 	InvitationHandler *handler.InvitationHandler
 	TokenHandler      *handler.TokenHandler
 	BillingHandler    *handler.BillingHandler
+	GroupHandler      *handler.GroupHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,
@@ -156,6 +161,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	attachmentRepo := postgres.NewAttachmentRepository(pool)
 	invitationRepo := postgres.NewInvitationRepository(pool)
 	billingRepo := postgres.NewBillingRepository(pool)
+	groupRepo := postgres.NewGroupRepository(pool)
 
 	// RedisClient/RateLimiter: constructed whenever Config.RedisURL is
 	// non-empty, independent of MessageHubDriver (see Container.RedisClient's
@@ -259,6 +265,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
 	modelUC := modelusecase.NewModelUsecase(llmGateway)
 	invitationUC := invitationusecase.NewInvitationUsecase(invitationRepo, roomRepo, userRepo)
+	groupUC := groupusecase.NewGroupUsecase(groupRepo, userRepo, invitationUC)
 
 	// Handlers
 	healthHandler := handler.NewHealthHandler()
@@ -272,6 +279,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	invitationHandler := handler.NewInvitationHandler(invitationUC)
 	tokenHandler := handler.NewTokenHandler(llmGateway)
 	billingHandler := handler.NewBillingHandler(billingUC)
+	groupHandler := handler.NewGroupHandler(groupUC)
 
 	return &Container{
 		Config:      cfg,
@@ -286,6 +294,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		AttachmentRepo: attachmentRepo,
 		InvitationRepo: invitationRepo,
 		BillingRepo:    billingRepo,
+		GroupRepo:      groupRepo,
 
 		AuthService:   authService,
 		LLMGateway:    llmGateway,
@@ -300,6 +309,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		ModelUC:      modelUC,
 		InvitationUC: invitationUC,
 		BillingUC:    billingUC,
+		GroupUC:      groupUC,
 
 		HealthHandler:     healthHandler,
 		AuthHandler:       authHandler,
@@ -312,6 +322,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		InvitationHandler: invitationHandler,
 		TokenHandler:      tokenHandler,
 		BillingHandler:    billingHandler,
+		GroupHandler:      groupHandler,
 	}, nil
 }
 

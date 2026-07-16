@@ -340,6 +340,91 @@ type RoomMembershipResponse struct {
 	JoinedAt time.Time `json:"joined_at"`
 }
 
+// --- Group DTOs ---
+
+// CreateGroupRequest is the request body for POST /groups. Name is
+// required; Description is optional.
+type CreateGroupRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// UpdateGroupRequest is the request body for PUT /groups/:groupId. Name is
+// required; Description is optional.
+type UpdateGroupRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// GroupResponse is the JSON response representation of a single personal
+// group.
+type GroupResponse struct {
+	ID          string    `json:"id"`
+	OwnerID     string    `json:"owner_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// GroupListResponse is the response body for GET /groups.
+type GroupListResponse struct {
+	Groups []GroupResponse `json:"groups"`
+}
+
+// AddGroupMemberRequest is the request body for
+// POST /groups/:groupId/members. Username is required and is resolved to
+// an existing user.
+type AddGroupMemberRequest struct {
+	Username string `json:"username"`
+}
+
+// GroupMemberResponse is the JSON response representation of a single
+// group membership, with the member's username resolved.
+type GroupMemberResponse struct {
+	ID       string    `json:"id"`
+	GroupID  string    `json:"group_id"`
+	UserID   string    `json:"user_id"`
+	Username string    `json:"username"`
+	AddedAt  time.Time `json:"added_at"`
+}
+
+// GroupMemberListResponse is the response body for
+// GET /groups/:groupId/members.
+type GroupMemberListResponse struct {
+	Members []GroupMemberResponse `json:"members"`
+}
+
+// BatchInviteByGroupRequest is the request body for
+// POST /rooms/:roomId/invitations/batch-by-group. GroupID and Role are
+// required; Role must be one of the four non-"master" domainroom.Role
+// values. ExpiresInHours is optional and follows the same
+// [1, 720]-hour bounds as CreateInvitationRequest.ExpiresInHours.
+type BatchInviteByGroupRequest struct {
+	GroupID        string `json:"group_id"`
+	Role           string `json:"role"`
+	ExpiresInHours *int   `json:"expires_in_hours"`
+}
+
+// BatchInviteSkipResponse is the JSON response representation of a single
+// group member who was not invited by a batch-invitation call, along with
+// the reason (e.g. already a room member, already has a pending
+// invitation).
+type BatchInviteSkipResponse struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	Reason   string `json:"reason"`
+}
+
+// BatchInviteByGroupResponse is the response body for
+// POST /rooms/:roomId/invitations/batch-by-group. Invited contains every
+// invitation successfully created; Skipped contains one entry per group
+// member who was not invited, with a reason.
+type BatchInviteByGroupResponse struct {
+	Invited []InvitationResponse      `json:"invited"`
+	Skipped []BatchInviteSkipResponse `json:"skipped"`
+}
+
 // --- Billing DTOs ---
 
 // TokenBalanceResponse is the JSON response representation of a user's
