@@ -1,5 +1,7 @@
 import { setupWorker } from "msw/browser"
-import { handlers } from "./handlers"
+import { authHandlers } from "@/features/auth/api/handlers"
+import { roomsHandlers } from "@/features/rooms/api/handlers"
+import { messagesHandlers } from "@/features/messages/api/handlers"
 
 /**
  * Browser MSW worker sharing the same handlers as the Node `server` used by
@@ -7,4 +9,8 @@ import { handlers } from "./handlers"
  * anywhere in the app bootstrap yet — a caller must invoke `worker.start()`
  * explicitly once that wiring is added.
  */
-export const worker = setupWorker(...handlers)
+export const worker = setupWorker(
+  ...authHandlers,
+  ...roomsHandlers,
+  ...messagesHandlers,
+)
