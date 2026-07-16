@@ -555,7 +555,13 @@ services:
       # Disabled only for this e2e instance; the dev `kratos` service above
       # keeps the default (real) behavior.
       SELFSERVICE_METHODS_PASSWORD_CONFIG_HAVEIBEENPWNED_ENABLED: "false"
-    command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
+    # No `--watch-courier` here (unlike the dev `kratos` service above): no
+    # e2e spec ever awaits a courier-delivered email, and running it under
+    # full-suite parallel load produces nothing but repeated "Unable to send
+    # email using SMTP connection" noise against `mailslurper-e2e` (wave-8
+    # review carryover). Dropping it only from this e2e-only service leaves
+    # the dev instance's courier behavior untouched.
+    command: serve -c /etc/config/kratos/kratos.yml --dev
     volumes:
       - ./ory/kratos:/etc/config/kratos:ro
     ports:

@@ -101,6 +101,28 @@ back gracefully to the non-streaming path when no chunk events arrive.
       private-mode badges sharing `MessageBubble.tsx` (wave-7 integration
       review).
 
+## Wave 8 (Step 58) regression follow-up
+
+Step 58's broader regression suite (`web/e2e/regression/advanced-ai/`)
+re-verifies this phase's streaming display end to end, alongside a
+wave-7-review carryover fix that pairs directly with it:
+
+- [x] `web/e2e/regression/advanced-ai/streaming.spec.ts`: reuses this
+      step's exact fixture (`[[fixture:streaming-demo]]`) and in-page
+      `MutationObserver` technique to confirm, beyond Step 54's own spec,
+      that the finalized bubble reaches a genuinely stable, non-degraded
+      steady state — the Regenerate action is present, enabled, and
+      functional once streaming settles.
+- [x] Carryover fix landed alongside this verification (not new Phase 19
+      scope, but directly touches `MessageBubble.tsx`'s streaming states):
+      `RegenerateAIMessage` (`server/internal/usecase/message/usecase.go`)
+      now rejects a target AI message still `MessageStatusStreaming` with a
+      new `domain.ErrConflict` (409); `MessageBubble.tsx`'s Regenerate
+      button is `disabled={isStreaming}` so the client never issues that
+      now-rejected request in the first place. Unit-tested on both sides
+      (`usecase_test.go`'s `TestRegenerateAIMessageRejectsStreamingTarget`,
+      `MessageBubble.test.tsx`'s streaming-state describe block).
+
 ## Out of scope (per step54.md)
 
 - Any change to the LLM Gateway's SSE/streaming endpoint or `stream()` port

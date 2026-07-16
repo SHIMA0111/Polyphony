@@ -334,6 +334,7 @@ export function MessageBubble({
             onClick={() => onRegenerate(message.id)}
             loading={isRegenerating}
             loadingText="Regenerating"
+            disabled={isStreaming}
           >
             <RefreshCw size={12} />
             {isFailed ? "Retry" : "Regenerate"}

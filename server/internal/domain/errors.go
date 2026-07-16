@@ -101,6 +101,15 @@ var (
 	// whether to Create or Update; this sentinel only surfaces on a
 	// concurrent-redelivery race.
 	ErrSubscriptionAlreadyExists = errors.New("subscription already exists")
+
+	// ErrConflict indicates a request cannot be fulfilled because the
+	// target resource is in a state incompatible with the requested
+	// operation — e.g. MessageUsecase.RegenerateAIMessage rejecting a
+	// regenerate call against an AI message that is still
+	// domainmessage.MessageStatusStreaming (mid-stream, not yet finalized).
+	// Mapped to HTTP 409 by handler.handleMessageError, alongside the more
+	// specific ErrArchivedRoom which predates this generic sentinel.
+	ErrConflict = errors.New("conflict")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.
