@@ -286,7 +286,7 @@ services:
   # that value into `.env`'s STRIPE_WEBHOOK_SECRET and restart the api
   # service for signature verification to succeed.
   stripe-cli:
-    image: stripe/stripe-cli:v1.21.6
+    image: stripe/stripe-cli:v1.21.7
     command: listen --api-key ${STRIPE_SECRET_KEY:-} --forward-to api:8080/webhooks/stripe --skip-verify
     depends_on:
       api:
