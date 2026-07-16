@@ -29,6 +29,7 @@ import (
 	attachmentusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/attachment"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
+	modelusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/model"
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
 	userusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/user"
 )
@@ -71,6 +72,7 @@ type Container struct {
 	MsgUC        *msgusecase.MessageUsecase
 	UserUC       *userusecase.UserUsecase
 	AttachmentUC *attachmentusecase.AttachmentUsecase
+	ModelUC      *modelusecase.ModelUsecase
 
 	// Handlers
 	HealthHandler     *handler.HealthHandler
@@ -117,13 +119,14 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmClient, messageHub)
 	userUC := userusecase.NewUserUsecase(userRepo)
 	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
+	modelUC := modelusecase.NewModelUsecase(llmClient)
 
 	// Handlers
 	healthHandler := handler.NewHealthHandler()
 	authHandler := handler.NewAuthHandler(authUC)
 	roomHandler := handler.NewRoomHandler(roomUC)
 	msgHandler := handler.NewMessageHandler(msgUC)
-	modelHandler := handler.NewModelHandler(llmClient)
+	modelHandler := handler.NewModelHandler(modelUC)
 	userHandler := handler.NewUserHandler(userUC)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentUC)
 
@@ -147,6 +150,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		MsgUC:        msgUC,
 		UserUC:       userUC,
 		AttachmentUC: attachmentUC,
+		ModelUC:      modelUC,
 
 		HealthHandler:     healthHandler,
 		AuthHandler:       authHandler,

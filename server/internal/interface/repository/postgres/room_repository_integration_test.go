@@ -91,3 +91,49 @@ func TestRoomRepositoryCreateRollback(t *testing.T) {
 		t.Fatalf("expected exactly 1 room_members row after the failed duplicate Create, got %d", memberCount)
 	}
 }
+
+// TestRoomMembersRoleCheckConstraint proves that room_members.role is
+// enforced by a DB-level CHECK constraint (added by the
+// add_room_members_role_check migration), independent of any Go-level
+// validation: an INSERT with a role value outside the five defined roles
+// must fail at the database.
+func TestRoomMembersRoleCheckConstraint(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := &domainuser.User{
+		ID:           uuid.New().String(),
+		Email:        "role-check-owner@example.com",
+		Username:     "role-check-owner",
+		PasswordHash: "hash",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if err := userRepo.Create(ctx, owner); err != nil {
+		t.Fatalf("create owner user: %v", err)
+	}
+
+	rm := &domainroom.Room{
+		ID:          uuid.New().String(),
+		Name:        "Role Check Room",
+		Description: "",
+		OwnerID:     owner.ID,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err := pool.Exec(ctx,
+		`INSERT INTO room_members (id, room_id, user_id, role, joined_at)
+		 VALUES ($1, $2, $3, 'superadmin', $4)`,
+		uuid.New().String(), rm.ID, owner.ID, time.Now(),
+	)
+	if err == nil {
+		t.Fatal("expected an INSERT with role='superadmin' to violate the room_members_role_check CHECK constraint, got nil error")
+	}
+}

@@ -1,4 +1,5 @@
-h1:nx+9NW56BkM5fWkvQ7YlsbsQgBzsZtPRG+EuFh90mtk=
+h1:lRhl81EgJhuu7nrVXCKPdb+MeKtdiuDxHb74MTUNmYU=
 20260220060722_initial.sql h1:VwlMvt76BnxphdtJZdLQHauB2X/CNIgQYsp6h0ToCUo=
 20260715164341_add_message_response_link_and_sequence_unique.sql h1:Ricf+Izs1ckG+t5ojMYi1HsEz7rUghfjndWEG6VhB+g=
 20260715180129_add_message_attachments.sql h1:wjuWkT2njWR69ebAedhRCkuI+KQTGgS0UI9SBgzRxpY=
+20260715182548_add_room_members_role_check.sql h1:ydTxHXeBNxmBEP4VVMuEZhOVfdYkjgOhu13o1dABQN0=

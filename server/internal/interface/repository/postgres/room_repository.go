@@ -52,8 +52,8 @@ func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO room_members (id, room_id, user_id, role, joined_at)
-		 VALUES ($1, $2, $3, 'master', $4)`,
-		uuid.New().String(), rm.ID, rm.OwnerID, time.Now(),
+		 VALUES ($1, $2, $3, $4, $5)`,
+		uuid.New().String(), rm.ID, rm.OwnerID, string(room.RoleMaster), time.Now(),
 	)
 	if err != nil {
 		return err
@@ -102,6 +102,35 @@ func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*ro
 	return rooms, rows.Err()
 }
 
+// ListByUserIDWithRole returns all rooms that the given user is a member of,
+// together with the user's role in each room, ordered by creation time
+// descending. It performs a single INNER JOIN query (no N+1 GetMember
+// lookups per room).
+func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string) ([]*room.RoomWithRole, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT r.id, r.name, r.description, r.owner_id, r.created_at, r.updated_at, rm.role
+		 FROM rooms r
+		 INNER JOIN room_members rm ON r.id = rm.room_id
+		 WHERE rm.user_id = $1
+		 ORDER BY r.created_at DESC`, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*room.RoomWithRole
+	for rows.Next() {
+		var rm room.Room
+		var roleStr string
+		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.CreatedAt, &rm.UpdatedAt, &roleStr); err != nil {
+			return nil, err
+		}
+		result = append(result, &room.RoomWithRole{Room: &rm, Role: room.Role(roleStr)})
+	}
+	return result, rows.Err()
+}
+
 // Update updates the name, description, and updated_at fields of a room. It returns domain.ErrNotFound if the room does not exist.
 func (r *RoomRepository) Update(ctx context.Context, rm *room.Room) error {
 	tag, err := r.pool.Exec(ctx,
@@ -134,7 +163,7 @@ func (r *RoomRepository) AddMember(ctx context.Context, member *room.RoomMember)
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO room_members (id, room_id, user_id, role, joined_at)
 		 VALUES ($1, $2, $3, $4, $5)`,
-		member.ID, member.RoomID, member.UserID, member.Role, member.JoinedAt,
+		member.ID, member.RoomID, member.UserID, string(member.Role), member.JoinedAt,
 	)
 	return err
 }
@@ -142,16 +171,18 @@ func (r *RoomRepository) AddMember(ctx context.Context, member *room.RoomMember)
 // GetMember retrieves a specific room membership by room ID and user ID. It returns domain.ErrNotFound if the membership does not exist.
 func (r *RoomRepository) GetMember(ctx context.Context, roomID, userID string) (*room.RoomMember, error) {
 	var m room.RoomMember
+	var roleStr string
 	err := r.pool.QueryRow(ctx,
 		`SELECT id, room_id, user_id, role, joined_at FROM room_members WHERE room_id = $1 AND user_id = $2`,
 		roomID, userID,
-	).Scan(&m.ID, &m.RoomID, &m.UserID, &m.Role, &m.JoinedAt)
+	).Scan(&m.ID, &m.RoomID, &m.UserID, &roleStr, &m.JoinedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
 		return nil, err
 	}
+	m.Role = room.Role(roleStr)
 	return &m, nil
 }
 
@@ -169,9 +200,11 @@ func (r *RoomRepository) ListMembers(ctx context.Context, roomID string) ([]*roo
 	var members []*room.RoomMember
 	for rows.Next() {
 		var m room.RoomMember
-		if err := rows.Scan(&m.ID, &m.RoomID, &m.UserID, &m.Role, &m.JoinedAt); err != nil {
+		var roleStr string
+		if err := rows.Scan(&m.ID, &m.RoomID, &m.UserID, &roleStr, &m.JoinedAt); err != nil {
 			return nil, err
 		}
+		m.Role = room.Role(roleStr)
 		members = append(members, &m)
 	}
 	return members, rows.Err()

@@ -13,11 +13,22 @@ type Room struct {
 	UpdatedAt   time.Time
 }
 
-// RoomMember represents a user's membership in a room.
+// RoomMember represents a user's membership in a room, including their
+// authorization Role within it.
 type RoomMember struct {
 	ID       string
 	RoomID   string
 	UserID   string
-	Role     string
+	Role     Role
 	JoinedAt time.Time
+}
+
+// RoomWithRole pairs a Room with a specific user's Role in that room. It is
+// returned by RoomRepository.ListByUserIDWithRole (and used by the usecase
+// layer as the return type of GetRoom/CreateRoom/UpdateRoom/ListRooms) so
+// callers can surface the requesting user's permission level without a
+// second repository round-trip.
+type RoomWithRole struct {
+	Room *Room
+	Role Role
 }

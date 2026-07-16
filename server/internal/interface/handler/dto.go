@@ -42,12 +42,16 @@ type UpdateRoomRequest struct {
 	Description string `json:"description"`
 }
 
-// RoomResponse is the response body for a room.
+// RoomResponse is the response body for a room. Role is the requesting
+// user's role in this room (e.g. "reader", "guest", "member", "admin",
+// "master"), serialized as the plain string value of domainroom.Role so
+// clients can do direct string comparisons.
 type RoomResponse struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
 	OwnerID     string    `json:"owner_id"`
+	Role        string    `json:"role"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
