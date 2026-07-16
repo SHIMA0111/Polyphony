@@ -1,0 +1,12 @@
+# Repo-root .dockerignore.
+#
+# Only consulted by builds whose context is the repo root (currently `llm-gateway`/
+# `llm-gateway-e2e` in docker-compose.yml, since build.rs needs `server/proto/` inside
+# the build context — see llm-gateway/Dockerfile). Builds with their own context
+# (`./server`, `./web`) use their own `.dockerignore` instead and are unaffected by
+# this file.
+.git
+.gitignore
+llm-gateway/target
+web/node_modules
+web/.next

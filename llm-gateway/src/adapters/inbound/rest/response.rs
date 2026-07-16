@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::domain::model::{CompletionResponse, ModelInfo};
+use crate::domain::model::{CompletionResponse, ModelInfo, ModelPricing};
 
 /// Completion response DTO for the REST API.
 #[derive(Serialize)]
@@ -66,6 +66,25 @@ pub struct ModelsResponseDto {
     pub models: Vec<ModelInfoDto>,
 }
 
+/// Model pricing DTO for the REST API. Per-1M-token USD pricing, the project-wide
+/// canonical unit — see `domain::model::ModelPricing`.
+#[derive(Serialize)]
+pub struct ModelPricingDto {
+    pub input_price_per_million_tokens: f64,
+    pub output_price_per_million_tokens: f64,
+    pub currency: String,
+}
+
+impl From<ModelPricing> for ModelPricingDto {
+    fn from(p: ModelPricing) -> Self {
+        Self {
+            input_price_per_million_tokens: p.input_price_per_million_tokens,
+            output_price_per_million_tokens: p.output_price_per_million_tokens,
+            currency: p.currency,
+        }
+    }
+}
+
 /// Model info DTO for the REST API.
 #[derive(Serialize)]
 pub struct ModelInfoDto {
@@ -73,6 +92,17 @@ pub struct ModelInfoDto {
     pub name: String,
     pub provider: String,
     pub owned_by: String,
+    /// Maximum context window in tokens, if known. Omitted from the JSON body when
+    /// unknown, rather than serialized as `null`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Pricing metadata, if known. Omitted from the JSON body when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricingDto>,
+    /// Whether the model accepts image/Vision content parts, if known. Omitted from
+    /// the JSON body when unknown; absent must be treated as "no" by consumers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_image_input: Option<bool>,
 }
 
 impl From<ModelInfo> for ModelInfoDto {
@@ -82,6 +112,9 @@ impl From<ModelInfo> for ModelInfoDto {
             name: m.name,
             provider: m.provider,
             owned_by: m.owned_by,
+            context_window: m.context_window,
+            pricing: m.pricing.map(ModelPricingDto::from),
+            supports_image_input: m.supports_image_input,
         }
     }
 }

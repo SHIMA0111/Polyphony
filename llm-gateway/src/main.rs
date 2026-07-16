@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
+use llm_gateway::adapters::inbound::grpc::serve_grpc;
 use llm_gateway::adapters::inbound::rest::router::build_router;
 use llm_gateway::adapters::outbound::env_key::EnvKeyStore;
 use llm_gateway::adapters::outbound::openai::OpenAIProvider;
 use llm_gateway::config::Config;
 use llm_gateway::domain::service::CompletionService;
+use llm_gateway::ports::inbound::completion::CompletionUseCase;
 
 #[tokio::main]
 async fn main() {
@@ -36,20 +38,36 @@ async fn main() {
     };
 
     let service = CompletionService::new(vec![Box::new(openai_provider)], key_store);
-    let state = Arc::new(service);
+    // Coerced to the trait object once here so the exact same instance is shared by
+    // both the REST router and the gRPC server below — no second `CompletionService`
+    // is ever constructed.
+    let state: Arc<dyn CompletionUseCase> = Arc::new(service);
 
-    let router = build_router(state);
+    let router = build_router(state.clone());
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port))
-        .await
-        .expect("failed to bind TCP listener");
+    let rest_server = async {
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port))
+            .await
+            .expect("failed to bind TCP listener");
 
-    tracing::info!(port = config.port, "LLM Gateway listening");
+        tracing::info!(port = config.port, "LLM Gateway (REST) listening");
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("server error");
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .expect("REST server error");
+    };
+
+    let grpc_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
+    let grpc_server = async move {
+        tracing::info!(port = config.grpc_port, "LLM Gateway (gRPC) listening");
+
+        serve_grpc(state, grpc_addr)
+            .await
+            .expect("gRPC server error");
+    };
+
+    tokio::join!(rest_server, grpc_server);
 }
 
 /// Waits for a `Ctrl+C` (SIGINT) or, on Unix, a `SIGTERM` signal, whichever comes
