@@ -3,9 +3,8 @@ import type { KratosSession } from "../types"
 import type { UiContainer } from "../utils/kratos-flow"
 
 /**
- * MSW request handlers for the auth feature, shared by the Node
- * `setupServer` (Vitest, see `src/test/msw/server.ts`) and the browser
- * `setupWorker` (`src/test/msw/browser.ts`).
+ * MSW request handlers for the auth feature, used by the Node
+ * `setupServer` (Vitest, see `src/test/msw/server.ts`).
  *
  * Mocks the `/api/kratos/*` proxy's Kratos-shaped responses (self-service
  * login/registration/logout flows and `sessions/whoami`) rather than the

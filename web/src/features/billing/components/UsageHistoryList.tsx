@@ -1,6 +1,7 @@
 "use client"
 
 import { Badge, Box, Button, Flex, Skeleton, Table, Text } from "@chakra-ui/react"
+import { formatDateTimeLocal } from "@/lib/format"
 import { useUsageHistory } from "../hooks/use-usage-history"
 import type { TransactionType } from "../types"
 
@@ -23,28 +24,6 @@ const SKELETON_ROW_COUNT = 5
 function formatSignedAmount(amount: number): string {
   const sign = amount > 0 ? "+" : amount < 0 ? "-" : ""
   return `${sign}${Math.abs(amount).toLocaleString("en-US")}`
-}
-
-/**
- * `toLocaleDateString`/`toLocaleTimeString` formatting, pinned to
- * `timeZone: "UTC"` (matching `RoomList.tsx`'s convention) so the rendered
- * string is identical on the server and in the browser regardless of either
- * host's local timezone, avoiding a hydration mismatch.
- */
-function formatTimestamp(iso: string): string {
-  const date = new Date(iso)
-  const datePart = date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  })
-  const timePart = date.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: "UTC",
-  })
-  return `${datePart}, ${timePart}`
 }
 
 /**
@@ -121,7 +100,7 @@ export function UsageHistoryList() {
           {transactions.map((txn) => (
             <Table.Row key={txn.id}>
               <Table.Cell color="fg.muted" fontSize="sm">
-                {formatTimestamp(txn.created_at)}
+                {formatDateTimeLocal(txn.created_at)}
               </Table.Cell>
               <Table.Cell>
                 <Badge variant="subtle" colorPalette={TYPE_COLOR_PALETTE[txn.type]}>

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { requestUploadUrl } from "../api/request-upload-url"
 import { uploadAttachment } from "../lib/upload-attachment"
+import { getErrorMessage } from "@/lib/get-error-message"
 
 /**
  * MIME types Step 12's `AttachmentUsecase.RequestUpload` allow-lists
@@ -197,7 +198,7 @@ export function useAttachmentStaging(roomId: string): UseAttachmentStagingResult
                 ? {
                     ...a,
                     status: "error",
-                    errorMessage: err instanceof Error ? err.message : "Upload failed",
+                    errorMessage: getErrorMessage(err, "Upload failed"),
                   }
                 : a,
             ),

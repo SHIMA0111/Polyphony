@@ -299,12 +299,16 @@ func (u *MessageUsecase) buildAndEnrichContextBucket(
 // olderPublicChat (already attachment-enriched -- so a Vision-capable model
 // receives the real image parts when includeImages is true), calls
 // ai.LLMGateway.Complete, and -- on success -- caches the result via
-// u.summaryRepo.Upsert before returning it. A Complete or EstimateTokens
-// failure, or an Upsert failure, is returned to the caller (assembleAIContext
-// logs it and degrades to the un-summarized context); a successful Complete
-// whose subsequent cache-write fails still returns the freshly computed
-// summary text, since the summary itself is still valid for this one call
-// even though it won't be reused by a later one.
+// u.summaryRepo.Upsert before returning it. Only a Complete failure is
+// returned to the caller (assembleAIContext logs it and degrades to the
+// un-summarized context); an EstimateTokens failure is swallowed instead
+// (tokenCount is left at 0, since it is only ever used for the cached
+// ai.ContextSummary.TokenCount metadata field, not to gate anything), and a
+// successful Complete whose subsequent Upsert cache-write fails is logged
+// but otherwise ignored -- either way this call still returns the freshly
+// computed summary text, since the summary itself is still valid for this
+// one call even though a failed Upsert means it won't be reused by a later
+// one.
 func (u *MessageUsecase) summaryOrCompute(
 	ctx context.Context,
 	roomID, model string,

@@ -248,6 +248,34 @@ describe("mergeMessageEvent", () => {
       expect(data?.pages[0].messages).toEqual([finalMessage])
     })
 
+    it("preserves a true used_context_summary on finalize even if the finalize event's own message carries false (H1 belt-and-suspenders)", () => {
+      let data: MessagesInfiniteData | undefined = {
+        pages: [{ messages: [], next_cursor: null }],
+        pageParams: [undefined],
+      }
+      // A summarized-context stream: the first chunk carries summary_used:
+      // true, which applyTokenChunk OR-accumulates onto the placeholder.
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "partial", true))
+      expect(data?.pages[0].messages[0].used_context_summary).toBe(true)
+
+      // The terminating message_updated event's own message would wipe the
+      // flag if taken verbatim (simulating a server that omitted it).
+      const finalMessage = makeMessage("ai-1", {
+        type: "ai",
+        content: "partial response, finished",
+        status: "completed",
+        sequence: 7,
+        used_context_summary: false,
+      })
+      data = mergeMessageEvent(data, makeUpdatedEvent(finalMessage))
+
+      expect(data?.pages[0].messages[0]).toMatchObject({
+        content: "partial response, finished",
+        status: "completed",
+        used_context_summary: true,
+      })
+    })
+
     it("ignores a chunk that arrives for a message already finalized as completed (idempotent finalize/chunk race)", () => {
       const finalized = makeMessage("ai-1", {
         type: "ai",

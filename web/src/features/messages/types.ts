@@ -3,6 +3,10 @@
  * (`server/internal/interface/handler/dto.go`), reached client-side via the
  * Step 4 data-plane proxy at `/api/proxy/rooms/:roomId/messages*` and
  * `/api/proxy/models`.
+ *
+ * See `./types/ws-events.ts` for the WebSocket frame types built on top of
+ * {@link Message} (kept in a separate file rather than merged in here, since
+ * those types are wire-frame-shaped, not REST-response-shaped).
  */
 
 export type MessageType = "human" | "ai"

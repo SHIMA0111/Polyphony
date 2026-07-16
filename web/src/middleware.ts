@@ -16,15 +16,8 @@ const AUTH_PATHS = ["/login", "/register"]
  * resolves the session against Kratos on every request. A forged or stale
  * cookie would pass this check but still be rejected by the Go API with a
  * `401`.
- *
- * Bypassed entirely in mock mode (`NEXT_PUBLIC_MOCK_API=true`) so the
- * existing no-login demo flow keeps working.
  */
 export function middleware(request: NextRequest) {
-  if (process.env.NEXT_PUBLIC_MOCK_API === "true") {
-    return NextResponse.next()
-  }
-
   const hasSession = request.cookies.has(KRATOS_SESSION_COOKIE_NAME)
   const { pathname } = request.nextUrl
 

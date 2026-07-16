@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Box, Button, Dialog, Field, Flex, Input, Portal, Textarea } from "@chakra-ui/react"
 import { Pencil, Plus } from "lucide-react"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useCreateGroup } from "../hooks/use-create-group"
 import { useUpdateGroup } from "../hooks/use-update-group"
 import type { Group } from "../types"
@@ -123,9 +124,10 @@ export function GroupFormDialog({ mode, initialGroup }: GroupFormDialogProps) {
                 </Field.Root>
                 {mutation.isError && (
                   <Box fontSize="sm" color="fg.error" role="alert">
-                    {mutation.error instanceof Error
-                      ? mutation.error.message
-                      : `Failed to ${mode === "create" ? "create" : "update"} group.`}
+                    {getErrorMessage(
+                      mutation.error,
+                      `Failed to ${mode === "create" ? "create" : "update"} group.`,
+                    )}
                   </Box>
                 )}
               </Flex>

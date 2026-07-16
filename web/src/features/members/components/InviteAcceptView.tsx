@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation"
 import { Button, Card, Flex, Heading, Spinner, Text } from "@chakra-ui/react"
 import { Check, X } from "lucide-react"
+import { formatUtcDate } from "@/lib/format"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useInvitationByCode } from "../hooks/use-invitation-by-code"
 import { useAcceptInvitation } from "../hooks/use-accept-invitation"
 import { useRejectInvitation } from "../hooks/use-reject-invitation"
@@ -70,25 +72,21 @@ export function InviteAcceptView({ code }: InviteAcceptViewProps) {
               </Flex>
               <Text fontSize="sm" color="fg.muted">
                 Expires{" "}
-                {new Date(invitationQuery.data.expires_at).toLocaleDateString(
-                  "en-US",
-                  { month: "short", day: "numeric", timeZone: "UTC" },
-                )}
+                {formatUtcDate(invitationQuery.data.expires_at, {
+                  month: "short",
+                  day: "numeric",
+                })}
               </Text>
 
               {rejectMutation.isSuccess ? (
                 <Text color="fg.muted">Invitation rejected.</Text>
               ) : acceptMutation.isError ? (
                 <Text color="fg.error" role="alert">
-                  {acceptMutation.error instanceof Error
-                    ? acceptMutation.error.message
-                    : "Could not accept this invitation."}
+                  {getErrorMessage(acceptMutation.error, "Could not accept this invitation.")}
                 </Text>
               ) : rejectMutation.isError ? (
                 <Text color="fg.error" role="alert">
-                  {rejectMutation.error instanceof Error
-                    ? rejectMutation.error.message
-                    : "Could not reject this invitation."}
+                  {getErrorMessage(rejectMutation.error, "Could not reject this invitation.")}
                 </Text>
               ) : (
                 <Flex direction="column" align="center" gap={3} w="full">

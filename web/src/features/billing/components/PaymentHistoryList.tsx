@@ -1,6 +1,7 @@
 "use client"
 
 import { Badge, Box, Button, Flex, Skeleton, Table, Text } from "@chakra-ui/react"
+import { formatCurrency, formatUtcDate } from "@/lib/format"
 import { usePaymentHistory } from "../hooks/use-payment-history"
 import type { Payment, PaymentStatus } from "../types"
 
@@ -16,36 +17,12 @@ const STATUS_COLOR_PALETTE: Record<PaymentStatus, string> = {
 const SKELETON_ROW_COUNT = 5
 
 /**
- * Formats `amount_cents` (an integer minor-currency-unit amount, per Stripe
- * convention) as a localized currency string.
- */
-function formatAmount(payment: Payment): string {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: payment.currency,
-  }).format(payment.amount_cents / 100)
-}
-
-/**
  * Derives a human-readable row label from `kind` + `tokens_credited` — Step
  * 49's `PaymentRecordResponse` has no free-text description field.
  */
 function describePayment(payment: Payment): string {
   const kindLabel = payment.kind === "subscription" ? "Subscription renewal" : "Token top-up"
   return `${kindLabel} (+${payment.tokens_credited.toLocaleString("en-US")} tokens)`
-}
-
-/**
- * `toLocaleDateString` formatting pinned to `timeZone: "UTC"`, matching
- * `UsageHistoryList.tsx`'s date-formatting convention.
- */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  })
 }
 
 /**
@@ -119,11 +96,11 @@ export function PaymentHistoryList() {
           {payments.map((payment) => (
             <Table.Row key={payment.id}>
               <Table.Cell color="fg.muted" fontSize="sm">
-                {formatDate(payment.created_at)}
+                {formatUtcDate(payment.created_at)}
               </Table.Cell>
               <Table.Cell>{describePayment(payment)}</Table.Cell>
               <Table.Cell textAlign="end" fontWeight="medium">
-                {formatAmount(payment)}
+                {formatCurrency(payment.amount_cents, payment.currency)}
               </Table.Cell>
               <Table.Cell textAlign="end">
                 <Badge

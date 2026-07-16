@@ -2,6 +2,7 @@
 
 import { useMutation } from "@tanstack/react-query"
 import { toaster } from "@/components/ui/toaster"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { createCheckoutSession } from "../api/create-checkout-session"
 import type { BillingPlan } from "../types"
 
@@ -25,7 +26,7 @@ export function useCreateCheckoutSession() {
       toaster.create({
         type: "error",
         title: "Could not start checkout",
-        description: err instanceof Error ? err.message : "Please try again.",
+        description: getErrorMessage(err, "Please try again."),
       })
     },
   })

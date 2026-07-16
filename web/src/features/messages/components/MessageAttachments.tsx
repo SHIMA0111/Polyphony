@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { Flex, Image } from "@chakra-ui/react"
-import { useMessageAttachments } from "@/features/messages/api/use-message-attachments"
+import { useMessageAttachments } from "@/features/messages/hooks/use-message-attachments"
 import type { Message } from "@/features/messages/types"
 import { AttachmentLightbox } from "./AttachmentLightbox"
 

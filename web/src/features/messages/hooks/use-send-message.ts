@@ -2,6 +2,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { sendMessage } from "../api/send-message"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { toaster } from "@/components/ui/toaster"
 import {
   findMessageInPages,
@@ -90,8 +91,7 @@ export function useSendMessage(roomId: string) {
       toaster.create({
         type: "error",
         title: "Message failed to send",
-        description:
-          error instanceof Error ? error.message : "Please try again.",
+        description: getErrorMessage(error, "Please try again."),
       })
     },
   })

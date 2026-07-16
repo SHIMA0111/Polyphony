@@ -30,6 +30,15 @@ function startOfDay(date: Date): number {
  * Human-readable day label for a day separator: `"Today"`/`"Yesterday"`
  * relative to `now`, otherwise a localized long date (e.g. "July 14, 2026").
  *
+ * Deliberately does NOT use `@/lib/format`'s shared `formatUtcDate` (M5
+ * post-review dedup pass): every shared helper there always pins
+ * `timeZone: "UTC"` and the `"en-US"` locale, but this function's `now`-based
+ * branch intentionally switches to the *runtime's own* locale/timezone once
+ * mounted (see the `now` param doc below) -- the opposite of what the shared
+ * helpers guarantee -- and its `now: null` branch uses `month: "long"`, not
+ * the shared helpers' `"short"`. Sharing would either change this behavior or
+ * require bending the shared helpers' contract for a single caller.
+ *
  * @param now - The reference "current" instant used to decide "Today" /
  *   "Yesterday", or `null` to skip relative labels entirely and always
  *   render a fixed-locale, fixed-`timeZone` absolute date instead.

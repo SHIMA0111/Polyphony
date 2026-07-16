@@ -1,20 +1,9 @@
 "use client"
 
 import { Badge, Button, Card, Flex, Text } from "@chakra-ui/react"
+import { formatCurrency } from "@/lib/format"
 import { useCreateCheckoutSession } from "../hooks/use-create-checkout-session"
 import type { BillingPlan } from "../types"
-
-/**
- * Formats `price_cents` (an integer minor-currency-unit amount, per Stripe
- * convention) as a localized currency string — never render the raw cents
- * value or a hand-rolled `/ 100` division without a formatter.
- */
-function formatPrice(plan: BillingPlan): string {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: plan.currency,
-  }).format(plan.price_cents / 100)
-}
 
 /**
  * A single purchasable catalog entry (subscription plan or one-time token
@@ -44,7 +33,7 @@ export function PlanCard({ plan }: { plan: BillingPlan }) {
 
         <Flex direction="column" gap={1}>
           <Text fontSize="2xl" fontWeight="bold">
-            {formatPrice(plan)}
+            {formatCurrency(plan.price_cents, plan.currency)}
             {plan.interval === "month" && (
               <Text as="span" fontSize="sm" fontWeight="normal" color="fg.muted">
                 {" "}

@@ -9,6 +9,7 @@ import { Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/reac
 import { Pen } from "lucide-react"
 import { PasswordInput } from "@/components/ui/password-input"
 import { toaster } from "@/components/ui/toaster"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useLogin } from "@/features/auth/hooks/use-login"
 import { getLoginFlow } from "@/features/auth/api/login-flow"
 import { SocialLoginButtons } from "@/features/auth/components/SocialLoginButtons"
@@ -86,7 +87,7 @@ export function LoginForm() {
       toaster.create({
         type: "error",
         title: "Sign in failed",
-        description: err instanceof Error ? err.message : "Please try again.",
+        description: getErrorMessage(err, "Please try again."),
       })
     }
   })

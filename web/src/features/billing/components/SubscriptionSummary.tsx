@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { Badge, Box, Button, Card, Flex, Skeleton, Text } from "@chakra-ui/react"
+import { formatUtcDate } from "@/lib/format"
 import { useCreateBillingPortalSession } from "../hooks/use-create-billing-portal-session"
 import { usePlans } from "../hooks/use-plans"
 import { useSubscription } from "../hooks/use-subscription"
@@ -14,21 +15,6 @@ const STATUS_COLOR_PALETTE: Record<SubscriptionStatus, string> = {
   past_due: "orange",
   canceled: "gray",
   none: "gray",
-}
-
-/**
- * `toLocaleDateString` formatting pinned to `timeZone: "UTC"`, matching
- * `RoomList.tsx`'s date-formatting convention so the rendered string is
- * identical on the server and in the browser regardless of either host's
- * local timezone.
- */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  })
 }
 
 /**
@@ -107,7 +93,7 @@ export function SubscriptionSummary() {
         {subscription.current_period_end && (
           <Text color="fg.muted" fontSize="sm">
             {subscription.cancel_at_period_end ? "Ends" : "Renews"} on{" "}
-            {formatDate(subscription.current_period_end)}
+            {formatUtcDate(subscription.current_period_end)}
           </Text>
         )}
 
@@ -120,7 +106,7 @@ export function SubscriptionSummary() {
         {subscription.cancel_at_period_end && subscription.current_period_end && (
           <Box borderWidth="1px" borderColor="orange.300" bg="orange.subtle" rounded="md" p={3}>
             <Text fontSize="sm" color="orange.fg">
-              Your subscription will end on {formatDate(subscription.current_period_end)} and
+              Your subscription will end on {formatUtcDate(subscription.current_period_end)} and
               will not renew.
             </Text>
           </Box>

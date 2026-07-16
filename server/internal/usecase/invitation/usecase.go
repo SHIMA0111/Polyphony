@@ -275,17 +275,11 @@ func (u *InvitationUsecase) RejectInvitation(ctx context.Context, userID, invita
 // getMember loads the caller's membership in roomID, translating a missing
 // membership (domain.ErrNotFound) into domain.ErrForbidden so that a
 // non-member can never distinguish "room does not exist" from "room exists
-// but I'm not a member of it" via the returned error (mirroring
-// room.RoomUsecase.getMember).
+// but I'm not a member of it" via the returned error. See
+// domainroom.GetMemberOrForbidden (shared with usecase/message and
+// usecase/room, which each keep this same thin wrapper).
 func (u *InvitationUsecase) getMember(ctx context.Context, roomID, userID string) (*domainroom.RoomMember, error) {
-	member, err := u.roomRepo.GetMember(ctx, roomID, userID)
-	if err != nil {
-		if errors.Is(err, domain.ErrNotFound) {
-			return nil, domain.ErrForbidden
-		}
-		return nil, err
-	}
-	return member, nil
+	return domainroom.GetMemberOrForbidden(ctx, u.roomRepo, roomID, userID)
 }
 
 // newInviteCode generates a unique, URL-safe invitation code: a UUID with

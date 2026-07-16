@@ -102,6 +102,17 @@ var (
 	// concurrent-redelivery race.
 	ErrSubscriptionAlreadyExists = errors.New("subscription already exists")
 
+	// ErrStreamingUnsupported indicates the selected ai.LLMGateway
+	// implementation does not support Stream at all (currently:
+	// interface/gateway.GRPCClient, selected when
+	// config.Config.LLMGatewayTransport is "grpc" -- see its Stream doc
+	// comment). It is always wrapped together with ErrLLMGateway so existing
+	// errors.Is(err, domain.ErrLLMGateway) call sites keep matching;
+	// usecase/message.MessageUsecase.SendAIMessageStream additionally checks
+	// errors.Is(err, ErrStreamingUnsupported) specifically to fall back to
+	// the unary Complete path instead of failing the send outright.
+	ErrStreamingUnsupported = errors.New("streaming not supported by this llm gateway transport")
+
 	// ErrConflict indicates a request cannot be fulfilled because the
 	// target resource is in a state incompatible with the requested
 	// operation — e.g. MessageUsecase.RegenerateAIMessage rejecting a
@@ -111,8 +122,3 @@ var (
 	// specific ErrArchivedRoom which predates this generic sentinel.
 	ErrConflict = errors.New("conflict")
 )
-
-// IsLLMGatewayError checks if the error wraps ErrLLMGateway.
-func IsLLMGatewayError(err error) bool {
-	return errors.Is(err, ErrLLMGateway)
-}

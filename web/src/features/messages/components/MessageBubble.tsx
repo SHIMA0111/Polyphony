@@ -16,6 +16,8 @@ import {
 import { AlertTriangle, EyeOff, Lock, MoreVertical, RefreshCw } from "lucide-react"
 import type { Message } from "@/features/messages/types"
 import { Tooltip } from "@/components/ui/tooltip"
+import { formatDateTimeLocal } from "@/lib/format"
+import { roleAtLeast } from "@/lib/roles"
 import { useSession } from "@/features/auth/hooks/use-session"
 import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useDeleteMessage } from "@/features/messages/hooks/use-delete-message"
@@ -33,20 +35,13 @@ interface MessageBubbleProps {
   onRetry: (messageId: string, content: string) => void
 }
 
-// Both formatters below are pinned to `timeZone: "UTC"` rather than the
-// host's local timezone, so the rendered string is byte-identical between
-// the Next.js server render and the browser's hydration render — otherwise
-// a server/browser timezone mismatch produces a React hydration error on
-// every message bubble's timestamp.
-
-/** Full date-time shown in the timestamp tooltip. */
-function formatFullTimestamp(iso: string): string {
-  return new Date(iso).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  })
-}
+// The short-time formatter below is pinned to `timeZone: "UTC"` rather than
+// the host's local timezone, so the rendered string is byte-identical
+// between the Next.js server render and the browser's hydration render —
+// otherwise a server/browser timezone mismatch produces a React hydration
+// error on every message bubble's timestamp. The full timestamp (shown in
+// the tooltip) uses the same-pinned shared `formatDateTimeLocal` (`@/lib/format`)
+// instead of its own copy.
 
 /** Short time-of-day shown next to each bubble. */
 function formatShortTimestamp(iso: string): string {
@@ -84,37 +79,6 @@ function StreamingCursor() {
       }}
     />
   )
-}
-
-/**
- * Room-role privilege ranking, mirroring
- * `server/internal/domain/room/role.go`'s closed
- * `reader < guest < member < admin < master` hierarchy. Kept as a small,
- * local, single-purpose helper rather than a shared `lib/roles.ts` module:
- * the gating here is UX-only (hiding menu items a request would be `403`'d
- * for anyway) and the server remains the sole authority regardless of what
- * this computes.
- */
-const ROOM_ROLE_RANK: Record<string, number> = {
-  reader: 0,
-  guest: 1,
-  member: 2,
-  admin: 3,
-  master: 4,
-}
-
-/**
- * Reports whether `role` meets or exceeds `min` in the reader < guest <
- * member < admin < master ordering. An unrecognized or missing `role`
- * (including `undefined`, e.g. before the room query has loaded) never
- * meets any minimum — mirroring `domainroom.Role.AtLeast`'s own
- * fail-closed behavior for an invalid role.
- */
-function roleAtLeast(role: string | undefined, min: string): boolean {
-  const rank = role ? ROOM_ROLE_RANK[role] : undefined
-  const minRank = ROOM_ROLE_RANK[min]
-  if (rank === undefined || minRank === undefined) return false
-  return rank >= minRank
 }
 
 /**
@@ -174,12 +138,19 @@ export function MessageBubble({
   const isOwnMessage =
     currentUserId != null && currentUserId === message.sender_id
 
+  // `role` is `undefined` before `roomQuery` has loaded -- `roleAtLeast`
+  // (shared `@/lib/roles`) requires a real `RoomRole`, so that case is
+  // checked explicitly here and short-circuits to `false`, matching this
+  // component's previous fail-closed local helper.
   const canToggleExclude =
-    isPersisted && !message.is_deleted && roleAtLeast(role, "member")
+    isPersisted &&
+    !message.is_deleted &&
+    role !== undefined &&
+    roleAtLeast(role, "member")
   const canDelete =
     isPersisted &&
     !message.is_deleted &&
-    (isOwnMessage || roleAtLeast(role, "admin"))
+    (isOwnMessage || (role !== undefined && roleAtLeast(role, "admin")))
   const showMenu = canToggleExclude || canDelete
 
   const handleToggleExclude = () => {
@@ -289,7 +260,7 @@ export function MessageBubble({
             </Text>
           </Flex>
         ) : (
-          <Tooltip content={formatFullTimestamp(message.created_at)}>
+          <Tooltip content={formatDateTimeLocal(message.created_at)}>
             <Text fontSize="xs" color="fg.muted" tabIndex={0}>
               {formatShortTimestamp(message.created_at)}
             </Text>

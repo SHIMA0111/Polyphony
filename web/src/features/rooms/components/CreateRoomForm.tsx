@@ -6,6 +6,7 @@ import { useForm } from "react-hook-form"
 import { Button, Dialog, Field, Flex, Input, Portal, Textarea } from "@chakra-ui/react"
 import { Plus } from "lucide-react"
 import { toaster } from "@/components/ui/toaster"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useCreateRoom } from "@/features/rooms/hooks/use-create-room"
 import {
   createRoomSchema,
@@ -35,7 +36,7 @@ export function CreateRoomForm() {
       toaster.create({
         type: "error",
         title: "Failed to create room",
-        description: err instanceof Error ? err.message : "Please try again.",
+        description: getErrorMessage(err, "Please try again."),
       })
     }
   })

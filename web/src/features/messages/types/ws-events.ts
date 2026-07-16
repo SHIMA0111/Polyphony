@@ -1,6 +1,13 @@
 import type { Message } from "../types"
 
 /**
+ * WebSocket frame types built on top of `../types.ts`'s {@link Message} --
+ * kept in this separate file rather than merged into `../types.ts` since
+ * these are wire-frame-shaped (`{type, room_id, message | chunk}`), not
+ * REST-response-shaped like everything in that file.
+ */
+
+/**
  * Mirrors `server/internal/domain/event/hub.go`'s `EventType` constants —
  * the three values the server's `WebSocketHandler` (Steps 15/51) emits as a
  * frame's `"type"` field. `"token_chunk"` is Step 51's AI streaming chunk

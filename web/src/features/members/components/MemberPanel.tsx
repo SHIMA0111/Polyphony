@@ -3,7 +3,7 @@
 import { Box, Drawer, Flex, Heading, IconButton, Portal, Skeleton } from "@chakra-ui/react"
 import { X } from "lucide-react"
 import { useMembers } from "../hooks/use-members"
-import { canManageMembers } from "../lib/roles"
+import { canManageMembers } from "@/lib/roles"
 import { InviteDialog } from "./InviteDialog"
 import { MemberListItem } from "./MemberListItem"
 import { TransferOwnershipDialog } from "./TransferOwnershipDialog"

@@ -2,6 +2,7 @@
 
 import { useMutation } from "@tanstack/react-query"
 import { toaster } from "@/components/ui/toaster"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { createBillingPortalSession } from "../api/create-billing-portal-session"
 
 /**
@@ -22,7 +23,7 @@ export function useCreateBillingPortalSession() {
       toaster.create({
         type: "error",
         title: "Could not open billing portal",
-        description: err instanceof Error ? err.message : "Please try again.",
+        description: getErrorMessage(err, "Please try again."),
       })
     },
   })

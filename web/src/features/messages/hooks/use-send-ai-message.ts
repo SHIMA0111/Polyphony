@@ -2,6 +2,8 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { sendAIMessage, sendAIMessageStream } from "../api/send-ai-message"
+import { ApiRequestError } from "@/lib/http-client"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { toaster } from "@/components/ui/toaster"
 import {
   findMessageInPages,
@@ -94,7 +96,13 @@ interface SendAIMessageContext {
  * echo back to `status: "failed"` for `MessageBubble`'s retry affordance and
  * drops the AI placeholder outright — it never represented anything real to
  * retry, and the existing AI regenerate/retry control only makes sense
- * against a real, persisted human message id.
+ * against a real, persisted human message id. The optimistic-rollback part
+ * of `onError` always runs, but the generic failed-to-send toast is
+ * suppressed for a `402` (`ApiRequestError.status === 402`,
+ * `domain.ErrInsufficientBalance`): `useChatRoom.handleSendWithAI` already
+ * surfaces that specific rejection via its own inline `aiError` alert
+ * (`INSUFFICIENT_BALANCE_MESSAGE`), and showing both at once (M1 post-review
+ * finding) was a confusing double-toast for the exact same failure.
  */
 export function useSendAIMessage(roomId: string) {
   const queryClient = useQueryClient()
@@ -192,11 +200,16 @@ export function useSendAIMessage(roomId: string) {
         return markStatusInNewestPage(withoutPlaceholder, context.humanOptimisticId, "failed")
       })
 
+      if (error instanceof ApiRequestError && error.status === 402) {
+        // Insufficient balance is surfaced via `useChatRoom`'s inline
+        // `aiError` alert instead -- see this function's docstring.
+        return
+      }
+
       toaster.create({
         type: "error",
         title: "Message failed to send",
-        description:
-          error instanceof Error ? error.message : "Please try again.",
+        description: getErrorMessage(error, "Please try again."),
       })
     },
   })

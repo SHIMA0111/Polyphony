@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Box, Button, Menu, Portal } from "@chakra-ui/react"
 import { ChevronDown, Check } from "lucide-react"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useChangeMemberRole } from "../hooks/use-change-member-role"
 import { RoleBadge } from "./RoleBadge"
 import type { RoomRole } from "../types"
@@ -73,9 +74,7 @@ export function RolePicker({ roomId, userId, currentRole }: RolePickerProps) {
       </Menu.Root>
       {changeRoleMutation.isError && (
         <Box mt={1} fontSize="xs" color="fg.error" role="alert">
-          {changeRoleMutation.error instanceof Error
-            ? changeRoleMutation.error.message
-            : "Failed to change role."}
+          {getErrorMessage(changeRoleMutation.error, "Failed to change role.")}
         </Box>
       )}
     </Box>

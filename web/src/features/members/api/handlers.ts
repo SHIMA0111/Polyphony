@@ -10,9 +10,8 @@ import type {
 /**
  * MSW request handlers for the members feature (members, room invitations,
  * my-invitations, invitation-by-code, accept/reject, role-change, leave,
- * transfer-ownership), shared by the Node `setupServer` (Vitest, see
- * `src/test/msw/server.ts`) and the browser `setupWorker`
- * (`src/test/msw/browser.ts`).
+ * transfer-ownership), used by the Node `setupServer` (Vitest, see
+ * `src/test/msw/server.ts`).
  *
  * Every path is pinned to the `/api/proxy/*` contract that Step 4's BFF
  * catch-all proxy (`app/api/proxy/[...path]/route.ts`) forwards 1:1 to the

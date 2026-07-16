@@ -2,6 +2,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { updateMessageExclude } from "../api/update-message-exclude"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { toaster } from "@/components/ui/toaster"
 import { replaceMessageInAnyPage, type MessagesInfiniteData } from "../lib/message-cache"
 
@@ -34,8 +35,7 @@ export function useUpdateMessageExclude(roomId: string) {
       toaster.create({
         type: "error",
         title: "Failed to update message",
-        description:
-          error instanceof Error ? error.message : "Please try again.",
+        description: getErrorMessage(error, "Please try again."),
       })
     },
   })

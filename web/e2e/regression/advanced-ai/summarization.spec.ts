@@ -208,4 +208,90 @@ test.describe("Summarization regression", () => {
     ).toBeVisible()
     await expect(page.getByText("Summarized history")).toHaveCount(0)
   })
+
+  /**
+   * The exact H1 post-review regression, exercised on the DEFAULT streaming
+   * path (the UI's "Send with AI" button, `POST .../messages/ai/stream`):
+   * during streaming, each `token_chunk` WS frame carries
+   * `summary_used: true` and the badge renders early -- but before the H1
+   * fix, `consumeAIStream`'s terminating `message_updated` publish omitted
+   * `UsedContextSummary`, so the finalize frame's wholesale replace silently
+   * WIPED the already-rendered badge the moment the stream settled. This
+   * test asserts the badge is (still) visible strictly *after* the stream
+   * has finalized (final text rendered, no "Streaming…" affordance left).
+   */
+  test("the 'Summarized history' badge survives stream finalize on the default streaming send path", async ({
+    page,
+    request,
+  }) => {
+    const runId = `${Date.now()}_${Math.floor(Math.random() * 100_000)}`
+    const email = `summ-stream-${runId}@polyphony.test`
+    // Underscores only + short prefix: see the first test's username comment.
+    const username = `summstr_${runId}`
+    const password = "summarization-stream-password-123"
+
+    await page.goto("/register")
+    await page.getByPlaceholder("you@example.com").fill(email)
+    await page.getByPlaceholder("johndoe").fill(username)
+    await page.getByPlaceholder("Create a password").fill(password)
+    await page.getByPlaceholder("Confirm your password").fill(password)
+    await page.getByRole("button", { name: "Create account" }).click()
+    await expect(page).toHaveURL(/\/rooms$/, { timeout: 15_000 })
+
+    creditTokenBalance(email, 1_000_000)
+
+    const roomName = `Summarization Streaming Room ${runId}`
+    const seeded = await seedLongHistoryRoom(request, {
+      userEmail: email,
+      userPassword: password,
+      roomName,
+    })
+    expect(seeded.messageCount).toBeGreaterThan(0)
+
+    await page.goto(`/rooms/${seeded.roomId}`)
+    await expect(
+      page.locator('[aria-label="Connection status: Connected"]'),
+    ).toBeVisible({ timeout: 15_000 })
+
+    // Explicitly select GPT-5 Mini before sending: `seedLongHistoryRoom`
+    // calibrates the room's history against gpt-5-mini's 272k context
+    // window (see that helper's SUMMARIZATION_TOKEN_BUDGET), but the UI's
+    // ModelSelector defaults to the gateway's *first* listed model
+    // (gpt-5.2, 400k window -- see `MessageInput.tsx`'s `models[0]`
+    // fallback), whose larger budget the seeded history does not reliably
+    // overflow. The first test never hits this because its API-driven send
+    // omits `model` entirely, falling through to the server-side
+    // DEFAULT_AI_MODEL (gpt-5-mini). Selector-driving convention copied
+    // from `regression/ai-send-model-select.spec.ts`.
+    const modelTrigger = page
+      .getByRole("button", { name: "Attach image" })
+      .locator("xpath=following-sibling::button[1]")
+    await modelTrigger.click()
+    await page.getByText("GPT-5 Mini", { exact: true }).click()
+    await expect(
+      page.getByRole("button", { name: "GPT-5 Mini", exact: true }),
+    ).toBeVisible()
+
+    // The default streaming path: through the rendered UI, not page.request.
+    await page
+      .getByPlaceholder("Ask me anything...")
+      .fill(`Please summarize our discussion so far ${runId}`)
+    await page.getByRole("button", { name: "Send with AI" }).click()
+
+    // Wait for the stream to fully finalize: the stub's default streamed
+    // reply text is rendered and no streaming affordance remains -- i.e. the
+    // terminating `message_updated` frame has already been merged.
+    await expect(page.getByText("This is a canned SSE stub response.")).toBeVisible({
+      timeout: 20_000,
+    })
+    await expect(page.getByText("Streaming…")).toHaveCount(0)
+    // Give any trailing WS frame a brief moment to settle (matching
+    // `regression/advanced-ai/streaming.spec.ts`'s convention), so the badge
+    // assertion below genuinely runs post-finalize rather than racing it.
+    await page.waitForTimeout(500)
+
+    // The H1 assertion: the badge is visible AFTER finalize, not merely at
+    // some point during streaming.
+    await expect(page.getByText("Summarized history")).toBeVisible()
+  })
 })

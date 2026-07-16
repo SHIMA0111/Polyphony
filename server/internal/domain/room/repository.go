@@ -1,7 +1,12 @@
 // Package room defines the room and membership entities and their repository port.
 package room
 
-import "context"
+import (
+	"context"
+	"errors"
+
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+)
 
 // RoomRepository defines persistence operations for rooms and memberships.
 type RoomRepository interface {
@@ -65,4 +70,27 @@ type RoomRepository interface {
 	// either membership row (oldOwnerID, newOwnerID) does not exist,
 	// rolling back any partial writes.
 	TransferOwnership(ctx context.Context, roomID, oldOwnerID, newOwnerID string) error
+}
+
+// GetMemberOrForbidden loads the caller's membership in roomID via repo,
+// translating a missing membership (domain.ErrNotFound) into
+// domain.ErrForbidden so that a non-member can never distinguish "room does
+// not exist" from "room exists but I'm not a member of it" via the returned
+// error.
+//
+// Shared by usecase/message.MessageUsecase, usecase/room.RoomUsecase, and
+// usecase/invitation.InvitationUsecase (L6 post-review dedup finding): each
+// used to define its own identical getMember method wrapping exactly this
+// translation. They now each keep a thin same-named getMember method that
+// just forwards here, preserving each usecase's existing call sites and
+// doc-comment cross-references.
+func GetMemberOrForbidden(ctx context.Context, repo RoomRepository, roomID, userID string) (*RoomMember, error) {
+	member, err := repo.GetMember(ctx, roomID, userID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, domain.ErrForbidden
+		}
+		return nil, err
+	}
+	return member, nil
 }

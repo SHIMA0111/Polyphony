@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation"
 import { Box, Button, Flex, Text } from "@chakra-ui/react"
 import { Check, X } from "lucide-react"
+import { formatUtcDate } from "@/lib/format"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useMyInvitations } from "../hooks/use-my-invitations"
 import { useAcceptInvitation } from "../hooks/use-accept-invitation"
 import { useRejectInvitation } from "../hooks/use-reject-invitation"
@@ -69,10 +71,9 @@ export function InvitationsInbox() {
               </Text>
               <Text fontSize="xs" color="fg.muted">
                 Expires{" "}
-                {new Date(invitation.expires_at).toLocaleDateString("en-US", {
+                {formatUtcDate(invitation.expires_at, {
                   month: "short",
                   day: "numeric",
-                  timeZone: "UTC",
                 })}
               </Text>
             </Box>
@@ -109,9 +110,10 @@ export function InvitationsInbox() {
       ))}
       {(acceptMutation.isError || rejectMutation.isError) && (
         <Box fontSize="xs" color="fg.error" role="alert">
-          {(acceptMutation.error ?? rejectMutation.error) instanceof Error
-            ? ((acceptMutation.error ?? rejectMutation.error) as Error).message
-            : "Something went wrong."}
+          {getErrorMessage(
+            acceptMutation.error ?? rejectMutation.error,
+            "Something went wrong.",
+          )}
         </Box>
       )}
     </Flex>

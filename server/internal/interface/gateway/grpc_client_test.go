@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -324,7 +325,7 @@ func TestGRPCClientCompleteNonRetryableCodeReturnsImmediately(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for a non-retryable code")
 	}
-	if !domain.IsLLMGatewayError(err) {
+	if !errors.Is(err, domain.ErrLLMGateway) {
 		t.Errorf("expected domain.ErrLLMGateway-wrapped error, got: %v", err)
 	}
 	if got := fixture.completion.callCount(); got != 1 {
@@ -344,7 +345,7 @@ func TestGRPCClientCompleteExhaustsRetriesOnPersistentUnavailable(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected an error after exhausting retries")
 	}
-	if !domain.IsLLMGatewayError(err) {
+	if !errors.Is(err, domain.ErrLLMGateway) {
 		t.Errorf("expected domain.ErrLLMGateway-wrapped error, got: %v", err)
 	}
 	if got := fixture.completion.callCount(); got != 3 {
@@ -373,11 +374,16 @@ func TestGRPCClientCheckHealthNotServing(t *testing.T) {
 }
 
 // TestGRPCClientStreamNotSupported asserts Stream (which GRPCClient must
-// implement to satisfy ai.LLMGateway) always returns a synchronous
-// domain.ErrLLMGateway-wrapped error and a nil channel, since gRPC streaming
-// is out of scope for this step (REST-only, per Step 51). It uses a bare
-// zero-value GRPCClient since Stream never touches the underlying
-// connection.
+// implement to satisfy ai.LLMGateway) always returns a synchronous error
+// wrapping both domain.ErrLLMGateway and domain.ErrStreamingUnsupported, and
+// a nil channel, since gRPC streaming is out of scope for this step
+// (REST-only, per Step 51). It uses a bare zero-value GRPCClient since
+// Stream never touches the underlying connection.
+//
+// The domain.ErrStreamingUnsupported check is the M2 post-review addition:
+// usecase/message.MessageUsecase.SendAIMessageStream relies on exactly this
+// wrapping to detect "this transport can't stream" and fall back to the
+// unary Complete call instead of failing the send outright.
 func TestGRPCClientStreamNotSupported(t *testing.T) {
 	client := &GRPCClient{}
 
@@ -385,8 +391,11 @@ func TestGRPCClientStreamNotSupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a non-nil error from Stream")
 	}
-	if !domain.IsLLMGatewayError(err) {
+	if !errors.Is(err, domain.ErrLLMGateway) {
 		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", err)
+	}
+	if !errors.Is(err, domain.ErrStreamingUnsupported) {
+		t.Fatalf("expected ErrStreamingUnsupported-wrapped error, got %v", err)
 	}
 	if ch != nil {
 		t.Fatal("expected a nil channel from Stream")

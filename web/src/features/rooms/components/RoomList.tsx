@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { Box, Card, Flex, Heading, SimpleGrid, Text } from "@chakra-ui/react"
 import { MessageSquare, Users } from "lucide-react"
+import { formatUtcDate } from "@/lib/format"
 import { useRooms } from "@/features/rooms/hooks/use-rooms"
 import { CreateRoomForm } from "./CreateRoomForm"
 
@@ -77,14 +78,9 @@ export function RoomList() {
                         <Text>Members</Text>
                       </Flex>
                       <Text>
-                        {/* `timeZone: "UTC"` pins this to the same string on
-                            the server and in the browser regardless of
-                            either host's local timezone, avoiding a React
-                            hydration mismatch. */}
-                        {new Date(room.created_at).toLocaleDateString("en-US", {
+                        {formatUtcDate(room.created_at, {
                           month: "short",
                           day: "numeric",
-                          timeZone: "UTC",
                         })}
                       </Text>
                     </Flex>

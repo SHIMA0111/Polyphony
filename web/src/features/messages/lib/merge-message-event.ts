@@ -34,7 +34,14 @@ import type { RoomSocketEvent } from "../types/ws-events"
  *   or an initial page fetch has already brought the message in. This is
  *   also Step 51/54's streaming *finalize* signal: the AI placeholder's
  *   accumulated in-flight content is replaced wholesale by the authoritative
- *   final message (real content, `status: "completed"`/`"failed"`).
+ *   final message (real content, `status: "completed"`/`"failed"`) --
+ *   except `used_context_summary`, which is OR-ed against whatever the
+ *   already-cached entry has instead of taken verbatim from the incoming
+ *   message (post-review hardening: the server always sets it correctly on
+ *   the finalize event -- see `stream.go`'s `consumeAIStream` -- but this
+ *   keeps a stray backend regression from silently clearing a "Summarized
+ *   history" badge the reader already saw rendered from an earlier
+ *   `token_chunk` frame).
  * - `token_chunk` (Step 54) appends `chunk.delta` to the message identified
  *   by `chunk.message_id`, marking it `status: "streaming"` — see
  *   {@link applyTokenChunk}'s own docstring for the insert-or-append and
@@ -103,15 +110,24 @@ export function mergeMessageEvent(
     return data
   }
 
-  const alreadyPresent = findMessageInPages(data, message.id) !== undefined
+  const existing = findMessageInPages(data, message.id)
 
   if (event.type === "message_updated") {
-    if (!alreadyPresent) return data
-    return replaceMessageInAnyPage(data, (m) => m.id === message.id, message)
+    if (!existing) return data
+    // Belt-and-suspenders: the server is the source of truth for
+    // `used_context_summary` and always sets it correctly on the finalize
+    // event (see H1 fix in `stream.go`'s `consumeAIStream`), but OR it
+    // against whatever the cache already has anyway so a stray backend
+    // regression can never silently wipe a badge the reader has already
+    // seen rendered (e.g. from an earlier `token_chunk` frame).
+    return replaceMessageInAnyPage(data, (m) => m.id === message.id, {
+      ...message,
+      used_context_summary: existing.used_context_summary || message.used_context_summary,
+    })
   }
 
   // event.type === "message_created"
-  if (alreadyPresent) {
+  if (existing) {
     return replaceMessageInAnyPage(data, (m) => m.id === message.id, message)
   }
   if (message.type === "ai") {

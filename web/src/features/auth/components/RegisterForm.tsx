@@ -9,6 +9,7 @@ import { Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/reac
 import { Pen } from "lucide-react"
 import { PasswordInput, PasswordStrengthMeter } from "@/components/ui/password-input"
 import { toaster } from "@/components/ui/toaster"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useRegister } from "@/features/auth/hooks/use-register"
 import { getRegistrationFlow } from "@/features/auth/api/registration-flow"
 import { SocialLoginButtons } from "@/features/auth/components/SocialLoginButtons"
@@ -95,7 +96,7 @@ export function RegisterForm() {
       toaster.create({
         type: "error",
         title: "Registration failed",
-        description: err instanceof Error ? err.message : "Please try again.",
+        description: getErrorMessage(err, "Please try again."),
       })
     }
   })

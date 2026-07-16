@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { apiRequest } from "@/lib/http-client"
-import { getWsBaseUrl, isMockMode } from "@/config/env"
+import { getWsBaseUrl } from "@/config/env"
 import { useSession } from "@/features/auth/hooks/use-session"
 import { mergeMessageEvent } from "../lib/merge-message-event"
 import { isRoomSocketEvent } from "../types/ws-events"
@@ -13,9 +13,8 @@ import type { MessagesInfiniteData } from "../lib/message-cache"
  * Live status of a room's WebSocket connection, rendered by
  * `../components/ConnectionStatus.tsx`.
  *
- * `"offline"` covers both an abnormal-close state the reconnect loop has
- * given up reporting more granularly on, and the permanent inert state used
- * in MSW mock mode (see {@link useRoomSocket}'s docstring).
+ * `"offline"` covers an abnormal-close state the reconnect loop has given up
+ * reporting more granularly on.
  */
 export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline"
 
@@ -63,10 +62,17 @@ function withJitter(backoffMs: number): number {
  * any abnormal close or failed ticket fetch, resetting the backoff delay
  * back to the base value on every successful `onopen`.
  *
- * Fully inert — constructs no `WebSocket` at all and reports a static
- * `"offline"` status — when the app is running under MSW mock mode
- * (`isMockMode()`), since the MSW-mocked REST handlers have no live event
- * source for it to subscribe to.
+ * M3 post-review finding: this WS connection is push-only with no
+ * missed-event replay, so any `message_created`/`message_updated`/
+ * `token_chunk` frame published while the connection was down (a dropped
+ * wifi connection, a server restart, a laptop sleeping, etc.) is gone for
+ * good as far as this socket is concerned. To reconcile that gap, every
+ * `onopen` *after* the first one (i.e. one that follows a real
+ * disconnect/reconnect cycle, not the initial mount) invalidates
+ * `["rooms", roomId, "messages"]` so `useMessages`'s own query refetches the
+ * latest page from the REST API. The very first `onopen` does not
+ * invalidate -- that would just be a redundant duplicate of the fetch
+ * `useMessages` already performs on mount.
  *
  * @param roomId - The room to subscribe to. A new connection is opened
  * whenever this changes, tearing down the previous one first.
@@ -74,9 +80,7 @@ function withJitter(backoffMs: number): number {
  */
 export function useRoomSocket(roomId: string): ConnectionStatus {
   const queryClient = useQueryClient()
-  const [status, setStatus] = useState<ConnectionStatus>(
-    isMockMode() ? "offline" : "connecting",
-  )
+  const [status, setStatus] = useState<ConnectionStatus>("connecting")
 
   // The current user's id, for `mergeMessageEvent`'s defensive
   // sender-mismatch guard (Step 47). Read via a ref (rather than added to
@@ -90,18 +94,16 @@ export function useRoomSocket(roomId: string): ConnectionStatus {
   }, [currentUserId])
 
   useEffect(() => {
-    // The initial `useState` above already covers the mock-mode status; mock
-    // mode cannot toggle within a single build (it is a NEXT_PUBLIC_* value
-    // inlined at build time), so there is nothing further to synchronize
-    // here — just skip opening a real connection.
-    if (isMockMode()) return
-
     const queryKey = ["rooms", roomId, "messages"] as const
 
     let cancelled = false
     let socket: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
     let backoffMs = BASE_BACKOFF_MS
+    // Set once the first connection succeeds; gates the reconnect-backfill
+    // invalidation below so only a *recovering* onopen (one that follows a
+    // real disconnect) triggers it, not the initial mount.
+    let hasConnectedOnce = false
 
     function scheduleReconnect() {
       if (cancelled) return
@@ -139,6 +141,13 @@ export function useRoomSocket(roomId: string): ConnectionStatus {
         if (cancelled) return
         backoffMs = BASE_BACKOFF_MS
         setStatus("connected")
+
+        if (hasConnectedOnce) {
+          // Recovering from a drop: reconcile whatever was missed while
+          // disconnected via a fresh REST fetch (see this hook's docstring).
+          void queryClient.invalidateQueries({ queryKey })
+        }
+        hasConnectedOnce = true
       }
 
       ws.onmessage = (messageEvent: MessageEvent<string>) => {
@@ -153,6 +162,27 @@ export function useRoomSocket(roomId: string): ConnectionStatus {
         queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) =>
           mergeMessageEvent(old, parsed, currentUserIdRef.current),
         )
+
+        // L1 post-review finding: a streaming AI send's token debit only
+        // happens in the background once the stream actually finishes (see
+        // `stream.go`'s `consumeAIStream`/`completeAIMessageFallback`), well
+        // after `useChatRoom.handleSendWithAI` already invalidates
+        // `["billing", "balance"]` against the *202* response -- so that
+        // invalidation is premature (pre-debit) for the default streaming
+        // path. Invalidate again here, on the terminating `message_updated`
+        // finalize event for any AI message, so the top-bar balance
+        // reflects the post-debit number promptly instead of waiting for
+        // `useBalance`'s next poll tick. This also fires (harmlessly
+        // redundant) for a regenerate's own `message_updated` -- that path's
+        // debit is already correctly timed by
+        // `use-regenerate-ai-message.ts`'s `onSuccess`.
+        if (
+          parsed.type === "message_updated" &&
+          parsed.message.type === "ai" &&
+          (parsed.message.status === "completed" || parsed.message.status === "failed")
+        ) {
+          void queryClient.invalidateQueries({ queryKey: ["billing", "balance"] })
+        }
       }
 
       // `onclose` fires for both a clean and an abnormal close (including

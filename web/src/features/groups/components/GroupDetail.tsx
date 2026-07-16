@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Box, Button, Card, Dialog, Flex, Heading, Portal, Skeleton, Text } from "@chakra-ui/react"
 import { Trash2 } from "lucide-react"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useGroup } from "../hooks/use-group"
 import { useDeleteGroup } from "../hooks/use-delete-group"
 import { GroupFormDialog } from "./GroupFormDialog"
@@ -103,9 +104,7 @@ export function GroupDetail({ groupId }: GroupDetailProps) {
                     <Dialog.Body>
                       {deleteGroupMutation.isError && (
                         <Box fontSize="sm" color="fg.error" role="alert">
-                          {deleteGroupMutation.error instanceof Error
-                            ? deleteGroupMutation.error.message
-                            : "Failed to delete group."}
+                          {getErrorMessage(deleteGroupMutation.error, "Failed to delete group.")}
                         </Box>
                       )}
                     </Dialog.Body>

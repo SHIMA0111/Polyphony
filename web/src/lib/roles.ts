@@ -1,4 +1,15 @@
-import type { RoomRole } from "../types"
+import type { RoomRole } from "@/features/members/types"
+
+/**
+ * Moved here from `features/members/lib/roles.ts` (M5 post-review dedup):
+ * `features/messages/components/ChatRoom.tsx` and
+ * `features/rooms/components/RoomSettingsDrawer.tsx` both imported it
+ * directly from the `members` feature, violating the no-cross-feature-
+ * imports rule. `RoomRole` itself still comes from `@/features/members/types`
+ * (matching the existing precedent of `features/rooms/types.ts`'s `Room.role`
+ * field, which does the same type-only cross-feature import) -- only this
+ * role-comparison logic moved, not the type definition.
+ */
 
 /**
  * The 5-tier role order, lowest-to-highest privilege — a client-side mirror

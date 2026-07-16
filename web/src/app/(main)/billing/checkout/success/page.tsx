@@ -8,24 +8,12 @@ import { Box, Button, Flex, Heading, Spinner, Text } from "@chakra-ui/react"
 import { CheckCircle2 } from "lucide-react"
 import { usePlans } from "@/features/billing/hooks/use-plans"
 import { useSubscription } from "@/features/billing/hooks/use-subscription"
+import { formatUtcDate } from "@/lib/format"
 
 /** Interval between polling attempts while waiting for the webhook to land. */
 const POLL_INTERVAL_MS = 2_000
 /** Caps how long this page polls before showing the non-erroring fallback. */
 const MAX_POLL_ATTEMPTS = 8
-
-/**
- * `toLocaleDateString` formatting pinned to `timeZone: "UTC"`, matching
- * `RoomList.tsx`'s date-formatting convention.
- */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  })
-}
 
 /**
  * The post-Checkout redirect target
@@ -91,7 +79,7 @@ function CheckoutSuccessContent() {
           {subscription.current_period_end && (
             <>
               {" "}
-              — renews on {formatDate(subscription.current_period_end)}
+              — renews on {formatUtcDate(subscription.current_period_end)}
             </>
           )}
           .

@@ -79,7 +79,6 @@ docs/tasks/        — Step-by-step build plan (steps 1-60) this codebase was im
 - Rust 1.93+
 - Go 1.24+
 - Bun 1.2+
-- Flutter 3+
 - Docker / Docker Compose
 - PostgreSQL 17 / Redis 7
 - Protocol Buffers compiler (`protoc`) 3.15+ (needed for local `cargo build`/`cargo run` in `llm-gateway/` outside Docker)

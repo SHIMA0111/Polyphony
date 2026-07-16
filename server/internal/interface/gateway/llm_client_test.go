@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -88,7 +89,7 @@ func TestLLMClientEstimateTokensNonOKStatus(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-200 gateway response, got nil")
 	}
-	if !domain.IsLLMGatewayError(err) {
+	if !errors.Is(err, domain.ErrLLMGateway) {
 		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", err)
 	}
 }
@@ -436,7 +437,7 @@ func TestLLMClient_StreamMidStreamError(t *testing.T) {
 	if results[1].Chunk != nil {
 		t.Fatalf("expected second result to carry no chunk, got %+v", results[1].Chunk)
 	}
-	if results[1].Err == nil || !domain.IsLLMGatewayError(results[1].Err) {
+	if results[1].Err == nil || !errors.Is(results[1].Err, domain.ErrLLMGateway) {
 		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", results[1].Err)
 	}
 }
@@ -461,7 +462,7 @@ func TestLLMClient_StreamNonOKStatusSynchronousError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-nil error for non-2xx response")
 	}
-	if !domain.IsLLMGatewayError(err) {
+	if !errors.Is(err, domain.ErrLLMGateway) {
 		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", err)
 	}
 	if ch != nil {

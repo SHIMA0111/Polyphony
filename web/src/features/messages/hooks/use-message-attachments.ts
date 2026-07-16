@@ -1,7 +1,7 @@
 "use client"
 
 import { useQuery } from "@tanstack/react-query"
-import { listAttachments } from "./list-attachments"
+import { listAttachments } from "../api/list-attachments"
 import type { AttachmentWithUrl } from "../types"
 
 /**

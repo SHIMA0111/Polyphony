@@ -3,6 +3,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { regenerateAIMessage } from "../api/regenerate-ai-message"
 import { replaceMessageInAnyPage, type MessagesInfiniteData } from "../lib/message-cache"
+import { ApiRequestError } from "@/lib/http-client"
+import { getErrorMessage } from "@/lib/get-error-message"
+import { toaster } from "@/components/ui/toaster"
 
 export interface RegenerateAIMessageInput {
   /** ID of the AI message being regenerated (replaced in the cache on success). */
@@ -24,6 +27,21 @@ export interface RegenerateAIMessageInput {
  * being regenerated (`aiMessageId`) — the same two-id distinction the
  * pre-migration component logic already made when it walked `messages` to
  * find the human message preceding the clicked AI message.
+ *
+ * Error surfacing (M1 post-review finding; previously this mutation had no
+ * `onError` at all, and `useChatRoom.handleRegenerate` swallowed every
+ * rejection, making a 402/502 regenerate failure a silent no-op): a `402`
+ * (`ApiRequestError.status === 402`, `domain.ErrInsufficientBalance`) is left
+ * for the caller to surface via its own inline `aiError` alert (mirroring
+ * `useSendAIMessage`'s same suppression, see that hook's docstring), since
+ * this hook has no component state to render an inline alert into; every
+ * other error shows a generic toast here, consistent with the send path.
+ *
+ * A successful regenerate also invalidates `["billing", "balance"]`: like a
+ * send, it debits the room owner's balance server-side
+ * (`BillingUsecase.RecordUsage`), so the top-bar balance should refresh
+ * promptly rather than waiting for `useBalance`'s background poll (parity
+ * with `useChatRoom.handleSendWithAI`'s own invalidation after a send).
  */
 export function useRegenerateAIMessage(roomId: string) {
   const queryClient = useQueryClient()
@@ -40,6 +58,17 @@ export function useRegenerateAIMessage(roomId: string) {
       queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) =>
         replaceMessageInAnyPage(old, (m) => m.id === variables.aiMessageId, updated),
       )
+      void queryClient.invalidateQueries({ queryKey: ["billing", "balance"] })
+    },
+    onError: (error) => {
+      if (error instanceof ApiRequestError && error.status === 402) {
+        return
+      }
+      toaster.create({
+        type: "error",
+        title: "Failed to regenerate response",
+        description: getErrorMessage(error, "Please try again."),
+      })
     },
   })
 }

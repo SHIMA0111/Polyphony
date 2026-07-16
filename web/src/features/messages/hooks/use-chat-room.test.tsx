@@ -141,6 +141,78 @@ describe("useChatRoom handleRegenerate", () => {
 
     expect(regenerateCalled).toBe(false)
   })
+
+  // --- M1 post-review finding: regenerate error surfacing ---
+
+  it("sets aiError on a 402 regenerate rejection and invalidates the balance query on a subsequent success", async () => {
+    server.use(
+      http.get("/api/proxy/rooms/:roomId/messages", () => {
+        return HttpResponse.json<MessagePage>({
+          messages: [fixtureAiMessage],
+          next_cursor: null,
+        })
+      }),
+    )
+
+    let shouldFail = true
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/regenerate",
+        () => {
+          if (shouldFail) {
+            return HttpResponse.json(
+              { message: "insufficient token balance" },
+              { status: 402 },
+            )
+          }
+          return HttpResponse.json<Message>({ ...fixtureAiMessage, content: "Regenerated" })
+        },
+      ),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.aiError).toBeNull()
+
+    // handleRegenerate never throws (unlike handleSendWithAI) -- the failure
+    // is fully absorbed and surfaced only via aiError.
+    await result.current.handleRegenerate(fixtureAiMessage.id)
+    await waitFor(() => expect(result.current.aiError).toBe("Insufficient token balance."))
+
+    shouldFail = false
+    await result.current.handleRegenerate(fixtureAiMessage.id)
+    await waitFor(() => expect(result.current.aiError).toBeNull())
+  })
+
+  it("does not set aiError for a non-402 regenerate failure", async () => {
+    server.use(
+      http.get("/api/proxy/rooms/:roomId/messages", () => {
+        return HttpResponse.json<MessagePage>({
+          messages: [fixtureAiMessage],
+          next_cursor: null,
+        })
+      }),
+    )
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/regenerate",
+        () => HttpResponse.json({ message: "Internal Server Error" }, { status: 500 }),
+      ),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await result.current.handleRegenerate(fixtureAiMessage.id)
+
+    expect(result.current.aiError).toBeNull()
+  })
 })
 
 /**

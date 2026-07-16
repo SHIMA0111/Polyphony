@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Avatar, Box, Button, Dialog, Flex, Portal, Text } from "@chakra-ui/react"
 import { Crown } from "lucide-react"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useMembers } from "../hooks/use-members"
 import { useTransferOwnership } from "../hooks/use-transfer-ownership"
 import type { Room } from "@/features/rooms/types"
@@ -120,9 +121,7 @@ export function TransferOwnershipDialog({ room }: TransferOwnershipDialogProps) 
               )}
               {transferMutation.isError && (
                 <Box mt={3} fontSize="sm" color="fg.error" role="alert">
-                  {transferMutation.error instanceof Error
-                    ? transferMutation.error.message
-                    : "Failed to transfer ownership."}
+                  {getErrorMessage(transferMutation.error, "Failed to transfer ownership.")}
                 </Box>
               )}
             </Dialog.Body>

@@ -1683,9 +1683,146 @@ func TestSendAIMessageStreamSynchronousDispatchFailure(t *testing.T) {
 	}
 }
 
-// TestSendAIMessageStreamSummaryUsedFalse asserts that, in this step's
-// standalone state (before Step 50's assembleAIContext lands), every
-// published EventTokenChunk's SummaryUsed field is false.
+// TestSendAIMessageStreamFallsBackToCompleteOnUnsupportedTransport is the M2
+// post-review regression test: when llmGateway.Stream fails synchronously
+// with domain.ErrStreamingUnsupported (exactly what
+// gateway.GRPCClient.Stream returns when LLM_GATEWAY_TRANSPORT=grpc), the
+// send must still succeed via a background fallback to the unary Complete
+// call rather than being marked failed outright -- before this fix, any
+// streaming send over the gRPC transport was silently broken.
+func TestSendAIMessageStreamFallsBackToCompleteOnUnsupportedTransport(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{
+		StreamErr:          fmt.Errorf("%w: streaming not supported over grpc transport", domain.ErrStreamingUnsupported),
+		CompletionResponse: &ai.CompletionResponse{Content: "fallback answer", Model: "test-model", PromptTokens: 7, OutputTokens: 3},
+	}
+	billing := &mocks.BillingGuard{}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, billing, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("expected no Go error on a fallback dispatch, got %v", err)
+	}
+	// The caller-visible contract is unchanged from the real-streaming happy
+	// path: an immediate "streaming" placeholder, not "failed".
+	if result.AIMessage.Status != domainmessage.MessageStatusStreaming {
+		t.Fatalf("expected streaming status immediately (fallback is transparent to the caller), got %s", result.AIMessage.Status)
+	}
+
+	var final event.RoomEvent
+	deadline := time.After(3 * time.Second)
+loop:
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventTokenChunk {
+				t.Fatal("expected no EventTokenChunk for the unary Complete fallback")
+			}
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == result.AIMessage.ID {
+				final = evt
+				break loop
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the fallback's EventMessageUpdated")
+		}
+	}
+	if final.Message.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected completed status, got %s", final.Message.Status)
+	}
+	if final.Message.Content != "fallback answer" {
+		t.Fatalf("expected fallback completion content, got %q", final.Message.Content)
+	}
+
+	persistedMsg, err := msgRepo.GetByID(ctx, result.AIMessage.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if persistedMsg.Content != "fallback answer" || persistedMsg.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected persisted message to match the fallback completion, got %+v", persistedMsg)
+	}
+
+	// RecordUsage is fire-and-forget, called just after the completion event
+	// is published; poll LastRecordUsageCall (which locks internally, unlike
+	// reading RecordUsageCalls directly) rather than racing on it.
+	waitForCondition(t, func() bool {
+		_, ok := billing.LastRecordUsageCall()
+		return ok
+	})
+	call, _ := billing.LastRecordUsageCall()
+	if call.PromptTokens != 7 || call.OutputTokens != 3 {
+		t.Fatalf("expected RecordUsage called with the Complete response's token counts, got %+v", call)
+	}
+}
+
+// TestSendAIMessageStreamSynchronousDispatchFailureUsedContextSummary is the
+// H1 post-review regression test for stream.go's synchronous-dispatch-failure
+// path: even though the gateway's Stream call fails before any chunk is ever
+// published, assembleAIContext still ran (and summarized) beforehand, so the
+// EventMessageUpdated publishing the immediate "failed" status must still
+// carry UsedContextSummary=true -- parity with the non-streaming SendAIMessage
+// failure path, which already reports it correctly.
+func TestSendAIMessageStreamSynchronousDispatchFailureUsedContextSummary(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{
+		Models:                []ai.ModelInfo{{ID: "gpt-5-mini", ContextWindow: 8000, SupportsImageInput: true}},
+		TokenEstimateResponse: &ai.TokenEstimateResponse{EstimatedTokens: 999_999},
+		CompletionResponse:    &ai.CompletionResponse{Content: "This is the summary."},
+		StreamErr:             fmt.Errorf("bad model"),
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	for i := 1; i <= 11; i++ {
+		if _, err := uc.SendMessage(ctx, "user-1", "room-1", fmt.Sprintf("msg-%d", i)); err != nil {
+			t.Fatalf("seed message %d: %v", i, err)
+		}
+	}
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "msg-12", "gpt-5-mini")
+	if err != nil {
+		t.Fatalf("expected no Go error on a synchronous dispatch failure, got %v", err)
+	}
+	if result.AIMessage.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected failed status immediately, got %s", result.AIMessage.Status)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == result.AIMessage.ID {
+				if !evt.UsedContextSummary {
+					t.Fatal("expected UsedContextSummary=true on the dispatch-failure EventMessageUpdated for a summarized context")
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the dispatch-failure EventMessageUpdated")
+		}
+	}
+}
+
+// TestSendAIMessageStreamSummaryUsedFalse asserts that, for an under-budget
+// context that never triggers summarization, every published EventTokenChunk's
+// SummaryUsed field is false, and so is the terminating EventMessageUpdated's
+// UsedContextSummary (parity check for the H1 post-review fix below).
 func TestSendAIMessageStreamSummaryUsedFalse(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -1707,12 +1844,63 @@ func TestSendAIMessageStreamSummaryUsedFalse(t *testing.T) {
 		t.Fatalf("SendAIMessageStream failed: %v", err)
 	}
 
-	chunks, _ := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	chunks, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
 	if len(chunks) != 1 {
 		t.Fatalf("expected exactly 1 chunk, got %d", len(chunks))
 	}
 	if chunks[0].Chunk.SummaryUsed {
-		t.Fatal("expected SummaryUsed=false in this step's standalone state")
+		t.Fatal("expected SummaryUsed=false for an under-budget context")
+	}
+	if final.UsedContextSummary {
+		t.Fatal("expected the terminating EventMessageUpdated's UsedContextSummary=false for an under-budget context")
+	}
+}
+
+// TestSendAIMessageStreamSummaryUsedTrue is the H1 post-review regression
+// test: it forces assembleAIContext to summarize (mirroring
+// TestAssembleAIContextSummarizesOnOverflowAndCaches's overflow setup, but
+// exercised through the streaming endpoint) and asserts that the
+// terminating EventMessageUpdated's UsedContextSummary is true, matching
+// the token_chunk events' own SummaryUsed flag -- before this fix,
+// consumeAIStream's final publish omitted UsedContextSummary entirely, which
+// silently cleared the "Summarized history" badge the token_chunk frames had
+// already shown once the stream finalized.
+func TestSendAIMessageStreamSummaryUsedTrue(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{
+		Models:                []ai.ModelInfo{{ID: "gpt-5-mini", ContextWindow: 8000, SupportsImageInput: true}},
+		TokenEstimateResponse: &ai.TokenEstimateResponse{EstimatedTokens: 999_999},
+		CompletionResponse:    &ai.CompletionResponse{Content: "This is the summary."},
+		StreamChunks:          []*ai.StreamChunk{{ID: "c1", Model: "test-model", Delta: "hi"}},
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	for i := 1; i <= 11; i++ {
+		if _, err := uc.SendMessage(ctx, "user-1", "room-1", fmt.Sprintf("msg-%d", i)); err != nil {
+			t.Fatalf("seed message %d: %v", i, err)
+		}
+	}
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "msg-12", "gpt-5-mini")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+
+	chunks, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if len(chunks) != 1 || !chunks[0].Chunk.SummaryUsed {
+		t.Fatalf("expected 1 chunk with SummaryUsed=true, got %+v", chunks)
+	}
+	if !final.UsedContextSummary {
+		t.Fatal("expected the terminating EventMessageUpdated's UsedContextSummary=true for a summarized context")
 	}
 }
 

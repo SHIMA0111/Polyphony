@@ -200,12 +200,19 @@ func (c *GRPCClient) EstimateTokens(ctx context.Context, req *ai.TokenEstimateRe
 // through the REST LLMClient's Stream, which consumes the gateway's
 // `POST /completions/stream` SSE endpoint. Calling Stream on a GRPCClient
 // (selected via config.Config.LLMGatewayTransport == "grpc") always returns a
-// synchronous domain.ErrLLMGateway-wrapped error and a nil channel -- exactly
-// the same "synchronous dispatch failure" shape Complete/ListModels/
-// EstimateTokens use on failure -- rather than panicking or silently falling
-// back to a non-streaming call.
+// synchronous error wrapping both domain.ErrLLMGateway and
+// domain.ErrStreamingUnsupported, and a nil channel -- exactly the same
+// "synchronous dispatch failure" shape Complete/ListModels/EstimateTokens use
+// on failure -- rather than panicking.
+//
+// Post-review fix (M2): this used to silently break every streaming send
+// when LLM_GATEWAY_TRANSPORT=grpc, since a synchronous Stream failure would
+// otherwise just mark the placeholder failed. Callers should check
+// errors.Is(err, domain.ErrStreamingUnsupported) specifically and fall back
+// to the unary Complete call instead of failing outright --
+// usecase/message.MessageUsecase.SendAIMessageStream does exactly that.
 func (c *GRPCClient) Stream(_ context.Context, _ *ai.CompletionRequest) (<-chan ai.StreamResult, error) {
-	return nil, fmt.Errorf("%w: streaming not supported over grpc transport", domain.ErrLLMGateway)
+	return nil, fmt.Errorf("%w: %w: streaming not supported over grpc transport", domain.ErrLLMGateway, domain.ErrStreamingUnsupported)
 }
 
 // checkHealth calls the standard grpc.health.v1.Health service with an empty

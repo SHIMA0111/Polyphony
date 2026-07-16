@@ -119,9 +119,14 @@ type Config struct {
 	// container.go wires up: "rest" (default) for the existing
 	// gateway.LLMClient, or "grpc" for gateway.GRPCClient (env
 	// LLM_GATEWAY_TRANSPORT). This is the Phase 8 swap point noted in
-	// CLAUDE.md's Interface Swap Points table. Any value other than "rest"
-	// or "grpc" falls back to "rest" with a logged warning, rather than
-	// failing Load, since this is an optional transport-selection knob.
+	// CLAUDE.md's Interface Swap Points table. Load returns an error for any
+	// other non-empty value, matching AuthMode/MessageHubDriver's posture
+	// (post-review fix: this used to silently fall back to "rest" with only
+	// a logged warning, masking a config typo instead of failing fast at
+	// startup). Note that "grpc" does not support streaming sends at all
+	// (see gateway.GRPCClient.Stream) -- SendAIMessageStream transparently
+	// falls back to the unary Complete call in that case rather than
+	// treating it as a config error.
 	LLMGatewayTransport string
 	// LLMGatewayGRPCAddr is the dial target used by gateway.NewGRPCClient
 	// when LLMGatewayTransport is "grpc" (env LLM_GATEWAY_GRPC_ADDR,
@@ -329,9 +334,7 @@ func Load() (*Config, error) {
 		llmGatewayTransport = defaultLLMGatewayTransport
 	}
 	if llmGatewayTransport != "rest" && llmGatewayTransport != "grpc" {
-		slog.Default().Warn("invalid LLM_GATEWAY_TRANSPORT, using default",
-			"value", llmGatewayTransport, "default", defaultLLMGatewayTransport)
-		llmGatewayTransport = defaultLLMGatewayTransport
+		return nil, fmt.Errorf("LLM_GATEWAY_TRANSPORT must be %q or %q, got %q", "rest", "grpc", llmGatewayTransport)
 	}
 
 	llmGatewayGRPCAddr := os.Getenv("LLM_GATEWAY_GRPC_ADDR")

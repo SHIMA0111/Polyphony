@@ -99,7 +99,6 @@ describe("useRoomSocket", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
-    vi.unstubAllEnvs()
   })
 
   it('fetches a ticket, opens a WebSocket, and reports "connected" on open', async () => {
@@ -246,6 +245,55 @@ describe("useRoomSocket", () => {
     expect(cache?.pages[0].messages[0].content).toBe("edited")
   })
 
+  it("invalidates the billing balance query on a message_updated finalize event for an AI message (L1 post-review finding)", async () => {
+    mockTicketEndpoint()
+
+    const queryClient = createTestQueryClient()
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries")
+    const queryKey = ["rooms", "room-1", "messages"] as const
+    queryClient.setQueryData<MessagesInfiniteData>(queryKey, {
+      pages: [
+        {
+          messages: [makeMessage("ai-1", { type: "ai", status: "streaming", content: "partial" })],
+          next_cursor: null,
+        },
+      ],
+      pageParams: [undefined],
+    })
+
+    renderHook(() => useRoomSocket("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+    act(() => FakeWebSocket.instances[0].simulateOpen())
+
+    // A token_chunk (not a finalize) must not trigger the balance
+    // invalidation.
+    act(() => {
+      FakeWebSocket.instances[0].simulateMessage({
+        type: "token_chunk",
+        room_id: "room-1",
+        chunk: { message_id: "ai-1", delta: "!", summary_used: false },
+      })
+    })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["billing", "balance"] })
+
+    act(() => {
+      FakeWebSocket.instances[0].simulateMessage({
+        type: "message_updated",
+        room_id: "room-1",
+        message: makeMessage("ai-1", {
+          type: "ai",
+          status: "completed",
+          content: "partial!",
+        }),
+      })
+    })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["billing", "balance"] })
+  })
+
   it(
     "reconnects with exponential backoff after an abnormal close",
     async () => {
@@ -277,17 +325,44 @@ describe("useRoomSocket", () => {
     10_000,
   )
 
-  it('is fully inert in MSW mock mode: no WebSocket is constructed and status is "offline"', async () => {
-    vi.stubEnv("NEXT_PUBLIC_MOCK_API", "true")
+  it(
+    "invalidates the messages query on a reconnect's onopen, but not on the initial connect (M3 post-review finding)",
+    async () => {
+      mockTicketEndpoint()
 
-    const { result } = renderHook(() => useRoomSocket("room-1"), {
-      wrapper: createQueryClientWrapper(),
-    })
+      const queryClient = createTestQueryClient()
+      const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries")
 
-    expect(result.current).toBe("offline")
+      const { result } = renderHook(() => useRoomSocket("room-1"), {
+        wrapper: createQueryClientWrapper(queryClient),
+      })
 
-    // Give any accidental async connect attempt a moment to have started.
-    await new Promise((resolve) => setTimeout(resolve, 10))
-    expect(FakeWebSocket.instances).toHaveLength(0)
-  })
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+      act(() => FakeWebSocket.instances[0].simulateOpen())
+      expect(result.current).toBe("connected")
+
+      // The initial connect's onopen must not invalidate -- useMessages
+      // already fetched on mount, so this would just be a redundant
+      // duplicate fetch.
+      expect(invalidateSpy).not.toHaveBeenCalled()
+
+      act(() => {
+        FakeWebSocket.instances[0].simulateAbnormalClose()
+      })
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), {
+        timeout: 3000,
+      })
+
+      act(() => FakeWebSocket.instances[1].simulateOpen())
+      expect(result.current).toBe("connected")
+
+      // A reconnect's onopen invalidates the room's messages query so
+      // whatever was published while disconnected reconciles via a fresh
+      // REST fetch.
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["rooms", "room-1", "messages"],
+      })
+    },
+    10_000,
+  )
 })

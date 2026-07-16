@@ -2,6 +2,7 @@
 
 import { Avatar, Box, Button, Flex, Text } from "@chakra-ui/react"
 import { UserMinus } from "lucide-react"
+import { formatUtcDate } from "@/lib/format"
 import { useRemoveGroupMember } from "../hooks/use-remove-group-member"
 import type { GroupMember } from "../types"
 
@@ -35,16 +36,7 @@ export function GroupMemberRow({ groupId, member }: GroupMemberRowProps) {
           {member.username}
         </Text>
         <Text fontSize="xs" color="fg.muted">
-          {/* `timeZone: "UTC"` pins this to the same string on the server
-              and in the browser regardless of either host's local
-              timezone, avoiding a React hydration mismatch. */}
-          Added{" "}
-          {new Date(member.added_at).toLocaleDateString("en-US", {
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-            timeZone: "UTC",
-          })}
+          Added {formatUtcDate(member.added_at)}
         </Text>
       </Box>
 

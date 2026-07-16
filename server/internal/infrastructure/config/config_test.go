@@ -308,16 +308,17 @@ func TestLoadLLMGatewayGRPCOverrides(t *testing.T) {
 	}
 }
 
-func TestLoadLLMGatewayTransportInvalidFallsBackToDefault(t *testing.T) {
+// TestLoadLLMGatewayTransportInvalidReturnsError is the M2 post-review
+// regression test: an unrecognized LLM_GATEWAY_TRANSPORT used to silently
+// fall back to "rest" with only a logged warning; it must now fail Load
+// hard, matching AUTH_MODE/MESSAGE_HUB_DRIVER's posture (see
+// TestLoadAuthModeInvalidReturnsError/TestLoadMessageHubDriverInvalidReturnsError).
+func TestLoadLLMGatewayTransportInvalidReturnsError(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("LLM_GATEWAY_TRANSPORT", "carrier-pigeon")
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load should not fail on an invalid transport, got: %v", err)
-	}
-	if cfg.LLMGatewayTransport != "rest" {
-		t.Errorf("expected fallback to default LLMGatewayTransport %q, got %q", "rest", cfg.LLMGatewayTransport)
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to fail for an unrecognized LLM_GATEWAY_TRANSPORT value")
 	}
 }
 

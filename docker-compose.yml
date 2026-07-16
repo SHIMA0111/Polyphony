@@ -300,7 +300,6 @@ services:
       context: ./web
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
-        NEXT_PUBLIC_MOCK_API: ${NEXT_PUBLIC_MOCK_API:-false}
     environment:
       API_URL: ${API_URL:-http://api:8080}
       KRATOS_PUBLIC_URL: ${KRATOS_PUBLIC_URL:-http://kratos:4433}
@@ -723,7 +722,6 @@ services:
         # variable so a plain `NEXT_PUBLIC_API_URL` in .env cannot silently
         # repoint the e2e web build at the dev API again.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL_E2E:-http://localhost:8090}
-        NEXT_PUBLIC_MOCK_API: ${NEXT_PUBLIC_MOCK_API:-false}
     environment:
       API_URL: http://api-e2e:8080
       KRATOS_PUBLIC_URL: http://kratos-e2e:4433

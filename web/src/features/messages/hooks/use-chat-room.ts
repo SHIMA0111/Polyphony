@@ -11,7 +11,7 @@ import { useSendAIMessage } from "@/features/messages/hooks/use-send-ai-message"
 import { useRegenerateAIMessage } from "@/features/messages/hooks/use-regenerate-ai-message"
 import { attachToMessage } from "@/features/messages/api/attach-to-message"
 import { listAttachments } from "@/features/messages/api/list-attachments"
-import { messageAttachmentsQueryKey } from "@/features/messages/api/use-message-attachments"
+import { messageAttachmentsQueryKey } from "@/features/messages/hooks/use-message-attachments"
 import { flattenMessagePages } from "@/features/messages/lib/flatten-message-pages"
 import { removeFromNewestPage, type MessagesInfiniteData } from "@/features/messages/lib/message-cache"
 import type { Message, ModelInfo } from "@/features/messages/types"
@@ -109,11 +109,12 @@ export interface UseChatRoomResult {
   handleRetry: (messageId: string, content: string) => Promise<void>
   /**
    * Set to {@link INSUFFICIENT_BALANCE_MESSAGE} when the most recent
-   * `handleSendWithAI` call was rejected with HTTP 402, `null` otherwise
-   * (including after any other kind of send failure, which the mutation's
-   * own toast already surfaces). Cleared at the start of every subsequent
-   * `handleSendWithAI` call so a resolved-then-retried send doesn't leave a
-   * stale error on screen.
+   * `handleSendWithAI` *or* `handleRegenerate` call was rejected with HTTP
+   * 402, `null` otherwise (including after any other kind of failure, which
+   * the relevant mutation's own toast already surfaces -- see
+   * `useSendAIMessage`/`useRegenerateAIMessage`'s docstrings). Cleared at the
+   * start of every subsequent `handleSendWithAI`/`handleRegenerate` call so a
+   * resolved-then-retried attempt doesn't leave a stale error on screen.
    */
   aiError: string | null
 }
@@ -182,7 +183,16 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
         // Refresh the top-bar balance promptly after a successful AI send,
         // rather than waiting for `useBalance`'s background poll — a send
         // debits the room owner's balance server-side (see
-        // `BillingUsecase.RecordUsage`).
+        // `BillingUsecase.RecordUsage`). For the non-streaming/attachment
+        // branch (`stream: false`) this is already post-debit, since
+        // `RecordUsage` runs synchronously before that response resolves.
+        // For the default streaming branch it is *not* yet post-debit --
+        // billing only happens once the stream finishes in the background,
+        // well after this 202 response -- so `use-room-socket.ts`'s
+        // `onmessage` handler additionally invalidates the same query on
+        // the terminating `message_updated` finalize event (L1 post-review
+        // finding), which is what actually reflects the post-debit number
+        // for a streaming send.
         await queryClient.invalidateQueries({ queryKey: ["billing", "balance"] })
 
         if (attachmentIds.length > 0) {
@@ -203,11 +213,17 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
               humanMessageId: res.user_message.id,
               model,
             })
-          } catch {
-            // Mirrors `handleRegenerate`'s own swallow below: the mutation's
-            // rejection already reflects as a persisted `status: "failed"`
-            // AI message via `MessageBubble`'s own styling, so there is
+          } catch (error) {
+            // Mirrors `handleRegenerate`'s own catch below: a 402 is
+            // surfaced via the same inline `aiError` alert as a direct send
+            // rejection; any other error is already surfaced by
+            // `useRegenerateAIMessage`'s own `onError` toast, and
+            // `MessageBubble` also reflects a persisted `status: "failed"`
+            // AI message via its own styling either way, so there is
             // nothing further to do here.
+            if (error instanceof ApiRequestError && error.status === 402) {
+              setAiError(INSUFFICIENT_BALANCE_MESSAGE)
+            }
           }
         }
       } catch (error) {
@@ -244,16 +260,23 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
         return
       }
 
+      setAiError(null)
       try {
         await regenerateMutation.mutateAsync({
           aiMessageId,
           humanMessageId: aiMessage.in_response_to_message_id,
         })
-      } catch {
-        // The mutation's rejection is enough for callers that want to
-        // observe it (e.g. via `regenerateMutation.isError`); `MessageBubble`
-        // already reflects a persisted `status: "failed"` AI message via its
-        // own styling, so there is nothing further to do here.
+      } catch (error) {
+        // M1 post-review finding: a regenerate hitting 402/502 used to be a
+        // silent no-op here. A 402 is now surfaced the same way a direct
+        // send's is (the inline `aiError` alert); any other error is already
+        // surfaced by `useRegenerateAIMessage`'s own `onError` toast, and
+        // `MessageBubble` also reflects a persisted `status: "failed"` AI
+        // message via its own styling either way, so there is nothing
+        // further to do here.
+        if (error instanceof ApiRequestError && error.status === 402) {
+          setAiError(INSUFFICIENT_BALANCE_MESSAGE)
+        }
       }
     },
     [messages, regenerateMutation],

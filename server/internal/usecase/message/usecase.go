@@ -601,14 +601,9 @@ func (u *MessageUsecase) SetExcludeFromAI(ctx context.Context, userID, roomID, m
 // getMember loads the caller's membership in roomID, translating a missing
 // membership (domain.ErrNotFound) into domain.ErrForbidden so that a
 // non-member can never distinguish "room does not exist" from "room exists
-// but I'm not a member of it" via the returned error.
+// but I'm not a member of it" via the returned error. See
+// room.GetMemberOrForbidden (shared with usecase/room and usecase/invitation,
+// which each keep this same thin wrapper).
 func (u *MessageUsecase) getMember(ctx context.Context, roomID, userID string) (*room.RoomMember, error) {
-	member, err := u.roomRepo.GetMember(ctx, roomID, userID)
-	if err != nil {
-		if errors.Is(err, domain.ErrNotFound) {
-			return nil, domain.ErrForbidden
-		}
-		return nil, err
-	}
-	return member, nil
+	return room.GetMemberOrForbidden(ctx, u.roomRepo, roomID, userID)
 }

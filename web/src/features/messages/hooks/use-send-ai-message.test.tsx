@@ -1,11 +1,12 @@
 import { renderHook, waitFor } from "@testing-library/react"
 import { delay, http, HttpResponse } from "msw"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import { fixtureAiStreamResponse } from "@/features/messages/api/handlers"
 import { mergeMessageEvent } from "@/features/messages/lib/merge-message-event"
 import type { MessagesInfiniteData } from "@/features/messages/lib/message-cache"
+import { toaster } from "@/components/ui/toaster"
 import { useSendAIMessage } from "./use-send-ai-message"
 
 const queryKey = ["rooms", "room-1", "messages"] as const
@@ -226,5 +227,57 @@ describe("useSendAIMessage", () => {
     expect(data?.pages[0]?.messages[0]?.type).toBe("human")
     expect(data?.pages[0]?.messages[0]?.status).toBe("failed")
     expect(data?.pages[0]?.messages[0]?.content).toBe("Hello, AI!")
+  })
+
+  it("shows a generic failed-to-send toast for a non-402 failure", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
+        return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+      }),
+    )
+    const createSpy = vi.spyOn(toaster, "create")
+
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useSendAIMessage("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    await expect(
+      result.current.mutateAsync({ content: "Hello, AI!" }),
+    ).rejects.toThrow()
+
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Message failed to send" }),
+    )
+    createSpy.mockRestore()
+  })
+
+  it("M1 post-review: suppresses the generic failed-to-send toast for a 402 rejection (the inline aiError alert covers it instead)", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
+        return HttpResponse.json(
+          { message: "insufficient token balance" },
+          { status: 402 },
+        )
+      }),
+    )
+    const createSpy = vi.spyOn(toaster, "create")
+
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useSendAIMessage("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    await expect(
+      result.current.mutateAsync({ content: "Hello, AI!" }),
+    ).rejects.toThrow()
+
+    // The optimistic rollback still happens...
+    const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
+    expect(data?.pages[0]?.messages[0]?.status).toBe("failed")
+    // ...but no toast, since useChatRoom's inline aiError alert already
+    // covers this specific rejection.
+    expect(createSpy).not.toHaveBeenCalled()
+    createSpy.mockRestore()
   })
 })

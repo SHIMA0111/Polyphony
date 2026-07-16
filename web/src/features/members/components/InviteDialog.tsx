@@ -14,6 +14,7 @@ import {
   Text,
 } from "@chakra-ui/react"
 import { Copy, Link2, UserPlus } from "lucide-react"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { GroupPicker } from "@/features/groups/components/GroupPicker"
 import { useBatchInviteByGroup } from "@/features/groups/hooks/use-batch-invite-by-group"
 import type { BatchInviteByGroupResult, Group } from "@/features/groups/types"
@@ -264,9 +265,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
 
                 {createInvitationMutation.isError && (
                   <Box fontSize="sm" color="fg.error" role="alert">
-                    {createInvitationMutation.error instanceof Error
-                      ? createInvitationMutation.error.message
-                      : "Failed to create invitation."}
+                    {getErrorMessage(createInvitationMutation.error, "Failed to create invitation.")}
                   </Box>
                 )}
 
@@ -327,9 +326,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                     )}
                   {batchInviteByGroupMutation.isError && (
                     <Box fontSize="sm" color="fg.error" role="alert">
-                      {batchInviteByGroupMutation.error instanceof Error
-                        ? batchInviteByGroupMutation.error.message
-                        : "Failed to invite group."}
+                      {getErrorMessage(batchInviteByGroupMutation.error, "Failed to invite group.")}
                     </Box>
                   )}
                 </Flex>

@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Box, Button, Field, Flex, Input } from "@chakra-ui/react"
 import { UserPlus } from "lucide-react"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useAddGroupMember } from "../hooks/use-add-group-member"
 
 interface AddGroupMemberFormProps {
@@ -58,9 +59,7 @@ export function AddGroupMemberForm({ groupId }: AddGroupMemberFormProps) {
       </Flex>
       {addGroupMemberMutation.isError && (
         <Box mt={2} fontSize="sm" color="fg.error" role="alert">
-          {addGroupMemberMutation.error instanceof Error
-            ? addGroupMemberMutation.error.message
-            : "Failed to add member."}
+          {getErrorMessage(addGroupMemberMutation.error, "Failed to add member.")}
         </Box>
       )}
     </Box>

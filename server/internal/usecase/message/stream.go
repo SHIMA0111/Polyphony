@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -38,11 +39,17 @@ const streamBackgroundTimeout = 5 * time.Minute
 // the happy path, so callers must not assume completion the way they can
 // with SendAIMessage's return value.
 //
-// If the LLM Gateway's Stream call fails synchronously (bad model,
-// connection refused, etc.), the placeholder is immediately updated to
-// Status = MessageStatusFailed and EventMessageUpdated is published; this is
-// not a Go error return, mirroring SendAIMessage's existing
-// "both messages always returned, check AIMessage.Status" contract.
+// If the LLM Gateway's Stream call fails synchronously with
+// domain.ErrStreamingUnsupported (the selected ai.LLMGateway implementation
+// doesn't support streaming at all -- currently only
+// interface/gateway.GRPCClient, when config.Config.LLMGatewayTransport is
+// "grpc"), this transparently falls back to the unary Complete call instead
+// of failing the send: see completeAIMessageFallback's doc comment. Any
+// other synchronous Stream failure (bad model, connection refused, etc.)
+// immediately updates the placeholder to Status = MessageStatusFailed and
+// publishes EventMessageUpdated; this is not a Go error return, mirroring
+// SendAIMessage's existing "both messages always returned, check
+// AIMessage.Status" contract.
 //
 // Otherwise, a background goroutine (see consumeAIStream) ranges over the
 // gateway's stream: it publishes an EventTokenChunk RoomEvent for every
@@ -154,6 +161,21 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 		Messages: chatMsgs,
 	})
 	if err != nil {
+		if errors.Is(err, domain.ErrStreamingUnsupported) {
+			// The selected ai.LLMGateway transport doesn't support Stream at
+			// all (currently: gateway.GRPCClient over gRPC) -- fall back to
+			// the unary Complete call in the background instead of failing
+			// the send. The placeholder stays Status = MessageStatusStreaming
+			// exactly like the normal happy path, so the caller sees no
+			// difference from a real stream dispatch succeeding; see
+			// completeAIMessageFallback's doc comment for the rest of the
+			// contract (single terminating EventMessageUpdated, no
+			// EventTokenChunk).
+			aiMsgForCaller := *aiMsg
+			go u.completeAIMessageFallback(streamCtx, cancel, aiMsgForCaller, roomID, model, chatMsgs, summaryUsed)
+			return &SendAIResult{HumanMessage: humanMsg, AIMessage: &aiMsgForCaller}, nil
+		}
+
 		cancel()
 
 		failedNow := time.Now()
@@ -163,11 +185,12 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 		aiMsg.Status = domainmessage.MessageStatusFailed
 		aiMsg.UpdatedAt = failedNow
 		u.hub.Publish(ctx, event.RoomEvent{
-			Type:          event.EventMessageUpdated,
-			RoomID:        roomID,
-			Message:       aiMsg,
-			TargetUserIDs: targetUserIDsForVisibility(aiMsg),
-			OccurredAt:    failedNow,
+			Type:               event.EventMessageUpdated,
+			RoomID:             roomID,
+			Message:            aiMsg,
+			TargetUserIDs:      targetUserIDsForVisibility(aiMsg),
+			OccurredAt:         failedNow,
+			UsedContextSummary: summaryUsed,
 		})
 		return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg}, nil
 	}
@@ -267,11 +290,12 @@ func (u *MessageUsecase) consumeAIStream(
 	aiMsg.UpdatedAt = now
 
 	u.hub.Publish(ctx, event.RoomEvent{
-		Type:          event.EventMessageUpdated,
-		RoomID:        roomID,
-		Message:       &aiMsg,
-		TargetUserIDs: targetUserIDsForVisibility(&aiMsg),
-		OccurredAt:    now,
+		Type:               event.EventMessageUpdated,
+		RoomID:             roomID,
+		Message:            &aiMsg,
+		TargetUserIDs:      targetUserIDsForVisibility(&aiMsg),
+		OccurredAt:         now,
+		UsedContextSummary: summaryUsed,
 	})
 
 	if streamErr != nil {
@@ -288,6 +312,86 @@ func (u *MessageUsecase) consumeAIStream(
 	// Fire-and-forget: the AI message is already durably persisted, so a
 	// usage-recording failure must never affect anything downstream.
 	if err := u.billing.RecordUsage(ctx, roomID, aiMsg.ID, model, usage.PromptTokens, usage.CompletionTokens); err != nil {
+		slog.Error("failed to record token usage", "error", err, "room_id", roomID, "message_id", aiMsg.ID)
+	}
+}
+
+// completeAIMessageFallback is SendAIMessageStream's fallback completion
+// path (M2 post-review fix), used only when the LLM Gateway's Stream call
+// fails synchronously with domain.ErrStreamingUnsupported. Rather than
+// surfacing that as a hard failure -- which used to silently break every
+// streaming send whenever LLM_GATEWAY_TRANSPORT=grpc was configured, since
+// gateway.GRPCClient never implements Stream -- this transparently completes
+// the request through the unary ai.LLMGateway.Complete call instead,
+// preserving the streaming endpoint's 202+placeholder contract (the caller
+// already received a Status = MessageStatusStreaming placeholder) while
+// never publishing an EventTokenChunk, since there is no incremental data to
+// forward.
+//
+// Once Complete resolves (or fails), it persists the result via
+// MessageRepository.UpdateAIResponse (Status = MessageStatusCompleted on
+// success, MessageStatusFailed on failure, matching consumeAIStream's own
+// status mapping) and publishes a single EventMessageUpdated with the
+// resulting state -- the same terminating signal consumeAIStream's happy
+// path publishes, so the client's merge logic (mergeMessageEvent) needs no
+// special case for this fallback. On success it also records usage via
+// BillingGuard.RecordUsage fire-and-forget, mirroring SendAIMessage's
+// non-streaming usage recording -- unlike a stream's per-chunk Usage (which
+// may never arrive), Complete's response always carries a usage total.
+//
+// aiMsg is a value copy, exactly like consumeAIStream's aiMsg parameter --
+// see that method's doc comment for why mutating it here is safe. cancel is
+// called unconditionally before returning, to release streamCtx's resources
+// (mirroring consumeAIStream's own defer cancel()).
+func (u *MessageUsecase) completeAIMessageFallback(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	aiMsg domainmessage.Message,
+	roomID, model string,
+	chatMsgs []ai.ChatMessage,
+	summaryUsed bool,
+) {
+	defer cancel()
+
+	completion, err := u.llmGateway.Complete(ctx, &ai.CompletionRequest{
+		Model:    model,
+		Messages: chatMsgs,
+	})
+
+	now := time.Now()
+	status := domainmessage.MessageStatusCompleted
+	content := ""
+	if err != nil {
+		status = domainmessage.MessageStatusFailed
+	} else {
+		content = completion.Content
+	}
+
+	if updateErr := u.msgRepo.UpdateAIResponse(ctx, aiMsg.ID, content, status, now); updateErr != nil {
+		slog.Error("failed to persist gRPC-transport-fallback AI response", "error", updateErr, "room_id", roomID, "message_id", aiMsg.ID)
+		return
+	}
+	aiMsg.Content = content
+	aiMsg.Status = status
+	aiMsg.UpdatedAt = now
+
+	u.hub.Publish(ctx, event.RoomEvent{
+		Type:               event.EventMessageUpdated,
+		RoomID:             roomID,
+		Message:            &aiMsg,
+		TargetUserIDs:      targetUserIDsForVisibility(&aiMsg),
+		OccurredAt:         now,
+		UsedContextSummary: summaryUsed,
+	})
+
+	if err != nil {
+		slog.Error("gRPC-transport-fallback Complete call failed", "error", err, "room_id", roomID, "message_id", aiMsg.ID)
+		return
+	}
+
+	// Fire-and-forget: the AI message is already durably persisted, so a
+	// usage-recording failure must never affect anything downstream.
+	if err := u.billing.RecordUsage(ctx, roomID, aiMsg.ID, model, completion.PromptTokens, completion.OutputTokens); err != nil {
 		slog.Error("failed to record token usage", "error", err, "room_id", roomID, "message_id", aiMsg.ID)
 	}
 }

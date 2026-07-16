@@ -2,6 +2,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { deleteMessage } from "../api/delete-message"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { toaster } from "@/components/ui/toaster"
 import { removeMessageInAnyPage, type MessagesInfiniteData } from "../lib/message-cache"
 
@@ -33,8 +34,7 @@ export function useDeleteMessage(roomId: string) {
       toaster.create({
         type: "error",
         title: "Failed to delete message",
-        description:
-          error instanceof Error ? error.message : "Please try again.",
+        description: getErrorMessage(error, "Please try again."),
       })
     },
   })
