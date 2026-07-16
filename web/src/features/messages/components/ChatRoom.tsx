@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Flex, Spinner, Text } from "@chakra-ui/react"
+import { Alert, Flex, Spinner, Text } from "@chakra-ui/react"
 import { useChatRoom } from "@/features/messages/hooks/use-chat-room"
 import { useRoomSocket } from "@/features/messages/hooks/use-room-socket"
 import { canInvokeAI, canSendMessage } from "@/features/members/lib/roles"
@@ -75,7 +75,18 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
         pageCount={pageCount}
       />
 
-      {canSendMessage(viewerRole) ? (
+      {room?.is_archived ? (
+        <Alert.Root status="warning" borderRadius={0}>
+          <Alert.Indicator />
+          <Alert.Content>
+            <Alert.Title>Room archived</Alert.Title>
+            <Alert.Description>
+              This room is archived — a fork copy is still in progress and
+              cannot accept new messages yet.
+            </Alert.Description>
+          </Alert.Content>
+        </Alert.Root>
+      ) : canSendMessage(viewerRole) ? (
         <MessageInput
           roomId={roomId}
           onSend={handleSend}
