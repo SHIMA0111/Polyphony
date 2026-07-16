@@ -61,6 +61,12 @@ type Config struct {
 	// MinIO, which does not support virtual-hosted-style addressing) rather
 	// than virtual-hosted-style (env S3_FORCE_PATH_STYLE, default true).
 	S3ForcePathStyle bool
+	// WSTicketSecret is the HMAC secret used to sign and verify short-lived
+	// WebSocket upgrade tickets (see internal/interface/wsticket). It is read
+	// from the optional WS_TICKET_SECRET env var; if unset, it defaults to
+	// JWTSecret, which keeps local/dev setup zero-config while still
+	// allowing an independent secret in environments that want one.
+	WSTicketSecret string
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -121,6 +127,11 @@ func Load() (*Config, error) {
 		s3ForcePathStyle = v != "false"
 	}
 
+	wsTicketSecret := os.Getenv("WS_TICKET_SECRET")
+	if wsTicketSecret == "" {
+		wsTicketSecret = jwtSecret
+	}
+
 	return &Config{
 		Port:                port,
 		DatabaseURL:         dbURL,
@@ -136,6 +147,7 @@ func Load() (*Config, error) {
 		S3AccessKey:         s3AccessKey,
 		S3SecretKey:         s3SecretKey,
 		S3ForcePathStyle:    s3ForcePathStyle,
+		WSTicketSecret:      wsTicketSecret,
 	}, nil
 }
 
