@@ -23,6 +23,15 @@ const (
 
 	// MessageStatusFailed indicates the AI call failed. Eligible for regeneration.
 	MessageStatusFailed MessageStatus = "failed"
+
+	// MessageStatusStreaming indicates an AI placeholder message whose
+	// response is still being generated via MessageUsecase.SendAIMessageStream
+	// (Step 51): assigned when the placeholder is first persisted (with
+	// empty Content) and replaced with MessageStatusCompleted or
+	// MessageStatusFailed once the LLM Gateway's stream ends. No schema
+	// migration is needed for this new value since messages.status is a
+	// plain VARCHAR(20) with no CHECK/enum constraint (see server/schema.sql).
+	MessageStatusStreaming MessageStatus = "streaming"
 )
 
 // MessageVisibility represents who is allowed to see a message: every room

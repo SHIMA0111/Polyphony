@@ -124,6 +124,52 @@ func (h *MessageHandler) SendAI(c echo.Context) error {
 	})
 }
 
+// StreamAI handles POST /rooms/:roomId/messages/ai/stream. It sends a user
+// message and invokes the LLM Gateway's streaming completion endpoint,
+// returning immediately with HTTP 202 rather than waiting for the AI
+// response to finish generating. The response body is the same
+// SendAIMessageResponse shape SendAI returns; ai_message.status will be
+// "streaming" on the happy path (or "failed" if the gateway rejected the
+// request synchronously -- e.g. an unknown model), never "completed": the
+// response is forwarded to WebSocket-connected room members as it arrives,
+// via a sequence of "token_chunk" frames followed by a final
+// "message_updated" frame once the stream ends (see
+// websocket_handler.go and MessageUsecase.SendAIMessageStream).
+//
+// Private AI mode (SendAIMessageRequest.Private) is not supported by this
+// endpoint yet: a request with "private": true is rejected with HTTP 400
+// rather than silently broadcasting a private exchange to the whole room.
+// It otherwise returns HTTP 400 for empty content, HTTP 403 if the user
+// lacks permission, HTTP 404 if the room is not found, and HTTP 402 if the
+// room's token balance is exhausted, matching SendAI's error mapping via
+// handleMessageError.
+func (h *MessageHandler) StreamAI(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+
+	var req SendAIMessageRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
+	}
+
+	if req.Content == "" {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "content is required"})
+	}
+	if req.Private {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "private mode is not supported for streaming yet"})
+	}
+
+	result, err := h.usecase.SendAIMessageStream(c.Request().Context(), userID, roomID, req.Content, req.Model)
+	if err != nil {
+		return handleMessageError(c, err)
+	}
+
+	return c.JSON(http.StatusAccepted, SendAIMessageResponse{
+		UserMessage: toMessageResponse(result.HumanMessage),
+		AIMessage:   toMessageResponse(result.AIMessage),
+	})
+}
+
 // RegenerateAI handles POST /rooms/:roomId/messages/:messageId/regenerate.
 // It regenerates an AI response for an existing human message. The request body
 // may optionally specify a different model. The target message must be of type

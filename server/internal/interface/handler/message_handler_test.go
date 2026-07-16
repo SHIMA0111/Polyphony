@@ -669,3 +669,128 @@ func TestSendAIHandlerInsufficientBalance402(t *testing.T) {
 		t.Fatalf("expected insufficient token balance body, got %s", rec.Body.String())
 	}
 }
+
+// --- StreamAI tests (Step 51) ---
+
+// TestMessageHandlerStreamAI202 asserts StreamAI returns HTTP 202 with
+// ai_message.status == "streaming" in the JSON body on success.
+func TestMessageHandlerStreamAI202(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{
+			{ID: "c1", Model: "test-model", Delta: "Hi"},
+			{ID: "c1", Model: "test-model", FinishReason: "stop", Usage: &ai.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}},
+		},
+	}
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	e := echo.New()
+	h := NewMessageHandler(uc)
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai/stream",
+		strings.NewReader(`{"content":"What is Go?","model":"test-model"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.StreamAI(c); err != nil {
+		t.Fatalf("StreamAI error: %v", err)
+	}
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+
+	var resp SendAIMessageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.AIMessage.Status != "streaming" {
+		t.Fatalf("expected ai_message.status streaming, got %s", resp.AIMessage.Status)
+	}
+}
+
+// TestMessageHandlerStreamAI400EmptyContent asserts StreamAI returns HTTP
+// 400 for empty content, matching SendAI's validation.
+func TestMessageHandlerStreamAI400EmptyContent(t *testing.T) {
+	e, h := setupMessageTest(true)
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai/stream",
+		strings.NewReader(`{"content":""}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.StreamAI(c); err != nil {
+		t.Fatalf("StreamAI error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+// TestMessageHandlerStreamAI400Private asserts StreamAI rejects a
+// "private": true request with HTTP 400, since private streaming is not yet
+// supported.
+func TestMessageHandlerStreamAI400Private(t *testing.T) {
+	e, h := setupMessageTest(true)
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai/stream",
+		strings.NewReader(`{"content":"secret","private":true}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.StreamAI(c); err != nil {
+		t.Fatalf("StreamAI error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for private stream request, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "private mode is not supported for streaming yet") {
+		t.Fatalf("expected private-mode-unsupported message, got %s", rec.Body.String())
+	}
+}
+
+// TestMessageHandlerStreamAI402InsufficientBalance asserts StreamAI returns
+// HTTP 402 with the same body SendAI returns, when the usecase returns
+// domain.ErrInsufficientBalance.
+func TestMessageHandlerStreamAI402InsufficientBalance(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	guard := &mocks.BillingGuard{CheckBalanceErr: domain.ErrInsufficientBalance}
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	e := echo.New()
+	h := NewMessageHandler(uc)
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai/stream",
+		strings.NewReader(`{"content":"Hello","model":"test"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.StreamAI(c); err != nil {
+		t.Fatalf("StreamAI error: %v", err)
+	}
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected 402, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `{"message":"insufficient token balance"}`) {
+		t.Fatalf("expected insufficient token balance body, got %s", rec.Body.String())
+	}
+}

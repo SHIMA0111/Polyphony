@@ -2,12 +2,14 @@
 package gateway
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
@@ -18,16 +20,25 @@ import (
 type LLMClient struct {
 	baseURL    string
 	httpClient *http.Client
+	// streamClient is used only by Stream. Unlike httpClient, it is built
+	// with no http.Client.Timeout: Timeout bounds the entire
+	// request-plus-response-body lifetime, which would tear down a
+	// legitimately long-running SSE stream partway through. Cancellation for
+	// a streaming call instead relies entirely on the context.Context passed
+	// to http.NewRequestWithContext by the caller.
+	streamClient *http.Client
 }
 
 // NewLLMClient creates a new LLMClient configured to call the LLM Gateway at the given base URL.
-// The HTTP client is configured with a 60-second timeout.
+// The HTTP client used for unary calls (Complete/ListModels/EstimateTokens) is configured with a
+// 60-second timeout; the client used for Stream has no timeout (see LLMClient.streamClient).
 func NewLLMClient(baseURL string) *LLMClient {
 	return &LLMClient{
 		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
+		streamClient: &http.Client{},
 	}
 }
 
@@ -129,6 +140,20 @@ type usageDTO struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// streamChunkDTO mirrors the LLM Gateway's `CompletionChunkDto` wire shape
+// (Step 43), carried as the JSON payload of each unnamed SSE `data:` frame
+// from `POST /completions/stream`. Delta and FinishReason are pointers
+// because the gateway omits them from the JSON body when not applicable to
+// a given chunk, rather than serializing `null`; Stream flattens a nil
+// pointer to Go's zero value ("" for both).
+type streamChunkDTO struct {
+	ID           string    `json:"id"`
+	Model        string    `json:"model"`
+	Delta        *string   `json:"delta"`
+	FinishReason *string   `json:"finish_reason"`
+	Usage        *usageDTO `json:"usage"`
+}
+
 // modelPricingDTO mirrors the LLM Gateway's nested `ModelPricingDto`
 // (`llm-gateway/src/adapters/inbound/rest/response.rs`): per-1M-token USD
 // pricing, present only when `modelDTO.Pricing` is non-nil.
@@ -226,6 +251,185 @@ func (c *LLMClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*a
 		PromptTokens: result.Usage.PromptTokens,
 		OutputTokens: result.Usage.CompletionTokens,
 	}, nil
+}
+
+// sseDoneSentinel is the literal `data:` payload the LLM Gateway sends on an
+// unnamed frame to terminate a successful stream (Step 43's SSE contract).
+const sseDoneSentinel = "[DONE]"
+
+// sseErrorEventName is the SSE `event:` value the LLM Gateway sends on a
+// mid-stream provider failure; its `data:` payload is a plain-text error
+// message (domain_err.to_string() on the gateway side), not JSON.
+const sseErrorEventName = "error"
+
+// Stream sends a streaming completion request to the LLM Gateway's
+// `POST /completions/stream` endpoint and returns a channel of incremental
+// ai.StreamResult items.
+//
+// It builds the same request body Complete builds and POSTs it with
+// `Accept: text/event-stream`, using c.streamClient (which has no
+// http.Client.Timeout, unlike c.httpClient -- see NewLLMClient). A non-2xx
+// initial response is a synchronous dispatch failure: the response body is
+// read and closed, and a domain.ErrLLMGateway-wrapped error is returned
+// immediately with a nil channel; in this case no goroutine is started and
+// the caller must not read from the (nil) channel.
+//
+// On a 200 OK response, Stream starts a goroutine that owns resp.Body (closing
+// it via defer) and parses the SSE body into ai.StreamResult items, framing on
+// blank lines exactly like the SSE spec: an unnamed frame whose data decodes as
+// streamChunkDTO becomes a Chunk-carrying result; an unnamed frame whose data is
+// the literal sseDoneSentinel ends the stream cleanly with no further item; an
+// `event: error` frame becomes a single Err-carrying result wrapping
+// domain.ErrLLMGateway around its plain-text data; and a transport-level read
+// error (anything other than a clean EOF at a frame boundary) becomes a single
+// Err-carrying result wrapping domain.ErrLLMGateway. In every case the
+// goroutine closes the output channel exactly once, as its last action, so
+// callers can safely range over it.
+func (c *LLMClient) Stream(ctx context.Context, req *ai.CompletionRequest) (<-chan ai.StreamResult, error) {
+	msgs := make([]chatMsgDTO, len(req.Messages))
+	for i, m := range req.Messages {
+		msgs[i] = chatMsgDTO{Role: m.Role, Content: toContentDTO(m)}
+	}
+
+	body := completionReqDTO{
+		Model:       req.Model,
+		Messages:    msgs,
+		MaxTokens:   req.MaxTokens,
+		Temperature: req.Temperature,
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("%w: marshal request: %v", domain.ErrLLMGateway, err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/completions/stream", bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("%w: create request: %v", domain.ErrLLMGateway, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.streamClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("%w: send request: %v", domain.ErrLLMGateway, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("%w: status %d: %s", domain.ErrLLMGateway, resp.StatusCode, string(respBody))
+	}
+
+	out := make(chan ai.StreamResult)
+	go readSSEStream(resp.Body, out)
+	return out, nil
+}
+
+// sseFrame holds the accumulated "event:" line of a single SSE frame
+// (delimited by a blank line), as read by readSSEStream. Its "data:" lines
+// are accumulated separately (see readSSEStream's dataLines), since a frame
+// may carry more than one and they must be joined with "\n".
+type sseFrame struct {
+	event string
+}
+
+// readSSEStream owns body (closing it on return) and parses it as an SSE
+// stream, sending one ai.StreamResult on out per completed frame per the
+// contract documented on Stream, and closing out exactly once as its last
+// action.
+func readSSEStream(body io.ReadCloser, out chan<- ai.StreamResult) {
+	defer close(out)
+	defer func() { _ = body.Close() }()
+
+	reader := bufio.NewReader(body)
+	var frame sseFrame
+	var dataLines []string
+
+	flush := func() bool {
+		// Continues the loop when true (nothing to flush), stops it (returns
+		// false) when a terminal frame was processed.
+		defer func() {
+			frame = sseFrame{}
+			dataLines = nil
+		}()
+
+		if frame.event == "" && len(dataLines) == 0 {
+			return true
+		}
+		data := strings.Join(dataLines, "\n")
+
+		if frame.event == sseErrorEventName {
+			out <- ai.StreamResult{Err: fmt.Errorf("%w: stream error: %s", domain.ErrLLMGateway, data)}
+			return false
+		}
+
+		// Default/unnamed frame.
+		if data == sseDoneSentinel {
+			return false
+		}
+
+		var chunk streamChunkDTO
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			out <- ai.StreamResult{Err: fmt.Errorf("%w: decode stream chunk: %v", domain.ErrLLMGateway, err)}
+			return false
+		}
+
+		delta, finishReason := "", ""
+		if chunk.Delta != nil {
+			delta = *chunk.Delta
+		}
+		if chunk.FinishReason != nil {
+			finishReason = *chunk.FinishReason
+		}
+		var usage *ai.Usage
+		if chunk.Usage != nil {
+			usage = &ai.Usage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}
+		}
+		out <- ai.StreamResult{Chunk: &ai.StreamChunk{
+			ID:           chunk.ID,
+			Model:        chunk.Model,
+			Delta:        delta,
+			FinishReason: finishReason,
+			Usage:        usage,
+		}}
+		return true
+	}
+
+	for {
+		line, err := reader.ReadString('\n')
+		trimmed := strings.TrimRight(line, "\r\n")
+
+		if trimmed == "" && err == nil {
+			// Blank line: frame boundary.
+			if !flush() {
+				return
+			}
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(trimmed, "event:"):
+			frame.event = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+		case strings.HasPrefix(trimmed, "data:"):
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")))
+		}
+
+		if err != nil {
+			if err == io.EOF {
+				// Flush any final frame that wasn't terminated by a trailing
+				// blank line before ending cleanly.
+				flush()
+				return
+			}
+			out <- ai.StreamResult{Err: fmt.Errorf("%w: stream transport error: %v", domain.ErrLLMGateway, err)}
+			return
+		}
+	}
 }
 
 // ListModels retrieves the list of available models from the LLM Gateway.

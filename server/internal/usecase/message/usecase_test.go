@@ -1425,3 +1425,424 @@ func TestSendAIMessageArchivedRoom(t *testing.T) {
 		t.Fatalf("expected ErrArchivedRoom, got %v", err)
 	}
 }
+
+// --- SendAIMessageStream tests (Step 51) ---
+
+// collectUntilMessageUpdated drains sub, collecting every EventTokenChunk
+// event addressed to aiMessageID, until an EventMessageUpdated event for
+// that same message ID arrives, which it returns alongside the collected
+// chunks. It fails the test if that takes longer than 3 seconds.
+func collectUntilMessageUpdated(t *testing.T, sub <-chan event.RoomEvent, aiMessageID string) ([]event.RoomEvent, event.RoomEvent) {
+	t.Helper()
+	var chunks []event.RoomEvent
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			switch {
+			case evt.Type == event.EventTokenChunk && evt.Chunk != nil && evt.Chunk.MessageID == aiMessageID:
+				chunks = append(chunks, evt)
+			case evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == aiMessageID:
+				return chunks, evt
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for stream completion event")
+			return nil, event.RoomEvent{}
+		}
+	}
+}
+
+// waitForCondition polls cond every 5ms until it returns true, failing the
+// test if that takes longer than 2 seconds. Used to synchronize on
+// fire-and-forget background work (e.g. BillingGuard.RecordUsage) that has
+// no event of its own to wait on.
+func waitForCondition(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for condition")
+}
+
+// TestSendAIMessageStreamSuccess asserts the happy path: the returned
+// AIMessage is immediately "streaming" with empty content, exactly one
+// EventTokenChunk is published per chunk with a non-empty Delta (carrying
+// the right MessageID), and a final EventMessageUpdated carries
+// Status == "completed" with Content equal to the concatenation of every
+// chunk's Delta.
+func TestSendAIMessageStreamSuccess(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{
+			{ID: "c1", Model: "test-model", Delta: "Go"},
+			{ID: "c1", Model: "test-model", Delta: " is a language"},
+			{ID: "c1", Model: "test-model", FinishReason: "stop", Usage: &ai.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}},
+		},
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+	if result.AIMessage.Status != domainmessage.MessageStatusStreaming {
+		t.Fatalf("expected streaming status immediately, got %s", result.AIMessage.Status)
+	}
+	if result.AIMessage.Content != "" {
+		t.Fatalf("expected empty content immediately, got %q", result.AIMessage.Content)
+	}
+
+	chunks, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 token chunk events (non-empty deltas only), got %d: %+v", len(chunks), chunks)
+	}
+	if chunks[0].Chunk.Delta != "Go" || chunks[1].Chunk.Delta != " is a language" {
+		t.Fatalf("unexpected chunk deltas: %q, %q", chunks[0].Chunk.Delta, chunks[1].Chunk.Delta)
+	}
+	for _, c := range chunks {
+		if c.Chunk.MessageID != result.AIMessage.ID {
+			t.Fatalf("expected chunk MessageID %s, got %s", result.AIMessage.ID, c.Chunk.MessageID)
+		}
+	}
+
+	if final.Message.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected completed status, got %s", final.Message.Status)
+	}
+	if final.Message.Content != "Go is a language" {
+		t.Fatalf("expected concatenated content %q, got %q", "Go is a language", final.Message.Content)
+	}
+
+	// The persisted repo state should match what the events showed.
+	persisted, err := msgRepo.GetByID(ctx, result.AIMessage.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if persisted.Content != "Go is a language" || persisted.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected persisted message to match final event, got %+v", persisted)
+	}
+}
+
+// TestSendAIMessageStreamMidStreamFailureRetryable asserts that a mid-stream
+// provider failure publishes token-chunk events for the chunks seen before
+// the failure, then one EventMessageUpdated with Status == "failed" and
+// Content equal to the partial concatenation, and that the resulting
+// placeholder can be retried via RegenerateAIMessage exactly like a
+// non-streaming failure.
+func TestSendAIMessageStreamMidStreamFailureRetryable(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{
+			{ID: "c1", Model: "test-model", Delta: "partial "},
+		},
+		StreamMidErr: fmt.Errorf("provider exploded"),
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+
+	chunks, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if len(chunks) != 1 || chunks[0].Chunk.Delta != "partial " {
+		t.Fatalf("expected 1 token chunk before failure, got %+v", chunks)
+	}
+	if final.Message.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected failed status, got %s", final.Message.Status)
+	}
+	if final.Message.Content != "partial " {
+		t.Fatalf("expected partial content persisted, got %q", final.Message.Content)
+	}
+
+	// Retry via RegenerateAIMessage, switching to a working gateway.
+	gw2 := &mocks.LLMGateway{
+		CompletionResponse: &ai.CompletionResponse{Content: "recovered", Model: "test-model", PromptTokens: 3, OutputTokens: 2},
+	}
+	uc2 := NewMessageUsecase(msgRepo, roomRepo, gw2, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	regenerated, _, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
+	if err != nil {
+		t.Fatalf("RegenerateAIMessage after stream failure failed: %v", err)
+	}
+	if regenerated.Content != "recovered" || regenerated.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected successful regenerate, got %+v", regenerated)
+	}
+	if regenerated.ID != result.AIMessage.ID {
+		t.Fatal("expected regenerate to update the existing streamed placeholder, not create a new one")
+	}
+}
+
+// TestSendAIMessageStreamSynchronousDispatchFailure asserts that when
+// llmGateway.Stream itself fails synchronously (bad model, connection
+// refused, etc.), SendAIMessageStream returns no Go error, the returned
+// AIMessage.Status is immediately "failed", and no EventTokenChunk is ever
+// published.
+func TestSendAIMessageStreamSynchronousDispatchFailure(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{StreamErr: fmt.Errorf("bad model")}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("expected no Go error on a synchronous dispatch failure, got %v", err)
+	}
+	if result.AIMessage.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected failed status immediately, got %s", result.AIMessage.Status)
+	}
+
+	// Drain whatever events were already published (human/AI created, AI
+	// updated-to-failed) and assert no EventTokenChunk ever appears.
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventTokenChunk {
+				t.Fatal("expected no EventTokenChunk for a synchronous dispatch failure")
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// TestSendAIMessageStreamSummaryUsedFalse asserts that, in this step's
+// standalone state (before Step 50's assembleAIContext lands), every
+// published EventTokenChunk's SummaryUsed field is false.
+func TestSendAIMessageStreamSummaryUsedFalse(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{{ID: "c1", Model: "test-model", Delta: "hi"}},
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+
+	chunks, _ := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if len(chunks) != 1 {
+		t.Fatalf("expected exactly 1 chunk, got %d", len(chunks))
+	}
+	if chunks[0].Chunk.SummaryUsed {
+		t.Fatal("expected SummaryUsed=false in this step's standalone state")
+	}
+}
+
+// --- SendAIMessageStream billing guard tests (Step 42 parity) ---
+
+// TestSendAIMessageStreamInsufficientBalance asserts that SendAIMessageStream
+// returns domain.ErrInsufficientBalance immediately when the billing guard
+// rejects, and that no messages are created (the guard runs before any
+// message is persisted).
+func TestSendAIMessageStreamInsufficientBalance(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+
+	guard := &mocks.BillingGuard{CheckBalanceErr: domain.ErrInsufficientBalance}
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	_, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != domain.ErrInsufficientBalance {
+		t.Fatalf("expected ErrInsufficientBalance, got %v", err)
+	}
+	if len(msgRepo.Messages) != 0 {
+		t.Fatalf("expected zero messages created, got %d", len(msgRepo.Messages))
+	}
+}
+
+// TestSendAIMessageStreamRecordsUsage asserts that on a successful stream
+// with a Usage-bearing final chunk, RecordUsage is called exactly once with
+// the AI message's ID, the resolved model, and the final chunk's token
+// counts.
+func TestSendAIMessageStreamRecordsUsage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	guard := &mocks.BillingGuard{}
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{
+			{ID: "c1", Model: "test-model", Delta: "hi"},
+			{ID: "c1", Model: "test-model", FinishReason: "stop", Usage: &ai.Usage{PromptTokens: 4, CompletionTokens: 6, TotalTokens: 10}},
+		},
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+	collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+
+	// RecordUsage is fire-and-forget, called just after the completion
+	// event is published; poll LastRecordUsageCall (which locks internally,
+	// unlike reading RecordUsageCalls directly) rather than racing on it.
+	waitForCondition(t, func() bool {
+		_, ok := guard.LastRecordUsageCall()
+		return ok
+	})
+
+	call, _ := guard.LastRecordUsageCall()
+	if call.AIMessageID != result.AIMessage.ID {
+		t.Fatalf("expected RecordUsage aiMessageID %s, got %s", result.AIMessage.ID, call.AIMessageID)
+	}
+	if call.Model != "test-model" {
+		t.Fatalf("expected RecordUsage model test-model, got %s", call.Model)
+	}
+	if call.PromptTokens != 4 || call.OutputTokens != 6 {
+		t.Fatalf("expected RecordUsage tokens 4/6, got %d/%d", call.PromptTokens, call.OutputTokens)
+	}
+}
+
+// TestSendAIMessageStreamRecordUsageErrorSwallowed asserts that a
+// RecordUsage error does not affect the persisted/broadcast result of a
+// successful stream — usage recording is fire-and-forget.
+func TestSendAIMessageStreamRecordUsageErrorSwallowed(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	guard := &mocks.BillingGuard{RecordUsageErr: fmt.Errorf("db unavailable")}
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{
+			{ID: "c1", Model: "test-model", Delta: "hi"},
+			{ID: "c1", Model: "test-model", FinishReason: "stop", Usage: &ai.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}},
+		},
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+
+	_, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if final.Message.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected completed status despite RecordUsage error, got %s", final.Message.Status)
+	}
+}
+
+// TestSendAIMessageStreamNoUsageChunkSkipsRecordUsage asserts that a stream
+// which ends without ever delivering a Usage-bearing chunk never calls
+// RecordUsage.
+func TestSendAIMessageStreamNoUsageChunkSkipsRecordUsage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	guard := &mocks.BillingGuard{}
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{{ID: "c1", Model: "test-model", Delta: "hi", FinishReason: "stop"}}, // no Usage
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+	_, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if final.Message.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected completed status, got %s", final.Message.Status)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := guard.LastRecordUsageCall(); ok {
+		t.Fatal("expected RecordUsage never called when the stream ends with no usage-bearing chunk")
+	}
+}
+
+// TestSendAIMessageStreamMidStreamFailureNeverRecordsUsage asserts that a
+// mid-stream failure never calls RecordUsage, even when chunks were
+// delivered before the failure.
+func TestSendAIMessageStreamMidStreamFailureNeverRecordsUsage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	guard := &mocks.BillingGuard{}
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{{ID: "c1", Model: "test-model", Delta: "partial"}},
+		StreamMidErr: fmt.Errorf("boom"),
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+	_, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if final.Message.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected failed status, got %s", final.Message.Status)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := guard.LastRecordUsageCall(); ok {
+		t.Fatal("expected RecordUsage never called on a mid-stream failure")
+	}
+}
