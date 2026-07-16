@@ -58,6 +58,35 @@ function formatShortTimestamp(iso: string): string {
 }
 
 /**
+ * Small pulsing cursor rendered at the end of a still-streaming AI
+ * message's text (`status === "streaming"`, Step 54), so the bubble reads
+ * as "still generating" without a second, separate indicator alongside
+ * `ThinkingBubble`. Matches `ThinkingBubble`'s plain Chakra `css`-prop
+ * `@keyframes` convention -- no extra animation dependency.
+ */
+function StreamingCursor() {
+  return (
+    <Box
+      as="span"
+      display="inline-block"
+      w="2px"
+      h="1em"
+      ml="1px"
+      bg="fg.muted"
+      verticalAlign="text-bottom"
+      aria-hidden="true"
+      css={{
+        "@keyframes streaming-cursor-blink": {
+          "0%, 100%": { opacity: 1 },
+          "50%": { opacity: 0 },
+        },
+        animation: "streaming-cursor-blink 1s step-start infinite",
+      }}
+    />
+  )
+}
+
+/**
  * Room-role privilege ranking, mirroring
  * `server/internal/domain/room/role.go`'s closed
  * `reader < guest < member < admin < master` hierarchy. Kept as a small,
@@ -117,6 +146,14 @@ export function MessageBubble({
 
   const isFailed = message.status === "failed"
   const isSending = message.status === "sending"
+  /**
+   * `true` while an AI message is receiving `token_chunk` WS deltas but has
+   * not yet been finalized (Step 54; see `../lib/merge-message-event.ts`).
+   * Distinct from `isSending`: `"sending"` is the pre-round-trip optimistic
+   * state (no server id yet, always empty content), while `"streaming"` is
+   * a real, persisted message id already accumulating live content.
+   */
+  const isStreaming = message.status === "streaming"
   const isFailedHuman = isFailed && message.type === "human"
   const isExcluded = message.exclude_from_ai
 
@@ -195,8 +232,27 @@ export function MessageBubble({
             </Text>
           </Flex>
         )}
-        {message.type === "ai" && isSending ? (
+        {message.type === "ai" && (isSending || (isStreaming && !message.content)) ? (
+          // Thinking/typing state: no content has arrived yet, whether
+          // that's the pre-round-trip optimistic placeholder (`isSending`)
+          // or a persisted streaming placeholder still waiting on its first
+          // `token_chunk` (`isStreaming` with empty content).
           <ThinkingBubble />
+        ) : message.type === "ai" && isStreaming ? (
+          // Live-streaming state: content is growing in place as
+          // `token_chunk` deltas arrive (see
+          // `../lib/merge-message-event.ts`). Rendered as plain text rather
+          // than through `MarkdownContent` -- partial markdown mid-generation
+          // (an unclosed code fence, list, etc.) can render misleadingly --
+          // with a pulsing cursor appended so the bubble visibly reads as
+          // still in-flight. Once the terminating `message_updated` event
+          // finalizes the message, `status` moves off `"streaming"` and this
+          // same content renders through `MarkdownContent` below instead --
+          // a content update within the same bubble, not a remount.
+          <Text fontSize="15px" lineHeight="relaxed" whiteSpace="pre-wrap">
+            {message.content}
+            <StreamingCursor />
+          </Text>
         ) : message.type === "ai" && message.content ? (
           <MarkdownContent content={message.content} />
         ) : (
@@ -216,6 +272,13 @@ export function MessageBubble({
             <Spinner size="xs" color="fg.muted" />
             <Text fontSize="xs" color="fg.muted">
               Sending…
+            </Text>
+          </Flex>
+        ) : isStreaming ? (
+          <Flex align="center" gap={1}>
+            <Spinner size="xs" color="fg.muted" />
+            <Text fontSize="xs" color="fg.muted">
+              Streaming…
             </Text>
           </Flex>
         ) : (

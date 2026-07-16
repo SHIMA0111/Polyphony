@@ -3,7 +3,7 @@ import { delay, http, HttpResponse } from "msw"
 import { describe, expect, it } from "vitest"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
-import { fixtureAiMessageResponse } from "@/features/messages/api/handlers"
+import { fixtureAiStreamResponse } from "@/features/messages/api/handlers"
 import { mergeMessageEvent } from "@/features/messages/lib/merge-message-event"
 import type { MessagesInfiniteData } from "@/features/messages/lib/message-cache"
 import { useSendAIMessage } from "./use-send-ai-message"
@@ -13,9 +13,9 @@ const queryKey = ["rooms", "room-1", "messages"] as const
 describe("useSendAIMessage", () => {
   it("appends a sending human echo and a sending AI placeholder before the round-trip resolves", async () => {
     server.use(
-      http.post("/api/proxy/rooms/:roomId/messages/ai", async () => {
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", async () => {
         await delay(50)
-        return HttpResponse.json(fixtureAiMessageResponse, { status: 201 })
+        return HttpResponse.json(fixtureAiStreamResponse, { status: 202 })
       }),
     )
 
@@ -55,10 +55,13 @@ describe("useSendAIMessage", () => {
     await result.current.mutateAsync({ content: "Hello, AI!" })
 
     const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
-    // Newest-first: the AI reply landed after the human message.
+    // Newest-first: the AI reply landed after the human message. The AI
+    // entry is the `202` response's `status: "streaming"` placeholder, not
+    // finished text -- that only arrives via `token_chunk`/`message_updated`
+    // WS frames (see `merge-message-event.test.ts`).
     expect(data?.pages[0]?.messages).toEqual([
-      fixtureAiMessageResponse.ai_message,
-      fixtureAiMessageResponse.user_message,
+      fixtureAiStreamResponse.ai_message,
+      fixtureAiStreamResponse.user_message,
     ])
   })
 
@@ -71,9 +74,9 @@ describe("useSendAIMessage", () => {
     // entries; `onSuccess` must then remove the optimistic entries rather
     // than swap them for a *third* copy of each.
     server.use(
-      http.post("/api/proxy/rooms/:roomId/messages/ai", async () => {
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", async () => {
         await delay(50)
-        return HttpResponse.json(fixtureAiMessageResponse, { status: 201 })
+        return HttpResponse.json(fixtureAiStreamResponse, { status: 202 })
       }),
     )
 
@@ -92,12 +95,12 @@ describe("useSendAIMessage", () => {
       const withHuman = mergeMessageEvent(old, {
         type: "message_created",
         room_id: "room-1",
-        message: fixtureAiMessageResponse.user_message,
+        message: fixtureAiStreamResponse.user_message,
       })
       return mergeMessageEvent(withHuman, {
         type: "message_created",
         room_id: "room-1",
-        message: fixtureAiMessageResponse.ai_message,
+        message: fixtureAiStreamResponse.ai_message,
       })
     })
 
@@ -107,15 +110,75 @@ describe("useSendAIMessage", () => {
     expect(data?.pages[0]?.messages).toHaveLength(2)
     expect(data?.pages[0]?.messages).toEqual(
       expect.arrayContaining([
-        fixtureAiMessageResponse.ai_message,
-        fixtureAiMessageResponse.user_message,
+        fixtureAiStreamResponse.ai_message,
+        fixtureAiStreamResponse.user_message,
       ]),
     )
   })
 
+  it("streams token_chunk deltas onto the real AI message id and finalizes on message_updated (Step 54)", async () => {
+    // End-to-end through the actual mutation + `mergeMessageEvent`, matching
+    // how `use-room-socket.ts` really drives the cache: the AI placeholder
+    // arrives via the mutation's own `202` response (not a WS
+    // `message_created` echo, to keep this test focused on the chunk/finalize
+    // path this step adds), then two `token_chunk` frames grow its content,
+    // then a `message_updated` finalize frame replaces it with the
+    // authoritative final message.
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useSendAIMessage("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    await result.current.mutateAsync({ content: "Hello, AI!" })
+
+    const aiId = fixtureAiStreamResponse.ai_message.id
+
+    queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) =>
+      mergeMessageEvent(old, {
+        type: "token_chunk",
+        room_id: "room-1",
+        chunk: { message_id: aiId, delta: "Hello", summary_used: false },
+      }),
+    )
+    let aiMessage = queryClient
+      .getQueryData<MessagesInfiniteData>(queryKey)
+      ?.pages[0]?.messages.find((m) => m.id === aiId)
+    expect(aiMessage?.status).toBe("streaming")
+    expect(aiMessage?.content).toBe("Hello")
+
+    queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) =>
+      mergeMessageEvent(old, {
+        type: "token_chunk",
+        room_id: "room-1",
+        chunk: { message_id: aiId, delta: "!", summary_used: false },
+      }),
+    )
+    aiMessage = queryClient
+      .getQueryData<MessagesInfiniteData>(queryKey)
+      ?.pages[0]?.messages.find((m) => m.id === aiId)
+    expect(aiMessage?.content).toBe("Hello!")
+
+    const finalMessage = {
+      ...fixtureAiStreamResponse.ai_message,
+      content: "Hello!",
+      status: "completed" as const,
+    }
+    queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) =>
+      mergeMessageEvent(old, {
+        type: "message_updated",
+        room_id: "room-1",
+        message: finalMessage,
+      }),
+    )
+    aiMessage = queryClient
+      .getQueryData<MessagesInfiniteData>(queryKey)
+      ?.pages[0]?.messages.find((m) => m.id === aiId)
+    expect(aiMessage).toEqual(finalMessage)
+  })
+
   it("rolls the human echo back to status: 'failed' and drops the AI placeholder when the request fails", async () => {
     server.use(
-      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
         return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
       }),
     )

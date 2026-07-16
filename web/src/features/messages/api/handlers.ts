@@ -69,6 +69,25 @@ export const fixtureAiMessageResponse: AIMessageResponse = {
   ai_message: fixtureAiMessage,
 }
 
+/**
+ * The AI placeholder as `POST /rooms/:roomId/messages/ai/stream`'s `202`
+ * response actually returns it (see
+ * `server/internal/interface/handler/message_handler.go`'s `StreamAI` doc
+ * comment): `status: "streaming"`, empty `content` — the real text arrives
+ * afterward as `token_chunk` WS frames, never in this response body.
+ */
+export const fixtureAiMessageStreaming: Message = {
+  ...fixtureAiMessage,
+  status: "streaming",
+  content: "",
+}
+
+/** Response body for `POST /rooms/:roomId/messages/ai/stream`. */
+export const fixtureAiStreamResponse: AIMessageResponse = {
+  user_message: fixtureHumanMessage,
+  ai_message: fixtureAiMessageStreaming,
+}
+
 export const fixtureUploadTicket: UploadTicket = {
   attachment_id: "attachment-1",
   s3_key: "rooms/room-1/attachment-1.png",
@@ -150,6 +169,16 @@ export const messagesHandlers = [
   http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
     return HttpResponse.json<AIMessageResponse>(fixtureAiMessageResponse, {
       status: 201,
+    })
+  }),
+
+  // `useSendAIMessage`'s mutationFn calls this streaming endpoint by
+  // default (Step 54) — see `fixtureAiStreamResponse`'s docstring for why
+  // its `ai_message` is `status: "streaming"` with empty `content` rather
+  // than the finished reply `fixtureAiMessageResponse` carries.
+  http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
+    return HttpResponse.json<AIMessageResponse>(fixtureAiStreamResponse, {
+      status: 202,
     })
   }),
 

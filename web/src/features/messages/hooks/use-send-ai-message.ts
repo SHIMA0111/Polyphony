@@ -1,7 +1,7 @@
 "use client"
 
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { sendAIMessage } from "../api/send-ai-message"
+import { sendAIMessageStream } from "../api/send-ai-message"
 import { toaster } from "@/components/ui/toaster"
 import {
   findMessageInPages,
@@ -25,26 +25,43 @@ interface SendAIMessageContext {
 }
 
 /**
- * Sends a message with an AI response, optimistically appending both a
- * `status: "sending"` human echo and a `status: "sending"` AI placeholder
- * (rendered by `MessageBubble` as a `ThinkingBubble`) the instant the
- * mutation is invoked — no wait for the round trip.
+ * Sends a message with an AI response via Step 51's streaming endpoint
+ * (`sendAIMessageStream`, `POST /rooms/:roomId/messages/ai/stream`),
+ * optimistically appending both a `status: "sending"` human echo and a
+ * `status: "sending"` AI placeholder (rendered by `MessageBubble` as a
+ * `ThinkingBubble`) the instant the mutation is invoked — no wait for the
+ * round trip.
+ *
+ * Unlike the non-streaming `sendAIMessage` (still exported from
+ * `../api/send-ai-message` as the documented fallback for callers that
+ * cannot use streaming, e.g. a future private-AI-mode send —
+ * `StreamAI` rejects `private: true` with HTTP 400), this mutation's own
+ * `202` response never carries the finished AI text: `ai_message.status` is
+ * `"streaming"` with empty `content` on the happy path. The actual response
+ * text arrives afterward as `token_chunk` WebSocket frames merged by
+ * `mergeMessageEvent` (see `../lib/merge-message-event.ts`), terminated by a
+ * `message_updated` frame carrying the finalized message
+ * (`status: "completed"`/`"failed"`) — this hook's `onSuccess` only ever
+ * needs to reconcile the *optimistic* entries against the placeholder, not
+ * against final content.
  *
  * On success both optimistic entries are replaced by the real persisted
- * messages — unless either message's own WS `message_created` echo already
- * won the race and merged the server copy into the cache first (routinely
- * happens locally, since a WS frame can beat the POST response), in which
- * case that optimistic entry is dropped instead of being swapped in too
- * (checked independently per message, since the human and AI messages' WS
- * frames can each arrive on their own schedule) — otherwise the swap would
- * leave two copies of the same server message (see `mergeMessageEvent`'s
- * dedup-by-id, which cannot recognize an optimistic entry as "the same
- * message" since it has a different, client-generated id). Note that a
- * *successful* HTTP response can still carry
- * `ai_message.status === "failed"` — `SendAIMessage` always persists a
- * human message plus an AI message row, saving `status: "failed"` on the AI
- * row when the LLM call itself failed (see
- * `server/internal/usecase/message/usecase.go`) so `RegenerateAIMessage` can
+ * messages — unless either message's own WS `message_created` echo (or, for
+ * the AI message, its first `token_chunk`) already won the race and merged
+ * the server copy into the cache first (routinely happens locally, since a
+ * WS frame can beat the POST response), in which case that optimistic entry
+ * is dropped instead of being swapped in too (checked independently per
+ * message, since the human and AI messages' WS frames can each arrive on
+ * their own schedule) — otherwise the swap would leave two copies of the
+ * same server message (see `mergeMessageEvent`'s dedup-by-id, which cannot
+ * recognize an optimistic entry as "the same message" since it has a
+ * different, client-generated id) or, worse, clobber content already
+ * accumulated from `token_chunk` deltas with the placeholder's empty
+ * `content`. Note that a *successful* HTTP response can still carry
+ * `ai_message.status === "failed"` — `SendAIMessageStream` immediately marks
+ * the placeholder failed (never streaming) when the LLM Gateway rejects the
+ * request synchronously (see
+ * `server/internal/usecase/message/stream.go`) so `RegenerateAIMessage` can
  * retry it later. That is handled here like any other `onSuccess`
  * reconciliation, not this hook's `onError` path.
  *
@@ -61,7 +78,7 @@ export function useSendAIMessage(roomId: string) {
 
   return useMutation({
     mutationFn: ({ content, model }: SendAIMessageInput) =>
-      sendAIMessage(roomId, content, model),
+      sendAIMessageStream(roomId, content, model),
     onMutate: async ({ content }): Promise<SendAIMessageContext> => {
       await queryClient.cancelQueries({ queryKey })
 

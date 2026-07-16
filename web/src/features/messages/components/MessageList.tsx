@@ -94,7 +94,17 @@ export function MessageList({
 
   return (
     <Box position="relative" flex={1} minH={0}>
-      <Box ref={setContainerNode} h="full" overflowY="auto">
+      <Box
+        ref={setContainerNode}
+        h="full"
+        overflowY="auto"
+        // Stable hook for `web/e2e/streaming.spec.ts` (Step 54) to attach a
+        // `MutationObserver` to *before* triggering a send: the container
+        // itself is mounted from the very first render, unlike any
+        // individual `MessageBubble`, whose DOM node/key changes when an
+        // optimistic entry is swapped for its real, server-assigned id.
+        data-testid="message-list"
+      >
         <Box maxW="4xl" mx="auto" px={4} py={6} spaceY={6}>
           {isFetchingNextPage && (
             <Box display="flex" justifyContent="center" py={2}>

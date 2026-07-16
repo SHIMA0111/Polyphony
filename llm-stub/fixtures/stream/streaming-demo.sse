@@ -1,0 +1,45 @@
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"Streaming "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"responses "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"render "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"token "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"by "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"token, "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"so "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"the "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"reader "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"watches "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"each "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"word "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"appear "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"as "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"soon "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"as "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"the "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"model "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"produces "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"it."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-streaming-demo","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]

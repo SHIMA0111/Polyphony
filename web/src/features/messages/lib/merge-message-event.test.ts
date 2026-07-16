@@ -32,6 +32,18 @@ function makeUpdatedEvent(message: Message): RoomSocketEvent {
   return { type: "message_updated", room_id: "room-1", message }
 }
 
+function makeChunkEvent(
+  messageId: string,
+  delta: string,
+  summaryUsed = false,
+): RoomSocketEvent {
+  return {
+    type: "token_chunk",
+    room_id: "room-1",
+    chunk: { message_id: messageId, delta, summary_used: summaryUsed },
+  }
+}
+
 describe("mergeMessageEvent", () => {
   it("prepends a message_created event for a new id to the newest page", () => {
     const seeded: MessagesInfiniteData = {
@@ -140,5 +152,110 @@ describe("mergeMessageEvent", () => {
     // "4" (arrived second) is prepended in front of "5" (arrived first),
     // i.e. arrival order is preserved even though 4 < 5 numerically.
     expect(data?.pages[0].messages.map((m) => m.id)).toEqual(["4", "5"])
+  })
+
+  describe("token_chunk (Step 54 streaming)", () => {
+    it("appends a chunk's delta to an existing message and marks it status: streaming", () => {
+      const placeholder = makeMessage("ai-1", {
+        type: "ai",
+        content: "Hello",
+        status: "streaming",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [placeholder], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-1", ", world"))
+
+      const updated = result?.pages[0].messages.find((m) => m.id === "ai-1")
+      expect(updated?.content).toBe("Hello, world")
+      expect(updated?.status).toBe("streaming")
+    })
+
+    it("creates a new streaming placeholder when the first chunk for a message id arrives before any other event", () => {
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [makeMessage("1")], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-new", "First "))
+
+      const created = result?.pages[0].messages.find((m) => m.id === "ai-new")
+      expect(created).toMatchObject({
+        id: "ai-new",
+        type: "ai",
+        status: "streaming",
+        content: "First ",
+      })
+      // Prepended ahead of what was already cached.
+      expect(result?.pages[0].messages.map((m) => m.id)).toEqual(["ai-new", "1"])
+    })
+
+    it("accumulates content across multiple chunks for the same message id", () => {
+      let data: MessagesInfiniteData | undefined = {
+        pages: [{ messages: [], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "The "))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "quick "))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "fox"))
+
+      expect(data?.pages[0].messages.find((m) => m.id === "ai-1")?.content).toBe(
+        "The quick fox",
+      )
+    })
+
+    it("replaces the in-flight streamed entry wholesale on the terminating message_updated finalize event", () => {
+      let data: MessagesInfiniteData | undefined = {
+        pages: [{ messages: [], next_cursor: null }],
+        pageParams: [undefined],
+      }
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "partial"))
+      expect(data?.pages[0].messages[0].status).toBe("streaming")
+
+      const finalMessage = makeMessage("ai-1", {
+        type: "ai",
+        content: "partial response, finished",
+        status: "completed",
+        sequence: 7,
+      })
+      data = mergeMessageEvent(data, makeUpdatedEvent(finalMessage))
+
+      expect(data?.pages[0].messages).toEqual([finalMessage])
+    })
+
+    it("ignores a chunk that arrives for a message already finalized as completed (idempotent finalize/chunk race)", () => {
+      const finalized = makeMessage("ai-1", {
+        type: "ai",
+        content: "Already done.",
+        status: "completed",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [finalized], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-1", " more text"))
+
+      expect(result).toEqual(seeded)
+    })
+
+    it("ignores a chunk that arrives for a message already finalized as failed", () => {
+      const finalized = makeMessage("ai-1", {
+        type: "ai",
+        content: "partial before failure",
+        status: "failed",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [finalized], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-1", " ignored"))
+
+      expect(result).toEqual(seeded)
+    })
   })
 })
