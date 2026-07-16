@@ -31,6 +31,20 @@ interface CompletionRequestBody {
 const FIXTURE_MARKER = /^\[\[fixture:([^\]]+)]]/
 
 /**
+ * Whitelists characters allowed in a fixture name extracted from a
+ * `[[fixture:NAME]]` marker.
+ *
+ * `extractFixtureName`'s result is interpolated straight into a filesystem
+ * path (`fixtures/{name}.json`, `fixtures/stream/{name}.sse`) with no other
+ * sanitization. Without this check, a marker like `[[fixture:../package]]`
+ * would let a spec (or anything else able to reach this stub over HTTP) read
+ * arbitrary files outside `fixtures/` via path traversal. Only
+ * alphanumerics, `_`, and `-` are allowed — matching every real fixture file
+ * name in `fixtures/`.
+ */
+const VALID_FIXTURE_NAME = /^[a-zA-Z0-9_-]+$/
+
+/**
  * Determines which fixture to serve for a completion request.
  *
  * Inspects the last message with `role: "user"` in the request body: if its
@@ -161,9 +175,11 @@ export function mergeCompletionResponse(
  * canned SSE stream depending on `body.stream`.
  *
  * @param request - The incoming HTTP request.
- * @returns A `200` JSON/SSE response for a known fixture, or a `404` JSON
- *   error body (so a missing fixture fails a spec loudly) for an unknown one,
- *   or a `400` JSON error body for an unparseable request.
+ * @returns A `200` JSON/SSE response for a known fixture, a `400` JSON error
+ *   body for an unparseable request or a fixture name outside the
+ *   {@link VALID_FIXTURE_NAME} whitelist (e.g. a path-traversal attempt), or
+ *   a `404` JSON error body (so a missing fixture fails a spec loudly) for
+ *   an unknown one.
  */
 export async function handleChatCompletions(request: Request): Promise<Response> {
   let body: CompletionRequestBody
@@ -174,6 +190,10 @@ export async function handleChatCompletions(request: Request): Promise<Response>
   }
 
   const fixtureName = extractFixtureName(body.messages ?? [])
+
+  if (!VALID_FIXTURE_NAME.test(fixtureName)) {
+    return errorResponse(400, `invalid fixture name: ${fixtureName}`)
+  }
 
   if (body.stream === true) {
     const sse = await loadStreamingFixture(fixtureName)

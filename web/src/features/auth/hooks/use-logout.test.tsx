@@ -16,19 +16,19 @@ vi.mock("next/navigation", () => ({
  *
  * Covers both the happy path (Kratos logout succeeds) and the failure path
  * (the Kratos logout call errors out) to guard the `onSettled`-based
- * navigation: a failed logout must still invalidate the cached session and
- * navigate to `/login`, since stranding the user on the current page after a
- * failed logout attempt is worse than navigating away with a possibly-stale
- * server-side session.
+ * clearing/navigation: a failed logout must still clear the entire query
+ * cache and navigate to `/login`, since stranding the user on the current
+ * page after a failed logout attempt is worse than navigating away with a
+ * possibly-stale server-side session.
  */
 describe("useLogout", () => {
   beforeEach(() => {
     pushMock.mockClear()
   })
 
-  it("invalidates the session query and navigates to /login on success", async () => {
+  it("clears the query cache and navigates to /login on success", async () => {
     const queryClient = createTestQueryClient()
-    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries")
+    const clearSpy = vi.spyOn(queryClient, "clear")
 
     const { result } = renderHook(() => useLogout(), {
       wrapper: createQueryClientWrapper(queryClient),
@@ -38,11 +38,11 @@ describe("useLogout", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["auth", "session"] })
+    expect(clearSpy).toHaveBeenCalled()
     expect(pushMock).toHaveBeenCalledWith("/login")
   })
 
-  it("still invalidates the session query and navigates to /login when the Kratos logout call fails", async () => {
+  it("still clears the query cache and navigates to /login when the Kratos logout call fails", async () => {
     server.use(
       http.get("/api/kratos/self-service/logout/browser", () => {
         return HttpResponse.json({ error: "boom" }, { status: 500 })
@@ -50,7 +50,7 @@ describe("useLogout", () => {
     )
 
     const queryClient = createTestQueryClient()
-    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries")
+    const clearSpy = vi.spyOn(queryClient, "clear")
 
     const { result } = renderHook(() => useLogout(), {
       wrapper: createQueryClientWrapper(queryClient),
@@ -60,7 +60,7 @@ describe("useLogout", () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true))
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["auth", "session"] })
+    expect(clearSpy).toHaveBeenCalled()
     expect(pushMock).toHaveBeenCalledWith("/login")
   })
 })

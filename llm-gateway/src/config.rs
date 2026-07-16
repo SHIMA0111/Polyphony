@@ -9,6 +9,13 @@ pub struct HttpClientConfig {
     /// Maximum time to wait while establishing a TCP/TLS connection.
     pub connect_timeout: Duration,
     /// Maximum time to wait for the entire request (connect + send + receive).
+    ///
+    /// Streaming responses (SSE token-by-token) are also bounded by this same
+    /// `reqwest::Client` timeout end-to-end, since it covers the full request
+    /// lifetime rather than per-chunk idle gaps. A long-lived stream that keeps
+    /// producing chunks can still hit this ceiling; if that becomes a problem,
+    /// consider introducing separate idle-timeout semantics for streaming calls
+    /// rather than raising this value further.
     pub request_timeout: Duration,
     /// Maximum number of retry attempts after the initial request on a retryable
     /// (`429`/`5xx`) response.
@@ -60,7 +67,7 @@ impl Config {
     /// - `LLM_GATEWAY_PORT` — REST listen port (default: `8081`)
     /// - `LLM_GATEWAY_GRPC_PORT` — gRPC listen port (default: `50051`)
     /// - `LLM_GATEWAY_CONNECT_TIMEOUT_SECS` — Connect timeout in seconds (default: `10`)
-    /// - `LLM_GATEWAY_REQUEST_TIMEOUT_SECS` — Total request timeout in seconds (default: `30`)
+    /// - `LLM_GATEWAY_REQUEST_TIMEOUT_SECS` — Total request timeout in seconds (default: `600`)
     /// - `LLM_GATEWAY_MAX_RETRIES` — Max retry attempts on `429`/`5xx` responses (default: `3`)
     /// - `LLM_GATEWAY_RETRY_BASE_DELAY_MS` — Base backoff delay in milliseconds (default: `500`)
     /// - `OPENAI_BASE_URL` — OpenAI API base URL (default: `https://api.openai.com`)
@@ -77,7 +84,7 @@ impl Config {
         let connect_timeout =
             Duration::from_secs(env_parsed("LLM_GATEWAY_CONNECT_TIMEOUT_SECS", 10));
         let request_timeout =
-            Duration::from_secs(env_parsed("LLM_GATEWAY_REQUEST_TIMEOUT_SECS", 30));
+            Duration::from_secs(env_parsed("LLM_GATEWAY_REQUEST_TIMEOUT_SECS", 600));
         let max_retries = env_parsed("LLM_GATEWAY_MAX_RETRIES", 3);
         let retry_base_delay =
             Duration::from_millis(env_parsed("LLM_GATEWAY_RETRY_BASE_DELAY_MS", 500));
@@ -163,7 +170,7 @@ mod tests {
         assert_eq!(config.port, 8081);
         assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.http.connect_timeout, Duration::from_secs(10));
-        assert_eq!(config.http.request_timeout, Duration::from_secs(30));
+        assert_eq!(config.http.request_timeout, Duration::from_secs(600));
         assert_eq!(config.http.max_retries, 3);
         assert_eq!(config.http.retry_base_delay, Duration::from_millis(500));
         assert_eq!(config.openai.base_url, "https://api.openai.com");

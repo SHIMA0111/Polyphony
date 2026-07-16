@@ -31,8 +31,14 @@ type subscriber struct {
 // phase.
 //
 // The zero value is not usable; construct with NewInProcessHub.
+//
+// mu is a RWMutex rather than a plain Mutex so that Publish can hold a read
+// lock across its entire snapshot-and-send loop: this is what prevents the
+// send-after-close race described on Publish's doc comment, at the cost of
+// serializing Publish with Subscribe/unsubscribe (never with other
+// concurrent Publish calls, which only need read access).
 type InProcessHub struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	subs map[string][]*subscriber // roomID -> subscribers
 }
 
@@ -50,11 +56,18 @@ func NewInProcessHub() *InProcessHub {
 // blocking the caller. Publish never returns an error and never blocks on
 // slow subscribers, which is what guarantees that broadcasting can never
 // roll back or fail the write that produced the event.
+//
+// Publish holds the hub's read lock for the entire snapshot-and-send loop
+// (not just the snapshot) so that it can never race with an in-flight
+// unsubscribe: without this, Publish could read the subscriber list, have
+// unsubscribe concurrently remove and close that subscriber's channel, and
+// then send on the now-closed channel, panicking. Holding the read lock
+// throughout still allows unlimited concurrent Publish calls (RWMutex
+// readers don't block each other) and only serializes against
+// Subscribe/unsubscribe, which are comparatively rare.
 func (h *InProcessHub) Publish(_ context.Context, event RoomEvent) {
-	h.mu.Lock()
-	subs := make([]*subscriber, len(h.subs[event.RoomID]))
-	copy(subs, h.subs[event.RoomID])
-	h.mu.Unlock()
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 
 	var targets map[string]struct{}
 	if len(event.TargetUserIDs) > 0 {
@@ -64,7 +77,7 @@ func (h *InProcessHub) Publish(_ context.Context, event RoomEvent) {
 		}
 	}
 
-	for _, sub := range subs {
+	for _, sub := range h.subs[event.RoomID] {
 		if targets != nil {
 			if _, ok := targets[sub.userID]; !ok {
 				continue
@@ -88,7 +101,10 @@ func (h *InProcessHub) Publish(_ context.Context, event RoomEvent) {
 // The returned unsubscribe function removes the subscription and closes the
 // channel. It is safe to call more than once — only the first call has any
 // effect — so callers may unconditionally defer it without needing to track
-// whether they already called it elsewhere.
+// whether they already called it elsewhere. The channel is closed while
+// still holding the write lock (see Publish's doc comment) so that no
+// concurrent Publish call can ever observe a stale reference to this
+// subscriber after its channel has been closed.
 func (h *InProcessHub) Subscribe(_ context.Context, roomID, userID string) (<-chan RoomEvent, func()) {
 	sub := &subscriber{
 		userID: userID,
@@ -103,6 +119,8 @@ func (h *InProcessHub) Subscribe(_ context.Context, roomID, userID string) (<-ch
 	unsubscribe := func() {
 		once.Do(func() {
 			h.mu.Lock()
+			defer h.mu.Unlock()
+
 			list := h.subs[roomID]
 			for i, s := range list {
 				if s == sub {
@@ -113,7 +131,6 @@ func (h *InProcessHub) Subscribe(_ context.Context, roomID, userID string) (<-ch
 			if len(h.subs[roomID]) == 0 {
 				delete(h.subs, roomID)
 			}
-			h.mu.Unlock()
 
 			close(sub.ch)
 		})

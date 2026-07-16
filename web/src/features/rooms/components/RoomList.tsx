@@ -1,8 +1,8 @@
 "use client"
 
 import Link from "next/link"
-import { Box, Card, Flex, Heading, SimpleGrid, Text } from "@chakra-ui/react"
-import { MessageSquare, Users } from "lucide-react"
+import { Box, Button, Card, Flex, Heading, SimpleGrid, Text } from "@chakra-ui/react"
+import { AlertTriangle, MessageSquare, Users } from "lucide-react"
 import { formatUtcDate } from "@/lib/format"
 import { useRooms } from "@/features/rooms/hooks/use-rooms"
 import { CreateRoomForm } from "./CreateRoomForm"
@@ -19,7 +19,7 @@ import { CreateRoomForm } from "./CreateRoomForm"
  * room list taller than the available height.
  */
 export function RoomList() {
-  const { data: rooms = [], isPending } = useRooms()
+  const { data: rooms = [], isPending, isError, error, refetch } = useRooms()
 
   return (
     <Box h="100%" bg="bg">
@@ -45,6 +45,41 @@ export function RoomList() {
               </Card.Root>
             ))}
           </SimpleGrid>
+        ) : isError ? (
+          <Card.Root borderStyle="dashed" borderColor="border.error">
+            <Card.Body>
+              <Flex
+                direction="column"
+                align="center"
+                justify="center"
+                py={16}
+                textAlign="center"
+              >
+                <Flex
+                  h={16}
+                  w={16}
+                  rounded="full"
+                  bg="bg.subtle"
+                  align="center"
+                  justify="center"
+                  mb={4}
+                >
+                  <AlertTriangle size={32} color="var(--chakra-colors-fg-error)" />
+                </Flex>
+                <Heading size="md" mb={2}>
+                  Failed to load rooms
+                </Heading>
+                <Text color="fg.muted" mb={6} maxW="sm">
+                  {error instanceof Error
+                    ? error.message
+                    : "Something went wrong while loading your rooms."}
+                </Text>
+                <Button variant="outline" onClick={() => refetch()}>
+                  Try again
+                </Button>
+              </Flex>
+            </Card.Body>
+          </Card.Root>
         ) : rooms.length > 0 ? (
           <SimpleGrid columns={{ base: 1, md: 2 }} gap={4}>
             {rooms.map((room) => (

@@ -53,7 +53,7 @@ export function createQueryClientWrapper(
   }
 }
 
-interface RenderWithProvidersOptions extends RenderOptions {
+interface RenderWithProvidersOptions extends Omit<RenderOptions, "wrapper"> {
   /** Supply a pre-configured `QueryClient` (e.g. to spy on its methods). */
   queryClient?: QueryClient
 }

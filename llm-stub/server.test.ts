@@ -125,6 +125,31 @@ describe("POST /v1/chat/completions", () => {
     const json = (await res.json()) as { error: { message: string } }
     expect(json.error.message).toContain("does-not-exist")
   })
+
+  test("path-traversal fixture name is rejected with 400, not read from disk", async () => {
+    const res = await fetchHandler(
+      request({
+        model: "gpt-5-mini",
+        messages: [{ role: "user", content: "[[fixture:../package]] hi" }],
+      }),
+    )
+    expect(res.status).toBe(400)
+    const json = (await res.json()) as { error: { message: string } }
+    expect(json.error.message).toContain("invalid fixture name")
+  })
+
+  test("path-traversal streaming fixture name is rejected with 400, not read from disk", async () => {
+    const res = await fetchHandler(
+      request({
+        model: "gpt-5-mini",
+        messages: [{ role: "user", content: "[[fixture:../package]] hi" }],
+        stream: true,
+      }),
+    )
+    expect(res.status).toBe(400)
+    const json = (await res.json()) as { error: { message: string } }
+    expect(json.error.message).toContain("invalid fixture name")
+  })
 })
 
 describe("GET /health", () => {

@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,6 +150,49 @@ func TestInProcessHubUnsubscribeStopsDeliveryAndIsSafeToCallOnce(t *testing.T) {
 
 	// Calling unsubscribe again must be safe (no panic on double-close).
 	unsubscribe()
+}
+
+// TestInProcessHubConcurrentPublishAndUnsubscribeDoesNotRace exercises the
+// send-after-close race Publish and Subscribe's doc comments describe:
+// concurrent Publish and unsubscribe calls hammering the same room/subscriber
+// must never panic ("send on closed channel") and must never data-race on
+// the shared subscriber list. Run with -race to catch either failure mode.
+func TestInProcessHubConcurrentPublishAndUnsubscribeDoesNotRace(t *testing.T) {
+	hub := NewInProcessHub()
+	ctx := context.Background()
+
+	const iterations = 200
+	var wg sync.WaitGroup
+
+	for i := 0; i < iterations; i++ {
+		ch, unsubscribe := hub.Subscribe(ctx, "room-race", "user-race")
+
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			hub.Publish(ctx, RoomEvent{
+				Type:       EventMessageCreated,
+				RoomID:     "room-race",
+				Message:    &message.Message{ID: "msg-race"},
+				OccurredAt: time.Now(),
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			unsubscribe()
+		}()
+		go func() {
+			defer wg.Done()
+			// Drain concurrently with the other two goroutines so a
+			// send racing a close also has a reader on the other end.
+			select {
+			case <-ch:
+			case <-time.After(100 * time.Millisecond):
+			}
+		}()
+	}
+
+	wg.Wait()
 }
 
 func TestInProcessHubPublishNonBlockingOnFullChannel(t *testing.T) {

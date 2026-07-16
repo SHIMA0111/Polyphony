@@ -1,4 +1,9 @@
-// Package message defines the chat message entity, its repository port, and cursor pagination types.
+// Package message implements the chat message use cases: sending and
+// streaming human/AI messages, regenerating an AI reply, listing message
+// history with cursor pagination, assembling AI context (with older-history
+// summarization when it doesn't fit the model's token limit -- context.go),
+// resolving which model to invoke (model_resolution.go), and guarding calls
+// against the room's token balance (billing_guard.go).
 package message
 
 import (

@@ -1,4 +1,6 @@
-// Package auth defines the authentication service port (token issuance and validation).
+// Package auth implements the authentication use cases: registration, login,
+// token validation, and logout, delegating to the injected domain/auth
+// AuthService for the actual credential/session handling.
 package auth
 
 import (

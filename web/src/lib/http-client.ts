@@ -48,27 +48,43 @@ function extractMessage(body: unknown, status: number): string {
 }
 
 /**
+ * Upper bound, in milliseconds, on each of {@link clearKratosSession}'s two
+ * fetch calls. Without this, a stalled network request (rather than a clean
+ * failure) could hang indefinitely and delay the `/login` redirect that must
+ * follow it — see {@link apiFetch}'s 401 handling.
+ */
+const CLEAR_SESSION_FETCH_TIMEOUT_MS = 3000
+
+/**
  * Best-effort clears the Kratos session cookie via Kratos's own
  * self-service logout flow, both calls proxied through `/api/kratos/*` so
  * the browser's cookies (and Kratos's `Set-Cookie` response clearing them)
  * stay on this app's origin.
  *
+ * Each fetch is bounded by {@link CLEAR_SESSION_FETCH_TIMEOUT_MS} via
+ * `AbortSignal.timeout` so a stalled request can't hang this indefinitely.
+ *
  * Used only by {@link apiFetch}'s `401` handling, to avoid the
- * `middleware.ts` bounce-back loop described there: if this fails for any
- * reason (e.g. the session was already dead at Kratos too), the browser is
- * redirected to `/login` regardless — worst case, a stale-but-present
- * cookie causes one extra bounce through the middleware before Kratos's own
- * cookie expiry resolves it.
+ * `middleware.ts` bounce-back loop described there: if this fails or times
+ * out for any reason (e.g. the session was already dead at Kratos too, or
+ * the network stalls), the browser is redirected to `/login` regardless —
+ * worst case, a stale-but-present cookie causes one extra bounce through the
+ * middleware before Kratos's own cookie expiry resolves it. Callers must not
+ * skip the redirect based on this function's outcome.
  */
 async function clearKratosSession(): Promise<void> {
   try {
     const res = await fetch("/api/kratos/self-service/logout/browser", {
       headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(CLEAR_SESSION_FETCH_TIMEOUT_MS),
     })
     if (!res.ok) return
     const { logout_url } = (await res.json()) as { logout_url: string }
     const relativeLogoutUrl = `/api/kratos${new URL(logout_url).pathname}${new URL(logout_url).search}`
-    await fetch(relativeLogoutUrl, { headers: { Accept: "application/json" } })
+    await fetch(relativeLogoutUrl, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(CLEAR_SESSION_FETCH_TIMEOUT_MS),
+    })
   } catch {
     // Best-effort only — see docstring.
   }

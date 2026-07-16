@@ -77,9 +77,11 @@ describe("http-client", () => {
 
   it("on a 401, clears the Kratos session cookie via its self-service logout flow before redirecting to /login", async () => {
     const calledUrls: string[] = []
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const capturedSignals: (AbortSignal | null | undefined)[] = []
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       calledUrls.push(url)
+      capturedSignals.push(init?.signal)
       if (url === "/api/kratos/self-service/logout/browser") {
         return jsonResponse(200, {
           logout_url: "http://localhost:4433/self-service/logout?token=abc",
@@ -113,6 +115,45 @@ describe("http-client", () => {
         "/api/kratos/self-service/logout/browser",
         "/api/kratos/self-service/logout?token=abc",
       ])
+      expect(assign).toHaveBeenCalledWith("/login")
+
+      // Both Kratos logout-flow fetches (indices 1 and 2 — index 0 is the
+      // original /api/proxy/rooms call, which isn't bounded by this timeout)
+      // must be bounded by an AbortSignal so a stalled request can't hang
+      // the redirect indefinitely.
+      expect(capturedSignals[1]).toBeInstanceOf(AbortSignal)
+      expect(capturedSignals[2]).toBeInstanceOf(AbortSignal)
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      })
+    }
+  })
+
+  it("still redirects to /login on a 401 even if clearing the Kratos session times out or fails", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === "/api/kratos/self-service/logout/browser") {
+        // Simulate what an AbortSignal.timeout abort looks like: fetch
+        // rejects rather than resolving.
+        throw new DOMException("The operation was aborted.", "AbortError")
+      }
+      return jsonResponse(401, { message: "unauthorized" })
+    })
+
+    const assign = vi.fn()
+    const originalLocation = window.location
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, assign },
+    })
+
+    try {
+      await expect(apiRequest("/rooms")).rejects.toBeInstanceOf(ApiRequestError)
+
+      // The redirect must happen unconditionally, even though clearing the
+      // session failed/timed out.
       expect(assign).toHaveBeenCalledWith("/login")
     } finally {
       Object.defineProperty(window, "location", {

@@ -1,4 +1,7 @@
-// Package auth defines the authentication service port (token issuance and validation).
+// Package auth provides concrete implementations of the domain/auth
+// AuthService port: SimpleJWTService (self-hosted argon2+JWT), KratosAuthService
+// (backed by Ory Kratos's self-service flows), and CachedAuthService (a
+// Redis-caching decorator that wraps either of the other two).
 package auth
 
 import (

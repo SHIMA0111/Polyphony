@@ -145,8 +145,8 @@ services:
     image: oryd/kratos:v1.3.1
     environment:
       DSN: ${KRATOS_DSN:-postgres://kratos:kratos@kratos-db:5432/kratos?sslmode=disable}
-      SECRETS_COOKIE: ${KRATOS_COOKIE_SECRET:-change-me-32-byte-cookie-secret}
-      SECRETS_CIPHER: ${KRATOS_CIPHER_SECRET:-change-me-32-byte-cipher-secret}
+      SECRETS_COOKIE: ${KRATOS_COOKIE_SECRET:-dev-32-byte-kratos-cookie-secret}
+      SECRETS_CIPHER: ${KRATOS_CIPHER_SECRET:-dev-32-byte-kratos-cipher-secret}
       # Step 44: the entire OIDC providers array (dex/google/github, secrets
       # included) is supplied as a single JSON-string env var so no secret is
       # ever committed to ory/kratos/kratos.yml — see .env.example.
@@ -208,7 +208,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       LLM_GATEWAY_CONNECT_TIMEOUT_SECS: ${LLM_GATEWAY_CONNECT_TIMEOUT_SECS:-10}
-      LLM_GATEWAY_REQUEST_TIMEOUT_SECS: ${LLM_GATEWAY_REQUEST_TIMEOUT_SECS:-30}
+      LLM_GATEWAY_REQUEST_TIMEOUT_SECS: ${LLM_GATEWAY_REQUEST_TIMEOUT_SECS:-600}
       LLM_GATEWAY_MAX_RETRIES: ${LLM_GATEWAY_MAX_RETRIES:-3}
       LLM_GATEWAY_RETRY_BASE_DELAY_MS: ${LLM_GATEWAY_RETRY_BASE_DELAY_MS:-500}
     ports:

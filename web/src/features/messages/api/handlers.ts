@@ -194,15 +194,15 @@ export const messagesHandlers = [
     })
   }),
 
-  http.post(
-    "/api/proxy/rooms/:roomId/messages/:messageId/regenerate",
-    ({ params }) => {
-      return HttpResponse.json<Message>({
-        ...fixtureAiMessage,
-        id: String(params.messageId),
-      })
-    },
-  ),
+  // Regenerating produces a *new* AI message row (with its own id), not an
+  // in-place edit of the message being regenerated -- so this must not
+  // override the fixture's id with `params.messageId` the way a getById-style
+  // handler would. Doing so previously made a regenerated message
+  // indistinguishable from the original in tests asserting on message
+  // identity.
+  http.post("/api/proxy/rooms/:roomId/messages/:messageId/regenerate", () => {
+    return HttpResponse.json<Message>(fixtureAiMessage)
+  }),
 
   http.get("/api/proxy/models", () => {
     return HttpResponse.json<ModelListResponse>(fixtureModelListResponse)
