@@ -64,3 +64,61 @@ func TestUserRepositoryUniqueViolationMapping(t *testing.T) {
 		t.Fatalf("expected errors.Is(err, ErrUsernameAlreadyExists) to be true, got %v", err)
 	}
 }
+
+// TestUserRepositoryKratosIdentityIDRoundTrip proves that
+// SetKratosIdentityID/GetByKratosIdentityID round-trip against the real
+// database, and that inserting a second user with the same
+// kratos_identity_id violates the users_kratos_identity_id_unique
+// constraint, mapped to domain.ErrKratosIdentityAlreadyLinked.
+func TestUserRepositoryKratosIdentityIDRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+	userRepo := NewUserRepository(pool)
+
+	u := &domainuser.User{
+		ID:           uuid.New().String(),
+		Email:        "kratos-link@example.com",
+		Username:     "kratoslinkuser",
+		PasswordHash: "hash",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if err := userRepo.Create(ctx, u); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	// Unlinked users are not resolvable by kratos identity ID.
+	if _, err := userRepo.GetByKratosIdentityID(ctx, uuid.New().String()); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound for an unlinked identity, got %v", err)
+	}
+
+	kratosIdentityID := uuid.New().String()
+	if err := userRepo.SetKratosIdentityID(ctx, u.ID, kratosIdentityID); err != nil {
+		t.Fatalf("SetKratosIdentityID: %v", err)
+	}
+
+	linked, err := userRepo.GetByKratosIdentityID(ctx, kratosIdentityID)
+	if err != nil {
+		t.Fatalf("GetByKratosIdentityID: %v", err)
+	}
+	if linked.ID != u.ID {
+		t.Fatalf("expected linked user ID %q, got %q", u.ID, linked.ID)
+	}
+
+	other := &domainuser.User{
+		ID:           uuid.New().String(),
+		Email:        "kratos-link-2@example.com",
+		Username:     "kratoslinkuser2",
+		PasswordHash: "hash",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if err := userRepo.Create(ctx, other); err != nil {
+		t.Fatalf("create second user: %v", err)
+	}
+
+	err = userRepo.SetKratosIdentityID(ctx, other.ID, kratosIdentityID)
+	if !errors.Is(err, domain.ErrKratosIdentityAlreadyLinked) {
+		t.Fatalf("expected errors.Is(err, ErrKratosIdentityAlreadyLinked) to be true, got %v", err)
+	}
+}

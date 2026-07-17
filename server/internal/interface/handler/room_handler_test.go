@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,6 +37,14 @@ func TestCreateRoomHandler201(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", rec.Code)
 	}
+
+	var resp RoomResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.Role != "master" {
+		t.Fatalf(`expected role "master" for the room creator, got %q`, resp.Role)
+	}
 }
 
 func TestCreateRoomHandler400(t *testing.T) {
@@ -69,6 +78,41 @@ func TestListRoomsHandler200(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestGetRoomHandlerIncludesRole(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := roomusecase.NewRoomUsecase(repo)
+	h := NewRoomHandler(uc)
+	e := echo.New()
+	ctx := e.NewContext(httptest.NewRequest(http.MethodPost, "/rooms", nil), httptest.NewRecorder())
+
+	rwr, err := uc.CreateRoom(ctx.Request().Context(), "user-1", "Test Room", "desc")
+	if err != nil {
+		t.Fatalf("CreateRoom failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/rooms/"+rwr.Room.ID, nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues(rwr.Room.ID)
+	c.Set("user_id", "user-1")
+
+	if err := h.Get(c); err != nil {
+		t.Fatalf("Get handler error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp RoomResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.Role != "master" {
+		t.Fatalf(`expected role "master", got %q`, resp.Role)
 	}
 }
 

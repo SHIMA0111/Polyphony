@@ -8,14 +8,20 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
+	domainattachment "github.com/SHIMA0111/multi-user-ai/server/internal/domain/attachment"
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
+	domainstorage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/storage"
 	domainuser "github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/infrastructure/config"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/infrastructure/database"
@@ -23,11 +29,21 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/gateway"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/handler"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/repository/postgres"
+	ifstorage "github.com/SHIMA0111/multi-user-ai/server/internal/interface/storage"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/wsticket"
+	attachmentusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/attachment"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
+	modelusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/model"
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
 	userusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/user"
 )
+
+// wsTicketTTL is the lifetime given to WebSocket upgrade tickets minted by
+// the wsticket.Issuer wired up below. Kept short since a ticket only needs
+// to bridge the gap between the authenticated POST /ws/ticket call and the
+// WebSocket upgrade that immediately follows it.
+const wsTicketTTL = 60 * time.Second
 
 // Container holds every dependency wired up for the API server: the loaded
 // configuration, the database connection pool, the base logger, repositories,
@@ -47,10 +63,16 @@ type Container struct {
 	UserRepo domainuser.UserRepository
 	RoomRepo domainroom.RoomRepository
 	MsgRepo  domainmessage.MessageRepository
+	// AttachmentRepo is the domain/attachment.AttachmentRepository backing
+	// AttachmentUC's presign/link/list operations.
+	AttachmentRepo domainattachment.AttachmentRepository
 
 	// Services / Gateways
 	AuthService domainauth.AuthService
 	LLMGateway  ai.LLMGateway
+	// ObjectStorage is the domain/storage.ObjectStorage adapter (backed by
+	// MinIO/S3 via aws-sdk-go-v2) used to presign attachment upload/view URLs.
+	ObjectStorage domainstorage.ObjectStorage
 	// MessageHub is the event.MessageHub used by MsgUC to broadcast
 	// message_created/message_updated events. It is exposed on the
 	// Container (rather than kept private) so later steps (e.g. Step 15's
@@ -62,6 +84,12 @@ type Container struct {
 	RoomUC *roomusecase.RoomUsecase
 	MsgUC  *msgusecase.MessageUsecase
 	UserUC *userusecase.UserUsecase
+	// AttachmentUC implements the attachment presign/link/list business
+	// logic (see usecase/attachment.AttachmentUsecase).
+	AttachmentUC *attachmentusecase.AttachmentUsecase
+	// ModelUC lists available AI models across all configured providers via
+	// LLMGateway (see usecase/model.ModelUsecase).
+	ModelUC *modelusecase.ModelUsecase
 
 	// Handlers
 	HealthHandler  *handler.HealthHandler
@@ -70,6 +98,12 @@ type Container struct {
 	MessageHandler *handler.MessageHandler
 	ModelHandler   *handler.ModelHandler
 	UserHandler    *handler.UserHandler
+	// AttachmentHandler serves the presigned-upload/attach/list attachment
+	// endpoints, delegating to AttachmentUC.
+	AttachmentHandler *handler.AttachmentHandler
+	// WebSocketHandler serves the ticket-issuance and connection-upgrade
+	// endpoints that push real-time event.RoomEvent updates to clients.
+	WebSocketHandler *handler.WebSocketHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,
@@ -91,49 +125,94 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	userRepo := postgres.NewUserRepository(pool)
 	roomRepo := postgres.NewRoomRepository(pool)
 	msgRepo := postgres.NewMessageRepository(pool)
+	attachmentRepo := postgres.NewAttachmentRepository(pool)
 
 	// Services / Gateways
-	authService := ifauth.NewSimpleJWTService(userRepo, cfg.JWTSecret)
+	//
+	// AuthService is the Phase 9 swap point (see CLAUDE.md's Interface Swap
+	// Points table): AUTH_MODE selects SimpleJWTService (default) or
+	// KratosAuthService, both of which satisfy domainauth.AuthService, so no
+	// downstream usecase/handler code needs to change based on this branch.
+	var authService domainauth.AuthService
+	switch cfg.AuthMode {
+	case "kratos":
+		authService = ifauth.NewKratosAuthService(userRepo, cfg.KratosPublicURL, cfg.KratosAdminURL, cfg.KratosCookieName,
+			&http.Client{Timeout: 10 * time.Second})
+	default:
+		authService = ifauth.NewSimpleJWTService(userRepo, cfg.JWTSecret)
+	}
 	llmClient := gateway.NewLLMClient(cfg.LLMGatewayURL)
+	objectStorage := ifstorage.NewS3Storage(
+		cfg.S3Endpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3ForcePathStyle,
+	)
 	messageHub := event.NewInProcessHub()
+	ticketIssuer := wsticket.NewIssuer([]byte(cfg.WSTicketSecret), wsTicketTTL)
 
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
 	roomUC := roomusecase.NewRoomUsecase(roomRepo)
 	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmClient, messageHub)
 	userUC := userusecase.NewUserUsecase(userRepo)
+	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
+	modelUC := modelusecase.NewModelUsecase(llmClient)
 
 	// Handlers
 	healthHandler := handler.NewHealthHandler()
 	authHandler := handler.NewAuthHandler(authUC)
 	roomHandler := handler.NewRoomHandler(roomUC)
 	msgHandler := handler.NewMessageHandler(msgUC)
-	modelHandler := handler.NewModelHandler(llmClient)
+	modelHandler := handler.NewModelHandler(modelUC)
 	userHandler := handler.NewUserHandler(userUC)
+	attachmentHandler := handler.NewAttachmentHandler(attachmentUC)
+	wsHandler := handler.NewWebSocketHandler(roomUC, messageHub, ticketIssuer, originPatternsFromCORS(cfg.CORSOrigins))
 
 	return &Container{
 		Config: cfg,
 		Pool:   pool,
 		Logger: slog.Default(),
 
-		UserRepo: userRepo,
-		RoomRepo: roomRepo,
-		MsgRepo:  msgRepo,
+		UserRepo:       userRepo,
+		RoomRepo:       roomRepo,
+		MsgRepo:        msgRepo,
+		AttachmentRepo: attachmentRepo,
 
-		AuthService: authService,
-		LLMGateway:  llmClient,
-		MessageHub:  messageHub,
+		AuthService:   authService,
+		LLMGateway:    llmClient,
+		ObjectStorage: objectStorage,
+		MessageHub:    messageHub,
 
-		AuthUC: authUC,
-		RoomUC: roomUC,
-		MsgUC:  msgUC,
-		UserUC: userUC,
+		AuthUC:       authUC,
+		RoomUC:       roomUC,
+		MsgUC:        msgUC,
+		UserUC:       userUC,
+		AttachmentUC: attachmentUC,
+		ModelUC:      modelUC,
 
-		HealthHandler:  healthHandler,
-		AuthHandler:    authHandler,
-		RoomHandler:    roomHandler,
-		MessageHandler: msgHandler,
-		ModelHandler:   modelHandler,
-		UserHandler:    userHandler,
+		HealthHandler:     healthHandler,
+		AuthHandler:       authHandler,
+		RoomHandler:       roomHandler,
+		MessageHandler:    msgHandler,
+		ModelHandler:      modelHandler,
+		UserHandler:       userHandler,
+		AttachmentHandler: attachmentHandler,
+		WebSocketHandler:  wsHandler,
 	}, nil
+}
+
+// originPatternsFromCORS converts the server's comma-separated
+// CORS_ORIGINS configuration (full origin URLs, e.g.
+// "http://localhost:3000") into the host[:port] patterns expected by
+// websocket.AcceptOptions.OriginPatterns for the WebSocket handshake's
+// origin check. Entries that fail to parse or have no host are skipped.
+func originPatternsFromCORS(corsOrigins string) []string {
+	origins := strings.Split(corsOrigins, ",")
+	patterns := make([]string, 0, len(origins))
+	for _, origin := range origins {
+		u, err := url.Parse(strings.TrimSpace(origin))
+		if err != nil || u.Host == "" {
+			continue
+		}
+		patterns = append(patterns, u.Host)
+	}
+	return patterns
 }

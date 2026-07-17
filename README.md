@@ -53,6 +53,7 @@ phases.md          — Development Phase Plan (26 phases)
 - Flutter 3+
 - Docker / Docker Compose
 - PostgreSQL 17 / Redis 7
+- Protocol Buffers compiler (`protoc`) 3.15+ (needed for local `cargo build`/`cargo run` in `llm-gateway/` outside Docker)
 - [go-task](https://taskfile.dev/) (optional, for `task` commands)
 
 ### Quick Start (Docker Compose)

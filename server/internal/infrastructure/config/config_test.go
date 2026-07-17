@@ -6,9 +6,12 @@ import (
 )
 
 // withRequiredEnv sets the two required environment variables for the
-// duration of the test and clears them afterwards. It also clears the
-// optional DB_* duration variables so tests are isolated from any values
-// inherited from the surrounding environment.
+// duration of the test and clears them afterwards. It also clears every
+// optional env var Load reads (the DB_* duration variables, CORS_ORIGINS,
+// the S3_* variables, WS_TICKET_SECRET, AUTH_MODE, and the KRATOS_*
+// variables) so tests are isolated from any values inherited from the
+// surrounding environment (e.g. a developer's shell, or a docker-compose
+// `environment:` block set outside the test process).
 func withRequiredEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/db")
@@ -16,6 +19,18 @@ func withRequiredEnv(t *testing.T) {
 	t.Setenv("DB_MAX_CONN_LIFETIME", "")
 	t.Setenv("DB_MAX_CONN_IDLE_TIME", "")
 	t.Setenv("DB_HEALTH_CHECK_PERIOD", "")
+	t.Setenv("CORS_ORIGINS", "")
+	t.Setenv("S3_ENDPOINT", "")
+	t.Setenv("S3_REGION", "")
+	t.Setenv("S3_BUCKET", "")
+	t.Setenv("S3_ACCESS_KEY", "")
+	t.Setenv("S3_SECRET_KEY", "")
+	t.Setenv("S3_FORCE_PATH_STYLE", "")
+	t.Setenv("WS_TICKET_SECRET", "")
+	t.Setenv("AUTH_MODE", "")
+	t.Setenv("KRATOS_PUBLIC_URL", "")
+	t.Setenv("KRATOS_ADMIN_URL", "")
+	t.Setenv("KRATOS_COOKIE_NAME", "")
 }
 
 // TestLoadDBDurationDefaults verifies Load falls back to the documented
@@ -94,5 +109,227 @@ func TestLoadMissingRequiredVars(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected Load to fail when DATABASE_URL and JWT_SECRET are unset")
+	}
+}
+
+// TestLoadCORSOriginsDefault verifies Load falls back to the documented
+// default CORS_ORIGINS value when unset.
+func TestLoadCORSOriginsDefault(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CORSOrigins != "http://localhost:3000" {
+		t.Errorf("expected default CORSOrigins, got %q", cfg.CORSOrigins)
+	}
+}
+
+// TestLoadCORSOriginsWildcardRejected verifies Load fails fast when
+// CORS_ORIGINS contains a literal "*" entry — alone, or mixed in with other
+// origins, or with surrounding whitespace — since interface/app/router.go
+// always enables AllowCredentials, and browsers reject a wildcard origin
+// combined with credentialed requests.
+func TestLoadCORSOriginsWildcardRejected(t *testing.T) {
+	for _, val := range []string{"*", "http://localhost:3000,*", " * "} {
+		t.Run(val, func(t *testing.T) {
+			withRequiredEnv(t)
+			t.Setenv("CORS_ORIGINS", val)
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected Load to fail for CORS_ORIGINS=%q", val)
+			}
+		})
+	}
+}
+
+// TestLoadCORSOriginsNonWildcardAccepted verifies Load accepts a normal,
+// non-wildcard CORS_ORIGINS value (including one with multiple origins, and
+// one containing "*" only as a substring of a real origin, not a standalone
+// entry).
+func TestLoadCORSOriginsNonWildcardAccepted(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("CORS_ORIGINS", "https://app.example.com,https://admin.example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CORSOrigins != "https://app.example.com,https://admin.example.com" {
+		t.Errorf("expected overridden CORSOrigins, got %q", cfg.CORSOrigins)
+	}
+}
+
+// TestLoadCORSOriginsTrimsWhitespace verifies Load trims surrounding
+// whitespace from each comma-separated CORS_ORIGINS entry, so an
+// operator-supplied value with stray spaces (e.g. from a wrapped shell
+// export or a YAML block scalar) still parses to clean origins.
+func TestLoadCORSOriginsTrimsWhitespace(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("CORS_ORIGINS", " https://a.com , https://b.com ")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CORSOrigins != "https://a.com,https://b.com" {
+		t.Errorf("expected trimmed CORSOrigins %q, got %q", "https://a.com,https://b.com", cfg.CORSOrigins)
+	}
+}
+
+func TestLoadS3Defaults(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.S3Endpoint != "http://localhost:9000" {
+		t.Errorf("expected default S3Endpoint http://localhost:9000, got %v", cfg.S3Endpoint)
+	}
+	if cfg.S3Region != "us-east-1" {
+		t.Errorf("expected default S3Region us-east-1, got %v", cfg.S3Region)
+	}
+	if cfg.S3Bucket != "polyphony-attachments" {
+		t.Errorf("expected default S3Bucket polyphony-attachments, got %v", cfg.S3Bucket)
+	}
+	if cfg.S3AccessKey != "minioadmin" {
+		t.Errorf("expected default S3AccessKey minioadmin, got %v", cfg.S3AccessKey)
+	}
+	if cfg.S3SecretKey != "minioadmin" {
+		t.Errorf("expected default S3SecretKey minioadmin, got %v", cfg.S3SecretKey)
+	}
+	if !cfg.S3ForcePathStyle {
+		t.Errorf("expected default S3ForcePathStyle true, got %v", cfg.S3ForcePathStyle)
+	}
+}
+
+func TestLoadS3Overrides(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("S3_ENDPOINT", "http://minio.example.com:9000")
+	t.Setenv("S3_REGION", "eu-west-1")
+	t.Setenv("S3_BUCKET", "custom-bucket")
+	t.Setenv("S3_ACCESS_KEY", "custom-access-key")
+	t.Setenv("S3_SECRET_KEY", "custom-secret-key")
+	t.Setenv("S3_FORCE_PATH_STYLE", "false")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.S3Endpoint != "http://minio.example.com:9000" {
+		t.Errorf("expected overridden S3Endpoint, got %v", cfg.S3Endpoint)
+	}
+	if cfg.S3Region != "eu-west-1" {
+		t.Errorf("expected overridden S3Region, got %v", cfg.S3Region)
+	}
+	if cfg.S3Bucket != "custom-bucket" {
+		t.Errorf("expected overridden S3Bucket, got %v", cfg.S3Bucket)
+	}
+	if cfg.S3AccessKey != "custom-access-key" {
+		t.Errorf("expected overridden S3AccessKey, got %v", cfg.S3AccessKey)
+	}
+	if cfg.S3SecretKey != "custom-secret-key" {
+		t.Errorf("expected overridden S3SecretKey, got %v", cfg.S3SecretKey)
+	}
+	if cfg.S3ForcePathStyle {
+		t.Errorf("expected overridden S3ForcePathStyle false, got %v", cfg.S3ForcePathStyle)
+	}
+}
+
+// TestLoadS3ForcePathStyleInvalidFallsBackToDefault verifies Load falls back
+// to the default S3ForcePathStyle (true) — without failing Load itself —
+// when S3_FORCE_PATH_STYLE is set to a value strconv.ParseBool cannot parse,
+// since this is an optional tuning knob, not required configuration.
+func TestLoadS3ForcePathStyleInvalidFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("S3_FORCE_PATH_STYLE", "not-a-bool")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on an invalid S3_FORCE_PATH_STYLE, got: %v", err)
+	}
+	if !cfg.S3ForcePathStyle {
+		t.Errorf("expected fallback to default S3ForcePathStyle true, got %v", cfg.S3ForcePathStyle)
+	}
+}
+
+func TestLoadWSTicketSecretDefaultsToJWTSecret(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.WSTicketSecret != cfg.JWTSecret {
+		t.Errorf("expected WSTicketSecret to default to JWTSecret %q, got %q", cfg.JWTSecret, cfg.WSTicketSecret)
+	}
+}
+
+func TestLoadWSTicketSecretOverride(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("WS_TICKET_SECRET", "ws-ticket-secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.WSTicketSecret != "ws-ticket-secret" {
+		t.Errorf("expected WSTicketSecret override, got %q", cfg.WSTicketSecret)
+	}
+}
+
+func TestLoadAuthModeDefault(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.AuthMode != "simple_jwt" {
+		t.Errorf("expected default AuthMode %q, got %q", "simple_jwt", cfg.AuthMode)
+	}
+}
+
+func TestLoadAuthModeKratos(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("AUTH_MODE", "kratos")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.AuthMode != "kratos" {
+		t.Errorf("expected AuthMode %q, got %q", "kratos", cfg.AuthMode)
+	}
+}
+
+func TestLoadAuthModeInvalidReturnsError(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("AUTH_MODE", "oidc")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to fail for an unrecognized AUTH_MODE value")
+	}
+}
+
+func TestLoadKratosDefaults(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.KratosPublicURL != "http://localhost:4433" {
+		t.Errorf("expected default KratosPublicURL, got %q", cfg.KratosPublicURL)
+	}
+	if cfg.KratosAdminURL != "http://localhost:4434" {
+		t.Errorf("expected default KratosAdminURL, got %q", cfg.KratosAdminURL)
+	}
+	if cfg.KratosCookieName != "ory_kratos_session" {
+		t.Errorf("expected default KratosCookieName, got %q", cfg.KratosCookieName)
 	}
 }

@@ -1,9 +1,12 @@
 "use client"
 
-import { useRef, useEffect } from "react"
-import { Avatar, Box, Button, Flex, Text } from "@chakra-ui/react"
-import { AlertTriangle, RefreshCw } from "lucide-react"
+import { Box, Button } from "@chakra-ui/react"
+import { ArrowDown } from "lucide-react"
 import type { Message } from "@/features/messages/types"
+import { useNearBottomScroll } from "@/features/messages/hooks/use-near-bottom-scroll"
+import { groupMessagesForDisplay } from "@/features/messages/utils/group-messages"
+import { DaySeparator } from "./DaySeparator"
+import { MessageGroup } from "./MessageGroup"
 
 interface MessageListProps {
   messages: Message[]
@@ -16,126 +19,49 @@ export function MessageList({
   onRegenerate,
   isRegenerating,
 }: MessageListProps) {
-  const endRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages])
+  const { containerRef, hasNewMessages, scrollToBottom } =
+    useNearBottomScroll(messages)
+  const items = groupMessagesForDisplay(messages)
 
   return (
-    <Box flex={1} overflowY="auto">
-      <Box maxW="4xl" mx="auto" px={4} py={6} spaceY={6}>
-        {messages.map((message) => (
-          <Flex
-            key={message.id}
-            gap={3}
-            role="group"
-            direction={message.type === "human" ? "row-reverse" : "row"}
-          >
-            {/* Avatar */}
-            <Avatar.Root
-              size="sm"
-              flexShrink={0}
-              colorPalette={message.type === "ai" ? "blue" : "gray"}
-            >
-              <Avatar.Fallback name={message.type === "ai" ? "AI" : "You"} />
-            </Avatar.Root>
-
-            {/* Message Content */}
-            <Flex
-              flex={1}
-              direction="column"
-              align={message.type === "human" ? "flex-end" : "flex-start"}
-              gap={1}
-            >
-              <Flex
-                align="baseline"
-                gap={2}
-                direction={message.type === "human" ? "row-reverse" : "row"}
-              >
-                <Text fontSize="sm" fontWeight="medium">
-                  {message.type === "ai" ? "AI" : "You"}
-                </Text>
-                <Text
-                  fontSize="xs"
-                  color="fg.muted"
-                  opacity={0}
-                  _groupHover={{ opacity: 1 }}
-                  transition="opacity 0.2s"
-                >
-                  {new Date(message.created_at).toLocaleTimeString("en-US", {
-                    hour: "numeric",
-                    minute: "2-digit",
-                  })}
-                </Text>
-              </Flex>
-
-              <Box
-                display="inline-block"
-                rounded="2xl"
-                px={4}
-                py={2.5}
-                maxW="85%"
-                bg={
-                  message.status === "failed"
-                    ? "red.50"
-                    : message.type === "human"
-                      ? "blue.500"
-                      : "bg.subtle"
-                }
-                color={
-                  message.status === "failed"
-                    ? "red.700"
-                    : message.type === "human"
-                      ? "white"
-                      : "fg"
-                }
-                borderWidth={message.status === "failed" ? "1px" : 0}
-                borderColor={
-                  message.status === "failed" ? "red.200" : undefined
-                }
-              >
-                {message.status === "failed" && (
-                  <Flex align="center" gap={1} mb={1}>
-                    <AlertTriangle size={14} />
-                    <Text fontSize="xs" fontWeight="medium">
-                      AI response failed
-                    </Text>
-                  </Flex>
-                )}
-                <Text
-                  fontSize="15px"
-                  lineHeight="relaxed"
-                  whiteSpace="pre-wrap"
-                >
-                  {message.content || "(No response)"}
-                </Text>
-              </Box>
-
-              {/* Regenerate button for AI messages */}
-              {message.type === "ai" && (
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  h={7}
-                  px={2}
-                  fontSize="xs"
-                  opacity={message.status === "failed" ? 1 : 0}
-                  _groupHover={{ opacity: 1 }}
-                  transition="opacity 0.2s"
-                  onClick={() => onRegenerate(message.id)}
-                  loading={isRegenerating === message.id}
-                  loadingText="Regenerating"
-                >
-                  <RefreshCw size={12} />
-                  {message.status === "failed" ? "Retry" : "Regenerate"}
-                </Button>
-              )}
-            </Flex>
-          </Flex>
-        ))}
-        <div ref={endRef} />
+    <Box position="relative" flex={1} minH={0}>
+      <Box ref={containerRef} h="full" overflowY="auto">
+        <Box maxW="4xl" mx="auto" px={4} py={6} spaceY={6}>
+          {items.map((item) =>
+            item.kind === "day" ? (
+              <DaySeparator key={`day-${item.iso}`} label={item.label} />
+            ) : (
+              <MessageGroup
+                key={`group-${item.messages[0].id}`}
+                type={item.type}
+                messages={item.messages}
+                onRegenerate={onRegenerate}
+                isRegenerating={isRegenerating}
+              />
+            ),
+          )}
+        </Box>
       </Box>
+
+      {hasNewMessages && (
+        <Box
+          position="absolute"
+          bottom={4}
+          left="50%"
+          transform="translateX(-50%)"
+        >
+          <Button
+            size="sm"
+            rounded="full"
+            colorPalette="blue"
+            shadow="md"
+            onClick={scrollToBottom}
+          >
+            <ArrowDown size={14} />
+            New messages
+          </Button>
+        </Box>
+      )}
     </Box>
   )
 }

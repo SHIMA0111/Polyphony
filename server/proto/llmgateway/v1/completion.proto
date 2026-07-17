@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+// Polyphony LLM Gateway completion contract.
+//
+// Defines the chat-completion RPC served by the LLM Gateway (Rust) and consumed by
+// the Go API server. This is the gRPC counterpart of the REST `POST /completions`
+// endpoint (`llm-gateway/src/adapters/inbound/rest/`); both transports share the same
+// domain service (`CompletionUseCase`) and must stay semantically identical.
+//
+// Streaming completions and multimodal (Vision) message content are explicitly out of
+// scope for this contract version — see `docs/tasks/step19.md` for the rationale.
+package polyphony.llmgateway.v1;
+
+option go_package = "github.com/SHIMA0111/multi-user-ai/server/internal/interface/gateway/grpc/llmgatewaypb;llmgatewaypb";
+
+// Role of a chat message, mirroring the domain `Role` enum
+// (`llm-gateway/src/domain/model.rs`).
+enum ChatRole {
+  // Unset/unknown role. Never produced intentionally; presence indicates a caller bug.
+  CHAT_ROLE_UNSPECIFIED = 0;
+  // System instructions / context setting.
+  CHAT_ROLE_SYSTEM = 1;
+  // User input.
+  CHAT_ROLE_USER = 2;
+  // AI response.
+  CHAT_ROLE_ASSISTANT = 3;
+  // Tool execution result (web search, function calls, etc.).
+  CHAT_ROLE_TOOL = 4;
+}
+
+// A single chat message.
+//
+// `content` is plain text only. Multimodal content parts (images) are not represented
+// in this contract version; see the file-level comment.
+message ChatMessage {
+  ChatRole role = 1;
+  string content = 2;
+}
+
+// A chat completion request.
+message CompletionRequest {
+  // Model identifier to route the request to (e.g. "gpt-5.2").
+  string model = 1;
+  // Conversation history, oldest first.
+  repeated ChatMessage messages = 2;
+  // Sampling temperature. Absent means "use the provider's default".
+  optional float temperature = 3;
+  // Maximum number of tokens to generate. Absent means "use the provider's default".
+  optional uint32 max_tokens = 4;
+}
+
+// A single completion choice returned by the provider.
+message Choice {
+  // Index of this choice within `CompletionResponse.choices`.
+  uint32 index = 1;
+  // The generated message.
+  ChatMessage message = 2;
+  // Why generation stopped (e.g. "stop", "length").
+  string finish_reason = 3;
+}
+
+// Token usage statistics for a completion request/response pair.
+message Usage {
+  uint32 prompt_tokens = 1;
+  uint32 completion_tokens = 2;
+  uint32 total_tokens = 3;
+}
+
+// A chat completion response.
+message CompletionResponse {
+  // Provider-assigned identifier for this completion.
+  string id = 1;
+  // Model that actually served the request.
+  string model = 2;
+  repeated Choice choices = 3;
+  Usage usage = 4;
+}
+
+// Chat-completion RPC service, backed by the same `CompletionUseCase` domain port the
+// REST `POST /completions` endpoint uses.
+service CompletionService {
+  // Executes a single (non-streaming) chat completion.
+  rpc Complete(CompletionRequest) returns (CompletionResponse);
+}

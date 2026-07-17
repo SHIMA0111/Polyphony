@@ -42,12 +42,16 @@ type UpdateRoomRequest struct {
 	Description string `json:"description"`
 }
 
-// RoomResponse is the response body for a room.
+// RoomResponse is the response body for a room. Role is the requesting
+// user's role in this room (e.g. "reader", "guest", "member", "admin",
+// "master"), serialized as the plain string value of domainroom.Role so
+// clients can do direct string comparisons.
 type RoomResponse struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
 	OwnerID     string    `json:"owner_id"`
+	Role        string    `json:"role"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -132,6 +136,61 @@ type UserResponse struct {
 	Username string `json:"username"`
 	// CreatedAt is when the user account was created.
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// --- Attachment DTOs ---
+
+// PresignUploadRequest is the request body for
+// POST /rooms/:roomId/attachments/upload-url. Both fields are required.
+type PresignUploadRequest struct {
+	MimeType  string `json:"mime_type"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// PresignUploadResponse is the response body for
+// POST /rooms/:roomId/attachments/upload-url. UploadURL is a presigned PUT
+// URL valid until ExpiresAt; the client uploads object bytes directly to it.
+type PresignUploadResponse struct {
+	AttachmentID string    `json:"attachment_id"`
+	S3Key        string    `json:"s3_key"`
+	UploadURL    string    `json:"upload_url"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+// AttachAttachmentRequest is the request body for
+// POST /rooms/:roomId/messages/:messageId/attachments.
+type AttachAttachmentRequest struct {
+	AttachmentID string `json:"attachment_id"`
+}
+
+// AttachmentResponse is the JSON response representation of a single
+// attachment, without a view URL (returned by the attach endpoint).
+type AttachmentResponse struct {
+	ID        string    `json:"id"`
+	MessageID *string   `json:"message_id"`
+	S3Key     string    `json:"s3_key"`
+	MimeType  string    `json:"mime_type"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// AttachmentViewResponse is the JSON response representation of a single
+// attachment including a freshly-presigned view URL (returned by the list
+// endpoint).
+type AttachmentViewResponse struct {
+	ID        string    `json:"id"`
+	MessageID *string   `json:"message_id"`
+	S3Key     string    `json:"s3_key"`
+	MimeType  string    `json:"mime_type"`
+	SizeBytes int64     `json:"size_bytes"`
+	ViewURL   string    `json:"view_url"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// AttachmentListResponse is the response body for
+// GET /rooms/:roomId/messages/:messageId/attachments.
+type AttachmentListResponse struct {
+	Attachments []AttachmentViewResponse `json:"attachments"`
 }
 
 // --- Common DTOs ---

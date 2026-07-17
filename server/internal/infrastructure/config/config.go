@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -37,6 +39,53 @@ type Config struct {
 	// DBHealthCheckPeriod is the interval at which pgxpool runs a background
 	// health check on idle connections (env DB_HEALTH_CHECK_PERIOD, default 1m).
 	DBHealthCheckPeriod time.Duration
+
+	// S3Endpoint is the S3-compatible object storage endpoint used when
+	// presigning URLs. It must be reachable by whichever caller (typically a
+	// browser) will actually use the resulting presigned URL, which is why
+	// the default is a host-reachable http://localhost:9000 rather than the
+	// container-internal MinIO service address (env S3_ENDPOINT).
+	S3Endpoint string
+	// S3Region is the region used for SigV4 signing (env S3_REGION, default
+	// "us-east-1"). MinIO ignores the region's real-world meaning but still
+	// requires one to be set for signing.
+	S3Region string
+	// S3Bucket is the bucket attachments are stored in (env S3_BUCKET,
+	// default "polyphony-attachments").
+	S3Bucket string
+	// S3AccessKey is the access key used for static credentials (env
+	// S3_ACCESS_KEY, default "minioadmin").
+	S3AccessKey string
+	// S3SecretKey is the secret key used for static credentials (env
+	// S3_SECRET_KEY, default "minioadmin").
+	S3SecretKey string
+	// S3ForcePathStyle selects path-style bucket addressing (required by
+	// MinIO, which does not support virtual-hosted-style addressing) rather
+	// than virtual-hosted-style (env S3_FORCE_PATH_STYLE, default true).
+	S3ForcePathStyle bool
+	// WSTicketSecret is the HMAC secret used to sign and verify short-lived
+	// WebSocket upgrade tickets (see internal/interface/wsticket). It is read
+	// from the optional WS_TICKET_SECRET env var; if unset, it defaults to
+	// JWTSecret, which keeps local/dev setup zero-config while still
+	// allowing an independent secret in environments that want one.
+	WSTicketSecret string
+	// AuthMode selects which domainauth.AuthService implementation
+	// container.go wires up: "simple_jwt" (default) for SimpleJWTService, or
+	// "kratos" for KratosAuthService (env AUTH_MODE). Load returns an error
+	// for any other non-empty value.
+	AuthMode string
+	// KratosPublicURL is Ory Kratos's public API base URL, used for
+	// self-service registration/login flows and /sessions/whoami (env
+	// KRATOS_PUBLIC_URL, default "http://localhost:4433"). Only required
+	// when AuthMode is "kratos".
+	KratosPublicURL string
+	// KratosAdminURL is Ory Kratos's admin API base URL, used for identity
+	// management (env KRATOS_ADMIN_URL, default "http://localhost:4434").
+	KratosAdminURL string
+	// KratosCookieName is the name of the session cookie Ory Kratos issues,
+	// read by the auth middleware as a fallback when no Authorization
+	// header is present (env KRATOS_COOKIE_NAME, default "ory_kratos_session").
+	KratosCookieName string
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -63,14 +112,68 @@ func Load() (*Config, error) {
 		llmURL = "http://localhost:8081"
 	}
 
-	corsOrigins := os.Getenv("CORS_ORIGINS")
-	if corsOrigins == "" {
-		corsOrigins = "http://localhost:3000"
+	corsOriginsRaw := os.Getenv("CORS_ORIGINS")
+	if corsOriginsRaw == "" {
+		corsOriginsRaw = "http://localhost:3000"
+	}
+	corsOrigins, err := parseCORSOrigins(corsOriginsRaw)
+	if err != nil {
+		return nil, err
 	}
 
 	dbMaxConnLifetime := parseDurationEnv("DB_MAX_CONN_LIFETIME", defaultDBMaxConnLifetime)
 	dbMaxConnIdleTime := parseDurationEnv("DB_MAX_CONN_IDLE_TIME", defaultDBMaxConnIdleTime)
 	dbHealthCheckPeriod := parseDurationEnv("DB_HEALTH_CHECK_PERIOD", defaultDBHealthCheckPeriod)
+
+	s3Endpoint := os.Getenv("S3_ENDPOINT")
+	if s3Endpoint == "" {
+		s3Endpoint = "http://localhost:9000"
+	}
+	s3Region := os.Getenv("S3_REGION")
+	if s3Region == "" {
+		s3Region = "us-east-1"
+	}
+	s3Bucket := os.Getenv("S3_BUCKET")
+	if s3Bucket == "" {
+		s3Bucket = "polyphony-attachments"
+	}
+	s3AccessKey := os.Getenv("S3_ACCESS_KEY")
+	if s3AccessKey == "" {
+		s3AccessKey = "minioadmin"
+	}
+	s3SecretKey := os.Getenv("S3_SECRET_KEY")
+	if s3SecretKey == "" {
+		s3SecretKey = "minioadmin"
+	}
+	s3ForcePathStyle := parseBoolEnv("S3_FORCE_PATH_STYLE", true)
+
+	wsTicketSecret := os.Getenv("WS_TICKET_SECRET")
+	if wsTicketSecret == "" {
+		wsTicketSecret = jwtSecret
+	}
+
+	authMode := os.Getenv("AUTH_MODE")
+	if authMode == "" {
+		authMode = "simple_jwt"
+	}
+	if authMode != "simple_jwt" && authMode != "kratos" {
+		return nil, fmt.Errorf("AUTH_MODE must be %q or %q, got %q", "simple_jwt", "kratos", authMode)
+	}
+
+	kratosPublicURL := os.Getenv("KRATOS_PUBLIC_URL")
+	if kratosPublicURL == "" {
+		kratosPublicURL = "http://localhost:4433"
+	}
+
+	kratosAdminURL := os.Getenv("KRATOS_ADMIN_URL")
+	if kratosAdminURL == "" {
+		kratosAdminURL = "http://localhost:4434"
+	}
+
+	kratosCookieName := os.Getenv("KRATOS_COOKIE_NAME")
+	if kratosCookieName == "" {
+		kratosCookieName = "ory_kratos_session"
+	}
 
 	return &Config{
 		Port:                port,
@@ -81,7 +184,52 @@ func Load() (*Config, error) {
 		DBMaxConnLifetime:   dbMaxConnLifetime,
 		DBMaxConnIdleTime:   dbMaxConnIdleTime,
 		DBHealthCheckPeriod: dbHealthCheckPeriod,
+		S3Endpoint:          s3Endpoint,
+		S3Region:            s3Region,
+		S3Bucket:            s3Bucket,
+		S3AccessKey:         s3AccessKey,
+		S3SecretKey:         s3SecretKey,
+		S3ForcePathStyle:    s3ForcePathStyle,
+		WSTicketSecret:      wsTicketSecret,
+		AuthMode:            authMode,
+		KratosPublicURL:     kratosPublicURL,
+		KratosAdminURL:      kratosAdminURL,
+		KratosCookieName:    kratosCookieName,
 	}, nil
+}
+
+// parseCORSOrigins splits raw (a comma-separated list, matching the
+// CORS_ORIGINS format app/router.go splits on "," when building its
+// AllowOrigins list) into origins, trimming surrounding whitespace from each
+// entry and dropping any that are empty after trimming (e.g. from a trailing
+// comma, or accidental double commas). The result is joined back into a
+// comma-separated string with no surrounding whitespace, which
+// app/router.go's own strings.Split(..., ",") then splits back into a clean
+// origin list — so a value like " https://a.com , https://b.com " round-trips
+// to "https://a.com,https://b.com".
+//
+// It returns an error if, after trimming, any entry is a literal "*":
+// app/router.go always sets AllowCredentials: true on the CORS middleware
+// (required so the browser can send/receive the Kratos session cookie), and
+// browsers refuse to honor Access-Control-Allow-Origin: * together with
+// Access-Control-Allow-Credentials: true — so a "*" here would not just be
+// an overly permissive origin list, it would silently break every
+// credentialed cross-origin request. Fail fast at startup rather than as a
+// hard-to-diagnose CORS error in the browser.
+func parseCORSOrigins(raw string) (string, error) {
+	parts := strings.Split(raw, ",")
+	trimmed := make([]string, 0, len(parts))
+	for _, origin := range parts {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		if origin == "*" {
+			return "", fmt.Errorf(`CORS_ORIGINS must not contain "*" when credentials are enabled, got %q`, raw)
+		}
+		trimmed = append(trimmed, origin)
+	}
+	return strings.Join(trimmed, ","), nil
 }
 
 // parseDurationEnv reads the given environment variable and parses it as a
@@ -110,4 +258,27 @@ func parseDurationEnv(key string, fallback time.Duration) time.Duration {
 	}
 
 	return d
+}
+
+// parseBoolEnv reads the given environment variable and parses it with
+// strconv.ParseBool (accepting "1", "t", "T", "TRUE", "true", "True", "0",
+// "f", "F", "FALSE", "false", "False"). If the variable is unset, it returns
+// fallback. If the variable is set but fails to parse, it logs a warning via
+// slog.Default() and returns fallback rather than propagating an error,
+// matching this file's convention for optional tuning knobs (see
+// parseDurationEnv) rather than a required, startup-failing configuration.
+func parseBoolEnv(key string, fallback bool) bool {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback
+	}
+
+	b, err := strconv.ParseBool(val)
+	if err != nil {
+		slog.Default().Warn("invalid boolean for env var, using default",
+			"env", key, "value", val, "default", fallback, "error", err)
+		return fallback
+	}
+
+	return b
 }

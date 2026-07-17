@@ -18,6 +18,18 @@ type UserRepository interface {
 	// GetByUsername retrieves a user by username. Returns ErrNotFound if not found.
 	GetByUsername(ctx context.Context, username string) (*User, error)
 
+	// GetByKratosIdentityID retrieves the user linked to the given Ory Kratos
+	// identity ID. Returns ErrNotFound if no user is linked to that identity
+	// (e.g. the identity was created directly via the Kratos Admin API and
+	// has not yet been backfilled or self-healed into a local user row).
+	GetByKratosIdentityID(ctx context.Context, kratosIdentityID string) (*User, error)
+
+	// SetKratosIdentityID links the user identified by userID to the given
+	// Ory Kratos identity ID. Returns ErrNotFound if userID does not exist,
+	// or ErrKratosIdentityAlreadyLinked if kratosIdentityID is already linked
+	// to a different user.
+	SetKratosIdentityID(ctx context.Context, userID, kratosIdentityID string) error
+
 	// Update updates user fields. Returns ErrNotFound if user does not exist.
 	Update(ctx context.Context, user *User) error
 

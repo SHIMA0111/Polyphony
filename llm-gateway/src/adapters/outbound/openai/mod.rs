@@ -10,7 +10,9 @@ use reqwest::Client;
 use crate::adapters::outbound::http_retry::RetryPolicy;
 use crate::config::{HttpClientConfig, ProviderConfig};
 use crate::domain::error::DomainError;
-use crate::domain::model::{CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo};
+use crate::domain::model::{
+    CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, ModelPricing,
+};
 use crate::ports::outbound::key_store::KeyStore;
 use crate::ports::outbound::provider::LLMProvider;
 
@@ -21,6 +23,8 @@ use crate::ports::outbound::provider::LLMProvider;
 static MODELS: OnceLock<Vec<ModelInfo>> = OnceLock::new();
 
 fn models_list() -> &'static Vec<ModelInfo> {
+    // Illustrative placeholder metadata — not verified real-world pricing or context
+    // windows; replace with an authoritative source when billing (Phase 16-17) lands.
     MODELS.get_or_init(|| {
         vec![
             ModelInfo {
@@ -28,30 +32,65 @@ fn models_list() -> &'static Vec<ModelInfo> {
                 name: "GPT-5.2".to_string(),
                 provider: "openai".to_string(),
                 owned_by: "openai".to_string(),
+                context_window: Some(400_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 2.5,
+                    output_price_per_million_tokens: 10.0,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
             ModelInfo {
                 id: "gpt-5".to_string(),
                 name: "GPT-5".to_string(),
                 provider: "openai".to_string(),
                 owned_by: "openai".to_string(),
+                context_window: Some(272_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 1.25,
+                    output_price_per_million_tokens: 10.0,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
             ModelInfo {
                 id: "gpt-5-mini".to_string(),
                 name: "GPT-5 Mini".to_string(),
                 provider: "openai".to_string(),
                 owned_by: "openai".to_string(),
+                context_window: Some(272_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 0.25,
+                    output_price_per_million_tokens: 2.0,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
             ModelInfo {
                 id: "o4-mini".to_string(),
                 name: "o4-mini".to_string(),
                 provider: "openai".to_string(),
                 owned_by: "openai".to_string(),
+                context_window: Some(200_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 1.1,
+                    output_price_per_million_tokens: 4.4,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
             ModelInfo {
                 id: "o3".to_string(),
                 name: "o3".to_string(),
                 provider: "openai".to_string(),
                 owned_by: "openai".to_string(),
+                context_window: Some(200_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 2.0,
+                    output_price_per_million_tokens: 8.0,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
         ]
     })

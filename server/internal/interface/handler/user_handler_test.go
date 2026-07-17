@@ -65,7 +65,7 @@ func TestMeHandler401WithoutToken(t *testing.T) {
 	h := NewUserHandler(uc)
 
 	svc := &mocks.AuthService{}
-	mw := middleware.JWTAuth(svc)
+	mw := middleware.JWTAuth(svc, "ory_kratos_session")
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/users/me", nil)

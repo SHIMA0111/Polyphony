@@ -24,6 +24,12 @@ func NewRouter(c *Container) *echo.Echo {
 		AllowOrigins: strings.Split(c.Config.CORSOrigins, ","),
 		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
 		AllowHeaders: []string{echo.HeaderContentType, echo.HeaderAuthorization},
+		// AllowCredentials lets the browser send/receive the Kratos session
+		// cookie cross-origin (Step 20). This is only valid because
+		// c.Config.CORSOrigins is never "*" (it defaults to
+		// http://localhost:3000 and is env-driven) — credentialed CORS with
+		// a wildcard origin is rejected by browsers.
+		AllowCredentials: true,
 	}))
 	e.Use(middleware.RequestLogger(c.Logger))
 
@@ -33,10 +39,12 @@ func NewRouter(c *Container) *echo.Echo {
 
 	// Shared authenticated route group, used by every registrar below that
 	// needs the caller's identity.
-	authGroup := e.Group("", middleware.JWTAuth(c.AuthUC))
+	authGroup := e.Group("", middleware.JWTAuth(c.AuthUC, c.Config.KratosCookieName))
 	registerRoomRoutes(authGroup, c)
 	registerMessageRoutes(authGroup, c)
 	registerUserRoutes(authGroup, c)
+	registerAttachmentRoutes(authGroup, c)
+	registerWebSocketRoutes(e, authGroup, c)
 
 	return e
 }

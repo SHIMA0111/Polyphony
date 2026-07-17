@@ -13,6 +13,11 @@ var (
 	// ErrUsernameAlreadyExists indicates a user with the given username already exists.
 	ErrUsernameAlreadyExists = errors.New("username already exists")
 
+	// ErrKratosIdentityAlreadyLinked indicates the given Ory Kratos identity
+	// ID is already linked to a different local user (a unique constraint
+	// violation on users.kratos_identity_id).
+	ErrKratosIdentityAlreadyLinked = errors.New("kratos identity already linked to another user")
+
 	// ErrInvalidCredentials indicates the provided credentials are invalid.
 	ErrInvalidCredentials = errors.New("invalid credentials")
 
@@ -30,6 +35,23 @@ var (
 
 	// ErrInvalidMessageType indicates the message type is not valid for the operation.
 	ErrInvalidMessageType = errors.New("invalid message type")
+
+	// ErrAttachmentAlreadyLinked indicates an attachment has already been
+	// linked to a message and cannot be attached again.
+	ErrAttachmentAlreadyLinked = errors.New("attachment already linked to a message")
+
+	// ErrUnsupportedMimeType indicates an attachment upload was requested
+	// with a MIME type outside the supported allow-list.
+	ErrUnsupportedMimeType = errors.New("unsupported mime type")
+
+	// ErrAttachmentTooLarge indicates an attachment upload was requested
+	// with a declared size exceeding the maximum allowed.
+	ErrAttachmentTooLarge = errors.New("attachment too large")
+
+	// ErrInvalidAttachmentSize indicates an attachment upload was requested
+	// with a declared size that is not a positive number of bytes (zero or
+	// negative).
+	ErrInvalidAttachmentSize = errors.New("invalid attachment size")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.

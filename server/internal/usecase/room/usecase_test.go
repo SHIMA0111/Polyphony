@@ -16,15 +16,18 @@ func TestCreateRoom(t *testing.T) {
 	uc := NewRoomUsecase(repo)
 	ctx := context.Background()
 
-	rm, err := uc.CreateRoom(ctx, "user-1", "Test Room", "A test room")
+	rwr, err := uc.CreateRoom(ctx, "user-1", "Test Room", "A test room")
 	if err != nil {
 		t.Fatalf("CreateRoom failed: %v", err)
 	}
-	if rm.Name != "Test Room" {
-		t.Fatalf("expected Test Room, got %s", rm.Name)
+	if rwr.Room.Name != "Test Room" {
+		t.Fatalf("expected Test Room, got %s", rwr.Room.Name)
 	}
-	if rm.OwnerID != "user-1" {
-		t.Fatalf("expected owner user-1, got %s", rm.OwnerID)
+	if rwr.Room.OwnerID != "user-1" {
+		t.Fatalf("expected owner user-1, got %s", rwr.Room.OwnerID)
+	}
+	if rwr.Role != domainroom.RoleMaster {
+		t.Fatalf("expected creator role master, got %s", rwr.Role)
 	}
 }
 
@@ -35,31 +38,98 @@ func TestGetRoomNotMember(t *testing.T) {
 	uc := NewRoomUsecase(repo)
 	ctx := context.Background()
 
-	rm, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
 
-	_, err := uc.GetRoom(ctx, "user-2", rm.ID)
+	_, err := uc.GetRoom(ctx, "user-2", rwr.Room.ID)
 	if err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
 }
 
-// TestUpdateRoomNotOwner verifies UpdateRoom returns domain.ErrForbidden
-// when a non-owner member attempts to update the room.
-func TestUpdateRoomNotOwner(t *testing.T) {
+// TestGetRoomReturnsRole verifies GetRoom returns the caller's own
+// membership role (e.g. domainroom.RoleGuest) alongside the room.
+func TestGetRoomReturnsRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
 	ctx := context.Background()
 
-	rm, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	created, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
 
-	// Add user-2 as member
 	_ = repo.AddMember(ctx, &domainroom.RoomMember{
-		ID: "m2", RoomID: rm.ID, UserID: "user-2", Role: "member",
+		ID: "m2", RoomID: created.Room.ID, UserID: "user-2", Role: domainroom.RoleGuest,
 	})
 
-	_, err := uc.UpdateRoom(ctx, "user-2", rm.ID, "New Name", "new desc")
+	rwr, err := uc.GetRoom(ctx, "user-2", created.Room.ID)
+	if err != nil {
+		t.Fatalf("GetRoom failed: %v", err)
+	}
+	if rwr.Role != domainroom.RoleGuest {
+		t.Fatalf("expected role guest, got %s", rwr.Role)
+	}
+}
+
+// TestUpdateRoomMemberForbidden verifies UpdateRoom returns
+// domain.ErrForbidden for a plain domainroom.RoleMember, who lacks the
+// ActionManageRoom permission.
+func TestUpdateRoomMemberForbidden(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	// Add user-2 as a plain member (not admin/master) — cannot manage room.
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
+	})
+
+	_, err := uc.UpdateRoom(ctx, "user-2", rwr.Room.ID, "New Name", "new desc")
 	if err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+// TestUpdateRoomAdminAllowed verifies UpdateRoom succeeds for a
+// domainroom.RoleAdmin member, who holds ActionManageRoom permission.
+func TestUpdateRoomAdminAllowed(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	// Add user-2 as admin — admin may manage room settings.
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleAdmin,
+	})
+
+	updated, err := uc.UpdateRoom(ctx, "user-2", rwr.Room.ID, "New Name", "new desc")
+	if err != nil {
+		t.Fatalf("expected admin to update room, got error: %v", err)
+	}
+	if updated.Room.Name != "New Name" {
+		t.Fatalf("expected updated name, got %s", updated.Room.Name)
+	}
+}
+
+// TestDeleteRoomAdminForbidden verifies DeleteRoom returns
+// domain.ErrForbidden for a domainroom.RoleAdmin member: deleting a room is
+// reserved for domainroom.RoleMaster (the ActionDeleteRoom permission).
+func TestDeleteRoomAdminForbidden(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	// Add user-2 as admin — admin may manage the room but may not delete it.
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleAdmin,
+	})
+
+	err := uc.DeleteRoom(ctx, "user-2", rwr.Room.ID)
+	if err != domain.ErrForbidden {
+		t.Fatalf("expected admin DeleteRoom to be forbidden, got %v", err)
 	}
 }
 
@@ -70,14 +140,14 @@ func TestDeleteRoom(t *testing.T) {
 	uc := NewRoomUsecase(repo)
 	ctx := context.Background()
 
-	rm, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
 
-	err := uc.DeleteRoom(ctx, "user-1", rm.ID)
+	err := uc.DeleteRoom(ctx, "user-1", rwr.Room.ID)
 	if err != nil {
 		t.Fatalf("DeleteRoom failed: %v", err)
 	}
 
-	_, err = uc.GetRoom(ctx, "user-1", rm.ID)
+	_, err = uc.GetRoom(ctx, "user-1", rwr.Room.ID)
 	if err == nil {
 		t.Fatal("expected error after delete")
 	}
@@ -96,5 +166,29 @@ func TestListRoomsEmpty(t *testing.T) {
 	}
 	if len(rooms) != 0 {
 		t.Fatalf("expected 0 rooms, got %d", len(rooms))
+	}
+}
+
+// TestListRoomsIncludesRole verifies ListRooms returns each room paired with
+// the caller's own membership role.
+func TestListRoomsIncludesRole(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	rooms, err := uc.ListRooms(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("ListRooms failed: %v", err)
+	}
+	if len(rooms) != 1 {
+		t.Fatalf("expected 1 room, got %d", len(rooms))
+	}
+	if rooms[0].Room.ID != rwr.Room.ID {
+		t.Fatalf("expected room %s, got %s", rwr.Room.ID, rooms[0].Room.ID)
+	}
+	if rooms[0].Role != domainroom.RoleMaster {
+		t.Fatalf("expected role master, got %s", rooms[0].Role)
 	}
 }

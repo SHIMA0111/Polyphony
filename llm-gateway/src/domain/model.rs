@@ -171,6 +171,21 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
+/// Per-model pricing, expressed per 1 million tokens.
+///
+/// Per-1M-token USD pricing is the project-wide canonical unit for model pricing —
+/// it matches how OpenAI/Anthropic/Google publish their price lists. Never introduce
+/// a per-1k-token field alongside this one.
+#[derive(Debug, Clone)]
+pub struct ModelPricing {
+    /// USD price per 1,000,000 input (prompt) tokens.
+    pub input_price_per_million_tokens: f64,
+    /// USD price per 1,000,000 output (completion) tokens.
+    pub output_price_per_million_tokens: f64,
+    /// ISO 4217 currency code the prices above are denominated in (e.g. `"USD"`).
+    pub currency: String,
+}
+
 /// Information about an available model.
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
@@ -178,6 +193,21 @@ pub struct ModelInfo {
     pub name: String,
     pub provider: String,
     pub owned_by: String,
+    /// Maximum context window in tokens, if known.
+    ///
+    /// Optional/best-effort metadata: `None` means the value is unknown, not that the
+    /// model has no context limit.
+    pub context_window: Option<u32>,
+    /// Pricing metadata, if known.
+    ///
+    /// Optional/best-effort metadata: `None` means pricing has not been recorded for
+    /// this model, not that the model is free.
+    pub pricing: Option<ModelPricing>,
+    /// Whether the model accepts image/Vision content parts.
+    ///
+    /// Optional/best-effort metadata: `None` means unknown, and consumers must treat
+    /// an absent value as "no" until this is populated from an authoritative source.
+    pub supports_image_input: Option<bool>,
 }
 
 /// A single chunk of a streamed completion response.

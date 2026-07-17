@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
 )
@@ -40,20 +41,13 @@ func (h *RoomHandler) Create(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "name is required"})
 	}
 
-	rm, err := h.usecase.CreateRoom(c.Request().Context(), userID, req.Name, req.Description)
+	rwr, err := h.usecase.CreateRoom(c.Request().Context(), userID, req.Name, req.Description)
 	if err != nil {
 		middleware.GetLogger(c).Error("failed to create room", "error", err)
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
 	}
 
-	return c.JSON(http.StatusCreated, RoomResponse{
-		ID:          rm.ID,
-		Name:        rm.Name,
-		Description: rm.Description,
-		OwnerID:     rm.OwnerID,
-		CreatedAt:   rm.CreatedAt,
-		UpdatedAt:   rm.UpdatedAt,
-	})
+	return c.JSON(http.StatusCreated, toRoomResponse(rwr))
 }
 
 // Get handles GET /rooms/:roomId. It retrieves a single room by ID. The
@@ -64,19 +58,12 @@ func (h *RoomHandler) Get(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")
 
-	rm, err := h.usecase.GetRoom(c.Request().Context(), userID, roomID)
+	rwr, err := h.usecase.GetRoom(c.Request().Context(), userID, roomID)
 	if err != nil {
 		return handleRoomError(c, err)
 	}
 
-	return c.JSON(http.StatusOK, RoomResponse{
-		ID:          rm.ID,
-		Name:        rm.Name,
-		Description: rm.Description,
-		OwnerID:     rm.OwnerID,
-		CreatedAt:   rm.CreatedAt,
-		UpdatedAt:   rm.UpdatedAt,
-	})
+	return c.JSON(http.StatusOK, toRoomResponse(rwr))
 }
 
 // List handles GET /rooms. It returns all rooms the authenticated user has
@@ -92,15 +79,8 @@ func (h *RoomHandler) List(c echo.Context) error {
 	}
 
 	resp := make([]RoomResponse, len(rooms))
-	for i, rm := range rooms {
-		resp[i] = RoomResponse{
-			ID:          rm.ID,
-			Name:        rm.Name,
-			Description: rm.Description,
-			OwnerID:     rm.OwnerID,
-			CreatedAt:   rm.CreatedAt,
-			UpdatedAt:   rm.UpdatedAt,
-		}
+	for i, rwr := range rooms {
+		resp[i] = toRoomResponse(rwr)
 	}
 
 	return c.JSON(http.StatusOK, resp)
@@ -124,19 +104,12 @@ func (h *RoomHandler) Update(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "name is required"})
 	}
 
-	rm, err := h.usecase.UpdateRoom(c.Request().Context(), userID, roomID, req.Name, req.Description)
+	rwr, err := h.usecase.UpdateRoom(c.Request().Context(), userID, roomID, req.Name, req.Description)
 	if err != nil {
 		return handleRoomError(c, err)
 	}
 
-	return c.JSON(http.StatusOK, RoomResponse{
-		ID:          rm.ID,
-		Name:        rm.Name,
-		Description: rm.Description,
-		OwnerID:     rm.OwnerID,
-		CreatedAt:   rm.CreatedAt,
-		UpdatedAt:   rm.UpdatedAt,
-	})
+	return c.JSON(http.StatusOK, toRoomResponse(rwr))
 }
 
 // Delete handles DELETE /rooms/:roomId. It deletes the specified room. Only
@@ -152,6 +125,21 @@ func (h *RoomHandler) Delete(c echo.Context) error {
 	}
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+// toRoomResponse converts a domainroom.RoomWithRole (a Room paired with the
+// requesting user's Role in it) into the JSON-facing RoomResponse.
+func toRoomResponse(rwr *domainroom.RoomWithRole) RoomResponse {
+	rm := rwr.Room
+	return RoomResponse{
+		ID:          rm.ID,
+		Name:        rm.Name,
+		Description: rm.Description,
+		OwnerID:     rm.OwnerID,
+		Role:        string(rwr.Role),
+		CreatedAt:   rm.CreatedAt,
+		UpdatedAt:   rm.UpdatedAt,
+	}
 }
 
 func handleRoomError(c echo.Context, err error) error {
