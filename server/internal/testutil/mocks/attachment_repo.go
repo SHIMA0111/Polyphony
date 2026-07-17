@@ -25,16 +25,33 @@ func (r *AttachmentRepo) ensureInit() {
 	}
 }
 
+// cloneAttachment returns a deep-enough copy of a: a struct copy plus a
+// fresh *string for MessageID when non-nil. A plain struct copy (`cp := *a`)
+// still leaves cp.MessageID pointing at the very same string as a.MessageID,
+// since copying a struct copies its pointer fields by value, not what they
+// point to — so a caller mutating *cp.MessageID (or the repo later
+// re-deriving a pointer from the same address) would silently alias the
+// stored attachment. cloneAttachment is used for every value stored into or
+// read out of r.Attachments so no caller can ever observe or corrupt the
+// repo's internal state through a shared MessageID pointer.
+func cloneAttachment(a *attachment.Attachment) *attachment.Attachment {
+	cp := *a
+	if a.MessageID != nil {
+		msgID := *a.MessageID
+		cp.MessageID = &msgID
+	}
+	return &cp
+}
+
 // Create persists a new attachment row.
 func (r *AttachmentRepo) Create(_ context.Context, a *attachment.Attachment) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ensureInit()
 
-	// Store a copy so later in-place mutation by callers (or by
+	// Store a clone so later in-place mutation by callers (or by
 	// AttachToMessage below) can't alias the caller's own struct.
-	cp := *a
-	r.Attachments[a.ID] = &cp
+	r.Attachments[a.ID] = cloneAttachment(a)
 	return nil
 }
 
@@ -48,8 +65,7 @@ func (r *AttachmentRepo) GetByID(_ context.Context, id string) (*attachment.Atta
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	cp := *a
-	return &cp, nil
+	return cloneAttachment(a), nil
 }
 
 // AttachToMessage links an existing attachment to a message, provided the
@@ -71,8 +87,7 @@ func (r *AttachmentRepo) AttachToMessage(_ context.Context, attachmentID, messag
 	}
 	msgID := messageID
 	a.MessageID = &msgID
-	cp := *a
-	return &cp, nil
+	return cloneAttachment(a), nil
 }
 
 // ListByMessageID returns every attachment linked to the given message,
@@ -84,8 +99,7 @@ func (r *AttachmentRepo) ListByMessageID(_ context.Context, messageID string) ([
 	var result []*attachment.Attachment
 	for _, a := range r.Attachments {
 		if a.MessageID != nil && *a.MessageID == messageID {
-			cp := *a
-			result = append(result, &cp)
+			result = append(result, cloneAttachment(a))
 		}
 	}
 	sort.Slice(result, func(i, j int) bool {

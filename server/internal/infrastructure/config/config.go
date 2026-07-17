@@ -272,8 +272,18 @@ func Load() (*Config, error) {
 	if corsOrigins == "" {
 		corsOrigins = "http://localhost:3000"
 	}
+	// Split on "," and trim surrounding whitespace from each entry so
+	// operator-supplied values like "CORS_ORIGINS=https://a.com, https://b.com"
+	// (a space after the comma) don't produce a literal " https://b.com"
+	// origin that never matches a browser's unpadded Origin header. Empty
+	// entries (e.g. from a trailing comma) are dropped.
+	trimmedOrigins := make([]string, 0, len(strings.Split(corsOrigins, ",")))
 	for _, origin := range strings.Split(corsOrigins, ",") {
-		if strings.TrimSpace(origin) == "*" {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		if origin == "*" {
 			// app/router.go configures the CORS middleware with
 			// AllowCredentials: true so the browser can send/receive the
 			// Kratos session cookie cross-origin (Step 20), on the
@@ -287,7 +297,9 @@ func Load() (*Config, error) {
 			// against this API on a logged-in user's behalf.
 			return nil, fmt.Errorf(`CORS_ORIGINS must not contain "*": credentialed CORS with a wildcard origin allows any site to make authenticated requests against this API; list explicit origins instead`)
 		}
+		trimmedOrigins = append(trimmedOrigins, origin)
 	}
+	corsOrigins = strings.Join(trimmedOrigins, ",")
 
 	dbMaxConnLifetime := parseDurationEnv("DB_MAX_CONN_LIFETIME", defaultDBMaxConnLifetime)
 	dbMaxConnIdleTime := parseDurationEnv("DB_MAX_CONN_IDLE_TIME", defaultDBMaxConnIdleTime)
@@ -313,10 +325,7 @@ func Load() (*Config, error) {
 	if s3SecretKey == "" {
 		s3SecretKey = "minioadmin"
 	}
-	s3ForcePathStyle := true
-	if v := os.Getenv("S3_FORCE_PATH_STYLE"); v != "" {
-		s3ForcePathStyle = v != "false"
-	}
+	s3ForcePathStyle := parseBoolEnv("S3_FORCE_PATH_STYLE", true)
 
 	wsTicketSecret := os.Getenv("WS_TICKET_SECRET")
 	if wsTicketSecret == "" {
@@ -518,4 +527,27 @@ func parseDurationEnv(key string, fallback time.Duration) time.Duration {
 	}
 
 	return d
+}
+
+// parseBoolEnv reads the given environment variable and parses it as a
+// bool via strconv.ParseBool (accepting "1", "t", "T", "TRUE", "true",
+// "True", "0", "f", "F", "FALSE", "false", "False"). If the variable is
+// unset, it returns fallback. If the variable is set but fails to parse, it
+// logs a warning via slog.Default() and returns fallback rather than
+// propagating an error, since these settings are optional tuning knobs, not
+// required configuration.
+func parseBoolEnv(key string, fallback bool) bool {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback
+	}
+
+	b, err := strconv.ParseBool(val)
+	if err != nil {
+		slog.Default().Warn("invalid bool for env var, using default",
+			"env", key, "value", val, "default", fallback, "error", err)
+		return fallback
+	}
+
+	return b
 }

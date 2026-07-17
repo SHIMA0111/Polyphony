@@ -3,6 +3,8 @@
 import { useCallback, useMemo, useState } from "react"
 import { useQueryClient, type QueryClient } from "@tanstack/react-query"
 import { ApiRequestError } from "@/lib/http-client"
+import { useSession } from "@/features/auth/hooks/use-session"
+import { useMembers } from "@/features/members/hooks/use-members"
 import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useMessages } from "@/features/messages/hooks/use-messages"
 import { useModels } from "@/features/messages/hooks/use-models"
@@ -71,6 +73,7 @@ export const INSUFFICIENT_BALANCE_MESSAGE = "Insufficient token balance."
  * change on every render while a query has no data yet. */
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_MODELS: ModelInfo[] = []
+const EMPTY_SENDER_USERNAMES: Record<string, string> = {}
 
 export interface UseChatRoomResult {
   room: Room | undefined
@@ -108,6 +111,24 @@ export interface UseChatRoomResult {
    * failed optimistic entry so no duplicate bubble is left behind. */
   handleRetry: (messageId: string, content: string) => Promise<void>
   /**
+   * The signed-in viewer's own user id, sourced from `useSession()`, or
+   * `null` before the session query resolves (or while signed out). Passed
+   * down through `MessageList`/`MessageGroup` so a human message group can
+   * be labeled "You" for the viewer's own messages instead of always
+   * showing "You" for every human sender — see `MessageGroup`'s
+   * `resolveSenderLabel`.
+   */
+  currentUserId: string | null
+  /**
+   * Map from member `user_id` to `username`, derived from
+   * `useMembers(roomId)`. Passed down alongside `currentUserId` so
+   * `MessageGroup` can label a human group that isn't the viewer's own by
+   * the sender's actual username rather than mislabeling it "You" too. A
+   * sender with no entry here (e.g. they have since left the room) falls
+   * back to a short form of their id in `MessageGroup`.
+   */
+  senderUsernames: Record<string, string>
+  /**
    * Set to {@link INSUFFICIENT_BALANCE_MESSAGE} when the most recent
    * `handleSendWithAI` *or* `handleRegenerate` call was rejected with HTTP
    * 402, `null` otherwise (including after any other kind of failure, which
@@ -137,6 +158,8 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
   const roomQuery = useRoom(roomId)
   const messagesQuery = useMessages(roomId)
   const modelsQuery = useModels()
+  const sessionQuery = useSession()
+  const membersQuery = useMembers(roomId)
 
   const sendMessageMutation = useSendMessage(roomId)
   const sendAIMessageMutation = useSendAIMessage(roomId)
@@ -151,6 +174,24 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
   const models = modelsQuery.data ?? EMPTY_MODELS
   const isLoading =
     roomQuery.isPending || messagesQuery.isPending || modelsQuery.isPending
+
+  // Not included in `isLoading` above: the session/member-list queries are
+  // supplementary display data for `MessageGroup`'s sender label (see
+  // `currentUserId`/`senderUsernames`'s own doc comments), not data the
+  // chat transcript itself needs to render -- gating the whole page's
+  // loading state on them would delay the transcript for no benefit, since
+  // `MessageBubble` already tolerates its own `useSession()` call resolving
+  // a moment after first paint the same way.
+  const currentUserId = sessionQuery.data?.identity.id ?? null
+  const senderUsernames = useMemo(() => {
+    const members = membersQuery.data?.members
+    if (!members || members.length === 0) return EMPTY_SENDER_USERNAMES
+    const map: Record<string, string> = {}
+    for (const member of members) {
+      map[member.user_id] = member.username
+    }
+    return map
+  }, [membersQuery.data])
 
   const handleSend = useCallback(
     async (content: string, attachmentIds: string[] = []) => {
@@ -315,6 +356,8 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
     handleSendWithAI,
     handleRegenerate,
     handleRetry,
+    currentUserId,
+    senderUsernames,
     aiError,
   }
 }

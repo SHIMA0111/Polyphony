@@ -34,6 +34,27 @@ func setupWebSocketTest() (*echo.Echo, *WebSocketHandler, *mocks.RoomRepo, *even
 	return e, h, repo, hub, issuer
 }
 
+// waitForSubscriberCount bounded-polls hub.SubscriberCount(roomID) (up to
+// ~1s, checking every 5ms) until it reaches want, failing the test if that
+// deadline is reached first. It replaces a fixed time.Sleep for tests that
+// need to know a hub.Subscribe call issued on another goroutine (here, the
+// WebSocket handler's own connection-handling goroutine) has actually taken
+// effect before publishing an event the subscriber must observe.
+func waitForSubscriberCount(t *testing.T, hub *event.InProcessHub, roomID string, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if hub.SubscriberCount(roomID) >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d subscribers on room %q, got %d", want, roomID, hub.SubscriberCount(roomID))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestIssueTicket200(t *testing.T) {
 	e, h, _, _, issuer := setupWebSocketTest()
 
@@ -201,8 +222,11 @@ func TestHandleWS_TwoClientsBroadcastAndTargeted(t *testing.T) {
 	}
 	defer func() { _ = conn2.Close(websocket.StatusNormalClosure, "") }()
 
-	// Give the server a moment to register both subscriptions before publishing.
-	time.Sleep(100 * time.Millisecond)
+	// Wait, deterministically, until the server has registered both
+	// subscriptions before publishing — bounded-polling hub.SubscriberCount
+	// instead of a fixed time.Sleep avoids both a flaky race under load and
+	// needlessly slowing down the common case.
+	waitForSubscriberCount(t, hub, roomID, 2)
 
 	msg1 := &domainmessage.Message{ID: "msg-1", RoomID: roomID, Content: "hello", Type: domainmessage.MessageTypeHuman, Status: domainmessage.MessageStatusCompleted}
 	hub.Publish(ctx, event.RoomEvent{Type: event.EventMessageCreated, RoomID: roomID, Message: msg1, OccurredAt: time.Now()})

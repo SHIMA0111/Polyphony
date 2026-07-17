@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useParams } from "next/navigation"
 import { Avatar, Box, Button, Flex, Heading, Menu, Portal } from "@chakra-ui/react"
-import { LogOut, Pen, Settings, Users } from "lucide-react"
+import { LogOut, Pen, Users } from "lucide-react"
 import { useLogout } from "@/features/auth/hooks/use-logout"
 import { RoomRail } from "@/features/rooms/components/RoomRail"
 import { InvitationsBellButton } from "@/features/members/components/InvitationsBellButton"
@@ -14,7 +14,7 @@ import { BalanceBadge } from "@/features/billing/components/BalanceBadge"
  * (`/rooms` and `/rooms/[roomId]`).
  *
  * Renders a top bar (logo mark, "Polyphony" heading, the `BalanceBadge`
- * token-balance widget, and the avatar `Menu.Root` with Settings/Logout —
+ * token-balance widget, and the avatar `Menu.Root` with Groups/Logout —
  * moved here from `RoomList` so it mounts once instead of once per page)
  * above a two-region body: the
  * always-mounted `RoomRail` room-list rail and a content pane wrapping
@@ -92,10 +92,6 @@ export default function MainLayout({
               <Portal>
                 <Menu.Positioner>
                   <Menu.Content w="56">
-                    <Menu.Item value="settings" gap={2}>
-                      <Settings size={16} />
-                      Settings
-                    </Menu.Item>
                     <Menu.Item value="groups" gap={2} asChild>
                       <Link href="/groups">
                         <Users size={16} />

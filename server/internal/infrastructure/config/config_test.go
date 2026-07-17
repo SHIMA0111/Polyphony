@@ -163,6 +163,24 @@ func TestLoadCORSOriginsExplicitListSucceeds(t *testing.T) {
 	}
 }
 
+// TestLoadCORSOriginsTrimsWhitespaceAndDropsEmpties proves that Load trims
+// leading/trailing whitespace from each comma-separated CORS_ORIGINS entry
+// and drops empty entries (e.g. from a trailing comma), so an
+// operator-supplied value with stray spaces still parses to the exact
+// origins a browser's Origin header would present.
+func TestLoadCORSOriginsTrimsWhitespaceAndDropsEmpties(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("CORS_ORIGINS", " https://a.com , https://b.com ,")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CORSOrigins != "https://a.com,https://b.com" {
+		t.Errorf("expected trimmed CORSOrigins %q, got %q", "https://a.com,https://b.com", cfg.CORSOrigins)
+	}
+}
+
 func TestLoadS3Defaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -222,6 +240,24 @@ func TestLoadS3Overrides(t *testing.T) {
 	}
 	if cfg.S3ForcePathStyle {
 		t.Errorf("expected overridden S3ForcePathStyle false, got %v", cfg.S3ForcePathStyle)
+	}
+}
+
+// TestLoadS3ForcePathStyleInvalidValueDefaultsWithoutError proves that an
+// unparseable S3_FORCE_PATH_STYLE value doesn't fail Load: it's an optional
+// tuning knob (like DB_MAX_CONN_LIFETIME etc.), so an invalid value just
+// falls back to the default (true) with a logged warning instead of a
+// startup error.
+func TestLoadS3ForcePathStyleInvalidValueDefaultsWithoutError(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("S3_FORCE_PATH_STYLE", "not-a-bool")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected Load to succeed with an invalid S3_FORCE_PATH_STYLE, got error: %v", err)
+	}
+	if !cfg.S3ForcePathStyle {
+		t.Errorf("expected S3ForcePathStyle to default to true on invalid value, got %v", cfg.S3ForcePathStyle)
 	}
 }
 

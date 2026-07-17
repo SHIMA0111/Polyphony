@@ -44,6 +44,20 @@ interface MessageListProps {
   fetchNextPage: () => void
   /** Number of currently loaded pages, used to anchor scroll position across a load. */
   pageCount: number
+  /**
+   * The signed-in viewer's own user id, or `null`/`undefined` before it's
+   * known. Threaded down to `MessageGroup` so a human group can be labeled
+   * "You" vs. the sender's username. Optional (defaults to `null` in
+   * `MessageGroup`) so existing callers that don't pass it still render.
+   */
+  currentUserId?: string | null
+  /**
+   * Map from member `user_id` to `username`, sourced from
+   * `useMembers(roomId)`. Threaded down to `MessageGroup` to label a human
+   * group that isn't the viewer's own. Optional (defaults to `{}` in
+   * `MessageGroup`).
+   */
+  senderUsernames?: Record<string, string>
 }
 
 export function MessageList({
@@ -55,6 +69,8 @@ export function MessageList({
   isFetchingNextPage,
   fetchNextPage,
   pageCount,
+  currentUserId,
+  senderUsernames,
 }: MessageListProps) {
   const { containerRef, hasNewMessages, scrollToBottom } =
     useNearBottomScroll(messages)
@@ -118,10 +134,13 @@ export function MessageList({
               <MessageGroup
                 key={`group-${item.messages[0].id}`}
                 type={item.type}
+                senderId={item.senderId}
                 messages={item.messages}
                 onRegenerate={onRegenerate}
                 isRegenerating={isRegenerating}
                 onRetry={onRetry}
+                currentUserId={currentUserId}
+                senderUsernames={senderUsernames}
               />
             ),
           )}

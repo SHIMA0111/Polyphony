@@ -30,6 +30,8 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
     handleSendWithAI,
     handleRegenerate,
     handleRetry,
+    currentUserId,
+    senderUsernames,
     aiError,
   } = useChatRoom(roomId)
   const connectionStatus = useRoomSocket(roomId)
@@ -73,6 +75,8 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
           void fetchNextPage()
         }}
         pageCount={pageCount}
+        currentUserId={currentUserId}
+        senderUsernames={senderUsernames}
       />
 
       {room?.is_archived ? (

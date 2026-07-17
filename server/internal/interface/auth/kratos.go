@@ -320,19 +320,24 @@ func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identity kratos
 // a "cookie:"-prefixed string in practice (SimpleJWT never sets a browser
 // cookie), so the distinction only matters when AUTH_MODE=kratos.
 //
-// It returns domain.ErrInvalidToken if the request cannot be built, the
-// HTTP call itself fails, whoami responds with a non-200 status, or the
-// response body cannot be decoded — every case where the presented
-// credential itself is the problem. If ensureLocalUser subsequently fails
-// (a repository error resolving/creating/linking the local user), that
-// error is wrapped and returned as-is rather than flattened to
-// domain.ErrInvalidToken, since by that point whoami has already confirmed
-// the token is valid — see interface/middleware.JWTAuth, which relies on
-// this distinction to map the two cases to 401 and 500 respectively.
+// It returns domain.ErrInvalidToken only when the presented credential
+// itself is confirmed bad: whoami responds 401 (or 403, e.g. an
+// AAL-restricted session). A request-construction failure, a transport-level
+// error from the HTTP call, any other non-200 status (5xx or unexpected
+// 4xx), or a 200 response whose body cannot be decoded are all genuine
+// infrastructure/upstream failures rather than evidence about the
+// credential, so they are wrapped and returned as plain errors instead — see
+// interface/middleware.JWTAuth, which relies on this distinction to map
+// domain.ErrInvalidToken to 401 and any other error to a 5xx.
+//
+// If ensureLocalUser subsequently fails (a repository error
+// resolving/creating/linking the local user), that error is likewise
+// wrapped and returned as-is rather than flattened to domain.ErrInvalidToken,
+// since by that point whoami has already confirmed the token is valid.
 func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.publicURL+"/sessions/whoami", nil)
 	if err != nil {
-		return nil, domain.ErrInvalidToken
+		return nil, fmt.Errorf("create kratos whoami request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 
@@ -345,17 +350,21 @@ func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*d
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, domain.ErrInvalidToken
+		return nil, fmt.Errorf("send kratos whoami request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return nil, domain.ErrInvalidToken
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("kratos whoami failed: status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result kratosWhoamiRespDTO
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, domain.ErrInvalidToken
+		return nil, fmt.Errorf("decode kratos whoami response: %w", err)
 	}
 
 	localUser, err := s.ensureLocalUser(ctx, result.Identity)

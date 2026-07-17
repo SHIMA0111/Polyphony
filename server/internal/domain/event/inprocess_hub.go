@@ -169,6 +169,21 @@ func (h *InProcessHub) removeSubscriber(roomID string, sub *subscriber) {
 	close(sub.ch)
 }
 
+// SubscriberCount returns the number of subscribers currently registered
+// for roomID. It is intended for tests that need to wait, deterministically,
+// until a hub.Subscribe call issued on another goroutine has actually taken
+// effect before publishing an event that subscriber must observe — polling
+// this method avoids relying on a fixed time.Sleep, which is both slower
+// than necessary in the common case and flaky under load. It is not part of
+// the MessageHub interface: it is a concrete-type-only accessor exposed
+// solely for this deterministic-readiness use case in tests.
+func (h *InProcessHub) SubscriberCount(roomID string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	return len(h.subs[roomID])
+}
+
 // Revoke closes every open subscription userID currently holds on roomID.
 // Matching subscribers are snapshotted under the hub's read lock (so the
 // snapshot itself can never race with a concurrent Subscribe/unsubscribe
