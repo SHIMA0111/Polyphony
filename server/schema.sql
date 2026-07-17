@@ -85,3 +85,24 @@ CREATE TABLE room_invitations (
 
 CREATE INDEX idx_room_invitations_room_id ON room_invitations(room_id);
 CREATE INDEX idx_room_invitations_invitee_id ON room_invitations(invitee_id) WHERE invitee_id IS NOT NULL;
+
+CREATE TABLE token_balances (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    balance BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE token_transactions (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    room_id UUID REFERENCES rooms(id) ON DELETE SET NULL,
+    message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
+    type VARCHAR(20) NOT NULL,
+    amount BIGINT NOT NULL,
+    balance_after BIGINT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT token_transactions_type_check CHECK (type IN ('consumption', 'charge', 'adjustment'))
+);
+
+CREATE INDEX idx_token_transactions_user_created ON token_transactions(user_id, created_at DESC, id DESC);

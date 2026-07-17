@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
@@ -22,7 +23,7 @@ func setupMessageTest(isMember bool) (*echo.Echo, *MessageHandler) {
 		roomRepo.SeedMember("room-1", "user-1", "member")
 		roomRepo.SeedRoom("room-1", nil)
 	}
-	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
 	return echo.New(), NewMessageHandler(uc)
 }
 
@@ -141,7 +142,7 @@ func TestSendAIHandlerLLMFailure201(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
-	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub())
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub(), &mocks.BillingGuard{})
 	e := echo.New()
 	h := NewMessageHandler(uc)
 
@@ -214,7 +215,7 @@ func TestMessageHandlerDelete(t *testing.T) {
 		roomRepo := &mocks.RoomRepo{}
 		roomRepo.SeedMember("room-1", "user-1", "member")
 		roomRepo.SeedMember("room-1", "user-2", "member")
-		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
 		e := echo.New()
 		h := NewMessageHandler(uc)
 
@@ -243,7 +244,7 @@ func TestMessageHandlerDelete(t *testing.T) {
 		roomRepo := &mocks.RoomRepo{}
 		roomRepo.SeedMember("room-1", "user-1", "member")
 		roomRepo.SeedMember("room-2", "user-1", "member")
-		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
 		e := echo.New()
 		h := NewMessageHandler(uc)
 
@@ -276,7 +277,7 @@ func TestMessageHandlerUpdateExclude(t *testing.T) {
 		msgRepo := &mocks.MessageRepo{}
 		roomRepo := &mocks.RoomRepo{}
 		roomRepo.SeedMember("room-1", "user-1", "member")
-		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
 		e := echo.New()
 		h := NewMessageHandler(uc)
 
@@ -329,4 +330,36 @@ func TestMessageHandlerUpdateExclude(t *testing.T) {
 			t.Fatalf("expected 400, got %d", rec.Code)
 		}
 	})
+}
+
+// TestSendAIHandlerInsufficientBalance402 asserts that SendAI returns HTTP
+// 402 with body {"message":"insufficient token balance"} when the usecase
+// returns domain.ErrInsufficientBalance (Step 42).
+func TestSendAIHandlerInsufficientBalance402(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	guard := &mocks.BillingGuard{CheckBalanceErr: domain.ErrInsufficientBalance}
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard)
+	e := echo.New()
+	h := NewMessageHandler(uc)
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai",
+		strings.NewReader(`{"content":"Hello","model":"test"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.SendAI(c); err != nil {
+		t.Fatalf("SendAI error: %v", err)
+	}
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected 402, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `{"message":"insufficient token balance"}`) {
+		t.Fatalf("expected insufficient token balance body, got %s", rec.Body.String())
+	}
 }

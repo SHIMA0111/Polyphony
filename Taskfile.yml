@@ -214,3 +214,13 @@ tasks:
     dotenv: ['../.env.local', '../.env']
     cmds:
       - bun run dev
+
+  # ---------------------------------------------------------------------------
+  # Billing
+  # ---------------------------------------------------------------------------
+  billing:topup:
+    desc: 'Credit a user''s token balance for local dev/testing, e.g. task billing:topup -- -email user@example.com -amount 100000'
+    dir: server
+    dotenv: ['../.env.local', '../.env']
+    cmds:
+      - go run ./cmd/seed-tokens {{.CLI_ARGS}}
