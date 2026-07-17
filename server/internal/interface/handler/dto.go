@@ -193,6 +193,49 @@ type AttachmentListResponse struct {
 	Attachments []AttachmentViewResponse `json:"attachments"`
 }
 
+// --- Invitation DTOs ---
+
+// CreateInvitationRequest is the request body for
+// POST /rooms/:roomId/invitations. If InviteeUsername is nil, a reusable
+// link invitation is created; otherwise it targets that specific user
+// (single-use). Role is required and must be one of the five valid
+// domainroom.Role values. ExpiresInHours is optional; when omitted it
+// defaults to 168 (7 days) and must otherwise fall within [1, 720].
+type CreateInvitationRequest struct {
+	InviteeUsername *string `json:"invitee_username"`
+	Role            string  `json:"role"`
+	ExpiresInHours  *int    `json:"expires_in_hours"`
+}
+
+// InvitationResponse is the JSON response representation of a single
+// invitation. InviteeID is nil for link invitations.
+type InvitationResponse struct {
+	ID         string    `json:"id"`
+	RoomID     string    `json:"room_id"`
+	InviterID  string    `json:"inviter_id"`
+	InviteeID  *string   `json:"invitee_id"`
+	InviteCode string    `json:"invite_code"`
+	Role       string    `json:"role"`
+	Status     string    `json:"status"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// InvitationListResponse is the response body for a list of invitations.
+type InvitationListResponse struct {
+	Invitations []InvitationResponse `json:"invitations"`
+}
+
+// RoomMembershipResponse is the JSON response representation of a single
+// room membership, returned by POST /invitations/:invitationId/accept.
+type RoomMembershipResponse struct {
+	ID       string    `json:"id"`
+	RoomID   string    `json:"room_id"`
+	UserID   string    `json:"user_id"`
+	Role     string    `json:"role"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
 // --- Common DTOs ---
 
 // ErrorResponse is the standard error response body used across all handler

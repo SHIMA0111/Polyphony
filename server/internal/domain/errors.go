@@ -52,6 +52,24 @@ var (
 	// with a declared size that is not a positive number of bytes (zero or
 	// negative).
 	ErrInvalidAttachmentSize = errors.New("invalid attachment size")
+
+	// ErrInvitationExpired indicates an invitation's ExpiresAt has already
+	// passed at the time it was checked (e.g. on accept).
+	ErrInvitationExpired = errors.New("invitation expired")
+
+	// ErrInvitationNotPending indicates an operation that requires an
+	// invitation to be in StatusPending (e.g. accept, reject) was attempted
+	// on an invitation that has already been accepted, rejected, or revoked.
+	ErrInvitationNotPending = errors.New("invitation is not pending")
+
+	// ErrAlreadyMember indicates the target user is already a member of the
+	// room, so accepting the invitation (or otherwise adding them) would
+	// create a duplicate room_members row.
+	ErrAlreadyMember = errors.New("user is already a member of the room")
+
+	// ErrInvitationAlreadyExists indicates a pending, username-targeted
+	// invitation already exists for the same (room, invitee) pair.
+	ErrInvitationAlreadyExists = errors.New("invitation already exists")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.
