@@ -23,7 +23,7 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:-polyphony-minio}
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
       WS_TICKET_SECRET: ${WS_TICKET_SECRET:-}
-      AUTH_MODE: ${AUTH_MODE:-simple_jwt}
+      AUTH_MODE: ${AUTH_MODE:-kratos}
       KRATOS_PUBLIC_URL: ${KRATOS_PUBLIC_URL:-http://kratos:4433}
       KRATOS_ADMIN_URL: ${KRATOS_ADMIN_URL:-http://kratos:4434}
       KRATOS_COOKIE_NAME: ${KRATOS_COOKIE_NAME:-ory_kratos_session}
@@ -198,6 +198,7 @@ services:
         NEXT_PUBLIC_MOCK_API: ${NEXT_PUBLIC_MOCK_API:-false}
     environment:
       API_URL: ${API_URL:-http://api:8080}
+      KRATOS_PUBLIC_URL: ${KRATOS_PUBLIC_URL:-http://kratos:4433}
     ports:
       - "3000:3000"
     depends_on:
@@ -223,6 +224,10 @@ services:
       PORT: 8080
       CORS_ORIGINS: http://localhost:3001
       LLM_GATEWAY_URL: http://llm-gateway-e2e:8081
+      AUTH_MODE: kratos
+      KRATOS_PUBLIC_URL: http://kratos:4433
+      KRATOS_ADMIN_URL: http://kratos:4434
+      KRATOS_COOKIE_NAME: ory_kratos_session
     ports:
       - "8090:8080"
     healthcheck:
@@ -236,6 +241,8 @@ services:
       migrate-e2e:
         condition: service_completed_successfully
       llm-gateway-e2e:
+        condition: service_healthy
+      kratos:
         condition: service_healthy
 
   db-e2e:
@@ -312,6 +319,7 @@ services:
         NEXT_PUBLIC_MOCK_API: ${NEXT_PUBLIC_MOCK_API:-false}
     environment:
       API_URL: http://api-e2e:8080
+      KRATOS_PUBLIC_URL: ${KRATOS_PUBLIC_URL:-http://kratos:4433}
     ports:
       - "3001:3000"
     profiles: ["test"]

@@ -65,7 +65,14 @@ export default function MainLayout({
 
           <Menu.Root>
             <Menu.Trigger asChild>
-              <Button variant="ghost" rounded="full" p={0} h={9} w={9}>
+              <Button
+                aria-label="Account menu"
+                variant="ghost"
+                rounded="full"
+                p={0}
+                h={9}
+                w={9}
+              >
                 <Avatar.Root size="sm" colorPalette="blue">
                   <Avatar.Fallback name="User" />
                 </Avatar.Root>

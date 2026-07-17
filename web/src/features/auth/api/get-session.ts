@@ -1,37 +1,40 @@
 import { queryOptions } from "@tanstack/react-query"
-import { apiRequest, ApiRequestError } from "@/lib/http-client"
-import type { Session } from "../types"
-
-/** Fetcher shape shared by every per-feature `queryOptions()` factory. */
-type Fetcher = <T>(path: string) => Promise<T>
+import type { KratosSession, Session } from "../types"
 
 /**
- * Fetches the current session from `GET /api/proxy/users/me`.
+ * Fetches the current session from `GET /api/kratos/sessions/whoami`.
  *
- * A `401` (missing or expired session cookie) is mapped to `null` instead of
- * being thrown, so callers see a plain "signed out" state rather than
- * having to catch {@link ApiRequestError} themselves. Any other error
- * (network failure, `5xx`) is rethrown and surfaces as a query error.
+ * A `401` (missing or expired session cookie) resolves `null` instead of
+ * throwing, so callers see a plain "signed out" state rather than having to
+ * catch an error themselves. Any other non-2xx status is unexpected and
+ * throws.
  */
-async function getSession(fetcher: Fetcher): Promise<Session> {
-  try {
-    return await fetcher<Session>("/users/me")
-  } catch (err) {
-    if (err instanceof ApiRequestError && err.status === 401) {
-      return null
-    }
-    throw err
+export async function getSession(): Promise<Session> {
+  const res = await fetch("/api/kratos/sessions/whoami", {
+    headers: { Accept: "application/json" },
+  })
+
+  if (res.status === 401) {
+    return null
   }
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch session: HTTP ${res.status}`)
+  }
+
+  return (await res.json()) as KratosSession
 }
 
 /**
- * `queryOptions()` factory for the `["auth", "session"]` query, parameterized
- * by fetcher so the same factory works client-side (default `apiRequest`)
- * or in a test with a stubbed fetcher.
+ * `queryOptions()` factory for the `["auth", "session"]` query.
+ *
+ * Kept as its own factory (rather than inlining `useQuery` calls) so the
+ * query key stays defined in exactly one place — every invalidation call
+ * site elsewhere in the app uses the same `["auth", "session"]` key.
  */
-export function getSessionQueryOptions(fetcher: Fetcher = apiRequest) {
+export function getSessionQueryOptions() {
   return queryOptions({
     queryKey: ["auth", "session"] as const,
-    queryFn: () => getSession(fetcher),
+    queryFn: getSession,
   })
 }
