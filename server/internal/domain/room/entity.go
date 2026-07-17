@@ -21,6 +21,12 @@ type RoomMember struct {
 	UserID   string
 	Role     Role
 	JoinedAt time.Time
+	// Username is the member's display username. It is populated only by
+	// member-listing queries (RoomRepository.ListMembers, via a JOIN
+	// against the users table); it is left empty ("") on RoomMember values
+	// returned by other lookups (e.g. GetMember, AddMember) that have no
+	// reason to join against users.
+	Username string
 }
 
 // RoomWithRole pairs a Room with a specific user's Role in that room. It is

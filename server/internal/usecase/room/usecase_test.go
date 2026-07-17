@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
@@ -190,5 +191,223 @@ func TestListRoomsIncludesRole(t *testing.T) {
 	}
 	if rooms[0].Role != domainroom.RoleMaster {
 		t.Fatalf("expected role master, got %s", rooms[0].Role)
+	}
+}
+
+func TestListMembersReturnsForReader(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleReader,
+	})
+
+	members, err := uc.ListMembers(ctx, "user-2", rwr.Room.ID)
+	if err != nil {
+		t.Fatalf("ListMembers failed for reader: %v", err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("expected 2 members, got %d", len(members))
+	}
+}
+
+func TestListMembersForbiddenForNonMember(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	_, err := uc.ListMembers(ctx, "user-2", rwr.Room.ID)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestLeaveRoomSucceedsForNonOwnerMember(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
+	})
+
+	if err := uc.LeaveRoom(ctx, "user-2", rwr.Room.ID, "user-2"); err != nil {
+		t.Fatalf("LeaveRoom failed: %v", err)
+	}
+	if _, err := repo.GetMember(ctx, rwr.Room.ID, "user-2"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected membership to be removed, got err=%v", err)
+	}
+}
+
+func TestLeaveRoomOwnerProtected(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	err := uc.LeaveRoom(ctx, "user-1", rwr.Room.ID, "user-1")
+	if !errors.Is(err, domainroom.ErrOwnerRoleProtected) {
+		t.Fatalf("expected ErrOwnerRoleProtected, got %v", err)
+	}
+}
+
+func TestLeaveRoomForbiddenWhenTargetNotCaller(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
+	})
+
+	err := uc.LeaveRoom(ctx, "user-2", rwr.Room.ID, "user-3")
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestChangeMemberRoleSucceedsForAdmin(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleAdmin,
+	})
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m3", RoomID: rwr.Room.ID, UserID: "user-3", Role: domainroom.RoleMember,
+	})
+
+	updated, err := uc.ChangeMemberRole(ctx, "user-2", rwr.Room.ID, "user-3", domainroom.RoleGuest)
+	if err != nil {
+		t.Fatalf("ChangeMemberRole failed: %v", err)
+	}
+	if updated.Role != domainroom.RoleGuest {
+		t.Fatalf("expected role guest, got %s", updated.Role)
+	}
+}
+
+func TestChangeMemberRoleForbiddenForInsufficientRole(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
+	})
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m3", RoomID: rwr.Room.ID, UserID: "user-3", Role: domainroom.RoleGuest,
+	})
+
+	for _, callerID := range []string{"user-2", "user-3"} {
+		_, err := uc.ChangeMemberRole(ctx, callerID, rwr.Room.ID, "user-1", domainroom.RoleReader)
+		if !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("caller %s: expected ErrForbidden, got %v", callerID, err)
+		}
+	}
+}
+
+func TestChangeMemberRoleOwnerProtected(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleAdmin,
+	})
+
+	_, err := uc.ChangeMemberRole(ctx, "user-2", rwr.Room.ID, "user-1", domainroom.RoleGuest)
+	if !errors.Is(err, domainroom.ErrOwnerRoleProtected) {
+		t.Fatalf("expected ErrOwnerRoleProtected, got %v", err)
+	}
+}
+
+func TestTransferOwnershipSucceeds(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
+	})
+
+	result, err := uc.TransferOwnership(ctx, "user-1", rwr.Room.ID, "user-2")
+	if err != nil {
+		t.Fatalf("TransferOwnership failed: %v", err)
+	}
+	if result.Room.OwnerID != "user-2" {
+		t.Fatalf("expected new owner user-2, got %s", result.Room.OwnerID)
+	}
+
+	newOwnerMember, err := repo.GetMember(ctx, rwr.Room.ID, "user-2")
+	if err != nil {
+		t.Fatalf("GetMember(user-2) failed: %v", err)
+	}
+	if newOwnerMember.Role != domainroom.RoleMaster {
+		t.Fatalf("expected new owner role master, got %s", newOwnerMember.Role)
+	}
+
+	oldOwnerMember, err := repo.GetMember(ctx, rwr.Room.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetMember(user-1) failed: %v", err)
+	}
+	if oldOwnerMember.Role != domainroom.RoleAdmin {
+		t.Fatalf("expected old owner role admin, got %s", oldOwnerMember.Role)
+	}
+}
+
+func TestTransferOwnershipForbiddenForNonOwner(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleAdmin,
+	})
+
+	_, err := uc.TransferOwnership(ctx, "user-2", rwr.Room.ID, "user-2")
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestTransferOwnershipNotFoundForNonMemberTarget(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	_, err := uc.TransferOwnership(ctx, "user-1", rwr.Room.ID, "user-2")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestTransferOwnershipNoOpWhenTargetIsCurrentOwner(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	result, err := uc.TransferOwnership(ctx, "user-1", rwr.Room.ID, "user-1")
+	if err != nil {
+		t.Fatalf("expected no-op transfer to succeed, got error: %v", err)
+	}
+	if result.Room.OwnerID != "user-1" {
+		t.Fatalf("expected owner unchanged (user-1), got %s", result.Room.OwnerID)
 	}
 }

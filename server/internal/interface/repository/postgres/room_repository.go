@@ -187,9 +187,16 @@ func (r *RoomRepository) GetMember(ctx context.Context, roomID, userID string) (
 }
 
 // ListMembers returns all members of a room, ordered by join time ascending.
+// It JOINs against the users table to populate each RoomMember.Username, so
+// callers get human-readable display names without a separate
+// user-directory lookup.
 func (r *RoomRepository) ListMembers(ctx context.Context, roomID string) ([]*room.RoomMember, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, room_id, user_id, role, joined_at FROM room_members WHERE room_id = $1 ORDER BY joined_at`,
+		`SELECT rm.id, rm.room_id, rm.user_id, rm.role, rm.joined_at, u.username
+		 FROM room_members rm
+		 JOIN users u ON u.id = rm.user_id
+		 WHERE rm.room_id = $1
+		 ORDER BY rm.joined_at`,
 		roomID,
 	)
 	if err != nil {
@@ -201,7 +208,7 @@ func (r *RoomRepository) ListMembers(ctx context.Context, roomID string) ([]*roo
 	for rows.Next() {
 		var m room.RoomMember
 		var roleStr string
-		if err := rows.Scan(&m.ID, &m.RoomID, &m.UserID, &roleStr, &m.JoinedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.RoomID, &m.UserID, &roleStr, &m.JoinedAt, &m.Username); err != nil {
 			return nil, err
 		}
 		m.Role = room.Role(roleStr)
@@ -223,4 +230,70 @@ func (r *RoomRepository) RemoveMember(ctx context.Context, roomID, userID string
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+// UpdateMemberRole updates a single membership's role. It returns
+// domain.ErrNotFound if the membership (roomID, userID) does not exist.
+func (r *RoomRepository) UpdateMemberRole(ctx context.Context, roomID, userID string, role room.Role) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE room_members SET role = $1 WHERE room_id = $2 AND user_id = $3`,
+		string(role), roomID, userID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// TransferOwnership atomically updates rooms.owner_id to newOwnerID, sets
+// the new owner's room_members.role to master, and sets the previous
+// owner's (oldOwnerID) room_members.role to admin, all within a single
+// transaction, following the same r.pool.Begin / defer tx.Rollback /
+// tx.Commit pattern as Create. It returns domain.ErrNotFound — rolling back
+// all writes made so far in the transaction — if the rooms update, the new
+// owner's membership update, or the previous owner's membership update
+// affects zero rows (i.e. the room does not exist, or either user is not
+// already a room member).
+func (r *RoomRepository) TransferOwnership(ctx context.Context, roomID, oldOwnerID, newOwnerID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `UPDATE rooms SET owner_id = $1 WHERE id = $2`, newOwnerID, roomID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	tag, err = tx.Exec(ctx,
+		`UPDATE room_members SET role = $1 WHERE room_id = $2 AND user_id = $3`,
+		string(room.RoleMaster), roomID, newOwnerID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	tag, err = tx.Exec(ctx,
+		`UPDATE room_members SET role = $1 WHERE room_id = $2 AND user_id = $3`,
+		string(room.RoleAdmin), roomID, oldOwnerID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	return tx.Commit(ctx)
 }

@@ -38,4 +38,20 @@ type RoomRepository interface {
 
 	// RemoveMember removes a user from a room.
 	RemoveMember(ctx context.Context, roomID, userID string) error
+
+	// UpdateMemberRole updates a single membership's role. It returns
+	// domain.ErrNotFound if the membership (roomID, userID) does not exist.
+	// It does not itself enforce any RBAC or "owner role is protected"
+	// invariant — those are usecase-layer concerns; this method is a plain
+	// persistence operation.
+	UpdateMemberRole(ctx context.Context, roomID, userID string, role Role) error
+
+	// TransferOwnership atomically updates rooms.owner_id to newOwnerID,
+	// sets the new owner's room_members.role to RoleMaster, and sets the
+	// previous owner's (oldOwnerID) room_members.role to RoleAdmin, all
+	// within a single transaction so a room is never observed with zero or
+	// two masters. It returns domain.ErrNotFound if either the room or
+	// either membership row (oldOwnerID, newOwnerID) does not exist,
+	// rolling back any partial writes.
+	TransferOwnership(ctx context.Context, roomID, oldOwnerID, newOwnerID string) error
 }
