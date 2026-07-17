@@ -2,7 +2,10 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 
 use crate::domain::error::DomainError;
-use crate::domain::model::{CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo};
+use crate::domain::model::{
+    CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, TokenEstimateRequest,
+    TokenEstimateResponse,
+};
 
 /// Completion use case port.
 ///
@@ -62,4 +65,22 @@ pub trait CompletionUseCase: Send + Sync {
     /// Returns `DomainError::KeyNotFound` for the first registered provider whose API
     /// key cannot be resolved.
     fn readiness(&self) -> Result<(), DomainError>;
+
+    /// Estimates the token count for a list of chat messages.
+    ///
+    /// This reuses the same `AppState = Arc<dyn CompletionUseCase>` as `/completions`
+    /// and `/models` rather than introducing a second state type: the REST router's
+    /// `/tokens/estimate` handler is registered against the same shared state.
+    ///
+    /// Unlike `complete`/`list_models`/`stream`, this method is **synchronous** — the
+    /// underlying character-based heuristic (`domain::token_estimator`) performs no
+    /// I/O and never fails, so no `BoxFuture`/`Result` wrapping is needed.
+    ///
+    /// # Arguments
+    /// * `req` — The messages (and target model, for future model-specific tuning) to
+    ///   estimate.
+    ///
+    /// # Returns
+    /// A `TokenEstimateResponse` carrying the approximate token count.
+    fn estimate_tokens(&self, req: TokenEstimateRequest) -> TokenEstimateResponse;
 }

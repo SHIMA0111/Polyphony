@@ -232,6 +232,29 @@ pub struct CompletionChunk {
     pub usage: Option<Usage>,
 }
 
+/// Request to estimate the token count of a list of chat messages.
+///
+/// Provider-agnostic domain model, mirroring the shape of `CompletionRequest` but
+/// without sampling parameters (`temperature`, `max_tokens`) that are irrelevant to
+/// estimation.
+#[derive(Debug, Clone)]
+pub struct TokenEstimateRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+}
+
+/// Response containing an estimated token count for a `TokenEstimateRequest`.
+///
+/// `estimated_tokens` is an **approximation** produced by a character-based heuristic
+/// (see `domain::token_estimator`), not an exact count from the target model's real
+/// tokenizer. It is intended for UI meters and rough context-budget checks, not for
+/// precise billing.
+#[derive(Debug, Clone)]
+pub struct TokenEstimateResponse {
+    pub model: String,
+    pub estimated_tokens: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

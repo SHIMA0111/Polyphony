@@ -119,6 +119,16 @@ impl CompletionUseCase for StubUseCase {
     fn readiness(&self) -> Result<(), DomainError> {
         Ok(())
     }
+
+    fn estimate_tokens(&self, req: model::TokenEstimateRequest) -> model::TokenEstimateResponse {
+        // Not exercised by this gRPC test module (token estimation has no gRPC
+        // transport yet); delegate to the real heuristic so the stub stays truthful
+        // if a future gRPC estimation method is added on top of this same state.
+        model::TokenEstimateResponse {
+            model: req.model,
+            estimated_tokens: llm_gateway::domain::token_estimator::estimate_tokens(&req.messages),
+        }
+    }
 }
 
 /// Starts `serve_grpc` backed by a `StubUseCase` in a background task, waits for the

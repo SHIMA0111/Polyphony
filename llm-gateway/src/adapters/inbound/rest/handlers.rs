@@ -8,8 +8,10 @@ use axum::response::IntoResponse;
 use crate::domain::error::DomainError;
 use crate::ports::inbound::completion::CompletionUseCase;
 
-use super::request::CompletionRequestDto;
-use super::response::{CompletionResponseDto, ModelInfoDto, ModelsResponseDto};
+use super::request::{CompletionRequestDto, TokenEstimateRequestDto};
+use super::response::{
+    CompletionResponseDto, ModelInfoDto, ModelsResponseDto, TokenEstimateResponseDto,
+};
 
 /// Shared application state.
 pub type AppState = Arc<dyn CompletionUseCase>;
@@ -82,6 +84,22 @@ pub async fn complete(
     let req = dto.into_domain()?;
     let resp = service.complete(req).await?;
     Ok(Json(CompletionResponseDto::from(resp)))
+}
+
+/// Token estimation endpoint.
+///
+/// `POST /tokens/estimate` — Returns an approximate token count for a list of chat
+/// messages, computed by the character-based heuristic in `domain::token_estimator`.
+/// Unlike `complete`, this call is infallible once the DTO is converted: it never
+/// dispatches to a provider, so there is no `ModelNotFound` path; the only error is a
+/// `400` from an unrecognized role string during DTO conversion.
+pub async fn estimate_tokens(
+    State(service): State<AppState>,
+    Json(dto): Json<TokenEstimateRequestDto>,
+) -> Result<impl IntoResponse, AppError> {
+    let req = dto.into_domain()?;
+    let resp = service.estimate_tokens(req);
+    Ok(Json(TokenEstimateResponseDto::from(resp)))
 }
 
 /// Wrapper that converts domain errors into HTTP responses.

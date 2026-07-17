@@ -177,6 +177,31 @@ type ModelListResponse struct {
 	Models []ModelResponse `json:"models"`
 }
 
+// --- Token DTOs ---
+
+// ChatMessageDTO is the JSON representation of a single chat message used by
+// TokenEstimateRequest.
+type ChatMessageDTO struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// TokenEstimateRequest is the request body for POST /tokens/estimate. Model
+// is required; Messages may be empty (a valid estimation input for an empty
+// draft, returning just the fixed overhead).
+type TokenEstimateRequest struct {
+	Model    string           `json:"model"`
+	Messages []ChatMessageDTO `json:"messages"`
+}
+
+// TokenEstimateResponse is the response body for POST /tokens/estimate.
+// EstimatedTokens is an approximation computed by the LLM Gateway's
+// character-based heuristic, not an exact tokenizer count.
+type TokenEstimateResponse struct {
+	Model           string `json:"model"`
+	EstimatedTokens int    `json:"estimated_tokens"`
+}
+
 // --- User DTOs ---
 
 // UserResponse is the JSON response representation of the authenticated

@@ -109,6 +109,7 @@ type Container struct {
 	// endpoints that push real-time event.RoomEvent updates to clients.
 	WebSocketHandler  *handler.WebSocketHandler
 	InvitationHandler *handler.InvitationHandler
+	TokenHandler      *handler.TokenHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,
@@ -173,6 +174,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	attachmentHandler := handler.NewAttachmentHandler(attachmentUC)
 	wsHandler := handler.NewWebSocketHandler(roomUC, messageHub, ticketIssuer, originPatternsFromCORS(cfg.CORSOrigins))
 	invitationHandler := handler.NewInvitationHandler(invitationUC)
+	tokenHandler := handler.NewTokenHandler(llmClient)
 
 	return &Container{
 		Config: cfg,
@@ -207,6 +209,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		AttachmentHandler: attachmentHandler,
 		WebSocketHandler:  wsHandler,
 		InvitationHandler: invitationHandler,
+		TokenHandler:      tokenHandler,
 	}, nil
 }
 
