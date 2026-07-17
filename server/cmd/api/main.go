@@ -37,6 +37,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer container.Pool.Close()
+	if container.RedisClient != nil {
+		defer func() {
+			if err := container.RedisClient.Close(); err != nil {
+				slog.Warn("failed to close redis client", "error", err)
+			}
+		}()
+	}
 
 	// If the gRPC LLM Gateway transport is selected (LLM_GATEWAY_TRANSPORT=grpc),
 	// release its underlying *grpc.ClientConn on graceful shutdown too, mirroring

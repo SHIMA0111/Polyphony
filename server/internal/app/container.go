@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainattachment "github.com/SHIMA0111/multi-user-ai/server/internal/domain/attachment"
@@ -26,6 +27,7 @@ import (
 	domainuser "github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/infrastructure/config"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/infrastructure/database"
+	infraevent "github.com/SHIMA0111/multi-user-ai/server/internal/infrastructure/event"
 	ifauth "github.com/SHIMA0111/multi-user-ai/server/internal/interface/auth"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/gateway"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/handler"
@@ -60,6 +62,15 @@ type Container struct {
 	Pool *pgxpool.Pool
 	// Logger is the base structured logger used to build request-scoped loggers.
 	Logger *slog.Logger
+
+	// RedisClient is the shared Redis client used when Config.MessageHubDriver
+	// is "redis". It is nil when the inprocess driver is selected. It is kept
+	// on the Container (rather than only captured in a closure) so later
+	// steps (e.g. Step 33's rate limiting and Kratos session cache) can reuse
+	// the same client instead of opening a second connection pool. Callers
+	// are responsible for closing it (typically via a deferred
+	// RedisClient.Close() in main, guarded by a nil check).
+	RedisClient *redis.Client
 
 	// Repositories
 	UserRepo domainuser.UserRepository
@@ -179,7 +190,28 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	objectStorage := ifstorage.NewS3Storage(
 		cfg.S3Endpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3ForcePathStyle,
 	)
-	messageHub := event.NewInProcessHub()
+	// MessageHub is the Phase 10 swap point (see CLAUDE.md's Interface Swap
+	// Points table): MESSAGE_HUB_DRIVER selects InProcessHub (default), which
+	// only fans out within this single process, or RedisHub, which fans out
+	// via Redis Pub/Sub so multiple API server replicas share message
+	// delivery. Both satisfy event.MessageHub, so nothing downstream (MsgUC,
+	// the WebSocket handler) needs to change based on this branch.
+	var messageHub event.MessageHub
+	var redisClient *redis.Client
+	switch cfg.MessageHubDriver {
+	case "redis":
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("parse REDIS_URL: %w", err)
+		}
+		redisClient = redis.NewClient(opts)
+		messageHub = infraevent.NewRedisHub(redisClient)
+	default:
+		messageHub = event.NewInProcessHub()
+	}
+	slog.Info("message hub driver selected", "driver", cfg.MessageHubDriver)
+
 	ticketIssuer := wsticket.NewIssuer([]byte(cfg.WSTicketSecret), wsTicketTTL)
 
 	// Usecases
@@ -204,9 +236,10 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	tokenHandler := handler.NewTokenHandler(llmGateway)
 
 	return &Container{
-		Config: cfg,
-		Pool:   pool,
-		Logger: slog.Default(),
+		Config:      cfg,
+		Pool:        pool,
+		Logger:      slog.Default(),
+		RedisClient: redisClient,
 
 		UserRepo:       userRepo,
 		RoomRepo:       roomRepo,

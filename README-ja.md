@@ -58,7 +58,7 @@ phases.md          — 開発フェーズ計画（26フェーズ）
 ### クイックスタート（Docker Compose）
 
 ```bash
-# 全サービス起動（PostgreSQL, Go API, LLM Gateway, Web Frontend）
+# 全サービス起動（PostgreSQL, Redis, Go API, LLM Gateway, Web Frontend）
 task up
 # または: docker compose up -d
 

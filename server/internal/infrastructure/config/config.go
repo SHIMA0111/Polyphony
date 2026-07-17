@@ -119,6 +119,20 @@ type Config struct {
 	// LLM_GATEWAY_GRPC_BASE_BACKOFF, default 100ms). Falls back to the
 	// default if unset or unparseable as a time.Duration.
 	LLMGatewayGRPCBaseBackoff time.Duration
+
+	// RedisURL is the Redis connection string (env REDIS_URL), required only
+	// when MessageHubDriver is "redis". It is passed to redis.ParseURL by
+	// container.go to build the shared *redis.Client used by RedisHub (and,
+	// in a later step, rate limiting/session caching).
+	RedisURL string
+	// MessageHubDriver selects the event.MessageHub implementation
+	// container.go wires up: "inprocess" (default) for InProcessHub, a
+	// single-process, dependency-free implementation suitable for local dev
+	// without Redis, or "redis" for RedisHub, which fans events out via
+	// Redis Pub/Sub so multiple API replicas share message delivery (env
+	// MESSAGE_HUB_DRIVER). Load returns an error for any other non-empty
+	// value, and for "redis" without REDIS_URL also set.
+	MessageHubDriver string
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -236,6 +250,19 @@ func Load() (*Config, error) {
 
 	llmGatewayGRPCBaseBackoff := parseDurationEnv("LLM_GATEWAY_GRPC_BASE_BACKOFF", defaultLLMGatewayGRPCBaseBackoff)
 
+	hubDriver := os.Getenv("MESSAGE_HUB_DRIVER")
+	if hubDriver == "" {
+		hubDriver = "inprocess"
+	}
+	if hubDriver != "inprocess" && hubDriver != "redis" {
+		return nil, fmt.Errorf("MESSAGE_HUB_DRIVER must be %q or %q, got %q", "inprocess", "redis", hubDriver)
+	}
+
+	redisURL := os.Getenv("REDIS_URL")
+	if hubDriver == "redis" && redisURL == "" {
+		return nil, fmt.Errorf("REDIS_URL is required when MESSAGE_HUB_DRIVER=redis")
+	}
+
 	return &Config{
 		Port:                port,
 		DatabaseURL:         dbURL,
@@ -261,6 +288,9 @@ func Load() (*Config, error) {
 		LLMGatewayGRPCAddr:        llmGatewayGRPCAddr,
 		LLMGatewayGRPCMaxRetries:  llmGatewayGRPCMaxRetries,
 		LLMGatewayGRPCBaseBackoff: llmGatewayGRPCBaseBackoff,
+
+		RedisURL:         redisURL,
+		MessageHubDriver: hubDriver,
 	}, nil
 }
 
