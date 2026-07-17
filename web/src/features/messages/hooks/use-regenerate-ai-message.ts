@@ -2,7 +2,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { regenerateAIMessage } from "../api/regenerate-ai-message"
-import type { Message } from "../types"
+import { replaceMessageInAnyPage, type MessagesInfiniteData } from "../lib/message-cache"
 
 export interface RegenerateAIMessageInput {
   /** ID of the AI message being regenerated (replaced in the cache on success). */
@@ -27,15 +27,18 @@ export interface RegenerateAIMessageInput {
  */
 export function useRegenerateAIMessage(roomId: string) {
   const queryClient = useQueryClient()
+  const queryKey = ["rooms", roomId, "messages"] as const
 
   return useMutation({
     mutationFn: ({ humanMessageId, model }: RegenerateAIMessageInput) =>
       regenerateAIMessage(roomId, humanMessageId, model),
     onSuccess: (updated, variables) => {
-      queryClient.setQueryData<Message[]>(
-        ["rooms", roomId, "messages"],
-        (old = []) =>
-          old.map((m) => (m.id === variables.aiMessageId ? updated : m)),
+      // Unlike optimistic sends (always in `pages[0]`), the AI message being
+      // regenerated can live in any already-loaded page once the reader has
+      // scrolled up through history, so this searches every page rather
+      // than assuming the newest one.
+      queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) =>
+        replaceMessageInAnyPage(old, (m) => m.id === variables.aiMessageId, updated),
       )
     },
   })

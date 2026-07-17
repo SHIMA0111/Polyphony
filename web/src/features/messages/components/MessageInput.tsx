@@ -41,22 +41,35 @@ export function MessageInput({
   }, [input])
 
   const handleSend = useCallback(async () => {
-    if (!input.trim() || isSending) return
+    const content = input.trim()
+    if (!content || isSending) return
     setIsSending(true)
     try {
-      await onSend(input.trim())
+      await onSend(content)
       setInput("")
+    } catch {
+      // The mutation's own `onError` already appended a retryable "failed"
+      // bubble to the transcript and surfaced a failure toast — restore the
+      // typed content here so it isn't lost, rather than letting the
+      // rejection go uncaught.
+      setInput(content)
     } finally {
       setIsSending(false)
     }
   }, [input, isSending, onSend])
 
   const handleSendWithAI = useCallback(async () => {
-    if (!input.trim() || isSending || !selectedModel) return
+    const content = input.trim()
+    if (!content || isSending || !selectedModel) return
     setIsSending(true)
     try {
-      await onSendWithAI(input.trim(), selectedModel.id)
+      await onSendWithAI(content, selectedModel.id)
       setInput("")
+    } catch {
+      // See `handleSend`'s catch above: restore the content instead of
+      // losing it, the toast/failed-bubble is already handled by the
+      // mutation itself.
+      setInput(content)
     } finally {
       setIsSending(false)
     }

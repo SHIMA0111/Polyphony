@@ -1,9 +1,18 @@
 "use client"
 
-import { useQuery } from "@tanstack/react-query"
-import { getMessagesQueryOptions } from "../api/get-messages"
+import { useInfiniteQuery } from "@tanstack/react-query"
+import { getMessagesInfiniteQueryOptions } from "../api/get-messages"
 
-/** Messages in a room, oldest first, sourced from `GET /api/proxy/rooms/:roomId/messages`. */
+/**
+ * Cursor-paginated messages in a room, sourced from
+ * `GET /api/proxy/rooms/:roomId/messages`.
+ *
+ * Returns the raw `useInfiniteQuery` result (`data.pages`, `fetchNextPage`,
+ * `hasNextPage`, `isFetchingNextPage`, ...); callers that need a flat,
+ * display-ordered list should run `data.pages` through
+ * `../lib/flatten-message-pages.ts`'s `flattenMessagePages` (done for them
+ * by `useChatRoom`).
+ */
 export function useMessages(roomId: string) {
-  return useQuery(getMessagesQueryOptions(roomId))
+  return useInfiniteQuery(getMessagesInfiniteQueryOptions(roomId))
 }
