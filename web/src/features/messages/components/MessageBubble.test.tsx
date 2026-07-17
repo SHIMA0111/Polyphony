@@ -18,7 +18,7 @@ import { MessageList } from "./MessageList"
  * indicator), delete (behind a confirmation dialog, removing the message
  * from the rendered list on success), and role-gated menu visibility.
  *
- * `MessageBubble` reads the current user (`useSession`) and room role
+ * `MessageBubble` reads the current user (`useCurrentUser`) and room role
  * (`useRoom`) itself rather than via props, so these tests drive that
  * through MSW response overrides (`server.use(...)`) instead of passing
  * anything extra as component props. Interactions use `@testing-library/
@@ -31,7 +31,7 @@ import { MessageList } from "./MessageList"
 const baseMessage: Message = {
   id: "message-1",
   room_id: "room-1",
-  sender_id: "user-1", // matches `fixtureSession`'s identity id
+  sender_id: "user-1", // matches `fixtureCurrentUser`'s local id
   content: "Hello, AI!",
   type: "human",
   status: "completed",

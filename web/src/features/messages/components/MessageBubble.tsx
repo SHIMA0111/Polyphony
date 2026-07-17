@@ -18,7 +18,7 @@ import type { Message } from "@/features/messages/types"
 import { Tooltip } from "@/components/ui/tooltip"
 import { formatDateTimeLocal } from "@/lib/format"
 import { roleAtLeast } from "@/lib/roles"
-import { useSession } from "@/features/auth/hooks/use-session"
+import { useCurrentUser } from "@/features/auth/hooks/use-current-user"
 import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useDeleteMessage } from "@/features/messages/hooks/use-delete-message"
 import { useUpdateMessageExclude } from "@/features/messages/hooks/use-update-message-exclude"
@@ -89,11 +89,15 @@ function StreamingCursor() {
  * per-message action menu offering an AI-context exclude/include toggle and
  * a soft-delete action, gated by the caller's room role.
  *
- * The menu is entirely self-contained: it reads the requesting user's
- * identity (`useSession`) and room role (`useRoom(message.room_id)`, sharing
- * the same cached query `ChatRoom.tsx` already populated) directly rather
- * than needing either threaded down through `MessageList`/`MessageGroup` as
- * new props.
+ * The menu is entirely self-contained: it reads the requesting user's local
+ * identity (`useCurrentUser`, `GET /users/me` -- deliberately not
+ * `useSession().data?.identity.id`, Kratos's own identity UUID, which is
+ * never equal to `Message.sender_id`'s local `users.id` under
+ * `AUTH_MODE=kratos`; see `CurrentUser`'s doc comment in
+ * `@/features/auth/types.ts`) and room role (`useRoom(message.room_id)`,
+ * sharing the same cached query `ChatRoom.tsx` already populated) directly
+ * rather than needing either threaded down through `MessageList`/
+ * `MessageGroup` as new props.
  */
 export function MessageBubble({
   message,
@@ -103,7 +107,7 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   const [confirmOpen, setConfirmOpen] = useState(false)
 
-  const sessionQuery = useSession()
+  const currentUserQuery = useCurrentUser()
   const roomQuery = useRoom(message.room_id)
   const deleteMutation = useDeleteMessage(message.room_id)
   const excludeMutation = useUpdateMessageExclude(message.room_id)
@@ -133,7 +137,7 @@ export function MessageBubble({
   // below are gated on this in addition to the role/ownership checks.
   const isPersisted = !message.id.startsWith("optimistic-")
 
-  const currentUserId = sessionQuery.data?.identity.id
+  const currentUserId = currentUserQuery.data?.id
   const role = roomQuery.data?.role
   const isOwnMessage =
     currentUserId != null && currentUserId === message.sender_id

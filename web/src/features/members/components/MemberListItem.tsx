@@ -2,7 +2,7 @@
 
 import { Avatar, Badge, Box, Button, Flex, Text } from "@chakra-ui/react"
 import { LogOut } from "lucide-react"
-import { useSession } from "@/features/auth/hooks/use-session"
+import { useCurrentUser } from "@/features/auth/hooks/use-current-user"
 import { useLeaveRoom } from "../hooks/use-leave-room"
 import { canManageMembers, isOwnerRole } from "@/lib/roles"
 import { RoleBadge } from "./RoleBadge"
@@ -25,8 +25,14 @@ interface MemberListItemProps {
  * viewer owns the room, since the owner must transfer ownership first).
  */
 export function MemberListItem({ roomId, member, viewerRole }: MemberListItemProps) {
-  const { data: session } = useSession()
-  const isSelf = session?.identity.id === member.user_id
+  // Deliberately `useCurrentUser` (`GET /users/me`, the local `users.id`),
+  // not `useSession().data?.identity.id` (Kratos's own identity UUID) --
+  // under `AUTH_MODE=kratos` the two are never equal, and `member.user_id`
+  // is the local id, so comparing against `identity.id` here would never
+  // recognize the viewer's own row. See `CurrentUser`'s doc comment in
+  // `@/features/auth/types.ts`.
+  const { data: currentUser } = useCurrentUser()
+  const isSelf = currentUser?.id === member.user_id
   const isOwnerRow = isOwnerRole(member.role)
   const leaveRoomMutation = useLeaveRoom(roomId, member.user_id)
 

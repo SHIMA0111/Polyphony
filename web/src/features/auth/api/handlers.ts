@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw"
-import type { KratosSession } from "../types"
+import type { CurrentUser, KratosSession } from "../types"
 import type { UiContainer } from "../utils/kratos-flow"
 
 /**
@@ -9,9 +9,11 @@ import type { UiContainer } from "../utils/kratos-flow"
  * Mocks the `/api/kratos/*` proxy's Kratos-shaped responses (self-service
  * login/registration/logout flows and `sessions/whoami`) rather than the
  * retired `/api/auth/*` JWT endpoints — this app now speaks Kratos's flow
- * contract end to end, even in tests. The exported handlers below default
- * to the "happy path" (flow loads, submission succeeds); individual tests
- * override the `POST` submission handlers via `server.use(...)` with
+ * contract end to end, even in tests — plus the Go API's `GET /users/me`
+ * (reached via `/api/proxy/*`), which resolves the caller's local user
+ * record. The exported handlers below default to the "happy path" (flow
+ * loads, submission succeeds); individual tests override the `POST`
+ * submission handlers via `server.use(...)` with
  * {@link makeLoginFlowUiWithError}/{@link makeRegistrationFlowUiWithError}
  * to exercise the `400` validation-failure path.
  */
@@ -19,15 +21,40 @@ import type { UiContainer } from "../utils/kratos-flow"
 /** Canned CSRF token echoed back on every mocked flow, matching what a real Kratos flow embeds. */
 const CSRF_TOKEN = "test-csrf-token"
 
-/** The fixture user's session, returned by the mocked `sessions/whoami` handler. */
+/**
+ * The fixture user's Kratos session, returned by the mocked
+ * `sessions/whoami` handler. `identity.id` is deliberately a *different*
+ * value from {@link fixtureCurrentUser}'s `id` (the fixture's `sender_id`/
+ * `user_id` convention elsewhere): under `AUTH_MODE=kratos`, Kratos's own
+ * identity UUID is never equal to the local `users.id` UUID (see
+ * `CurrentUser`'s doc comment in `../types.ts`), and keeping the fixtures
+ * genuinely distinct is what lets `MessageGroup`'s "You" label (and
+ * `MessageBubble.isOwnMessage`/`MemberListItem.isSelf`) regression-test that
+ * mismatch instead of accidentally passing because both fixtures happened to
+ * share the same id string.
+ */
 export const fixtureSession: KratosSession = {
   identity: {
-    id: "user-1",
+    id: "kratos-identity-1",
     traits: {
       email: "user@example.com",
       username: "testuser",
     },
   },
+}
+
+/**
+ * The fixture user's local `users` row, returned by the mocked
+ * `GET /api/proxy/users/me` handler. `id` matches the `"user-1"` convention
+ * `sender_id`/`user_id` fixtures elsewhere use for "the viewer's own"
+ * messages/memberships -- see {@link fixtureSession}'s doc comment for why
+ * this is deliberately a different value from `fixtureSession.identity.id`.
+ */
+export const fixtureCurrentUser: CurrentUser = {
+  id: "user-1",
+  email: "user@example.com",
+  username: "testuser",
+  created_at: "2026-01-01T00:00:00Z",
 }
 
 const LOGIN_FLOW_ACTION = "http://localhost:4433/self-service/login?flow=login-flow-id"
@@ -167,5 +194,9 @@ export const authHandlers = [
 
   http.get("/api/kratos/sessions/whoami", () => {
     return HttpResponse.json<KratosSession>(fixtureSession)
+  }),
+
+  http.get("/api/proxy/users/me", () => {
+    return HttpResponse.json<CurrentUser>(fixtureCurrentUser)
   }),
 ]

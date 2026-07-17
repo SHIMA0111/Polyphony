@@ -24,7 +24,7 @@ vi.mock("next/navigation", () => ({
  * viewer whose own role (`viewerRole`, sourced from `Room.role`) passes
  * `canManageMembers` (`admin`/`master`), and are absent for
  * `member`/`guest`/`reader` viewers — gating another member's row, not the
- * viewer's own (the fixture session user is `user-1`; this row is
+ * viewer's own (the fixture current user's local id is `user-1`; this row is
  * `user-2`, so it is never the viewer's own row regardless of `viewerRole`).
  */
 const otherMember: Member = {

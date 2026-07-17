@@ -67,9 +67,11 @@ import type { RoomSocketEvent } from "../types/ws-events"
  *
  * @param data - Current cache data, or `undefined` if nothing has loaded yet.
  * @param event - The inbound, already-validated WS event.
- * @param currentUserId - The authenticated user's id (`useSession()`'s
- * `identity.id`), or `undefined` if not yet available -- in which case the
- * sender-mismatch guard is skipped entirely rather than guessed at.
+ * @param currentUserId - The authenticated user's local id (`useCurrentUser()`'s
+ * `id`, sourced from `GET /users/me` -- not `useSession()`'s Kratos
+ * `identity.id`, a different UUID under `AUTH_MODE=kratos`), or `undefined`
+ * if not yet available -- in which case the sender-mismatch guard is skipped
+ * entirely rather than guessed at.
  *
  * Duplicate-placeholder race (wave-9 review finding): `useSendAIMessage`'s
  * `onMutate` prepends a `status: "sending"` AI placeholder (id prefixed

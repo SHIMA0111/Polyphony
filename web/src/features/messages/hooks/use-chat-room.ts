@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from "react"
 import { useQueryClient, type QueryClient } from "@tanstack/react-query"
 import { ApiRequestError } from "@/lib/http-client"
-import { useSession } from "@/features/auth/hooks/use-session"
+import { useCurrentUser } from "@/features/auth/hooks/use-current-user"
 import { useMembers } from "@/features/members/hooks/use-members"
 import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useMessages } from "@/features/messages/hooks/use-messages"
@@ -111,12 +111,19 @@ export interface UseChatRoomResult {
    * failed optimistic entry so no duplicate bubble is left behind. */
   handleRetry: (messageId: string, content: string) => Promise<void>
   /**
-   * The signed-in viewer's own user id, sourced from `useSession()`, or
-   * `null` before the session query resolves (or while signed out). Passed
-   * down through `MessageList`/`MessageGroup` so a human message group can
-   * be labeled "You" for the viewer's own messages instead of always
-   * showing "You" for every human sender — see `MessageGroup`'s
-   * `resolveSenderLabel`.
+   * The signed-in viewer's own local user id, sourced from
+   * `useCurrentUser()` (`GET /users/me`), or `null` before that query
+   * resolves (or while signed out). Passed down through
+   * `MessageList`/`MessageGroup` so a human message group can be labeled
+   * "You" for the viewer's own messages instead of always showing "You" for
+   * every human sender — see `MessageGroup`'s `resolveSenderLabel`.
+   *
+   * Deliberately *not* `useSession().data?.identity.id`: under
+   * `AUTH_MODE=kratos`, that's Kratos's own identity UUID, which is never
+   * equal to the local `users.id` that `Message.sender_id` is keyed by (see
+   * `CurrentUser`'s doc comment in `@/features/auth/types.ts`) — comparing
+   * against it would leave every one of the viewer's own messages mislabeled
+   * with their username instead of "You".
    */
   currentUserId: string | null
   /**
@@ -158,7 +165,7 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
   const roomQuery = useRoom(roomId)
   const messagesQuery = useMessages(roomId)
   const modelsQuery = useModels()
-  const sessionQuery = useSession()
+  const currentUserQuery = useCurrentUser()
   const membersQuery = useMembers(roomId)
 
   const sendMessageMutation = useSendMessage(roomId)
@@ -175,14 +182,14 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
   const isLoading =
     roomQuery.isPending || messagesQuery.isPending || modelsQuery.isPending
 
-  // Not included in `isLoading` above: the session/member-list queries are
-  // supplementary display data for `MessageGroup`'s sender label (see
+  // Not included in `isLoading` above: the current-user/member-list queries
+  // are supplementary display data for `MessageGroup`'s sender label (see
   // `currentUserId`/`senderUsernames`'s own doc comments), not data the
   // chat transcript itself needs to render -- gating the whole page's
   // loading state on them would delay the transcript for no benefit, since
-  // `MessageBubble` already tolerates its own `useSession()` call resolving
-  // a moment after first paint the same way.
-  const currentUserId = sessionQuery.data?.identity.id ?? null
+  // `MessageBubble` already tolerates its own `useCurrentUser()` call
+  // resolving a moment after first paint the same way.
+  const currentUserId = currentUserQuery.data?.id ?? null
   const senderUsernames = useMemo(() => {
     const members = membersQuery.data?.members
     if (!members || members.length === 0) return EMPTY_SENDER_USERNAMES
