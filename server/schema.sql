@@ -19,6 +19,7 @@ CREATE TABLE rooms (
     name VARCHAR(255) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     owner_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    ai_context_cutoff_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -47,6 +48,8 @@ CREATE TABLE messages (
     status VARCHAR(20) NOT NULL DEFAULT 'completed',
     sequence BIGINT NOT NULL,
     in_response_to_message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
+    is_deleted BOOLEAN NOT NULL DEFAULT false,
+    exclude_from_ai BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT messages_room_sequence_unique UNIQUE (room_id, sequence)

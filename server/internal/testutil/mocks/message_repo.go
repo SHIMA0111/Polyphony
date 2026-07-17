@@ -62,13 +62,15 @@ func (m *MessageRepo) GetByID(_ context.Context, id string) (*message.Message, e
 
 // ListByRoom returns messages in a room, ignoring the cursor (this fake does
 // not implement true cursor-based pagination), truncated to limit entries.
+// Soft-deleted messages (IsDeleted == true) are excluded, mirroring the
+// postgres.MessageRepository behavior.
 func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int) (*message.CursorPage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var msgs []*message.Message
 	for _, msg := range m.Messages {
-		if msg.RoomID == roomID {
+		if msg.RoomID == roomID && !msg.IsDeleted {
 			msgs = append(msgs, msg)
 		}
 	}
@@ -79,14 +81,15 @@ func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int)
 }
 
 // ListByRoomUpTo returns up to limit messages in a room with sequence
-// <= maxSequence.
+// <= maxSequence. Soft-deleted messages (IsDeleted == true) are excluded,
+// mirroring the postgres.MessageRepository behavior.
 func (m *MessageRepo) ListByRoomUpTo(_ context.Context, roomID string, maxSequence int64, limit int) ([]*message.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var msgs []*message.Message
 	for _, msg := range m.Messages {
-		if msg.RoomID == roomID && msg.Sequence <= maxSequence {
+		if msg.RoomID == roomID && msg.Sequence <= maxSequence && !msg.IsDeleted {
 			msgs = append(msgs, msg)
 		}
 	}
@@ -134,16 +137,35 @@ func (m *MessageRepo) UpdateAIResponse(_ context.Context, id string, content str
 	return nil
 }
 
-// Delete removes a message by ID. Returns domain.ErrNotFound if the message
-// does not exist.
+// UpdateExcludeFromAI sets the ExcludeFromAI flag and UpdatedAt of a
+// message. Returns domain.ErrNotFound if the message does not exist.
+func (m *MessageRepo) UpdateExcludeFromAI(_ context.Context, id string, exclude bool, updatedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	msg, ok := m.Messages[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	msg.ExcludeFromAI = exclude
+	msg.UpdatedAt = updatedAt
+	return nil
+}
+
+// Delete soft-deletes a message by ID, setting IsDeleted rather than
+// removing it from Messages, mirroring postgres.MessageRepository.Delete.
+// Returns domain.ErrNotFound if the message does not exist or is already
+// deleted.
 func (m *MessageRepo) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.Messages[id]; !ok {
+	msg, ok := m.Messages[id]
+	if !ok || msg.IsDeleted {
 		return domain.ErrNotFound
 	}
-	delete(m.Messages, id)
+	msg.IsDeleted = true
+	msg.UpdatedAt = time.Now()
 	return nil
 }
 

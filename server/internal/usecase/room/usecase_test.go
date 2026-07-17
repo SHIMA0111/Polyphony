@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
@@ -151,6 +152,110 @@ func TestDeleteRoom(t *testing.T) {
 	_, err = uc.GetRoom(ctx, "user-1", rwr.Room.ID)
 	if err == nil {
 		t.Fatal("expected error after delete")
+	}
+}
+
+// --- UpdateAIContextCutoff (Step 23: AI context control) ---
+
+func TestUpdateAIContextCutoffAdminCanSet(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleAdmin,
+	})
+
+	cutoff := time.Now()
+	updated, err := uc.UpdateAIContextCutoff(ctx, "user-2", rwr.Room.ID, &cutoff)
+	if err != nil {
+		t.Fatalf("expected admin to set cutoff, got error: %v", err)
+	}
+	if updated.Room.AIContextCutoffAt == nil || !updated.Room.AIContextCutoffAt.Equal(cutoff) {
+		t.Fatalf("expected cutoff %v, got %v", cutoff, updated.Room.AIContextCutoffAt)
+	}
+}
+
+func TestUpdateAIContextCutoffMasterCanClear(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	cutoff := time.Now()
+	if _, err := uc.UpdateAIContextCutoff(ctx, "user-1", rwr.Room.ID, &cutoff); err != nil {
+		t.Fatalf("expected master to set cutoff, got error: %v", err)
+	}
+
+	cleared, err := uc.UpdateAIContextCutoff(ctx, "user-1", rwr.Room.ID, nil)
+	if err != nil {
+		t.Fatalf("expected master to clear cutoff, got error: %v", err)
+	}
+	if cleared.Room.AIContextCutoffAt != nil {
+		t.Fatalf("expected cleared cutoff to be nil, got %v", cleared.Room.AIContextCutoffAt)
+	}
+}
+
+func TestUpdateAIContextCutoffMemberForbidden(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
+	})
+
+	cutoff := time.Now()
+	if _, err := uc.UpdateAIContextCutoff(ctx, "user-2", rwr.Room.ID, &cutoff); err != domain.ErrForbidden {
+		t.Fatalf("expected ErrForbidden for member, got %v", err)
+	}
+}
+
+func TestUpdateAIContextCutoffGuestForbidden(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleGuest,
+	})
+
+	cutoff := time.Now()
+	if _, err := uc.UpdateAIContextCutoff(ctx, "user-2", rwr.Room.ID, &cutoff); err != domain.ErrForbidden {
+		t.Fatalf("expected ErrForbidden for guest, got %v", err)
+	}
+}
+
+func TestUpdateAIContextCutoffReaderForbidden(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleReader,
+	})
+
+	cutoff := time.Now()
+	if _, err := uc.UpdateAIContextCutoff(ctx, "user-2", rwr.Room.ID, &cutoff); err != domain.ErrForbidden {
+		t.Fatalf("expected ErrForbidden for reader, got %v", err)
+	}
+}
+
+func TestUpdateAIContextCutoffNonMemberForbidden(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	cutoff := time.Now()
+	if _, err := uc.UpdateAIContextCutoff(ctx, "user-2", rwr.Room.ID, &cutoff); err != domain.ErrForbidden {
+		t.Fatalf("expected ErrForbidden for non-member, got %v", err)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -424,6 +425,79 @@ func TestTransferOwnershipHandler403NonOwner(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
+}
+
+// TestRoomHandlerUpdateAIContextCutoff covers
+// PATCH /rooms/:roomId/ai-context-cutoff: 200 with the updated
+// ai_context_cutoff_at for the room owner (master), and 403 for a non-admin
+// member.
+func TestRoomHandlerUpdateAIContextCutoff(t *testing.T) {
+	t.Run("200 master sets cutoff", func(t *testing.T) {
+		repo := &mocks.RoomRepo{}
+		uc := roomusecase.NewRoomUsecase(repo)
+		h := NewRoomHandler(uc)
+		e := echo.New()
+
+		created, err := uc.CreateRoom(context.Background(), "user-1", "Test Room", "desc")
+		if err != nil {
+			t.Fatalf("CreateRoom failed: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPatch, "/rooms/"+created.Room.ID+"/ai-context-cutoff",
+			strings.NewReader(`{"cutoff_at":"2026-01-01T00:00:00Z"}`))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId")
+		c.SetParamValues(created.Room.ID)
+		c.Set("user_id", "user-1")
+
+		if err := h.UpdateAIContextCutoff(c); err != nil {
+			t.Fatalf("UpdateAIContextCutoff error: %v", err)
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+
+		var resp RoomResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.AIContextCutoffAt == nil || !resp.AIContextCutoffAt.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
+			t.Fatalf("expected ai_context_cutoff_at 2026-01-01T00:00:00Z, got %v", resp.AIContextCutoffAt)
+		}
+	})
+
+	t.Run("403 non-admin member", func(t *testing.T) {
+		repo := &mocks.RoomRepo{}
+		uc := roomusecase.NewRoomUsecase(repo)
+		h := NewRoomHandler(uc)
+		e := echo.New()
+
+		created, err := uc.CreateRoom(context.Background(), "user-1", "Test Room", "desc")
+		if err != nil {
+			t.Fatalf("CreateRoom failed: %v", err)
+		}
+		_ = repo.AddMember(context.Background(), &domainroom.RoomMember{
+			ID: "m2", RoomID: created.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
+		})
+
+		req := httptest.NewRequest(http.MethodPatch, "/rooms/"+created.Room.ID+"/ai-context-cutoff",
+			strings.NewReader(`{"cutoff_at":"2026-01-01T00:00:00Z"}`))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId")
+		c.SetParamValues(created.Room.ID)
+		c.Set("user_id", "user-2")
+
+		if err := h.UpdateAIContextCutoff(c); err != nil {
+			t.Fatalf("UpdateAIContextCutoff error: %v", err)
+		}
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", rec.Code)
+		}
+	})
 }
 
 func TestGetRoomHandler403(t *testing.T) {

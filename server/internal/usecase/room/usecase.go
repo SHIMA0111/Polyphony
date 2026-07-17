@@ -97,6 +97,41 @@ func (u *RoomUsecase) UpdateRoom(ctx context.Context, userID, roomID, name, desc
 	return &domainroom.RoomWithRole{Room: rm, Role: member.Role}, nil
 }
 
+// UpdateAIContextCutoff sets or clears a room's AI context cutoff datetime.
+// A non-nil cutoff excludes any message created before it from future AI
+// context assembly (ai.ContextBuilder.Build); a nil cutoff clears the
+// restriction. The caller must be at least domainroom.RoleAdmin in the room
+// (domainroom.ActionManageRoom) — so both admin and master may set the
+// cutoff, but reader/guest/member may not. It returns domain.ErrForbidden if
+// the caller lacks that role or is not a member of the room. It follows the
+// same get-check-mutate-persist shape as UpdateRoom and, like UpdateRoom,
+// returns a domainroom.RoomWithRole pairing the updated room with the
+// caller's role, so handlers can map the result to RoomResponse without
+// special-casing this endpoint.
+func (u *RoomUsecase) UpdateAIContextCutoff(ctx context.Context, userID, roomID string, cutoff *time.Time) (*domainroom.RoomWithRole, error) {
+	member, err := u.getMember(ctx, roomID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !member.Role.Allows(domainroom.ActionManageRoom) {
+		return nil, domain.ErrForbidden
+	}
+
+	rm, err := u.roomRepo.GetByID(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+
+	rm.AIContextCutoffAt = cutoff
+	rm.UpdatedAt = time.Now()
+
+	if err = u.roomRepo.Update(ctx, rm); err != nil {
+		return nil, err
+	}
+
+	return &domainroom.RoomWithRole{Room: rm, Role: member.Role}, nil
+}
+
 // DeleteRoom deletes a room. The caller must be domainroom.RoleMaster
 // (domainroom.ActionDeleteRoom) — even admin may not delete the room. It
 // returns domain.ErrForbidden if the caller is not master.

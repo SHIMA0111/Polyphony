@@ -30,7 +30,16 @@ type MessageRepository interface {
 	// UpdateAIResponse updates the content, status, and updated_at of an AI message.
 	UpdateAIResponse(ctx context.Context, id string, content string, status MessageStatus, updatedAt time.Time) error
 
-	// Delete removes a message by ID. Returns ErrNotFound if not found.
+	// UpdateExcludeFromAI sets the exclude_from_ai flag and updated_at of a
+	// message. It follows the same signature shape as UpdateAIResponse.
+	// Returns ErrNotFound if the message does not exist.
+	UpdateExcludeFromAI(ctx context.Context, id string, exclude bool, updatedAt time.Time) error
+
+	// Delete soft-deletes a message by ID: it sets is_deleted = true (and
+	// updates updated_at) rather than physically removing the row. A
+	// soft-deleted message is excluded from ListByRoom, ListByRoomUpTo, and
+	// AI context assembly, but remains fetchable via GetByID. Returns
+	// ErrNotFound if the message does not exist or is already deleted.
 	Delete(ctx context.Context, id string) error
 
 	// ReserveSequenceRange atomically reserves count contiguous sequence

@@ -9,8 +9,14 @@ type Room struct {
 	Name        string
 	Description string
 	OwnerID     string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// AIContextCutoffAt, when non-nil, is the earliest CreatedAt an AI
+	// context message may have: messages created strictly before this
+	// timestamp are excluded from ai.ContextBuilder.Build's output. A nil
+	// value means no cutoff is configured — the room's entire eligible
+	// history is considered.
+	AIContextCutoffAt *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // RoomMember represents a user's membership in a room, including their
