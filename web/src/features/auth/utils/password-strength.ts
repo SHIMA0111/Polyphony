@@ -24,7 +24,7 @@ export function getPasswordStrength(password: string): number {
   if (password.length >= 8) score += 1
   if (password.length >= 12) score += 1
   if (/[a-z]/.test(password) && /[A-Z]/.test(password)) score += 1
-  if (/[\d\W]/.test(password)) score += 1
+  if (/[^a-zA-Z]/.test(password)) score += 1
 
   return Math.min(score, 4)
 }

@@ -342,12 +342,22 @@ func (s *KratosAuthService) lookupUnlinkedLocalUser(ctx context.Context, email, 
 // a "cookie:"-prefixed string in practice (SimpleJWT never sets a browser
 // cookie), so the distinction only matters when AUTH_MODE=kratos.
 //
-// It returns domain.ErrInvalidToken on any non-200 whoami response or if
-// the resolved identity has no linked local user.
+// It returns domain.ErrInvalidToken only for the whoami responses that
+// genuinely mean "this session is not valid" — a 401 or 403 status, or a 200
+// response resolving to an identity with no linked local user (see below).
+// Anything else — the httpClient.Do call itself failing (e.g. Kratos
+// unreachable), a whoami status that is neither 200 nor 401/403 (e.g. a 5xx),
+// or a 200 response whose body fails to decode — is a server-side/
+// infrastructure problem, not evidence of an invalid token, and is returned
+// as a plain wrapped error instead. This distinction matters because
+// interface/middleware.JWTAuth maps domain.ErrInvalidToken to a 401 and
+// anything else to a 5xx; flattening every failure mode here into
+// ErrInvalidToken would misreport a Kratos outage as "your session expired"
+// instead of a server error.
 func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.publicURL+"/sessions/whoami", nil)
 	if err != nil {
-		return nil, domain.ErrInvalidToken
+		return nil, fmt.Errorf("build whoami request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 
@@ -360,17 +370,21 @@ func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*d
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, domain.ErrInvalidToken
+		return nil, fmt.Errorf("kratos whoami request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return nil, domain.ErrInvalidToken
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("kratos whoami failed: status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result kratosWhoamiRespDTO
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, domain.ErrInvalidToken
+		return nil, fmt.Errorf("decode kratos whoami response: %w", err)
 	}
 
 	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, result.Identity.ID)

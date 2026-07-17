@@ -69,6 +69,21 @@ type fakeKratos struct {
 
 	whoamiStatus int
 	whoamiBody   interface{}
+
+	// expectSessionToken and expectCookieValue, when non-empty, make the
+	// /sessions/whoami handler assert the incoming request actually carries
+	// the credential ValidateToken is documented to send (see
+	// KratosAuthService.ValidateToken's GoDoc): expectSessionToken checks the
+	// X-Session-Token header, expectCookieValue checks the cookieName cookie
+	// (see cookieName below). On a missing or mismatched credential the
+	// handler responds 401, regardless of whoamiStatus/whoamiBody — this
+	// catches a ValidateToken regression that silently drops the
+	// credential from the outgoing request instead of forwarding it to
+	// Kratos. At most one of the two is expected to be set per test, since a
+	// single ValidateToken call sends only one of the two credential forms.
+	expectSessionToken string
+	expectCookieValue  string
+	cookieName         string
 }
 
 func newFakeKratos() *fakeKratos {
@@ -78,6 +93,10 @@ func newFakeKratos() *fakeKratos {
 		registrationSubmitStatus: http.StatusOK,
 		loginSubmitStatus:        http.StatusOK,
 		whoamiStatus:             http.StatusOK,
+		// Matches the cookieName newTestKratosService passes to
+		// NewKratosAuthService, so expectCookieValue checks the same cookie
+		// ValidateToken actually sets.
+		cookieName: "ory_kratos_session",
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/self-service/registration/api", func(w http.ResponseWriter, _ *http.Request) {
@@ -109,6 +128,17 @@ func newFakeKratos() *fakeKratos {
 		_ = json.NewEncoder(w).Encode(f.loginSubmitBody)
 	})
 	mux.HandleFunc("/sessions/whoami", func(w http.ResponseWriter, r *http.Request) {
+		if f.expectSessionToken != "" && r.Header.Get(kratosHTTPHeaderSessionToken) != f.expectSessionToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if f.expectCookieValue != "" {
+			cookie, err := r.Cookie(f.cookieName)
+			if err != nil || cookie.Value != f.expectCookieValue {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(f.whoamiStatus)
 		_ = json.NewEncoder(w).Encode(f.whoamiBody)
@@ -368,6 +398,10 @@ func TestKratosValidateTokenBearer(t *testing.T) {
 
 	identityID := uuid.New().String()
 	f.whoamiBody = kratosWhoamiRespDTO{Identity: kratosIdentityDTO{ID: identityID}}
+	// Asserts ValidateToken actually forwards the bare token via the
+	// X-Session-Token header — a mismatched/missing header makes the fake
+	// respond 401, which would fail this test.
+	f.expectSessionToken = "opaque-native-token"
 
 	userRepo := &mocks.UserRepo{}
 	u := newSeedUser("d@example.com", "duser")
@@ -395,6 +429,10 @@ func TestKratosValidateTokenCookie(t *testing.T) {
 
 	identityID := uuid.New().String()
 	f.whoamiBody = kratosWhoamiRespDTO{Identity: kratosIdentityDTO{ID: identityID}}
+	// Asserts ValidateToken actually forwards the cookie value via a Cookie
+	// header named after cookieName — a mismatched/missing cookie makes the
+	// fake respond 401, which would fail this test.
+	f.expectCookieValue = "some-cookie-value"
 
 	userRepo := &mocks.UserRepo{}
 	u := newSeedUser("e@example.com", "euser")
@@ -429,6 +467,79 @@ func TestKratosValidateTokenInvalid(t *testing.T) {
 	_, err := svc.ValidateToken(context.Background(), "expired-token")
 	if !errors.Is(err, domain.ErrInvalidToken) {
 		t.Fatalf("expected domain.ErrInvalidToken, got %v", err)
+	}
+}
+
+// failingRoundTripper is an http.RoundTripper that always fails, simulating
+// a transport-level failure (e.g. Kratos unreachable) rather than any kind
+// of HTTP response.
+type failingRoundTripper struct{}
+
+func (failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("simulated transport failure")
+}
+
+// TestKratosValidateTokenTransportErrorIsNotInvalidToken proves that a
+// transport-level failure calling Kratos's whoami endpoint (e.g. Kratos is
+// unreachable) is returned as a plain wrapped error, not
+// domain.ErrInvalidToken — being unable to reach Kratos at all says nothing
+// about whether the presented token/session is valid.
+func TestKratosValidateTokenTransportErrorIsNotInvalidToken(t *testing.T) {
+	userRepo := &mocks.UserRepo{}
+	svc := NewKratosAuthService(userRepo, "http://127.0.0.1:1", "http://127.0.0.1:1", "ory_kratos_session", &http.Client{Transport: failingRoundTripper{}})
+
+	_, err := svc.ValidateToken(context.Background(), "opaque-native-token")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, domain.ErrInvalidToken) {
+		t.Fatalf("expected a non-ErrInvalidToken error, got %v", err)
+	}
+}
+
+// TestKratosValidateTokenServerErrorIsNotInvalidToken proves that a whoami
+// status that is neither 200 nor 401/403 (e.g. a 500 from a Kratos outage)
+// is returned as a plain wrapped error, not domain.ErrInvalidToken.
+func TestKratosValidateTokenServerErrorIsNotInvalidToken(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	f.whoamiStatus = http.StatusInternalServerError
+	f.whoamiBody = map[string]string{"error": "internal server error"}
+
+	userRepo := &mocks.UserRepo{}
+	svc := newTestKratosService(f, userRepo)
+
+	_, err := svc.ValidateToken(context.Background(), "opaque-native-token")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, domain.ErrInvalidToken) {
+		t.Fatalf("expected a non-ErrInvalidToken error, got %v", err)
+	}
+}
+
+// TestKratosValidateTokenUndecodableBodyIsNotInvalidToken proves that a 200
+// whoami response whose body fails to decode as JSON is returned as a plain
+// wrapped error, not domain.ErrInvalidToken — a malformed response body from
+// Kratos is not evidence the caller's token/session is invalid.
+func TestKratosValidateTokenUndecodableBodyIsNotInvalidToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not valid json"))
+	}))
+	defer server.Close()
+
+	userRepo := &mocks.UserRepo{}
+	svc := NewKratosAuthService(userRepo, server.URL, server.URL, "ory_kratos_session", server.Client())
+
+	_, err := svc.ValidateToken(context.Background(), "opaque-native-token")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, domain.ErrInvalidToken) {
+		t.Fatalf("expected a non-ErrInvalidToken error, got %v", err)
 	}
 }
 

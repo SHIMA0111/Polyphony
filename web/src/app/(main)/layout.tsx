@@ -2,7 +2,7 @@
 
 import { useParams } from "next/navigation"
 import { Avatar, Box, Button, Flex, Heading, Menu, Portal } from "@chakra-ui/react"
-import { LogOut, Pen, Settings } from "lucide-react"
+import { LogOut, Pen } from "lucide-react"
 import { useLogout } from "@/features/auth/hooks/use-logout"
 import { RoomRail } from "@/features/rooms/components/RoomRail"
 
@@ -11,7 +11,7 @@ import { RoomRail } from "@/features/rooms/components/RoomRail"
  * (`/rooms` and `/rooms/[roomId]`).
  *
  * Renders a top bar (logo mark, "Polyphony" heading, and the avatar
- * `Menu.Root` with Settings/Logout — moved here from `RoomList` so it mounts
+ * `Menu.Root` with Logout — moved here from `RoomList` so it mounts
  * once instead of once per page) above a two-region body: the
  * always-mounted `RoomRail` room-list rail and a content pane wrapping
  * `children` (`RoomList` at `/rooms`, `ChatRoom` at `/rooms/[roomId]`).
@@ -74,11 +74,6 @@ export default function MainLayout({
             <Portal>
               <Menu.Positioner>
                 <Menu.Content w="56">
-                  <Menu.Item value="settings" gap={2}>
-                    <Settings size={16} />
-                    Settings
-                  </Menu.Item>
-                  <Menu.Separator />
                   <Menu.Item
                     value="logout"
                     color="fg.error"

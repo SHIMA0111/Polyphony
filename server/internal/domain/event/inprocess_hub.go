@@ -138,3 +138,17 @@ func (h *InProcessHub) Subscribe(_ context.Context, roomID, userID string) (<-ch
 
 	return sub.ch, unsubscribe
 }
+
+// SubscriberCount returns the number of currently-registered subscribers for
+// roomID. It exists for tests that need to wait deterministically for a
+// Subscribe call to register before Publish-ing (e.g. polling until the
+// expected count is reached), rather than relying on a fixed time.Sleep,
+// which is only ever probabilistically long enough. It is not part of the
+// MessageHub interface — only InProcessHub's concrete type — since no
+// production caller needs it.
+func (h *InProcessHub) SubscriberCount(roomID string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	return len(h.subs[roomID])
+}

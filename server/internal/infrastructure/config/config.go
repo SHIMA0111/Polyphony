@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -111,20 +112,13 @@ func Load() (*Config, error) {
 		llmURL = "http://localhost:8081"
 	}
 
-	corsOrigins := os.Getenv("CORS_ORIGINS")
-	if corsOrigins == "" {
-		corsOrigins = "http://localhost:3000"
+	corsOriginsRaw := os.Getenv("CORS_ORIGINS")
+	if corsOriginsRaw == "" {
+		corsOriginsRaw = "http://localhost:3000"
 	}
-	if containsWildcardOrigin(corsOrigins) {
-		// interface/app/router.go always sets AllowCredentials: true on the
-		// CORS middleware (required so the browser can send/receive the
-		// Kratos session cookie), and browsers refuse to honor
-		// Access-Control-Allow-Origin: * together with
-		// Access-Control-Allow-Credentials: true — so a "*" here would not
-		// just be an overly permissive origin list, it would silently break
-		// every credentialed cross-origin request. Fail fast at startup
-		// rather than as a hard-to-diagnose CORS error in the browser.
-		return nil, fmt.Errorf(`CORS_ORIGINS must not contain "*" when credentials are enabled, got %q`, corsOrigins)
+	corsOrigins, err := parseCORSOrigins(corsOriginsRaw)
+	if err != nil {
+		return nil, err
 	}
 
 	dbMaxConnLifetime := parseDurationEnv("DB_MAX_CONN_LIFETIME", defaultDBMaxConnLifetime)
@@ -151,10 +145,7 @@ func Load() (*Config, error) {
 	if s3SecretKey == "" {
 		s3SecretKey = "minioadmin"
 	}
-	s3ForcePathStyle := true
-	if v := os.Getenv("S3_FORCE_PATH_STYLE"); v != "" {
-		s3ForcePathStyle = v != "false"
-	}
+	s3ForcePathStyle := parseBoolEnv("S3_FORCE_PATH_STYLE", true)
 
 	wsTicketSecret := os.Getenv("WS_TICKET_SECRET")
 	if wsTicketSecret == "" {
@@ -207,17 +198,38 @@ func Load() (*Config, error) {
 	}, nil
 }
 
-// containsWildcardOrigin reports whether corsOrigins (a comma-separated list,
-// matching the CORS_ORIGINS format interface/app/router.go splits on ",")
-// contains a literal "*" entry, after trimming surrounding whitespace from
-// each entry.
-func containsWildcardOrigin(corsOrigins string) bool {
-	for _, origin := range strings.Split(corsOrigins, ",") {
-		if strings.TrimSpace(origin) == "*" {
-			return true
+// parseCORSOrigins splits raw (a comma-separated list, matching the
+// CORS_ORIGINS format app/router.go splits on "," when building its
+// AllowOrigins list) into origins, trimming surrounding whitespace from each
+// entry and dropping any that are empty after trimming (e.g. from a trailing
+// comma, or accidental double commas). The result is joined back into a
+// comma-separated string with no surrounding whitespace, which
+// app/router.go's own strings.Split(..., ",") then splits back into a clean
+// origin list — so a value like " https://a.com , https://b.com " round-trips
+// to "https://a.com,https://b.com".
+//
+// It returns an error if, after trimming, any entry is a literal "*":
+// app/router.go always sets AllowCredentials: true on the CORS middleware
+// (required so the browser can send/receive the Kratos session cookie), and
+// browsers refuse to honor Access-Control-Allow-Origin: * together with
+// Access-Control-Allow-Credentials: true — so a "*" here would not just be
+// an overly permissive origin list, it would silently break every
+// credentialed cross-origin request. Fail fast at startup rather than as a
+// hard-to-diagnose CORS error in the browser.
+func parseCORSOrigins(raw string) (string, error) {
+	parts := strings.Split(raw, ",")
+	trimmed := make([]string, 0, len(parts))
+	for _, origin := range parts {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
 		}
+		if origin == "*" {
+			return "", fmt.Errorf(`CORS_ORIGINS must not contain "*" when credentials are enabled, got %q`, raw)
+		}
+		trimmed = append(trimmed, origin)
 	}
-	return false
+	return strings.Join(trimmed, ","), nil
 }
 
 // parseDurationEnv reads the given environment variable and parses it as a
@@ -246,4 +258,27 @@ func parseDurationEnv(key string, fallback time.Duration) time.Duration {
 	}
 
 	return d
+}
+
+// parseBoolEnv reads the given environment variable and parses it with
+// strconv.ParseBool (accepting "1", "t", "T", "TRUE", "true", "True", "0",
+// "f", "F", "FALSE", "false", "False"). If the variable is unset, it returns
+// fallback. If the variable is set but fails to parse, it logs a warning via
+// slog.Default() and returns fallback rather than propagating an error,
+// matching this file's convention for optional tuning knobs (see
+// parseDurationEnv) rather than a required, startup-failing configuration.
+func parseBoolEnv(key string, fallback bool) bool {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback
+	}
+
+	b, err := strconv.ParseBool(val)
+	if err != nil {
+		slog.Default().Warn("invalid boolean for env var, using default",
+			"env", key, "value", val, "default", fallback, "error", err)
+		return fallback
+	}
+
+	return b
 }

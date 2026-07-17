@@ -3,3 +3,13 @@ node_modules/
 .git
 .gitignore
 README.md
+
+# Environment files: never bake secrets into build contexts.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!.env.local.example
+!**/.env.example
+!**/.env.local.example

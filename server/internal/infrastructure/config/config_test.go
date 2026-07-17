@@ -161,6 +161,23 @@ func TestLoadCORSOriginsNonWildcardAccepted(t *testing.T) {
 	}
 }
 
+// TestLoadCORSOriginsTrimsWhitespace verifies Load trims surrounding
+// whitespace from each comma-separated CORS_ORIGINS entry, so an
+// operator-supplied value with stray spaces (e.g. from a wrapped shell
+// export or a YAML block scalar) still parses to clean origins.
+func TestLoadCORSOriginsTrimsWhitespace(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("CORS_ORIGINS", " https://a.com , https://b.com ")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CORSOrigins != "https://a.com,https://b.com" {
+		t.Errorf("expected trimmed CORSOrigins %q, got %q", "https://a.com,https://b.com", cfg.CORSOrigins)
+	}
+}
+
 func TestLoadS3Defaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -220,6 +237,23 @@ func TestLoadS3Overrides(t *testing.T) {
 	}
 	if cfg.S3ForcePathStyle {
 		t.Errorf("expected overridden S3ForcePathStyle false, got %v", cfg.S3ForcePathStyle)
+	}
+}
+
+// TestLoadS3ForcePathStyleInvalidFallsBackToDefault verifies Load falls back
+// to the default S3ForcePathStyle (true) — without failing Load itself —
+// when S3_FORCE_PATH_STYLE is set to a value strconv.ParseBool cannot parse,
+// since this is an optional tuning knob, not required configuration.
+func TestLoadS3ForcePathStyleInvalidFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("S3_FORCE_PATH_STYLE", "not-a-bool")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on an invalid S3_FORCE_PATH_STYLE, got: %v", err)
+	}
+	if !cfg.S3ForcePathStyle {
+		t.Errorf("expected fallback to default S3ForcePathStyle true, got %v", cfg.S3ForcePathStyle)
 	}
 }
 

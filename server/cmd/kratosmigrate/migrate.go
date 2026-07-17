@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
 )
 
@@ -41,18 +43,29 @@ type kratosCreateIdentityRespDTO struct {
 // as the identity's hashed_password credential, then links the created
 // identity back to the local user via userRepo.SetKratosIdentityID.
 //
-// It returns an error, leaving u unlinked, if the Admin API call fails or
-// returns a non-2xx status, or if SetKratosIdentityID fails (e.g. because
-// the created identity ID collides with an existing link, mapped to
-// domain.ErrKratosIdentityAlreadyLinked). Callers are expected to log and
-// continue to the next user rather than treat this as fatal for the batch.
+// It returns an error, leaving u unlinked, if the Admin API call fails,
+// returns a non-2xx status, returns a 2xx response whose body decodes but
+// carries an empty/missing identity id (which would otherwise silently link
+// u to the zero-value Kratos identity), or if SetKratosIdentityID fails
+// (e.g. because the created identity ID collides with an existing link,
+// mapped to domain.ErrKratosIdentityAlreadyLinked). Callers are expected to
+// log and continue to the next user rather than treat this as fatal for the
+// batch.
 //
 // If SetKratosIdentityID fails after the Kratos identity was already
-// created, this deletes the orphaned identity via the Admin API so a
-// re-run doesn't accumulate identities that no local user ever ends up
-// linked to. A cleanup failure is logged but never replaces the original
-// error returned to the caller — the original failure is what a caller
-// needs to know to decide whether/how to retry this user.
+// created, this reconciles before deleting it: it re-reads
+// userRepo.GetByKratosIdentityID(result.ID) and only issues the Admin API
+// delete when that lookup confirms the identity is genuinely unlinked
+// (domain.ErrNotFound). If the lookup instead finds a user — e.g.
+// SetKratosIdentityID failed with domain.ErrKratosIdentityAlreadyLinked
+// because a concurrent run already linked this identity to someone — or
+// fails ambiguously (a non-ErrNotFound error, such as a database outage,
+// where it is unknown whether the identity is linked), the delete is
+// skipped and the reason logged, so this never deletes a Kratos identity a
+// user might already depend on. Either way, a cleanup failure or skip is
+// logged but never replaces the original error returned to the caller —
+// the original failure is what a caller needs to know to decide
+// whether/how to retry this user.
 func migrateUser(ctx context.Context, adminURL string, httpClient *http.Client, userRepo user.UserRepository, u *user.User) error {
 	reqBody := kratosCreateIdentityReqDTO{SchemaID: "default"}
 	reqBody.Traits.Email = u.Email
@@ -90,15 +103,39 @@ func migrateUser(ctx context.Context, adminURL string, httpClient *http.Client, 
 		return fmt.Errorf("decode response: %w", err)
 	}
 
+	if result.ID == "" {
+		return fmt.Errorf("kratos admin create identity: response missing identity id")
+	}
+
 	if err := userRepo.SetKratosIdentityID(ctx, u.ID, result.ID); err != nil {
 		linkErr := fmt.Errorf("set kratos identity id: %w", err)
+
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		cleanupErr := deleteKratosIdentity(cleanupCtx, adminURL, httpClient, result.ID)
-		cancel()
-		if cleanupErr != nil {
-			slog.Error("failed to clean up orphaned kratos identity after link failure",
-				"user_id", u.ID, "kratos_identity_id", result.ID, "error", cleanupErr)
+		_, lookupErr := userRepo.GetByKratosIdentityID(cleanupCtx, result.ID)
+		switch {
+		case lookupErr == nil:
+			// A user is now linked to this identity (most likely the very
+			// SetKratosIdentityID failure above was
+			// domain.ErrKratosIdentityAlreadyLinked, or a concurrent run won
+			// the race) — deleting it would break that link.
+			slog.Warn("skipping kratos identity cleanup: identity is linked to a user",
+				"user_id", u.ID, "kratos_identity_id", result.ID)
+		case errors.Is(lookupErr, domain.ErrNotFound):
+			// Confirmed unlinked: safe to delete the identity this call just
+			// created.
+			if cleanupErr := deleteKratosIdentity(cleanupCtx, adminURL, httpClient, result.ID); cleanupErr != nil {
+				slog.Error("failed to clean up orphaned kratos identity after link failure",
+					"user_id", u.ID, "kratos_identity_id", result.ID, "error", cleanupErr)
+			}
+		default:
+			// Ambiguous: we couldn't determine whether the identity is
+			// linked (e.g. a database outage), so err on the side of not
+			// deleting it.
+			slog.Warn("skipping kratos identity cleanup: could not confirm identity is unlinked",
+				"user_id", u.ID, "kratos_identity_id", result.ID, "error", lookupErr)
 		}
+		cancel()
+
 		return linkErr
 	}
 
