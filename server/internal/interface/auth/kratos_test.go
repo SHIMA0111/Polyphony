@@ -585,19 +585,41 @@ func TestKratosValidateTokenRepoFailureIsNotInvalidToken(t *testing.T) {
 	}
 }
 
-// TestKratosValidateTokenUnlinkedIdentity proves that a 200 whoami response
-// for an identity with no local link maps to domain.ErrInvalidToken.
-func TestKratosValidateTokenUnlinkedIdentity(t *testing.T) {
+// TestKratosValidateTokenSelfHeal proves that ValidateToken self-heals a
+// missing local user row from the whoami response's identity traits, the
+// same way Login does, instead of returning domain.ErrInvalidToken — this
+// is the only path the browser data-plane exercises (registration/login
+// there go straight to Kratos via /api/kratos/*, never through this
+// package's own Register/Login), so a freshly browser-registered identity
+// must not 401 forever despite holding a valid Kratos session.
+func TestKratosValidateTokenSelfHeal(t *testing.T) {
 	f := newFakeKratos()
 	defer f.close()
 
-	f.whoamiBody = kratosWhoamiRespDTO{Identity: kratosIdentityDTO{ID: uuid.New().String()}}
+	identityID := uuid.New().String()
+	f.whoamiBody = kratosWhoamiRespDTO{
+		Identity: kratosIdentityDTO{
+			ID:     identityID,
+			Traits: kratosTraitsDTO{Email: "d@example.com", Username: "duser"},
+		},
+	}
 
 	userRepo := &mocks.UserRepo{}
 	svc := newTestKratosService(f, userRepo)
 
-	_, err := svc.ValidateToken(context.Background(), "opaque-native-token")
-	if !errors.Is(err, domain.ErrInvalidToken) {
-		t.Fatalf("expected domain.ErrInvalidToken, got %v", err)
+	claims, err := svc.ValidateToken(context.Background(), "cookie:some-cookie-value")
+	if err != nil {
+		t.Fatalf("expected ValidateToken to self-heal a local user link, got error: %v", err)
+	}
+
+	linkedUser, err := userRepo.GetByKratosIdentityID(context.Background(), identityID)
+	if err != nil {
+		t.Fatalf("expected a self-healed local user link, got error: %v", err)
+	}
+	if linkedUser.Email != "d@example.com" || linkedUser.Username != "duser" {
+		t.Errorf("unexpected self-healed user: %+v", linkedUser)
+	}
+	if claims.UserID != linkedUser.ID {
+		t.Errorf("expected claims.UserID %q to match self-healed user %q", claims.UserID, linkedUser.ID)
 	}
 }

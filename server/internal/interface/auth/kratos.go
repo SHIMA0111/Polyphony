@@ -261,9 +261,11 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 //   - Otherwise, a brand new local user row is created, with a
 //     kratos-managed placeholder password hash, linked to identityID.
 //
-// Used by both Register (a Kratos-side registration for an email/username
-// that already has a local-only, unlinked user record) and Login's
-// self-heal path (a Kratos identity with no local link yet).
+// Used by Register (a Kratos-side registration for an email/username that
+// already has a local-only, unlinked user record), Login's self-heal path
+// (a Kratos identity with no local link yet), and ValidateToken's self-heal
+// path (see its GoDoc) — the single shared implementation all three rely on
+// so none of them can silently diverge from the others.
 func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, email, username string) (*user.User, error) {
 	existing, err := s.lookupUnlinkedLocalUser(ctx, email, username)
 	if err != nil {
@@ -330,7 +332,13 @@ func (s *KratosAuthService) lookupUnlinkedLocalUser(ctx context.Context, email, 
 }
 
 // ValidateToken validates a token against Kratos's GET /sessions/whoami
-// endpoint and resolves the local user via userRepo.GetByKratosIdentityID.
+// endpoint and resolves the local user via ensureLocalUser, self-healing a
+// missing local row from the whoami response's identity traits exactly as
+// Login does — this is the only path the browser data-plane exercises
+// (registration/login there go straight to Kratos via /api/kratos/*, never
+// through this package's Register/Login), so without this self-heal a
+// freshly browser-registered identity would 401 forever despite holding a
+// perfectly valid Kratos session.
 //
 // token is interpreted using the following convention, which is the
 // contract that interface/middleware.JWTAuth relies on: if token has the
@@ -343,15 +351,14 @@ func (s *KratosAuthService) lookupUnlinkedLocalUser(ctx context.Context, email, 
 // cookie), so the distinction only matters when AUTH_MODE=kratos.
 //
 // It returns domain.ErrInvalidToken only for the whoami responses that
-// genuinely mean "this session is not valid" — a 401 or 403 status, or a 200
-// response resolving to an identity with no linked local user (see below).
-// Anything else — the httpClient.Do call itself failing (e.g. Kratos
-// unreachable), a whoami status that is neither 200 nor 401/403 (e.g. a 5xx),
-// or a 200 response whose body fails to decode — is a server-side/
-// infrastructure problem, not evidence of an invalid token, and is returned
-// as a plain wrapped error instead. This distinction matters because
-// interface/middleware.JWTAuth maps domain.ErrInvalidToken to a 401 and
-// anything else to a 5xx; flattening every failure mode here into
+// genuinely mean "this session is not valid" — a 401 or 403 status. Anything
+// else — the httpClient.Do call itself failing (e.g. Kratos unreachable), a
+// whoami status that is neither 200 nor 401/403 (e.g. a 5xx), a 200 response
+// whose body fails to decode, or ensureLocalUser's self-heal failing — is a
+// server-side/infrastructure problem, not evidence of an invalid token, and
+// is returned as a plain wrapped error instead. This distinction matters
+// because interface/middleware.JWTAuth maps domain.ErrInvalidToken to a 401
+// and anything else to a 5xx; flattening every failure mode here into
 // ErrInvalidToken would misreport a Kratos outage as "your session expired"
 // instead of a server error.
 func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error) {
@@ -387,20 +394,23 @@ func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*d
 		return nil, fmt.Errorf("decode kratos whoami response: %w", err)
 	}
 
-	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, result.Identity.ID)
+	identity := result.Identity
+	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, identity.ID)
 	if err != nil {
-		// Only "no local user linked to this identity yet" is a genuine
-		// invalid-token condition (from the caller's point of view: the
-		// presented session simply doesn't map to anyone). Any other
-		// repository failure (e.g. a database outage) is a server-side
-		// problem, not evidence of an invalid token — flattening it to
-		// domain.ErrInvalidToken would make interface/middleware surface a
-		// misleading 401 instead of a 5xx for what is really an
-		// infrastructure failure.
-		if errors.Is(err, domain.ErrNotFound) {
-			return nil, domain.ErrInvalidToken
+		if !errors.Is(err, domain.ErrNotFound) {
+			return nil, fmt.Errorf("resolve local user for kratos identity: %w", err)
 		}
-		return nil, fmt.Errorf("resolve local user for kratos identity: %w", err)
+
+		// No local user is linked to this identity yet. Rather than treating
+		// that as an invalid token (which would 401 forever a perfectly
+		// valid Kratos session — the browser data-plane only ever exercises
+		// this method, never Register/Login above), self-heal exactly as
+		// Login does: relink an existing unlinked local user matching
+		// email/username, or create a new one.
+		localUser, err = s.ensureLocalUser(ctx, identity.ID, identity.Traits.Email, identity.Traits.Username)
+		if err != nil {
+			return nil, fmt.Errorf("resolve local user for kratos identity: %w", err)
+		}
 	}
 
 	return &domainauth.Claims{UserID: localUser.ID}, nil
