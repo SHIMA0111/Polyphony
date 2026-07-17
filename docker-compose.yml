@@ -237,8 +237,8 @@ services:
       CORS_ORIGINS: http://localhost:3001
       LLM_GATEWAY_URL: http://llm-gateway-e2e:8081
       AUTH_MODE: kratos
-      KRATOS_PUBLIC_URL: http://kratos:4433
-      KRATOS_ADMIN_URL: http://kratos:4434
+      KRATOS_PUBLIC_URL: http://kratos-e2e:4433
+      KRATOS_ADMIN_URL: http://kratos-e2e:4434
       KRATOS_COOKIE_NAME: ory_kratos_session
     ports:
       - "8090:8080"
@@ -254,7 +254,7 @@ services:
         condition: service_completed_successfully
       llm-gateway-e2e:
         condition: service_healthy
-      kratos:
+      kratos-e2e:
         condition: service_healthy
 
   db-e2e:
@@ -273,6 +273,56 @@ services:
       timeout: 3s
       retries: 5
     profiles: ["test"]
+
+  kratos-db-e2e:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: kratos
+      POSTGRES_PASSWORD: kratos
+      POSTGRES_DB: kratos
+    volumes:
+      - kratos_pgdata-e2e:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kratos"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["test"]
+
+  kratos-e2e:
+    image: oryd/kratos:v1.3.1
+    environment:
+      DSN: postgres://kratos:kratos@kratos-db-e2e:5432/kratos?sslmode=disable
+      # SECRETS_CIPHER must be exactly 32 characters (Kratos's AES-256-GCM
+      # cipher key requirement, see ory/README.md) — Kratos refuses to start
+      # otherwise.
+      SECRETS_COOKIE: e2e-32-byte-kratos-cookie-secret
+      SECRETS_CIPHER: e2e-32-byte-kratos-cipher-secret
+    command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
+    volumes:
+      - ./ory/kratos:/etc/config/kratos:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4434/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    profiles: ["test"]
+    depends_on:
+      kratos-migrate-e2e:
+        condition: service_completed_successfully
+
+  kratos-migrate-e2e:
+    image: oryd/kratos:v1.3.1
+    environment:
+      DSN: postgres://kratos:kratos@kratos-db-e2e:5432/kratos?sslmode=disable
+    command: migrate sql -e --yes
+    volumes:
+      - ./ory/kratos:/etc/config/kratos:ro
+    profiles: ["test"]
+    depends_on:
+      kratos-db-e2e:
+        condition: service_healthy
 
   llm-gateway-e2e:
     build:
@@ -310,6 +360,25 @@ services:
       start_period: 5s
     profiles: ["test"]
 
+  mailslurper-e2e:
+    image: oryd/mailslurper:latest-smtps
+    # kratos.yml's courier config is shared verbatim with the dev `kratos`
+    # service and hardcodes `smtps://test:test@mailslurper:1025/...` — this
+    # alias makes that hostname resolve to this e2e-only mail relay too, so
+    # kratos-e2e's courier doesn't need its own copy of kratos.yml just to
+    # reach it under this service's real (namespaced) name.
+    networks:
+      default:
+        aliases:
+          - mailslurper
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4436/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    profiles: ["test"]
+
   migrate-e2e:
     image: arigaio/atlas:latest
     command: >
@@ -331,7 +400,7 @@ services:
         NEXT_PUBLIC_MOCK_API: ${NEXT_PUBLIC_MOCK_API:-false}
     environment:
       API_URL: http://api-e2e:8080
-      KRATOS_PUBLIC_URL: ${KRATOS_PUBLIC_URL:-http://kratos:4433}
+      KRATOS_PUBLIC_URL: http://kratos-e2e:4433
     ports:
       - "3001:3000"
     profiles: ["test"]
@@ -343,4 +412,5 @@ volumes:
   pgdata:
   pgdata-e2e:
   kratos_pgdata:
+  kratos_pgdata-e2e:
   miniodata:

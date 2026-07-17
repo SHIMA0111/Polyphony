@@ -23,7 +23,12 @@
 # earlier run/dev session still exists in the project. The cleanup trap is
 # scoped to only the resources this script itself brought up (the scaled
 # `api` replicas) — it never runs a project-wide `docker compose down`, so it
-# will not tear down a stack the developer already had running.
+# will not tear down a stack the developer already had running. Because
+# scaling `api` back down (`stop`/`rm`) necessarily removes every replica —
+# including the original, non-scaled one, if `api` was already running
+# before this script started — the trap records that pre-existing state up
+# front and restores a single, normally-configured `api` instance afterward
+# so the dev stack isn't left without one.
 #
 # Explicitly forces AUTH_MODE=simple_jwt for this stack's own bring-up
 # (independent of whatever AUTH_MODE default docker-compose.yml ships with),
@@ -51,6 +56,14 @@ export AUTH_MODE=simple_jwt
 COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.scale-test.yml)
 BASE_COMPOSE=(docker compose)
 
+# Recorded before this script touches `api` at all: whether a (non-scaled)
+# `api` container was already up, so the cleanup trap knows whether to
+# restore it after tearing down the scaled replicas below.
+API_WAS_RUNNING=""
+if [[ -n "$("${BASE_COMPOSE[@]}" ps -q api 2>/dev/null)" ]]; then
+  API_WAS_RUNNING=1
+fi
+
 RUN_SUFFIX="$(date +%s)"
 TEST_EMAIL="verify-redis-hub-${RUN_SUFFIX}@example.com"
 TEST_USERNAME="verify-redis-hub-${RUN_SUFFIX}"
@@ -63,6 +76,10 @@ cleanup() {
   echo "==> Stopping and removing only the api replicas this script scaled up"
   "${COMPOSE[@]}" stop api >/dev/null 2>&1 || true
   "${COMPOSE[@]}" rm -f api >/dev/null 2>&1 || true
+  if [[ -n "$API_WAS_RUNNING" ]]; then
+    echo "==> Restoring the api service that was already running before this script started"
+    "${BASE_COMPOSE[@]}" up -d --wait api || true
+  fi
   rm -f "$WS_WAIT_LOG"
   exit "$status"
 }
