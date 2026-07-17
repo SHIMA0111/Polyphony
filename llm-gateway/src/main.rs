@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use llm_gateway::adapters::inbound::grpc::serve_grpc;
 use llm_gateway::adapters::inbound::rest::router::build_router;
+use llm_gateway::adapters::outbound::anthropic::AnthropicProvider;
 use llm_gateway::adapters::outbound::env_key::EnvKeyStore;
 use llm_gateway::adapters::outbound::openai::OpenAIProvider;
 use llm_gateway::config::Config;
@@ -37,7 +38,22 @@ async fn main() {
         }
     };
 
-    let service = CompletionService::new(vec![Box::new(openai_provider)], key_store);
+    let anthropic_provider = match AnthropicProvider::new(
+        key_store.clone(),
+        config.http.clone(),
+        config.anthropic.clone(),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("failed to initialize AnthropicProvider: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let service = CompletionService::new(
+        vec![Box::new(openai_provider), Box::new(anthropic_provider)],
+        key_store,
+    );
     // Coerced to the trait object once here so the exact same instance is shared by
     // both the REST router and the gRPC server below — no second `CompletionService`
     // is ever constructed.
