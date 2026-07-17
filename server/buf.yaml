@@ -1,0 +1,16 @@
+# Buf module configuration for the shared LLM Gateway gRPC contract.
+#
+# The canonical proto source lives in ./proto (server/proto/llmgateway/v1/*.proto);
+# see docs/tasks/step19.md's "Proto location rationale" for why it is vendored here
+# rather than in a separate top-level directory. The Rust LLM Gateway consumes the
+# same files directly via tonic-build (see llm-gateway/build.rs) -- this module only
+# governs the Go-side codegen invoked by `buf generate` (see buf.gen.yaml).
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - DEFAULT
+breaking:
+  use:
+    - FILE

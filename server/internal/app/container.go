@@ -148,7 +148,34 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	default:
 		authService = ifauth.NewSimpleJWTService(userRepo, cfg.JWTSecret)
 	}
-	llmClient := gateway.NewLLMClient(cfg.LLMGatewayURL)
+	// LLMGateway is the Phase 8 swap point (see CLAUDE.md's Interface Swap
+	// Points table): LLM_GATEWAY_TRANSPORT selects the REST LLMClient
+	// (default) or the gRPC GRPCClient, both of which satisfy
+	// ai.LLMGateway, so no downstream usecase/handler code needs to change
+	// based on this branch.
+	var llmGateway ai.LLMGateway = gateway.NewLLMClient(cfg.LLMGatewayURL)
+	if cfg.LLMGatewayTransport == "grpc" {
+		grpcClient, err := gateway.NewGRPCClient(
+			cfg.LLMGatewayGRPCAddr, cfg.LLMGatewayGRPCMaxRetries, cfg.LLMGatewayGRPCBaseBackoff)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("build gRPC LLM Gateway client: %w", err)
+		}
+		llmGateway = grpcClient
+
+		// Fail fast/log a warning if the gateway isn't reachable, but never
+		// fail container construction on it: in Compose, the api container
+		// may start before the llm-gateway container becomes healthy, and
+		// individual Complete/ListModels calls already surface their own
+		// errors.
+		healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if healthErr := grpcClient.CheckHealth(healthCtx); healthErr != nil {
+			slog.Warn("LLM Gateway gRPC health check failed at startup", "error", healthErr)
+		} else {
+			slog.Info("LLM Gateway gRPC health check succeeded")
+		}
+		cancel()
+	}
 	objectStorage := ifstorage.NewS3Storage(
 		cfg.S3Endpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3ForcePathStyle,
 	)
@@ -158,10 +185,10 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
 	roomUC := roomusecase.NewRoomUsecase(roomRepo)
-	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmClient, messageHub)
+	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub)
 	userUC := userusecase.NewUserUsecase(userRepo)
 	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
-	modelUC := modelusecase.NewModelUsecase(llmClient)
+	modelUC := modelusecase.NewModelUsecase(llmGateway)
 	invitationUC := invitationusecase.NewInvitationUsecase(invitationRepo, roomRepo, userRepo)
 
 	// Handlers
@@ -174,7 +201,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	attachmentHandler := handler.NewAttachmentHandler(attachmentUC)
 	wsHandler := handler.NewWebSocketHandler(roomUC, messageHub, ticketIssuer, originPatternsFromCORS(cfg.CORSOrigins))
 	invitationHandler := handler.NewInvitationHandler(invitationUC)
-	tokenHandler := handler.NewTokenHandler(llmClient)
+	tokenHandler := handler.NewTokenHandler(llmGateway)
 
 	return &Container{
 		Config: cfg,
@@ -188,7 +215,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		InvitationRepo: invitationRepo,
 
 		AuthService:   authService,
-		LLMGateway:    llmClient,
+		LLMGateway:    llmGateway,
 		ObjectStorage: objectStorage,
 		MessageHub:    messageHub,
 
