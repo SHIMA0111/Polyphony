@@ -297,14 +297,17 @@ func TestAttachmentRepository_ListByMessageID(t *testing.T) {
 		t.Fatalf("AttachToMessage otherLinked failed: %v", err)
 	}
 
-	// Two attachments linked to the target message, created in order.
+	// Two attachments linked to the target message, created in order. Explicit,
+	// distinct timestamps (rather than back-to-back time.Now() calls) so the
+	// ordering assertion below never depends on wall-clock resolution.
+	base := time.Now().UTC().Truncate(time.Microsecond)
 	first := &domainattachment.Attachment{
 		ID:        uuid.New().String(),
 		RoomID:    rm.ID,
 		S3Key:     "attachments/" + rm.ID + "/first",
 		MimeType:  "image/png",
 		SizeBytes: 1,
-		CreatedAt: time.Now(),
+		CreatedAt: base,
 	}
 	if err := attachmentRepo.Create(ctx, first); err != nil {
 		t.Fatalf("Create first failed: %v", err)
@@ -319,7 +322,7 @@ func TestAttachmentRepository_ListByMessageID(t *testing.T) {
 		S3Key:     "attachments/" + rm.ID + "/second",
 		MimeType:  "image/png",
 		SizeBytes: 1,
-		CreatedAt: time.Now(),
+		CreatedAt: base.Add(time.Millisecond),
 	}
 	if err := attachmentRepo.Create(ctx, second); err != nil {
 		t.Fatalf("Create second failed: %v", err)
