@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
 )
@@ -91,7 +92,10 @@ func migrateUser(ctx context.Context, adminURL string, httpClient *http.Client, 
 
 	if err := userRepo.SetKratosIdentityID(ctx, u.ID, result.ID); err != nil {
 		linkErr := fmt.Errorf("set kratos identity id: %w", err)
-		if cleanupErr := deleteKratosIdentity(ctx, adminURL, httpClient, result.ID); cleanupErr != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		cleanupErr := deleteKratosIdentity(cleanupCtx, adminURL, httpClient, result.ID)
+		cancel()
+		if cleanupErr != nil {
 			slog.Error("failed to clean up orphaned kratos identity after link failure",
 				"user_id", u.ID, "kratos_identity_id", result.ID, "error", cleanupErr)
 		}

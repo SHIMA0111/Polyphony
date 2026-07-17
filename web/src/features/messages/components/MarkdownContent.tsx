@@ -1,5 +1,6 @@
 "use client"
 
+import { isValidElement } from "react"
 import { Box } from "@chakra-ui/react"
 import Markdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -23,10 +24,55 @@ interface MarkdownContentProps {
  */
 export function MarkdownContent({ content }: MarkdownContentProps) {
   const components: Components = {
-    // `pre` is unwrapped: `CodeBlock` (returned by the `code` renderer below)
-    // already renders its own container, so keeping the default `pre`
-    // wrapper here would double-wrap fenced blocks.
-    pre: ({ children }) => <>{children}</>,
+    // react-markdown always wraps a fenced code block's `code` element in
+    // `pre`, and calls this renderer with that `code` element *unrendered*
+    // (its type/props only -- the `code` function below hasn't run yet), so
+    // its `className` can be inspected here to tell fence kinds apart before
+    // `code` itself decides how to render:
+    //  - language-labeled (` ```js `): `code` will return `CodeBlock`, which
+    //    already renders its own container, so unwrap here to avoid
+    //    double-wrapping it in another `pre`.
+    //  - unlabeled (bare ` ``` `): `code` falls through to its plain inline
+    //    `<code>` styling below, which has no block semantics of its own, so
+    //    render a real block-level `pre` container here to preserve
+    //    whitespace/newlines instead of letting it collapse as inline text.
+    //    The nested `<code>` is reset to inherit this container's
+    //    background/font instead of re-applying its own, so the block isn't
+    //    double-styled.
+    pre: ({ children }) => {
+      const isLanguageLabeled =
+        isValidElement<{ className?: string }>(children) &&
+        (children.props.className ?? "").includes("language-")
+
+      if (isLanguageLabeled) {
+        return <>{children}</>
+      }
+
+      return (
+        <Box
+          as="pre"
+          whiteSpace="pre-wrap"
+          overflowX="auto"
+          rounded="sm"
+          bg="bg.emphasized"
+          fontSize="0.9em"
+          fontFamily="mono"
+          px="3"
+          py="2"
+          css={{
+            "& code": {
+              background: "none",
+              padding: 0,
+              borderRadius: 0,
+              fontSize: "inherit",
+              fontFamily: "inherit",
+            },
+          }}
+        >
+          {children}
+        </Box>
+      )
+    },
     code({ className, children }) {
       const match = /language-(\S+)/.exec(className ?? "")
       const text = String(children).replace(/\n$/, "")
