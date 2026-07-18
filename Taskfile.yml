@@ -230,6 +230,35 @@ tasks:
       - bun run dev
 
   # ---------------------------------------------------------------------------
+  # OAuth2/OIDC provider (Ory Hydra, Step 55)
+  # ---------------------------------------------------------------------------
+  oauth:hydra:register-demo-client:
+    desc: >-
+      Register the first-party demo OAuth2 client against the running Hydra
+      admin API. Copy the printed client_id/client_secret into .env's
+      HYDRA_DEMO_CLIENT_ID/HYDRA_DEMO_CLIENT_SECRET (see ory/README.md to
+      register additional first-party clients with different scopes/redirect
+      URIs).
+    cmds:
+      - >-
+        docker compose exec hydra hydra create oauth2-client
+        --endpoint http://localhost:4445
+        --name "Polyphony Demo Client"
+        --grant-type authorization_code,refresh_token
+        --response-type code
+        --scope "openid offline_access profile email"
+        --redirect-uri http://localhost:9999/callback
+        --token-endpoint-auth-method client_secret_basic
+        --format json
+      - 'echo "Copy the client_id/client_secret above into .env as HYDRA_DEMO_CLIENT_ID/HYDRA_DEMO_CLIENT_SECRET, then re-run: task oauth:hydra:test"'
+
+  oauth:hydra:test:
+    desc: Run the scripted Hydra authorization-code flow end to end (registration through /userinfo)
+    dotenv: ['.env.local', '.env']
+    cmds:
+      - bun run ory/hydra/test-oauth-flow.ts
+
+  # ---------------------------------------------------------------------------
   # Billing
   # ---------------------------------------------------------------------------
   billing:topup:

@@ -91,6 +91,55 @@ services:
       retries: 5
       start_period: 5s
 
+  hydra:
+    image: oryd/hydra:v2.2.0
+    environment:
+      DSN: ${HYDRA_DSN:-postgres://hydra:hydra@hydra-db:5432/hydra?sslmode=disable}
+      SECRETS_SYSTEM: ${HYDRA_SYSTEM_SECRET:-change-me-32-byte-system-secret!}
+      URLS_SELF_ISSUER: ${HYDRA_PUBLIC_URL:-http://localhost:4444}/
+      URLS_LOGIN: ${HYDRA_LOGIN_UI_URL:-http://localhost:3000/oauth/login}
+      URLS_CONSENT: ${HYDRA_CONSENT_UI_URL:-http://localhost:3000/oauth/consent}
+    command: serve all -c /etc/config/hydra/hydra.yml --dev
+    volumes:
+      - ./ory/hydra:/etc/config/hydra:ro
+    ports:
+      - "4444:4444"
+      - "4445:4445"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4445/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      hydra-migrate:
+        condition: service_completed_successfully
+
+  hydra-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${HYDRA_DB_USER:-hydra}
+      POSTGRES_PASSWORD: ${HYDRA_DB_PASSWORD:-hydra}
+      POSTGRES_DB: ${HYDRA_DB_NAME:-hydra}
+    volumes:
+      - hydra_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${HYDRA_DB_USER:-hydra}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  hydra-migrate:
+    image: oryd/hydra:v2.2.0
+    environment:
+      DSN: ${HYDRA_DSN:-postgres://hydra:hydra@hydra-db:5432/hydra?sslmode=disable}
+    command: ["migrate", "sql", "-e", "--yes"]
+    volumes:
+      - ./ory/hydra:/etc/config/hydra:ro
+    depends_on:
+      hydra-db:
+        condition: service_healthy
+
   kratos:
     image: oryd/kratos:v1.3.1
     environment:
@@ -255,6 +304,7 @@ services:
       API_URL: ${API_URL:-http://api:8080}
       KRATOS_PUBLIC_URL: ${KRATOS_PUBLIC_URL:-http://kratos:4433}
       KRATOS_COOKIE_NAME: ${KRATOS_COOKIE_NAME:-ory_kratos_session}
+      HYDRA_ADMIN_URL: ${HYDRA_ADMIN_URL:-http://hydra:4445}
     ports:
       - "3000:3000"
     depends_on:
@@ -504,6 +554,7 @@ services:
 volumes:
   pgdata:
   pgdata-e2e:
+  hydra_pgdata:
   kratos_pgdata:
   kratos_pgdata-e2e:
   miniodata:
