@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-redis/redis_rate/v10"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -21,6 +22,7 @@ import (
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
 	domainbilling "github.com/SHIMA0111/multi-user-ai/server/internal/domain/billing"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
+	domaingroup "github.com/SHIMA0111/multi-user-ai/server/internal/domain/group"
 	domaininvitation "github.com/SHIMA0111/multi-user-ai/server/internal/domain/invitation"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
@@ -38,6 +40,7 @@ import (
 	attachmentusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/attachment"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
 	billingusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/billing"
+	groupusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/group"
 	invitationusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/invitation"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
 	modelusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/model"
@@ -65,14 +68,29 @@ type Container struct {
 	// Logger is the base structured logger used to build request-scoped loggers.
 	Logger *slog.Logger
 
-	// RedisClient is the shared Redis client used when Config.MessageHubDriver
-	// is "redis". It is nil when the inprocess driver is selected. It is kept
-	// on the Container (rather than only captured in a closure) so later
-	// steps (e.g. Step 33's rate limiting and Kratos session cache) can reuse
-	// the same client instead of opening a second connection pool. Callers
-	// are responsible for closing it (typically via a deferred
-	// RedisClient.Close() in main, guarded by a nil check).
+	// RedisClient is the shared Redis client, constructed whenever
+	// Config.RedisURL is non-empty regardless of which MessageHubDriver is
+	// selected — Step 33's rate limiter and Kratos whoami cache both need a
+	// client even when MessageHubDriver is "inprocess" (e.g. AUTH_MODE=kratos
+	// with no Redis-backed MessageHub). It is nil only when RedisURL is
+	// unset entirely (e.g. local `go run ./cmd/api` with neither Redis nor
+	// Kratos configured), in which case RateLimiter is also nil and the
+	// AUTH_MODE=kratos branch below skips wrapping AuthService in
+	// CachedAuthService — both fail open to "no rate limiting"/"no caching"
+	// rather than panicking on a nil client. It is kept on the Container
+	// (rather than only captured in a closure) so later steps can reuse the
+	// same client instead of opening a second connection pool. Callers are
+	// responsible for closing it (typically via a deferred RedisClient.Close()
+	// in main, guarded by a nil check).
 	RedisClient *redis.Client
+	// RateLimiter is the shared Redis-backed GCRA token-bucket limiter (Step
+	// 33) built on RedisClient, used by middleware.RateLimit for the
+	// /auth/register, /auth/login, and AI-invoke routes. It is nil whenever
+	// RedisClient is nil (see RedisClient's GoDoc); routes_auth.go/
+	// routes_message.go must not dereference a nil RateLimiter, but
+	// middleware.RateLimit itself never runs at all in that case since the
+	// route registrars only attach it when this field is non-nil.
+	RateLimiter *redis_rate.Limiter
 
 	// Repositories
 	UserRepo domainuser.UserRepository
@@ -83,6 +101,15 @@ type Container struct {
 	AttachmentRepo domainattachment.AttachmentRepository
 	InvitationRepo domaininvitation.InvitationRepository
 	BillingRepo    domainbilling.BalanceRepository
+	// GroupRepo backs GroupUC's cross-room group persistence.
+	GroupRepo domaingroup.GroupRepository
+	// SubscriptionRepo backs BillingUC's Step 49 subscription lifecycle
+	// methods (GetSubscription, CancelSubscription, CreateBillingPortalSession).
+	SubscriptionRepo domainbilling.SubscriptionRepository
+	// PaymentRepo backs BillingUC's Step 49 payment-history and
+	// checkout/webhook credit-recording methods (ListPaymentHistory,
+	// HandleWebhookEvent).
+	PaymentRepo domainbilling.PaymentRepository
 
 	// Services / Gateways
 	AuthService domainauth.AuthService
@@ -90,6 +117,12 @@ type Container struct {
 	// ObjectStorage is the domain/storage.ObjectStorage adapter (backed by
 	// MinIO/S3 via aws-sdk-go-v2) used to presign attachment upload/view URLs.
 	ObjectStorage domainstorage.ObjectStorage
+	// StripeGateway is the domain/billing.StripeGateway adapter used for
+	// Checkout/Billing Portal/webhook operations (Step 49). It is nil when
+	// Config.StripeSecretKey is empty — BillingUsecase's Stripe-dependent
+	// methods check for this and return domain.ErrStripeNotConfigured
+	// rather than the container failing to build.
+	StripeGateway domainbilling.StripeGateway
 	// MessageHub is the event.MessageHub used by MsgUC to broadcast
 	// message_created/message_updated events. It is exposed on the
 	// Container (rather than kept private) so later steps (e.g. Step 15's
@@ -109,6 +142,8 @@ type Container struct {
 	ModelUC      *modelusecase.ModelUsecase
 	InvitationUC *invitationusecase.InvitationUsecase
 	BillingUC    *billingusecase.BillingUsecase
+	// GroupUC implements cross-room group business logic, backed by GroupRepo.
+	GroupUC *groupusecase.GroupUsecase
 
 	// Handlers
 	HealthHandler  *handler.HealthHandler
@@ -126,6 +161,8 @@ type Container struct {
 	InvitationHandler *handler.InvitationHandler
 	TokenHandler      *handler.TokenHandler
 	BillingHandler    *handler.BillingHandler
+	// GroupHandler serves the cross-room group endpoints, delegating to GroupUC.
+	GroupHandler *handler.GroupHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,
@@ -150,6 +187,42 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	attachmentRepo := postgres.NewAttachmentRepository(pool)
 	invitationRepo := postgres.NewInvitationRepository(pool)
 	billingRepo := postgres.NewBillingRepository(pool)
+	groupRepo := postgres.NewGroupRepository(pool)
+	subscriptionRepo := postgres.NewSubscriptionRepository(pool)
+	paymentRepo := postgres.NewPaymentRepository(pool)
+
+	// RedisClient/RateLimiter: constructed whenever Config.RedisURL is
+	// non-empty, independent of MessageHubDriver (see Container.RedisClient's
+	// GoDoc for why Step 33's rate limiter and Kratos whoami cache need a
+	// client even when MessageHubDriver is "inprocess"). MessageHubDriver's
+	// own "redis" branch below reuses this exact client rather than opening a
+	// second connection pool.
+	var redisClient *redis.Client
+	var rateLimiter *redis_rate.Limiter
+	if cfg.RedisURL != "" {
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("parse REDIS_URL: %w", err)
+		}
+		redisClient = redis.NewClient(opts)
+
+		// Verify connectivity eagerly, mirroring database.NewPool's Ping check,
+		// so a misconfigured/unreachable Redis fails container construction
+		// immediately instead of lazily on the first message hub/rate
+		// limiter/Kratos-cache operation (e.g. the first WebSocket
+		// Publish/Subscribe call from a real user).
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		pingErr := redisClient.Ping(pingCtx).Err()
+		cancel()
+		if pingErr != nil {
+			_ = redisClient.Close()
+			pool.Close()
+			return nil, fmt.Errorf("ping redis: %w", pingErr)
+		}
+
+		rateLimiter = redis_rate.NewLimiter(redisClient)
+	}
 
 	// Services / Gateways
 	//
@@ -160,8 +233,18 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	var authService domainauth.AuthService
 	switch cfg.AuthMode {
 	case "kratos":
-		authService = ifauth.NewKratosAuthService(userRepo, cfg.KratosPublicURL, cfg.KratosAdminURL, cfg.KratosCookieName,
+		kratosService := ifauth.NewKratosAuthService(userRepo, cfg.KratosPublicURL, cfg.KratosAdminURL, cfg.KratosCookieName,
 			&http.Client{Timeout: 10 * time.Second})
+		if redisClient != nil {
+			// Step 33: cache ValidateToken (Kratos's real /sessions/whoami
+			// round trip) behind a short-TTL Redis cache. Skipped when no
+			// Redis client is configured at all, in which case AuthService
+			// falls open to always calling Kratos directly (no caching,
+			// same behavior as before this step).
+			authService = ifauth.NewCachedAuthService(kratosService, redisClient, cfg.WhoamiCacheTTL)
+		} else {
+			authService = kratosService
+		}
 	default:
 		authService = ifauth.NewSimpleJWTService(userRepo, cfg.JWTSecret)
 	}
@@ -175,6 +258,9 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		grpcClient, err := gateway.NewGRPCClient(
 			cfg.LLMGatewayGRPCAddr, cfg.LLMGatewayGRPCMaxRetries, cfg.LLMGatewayGRPCBaseBackoff)
 		if err != nil {
+			if redisClient != nil {
+				_ = redisClient.Close()
+			}
 			pool.Close()
 			return nil, fmt.Errorf("build gRPC LLM Gateway client: %w", err)
 		}
@@ -196,6 +282,40 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	objectStorage := ifstorage.NewS3Storage(
 		cfg.S3Endpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3ForcePathStyle,
 	)
+	// StripeGateway is left nil when STRIPE_SECRET_KEY is unconfigured (see
+	// CLAUDE.md's Token billing section and step49.md): BillingUsecase's
+	// checkout/portal/cancel methods check for nil and return
+	// domain.ErrStripeNotConfigured instead of the container failing to
+	// build, so local development without a Stripe test account still works
+	// for every other feature.
+	var stripeGateway domainbilling.StripeGateway
+	if cfg.StripeSecretKey != "" {
+		stripeGateway = gateway.NewStripeClient(cfg.StripeSecretKey, cfg.StripeWebhookSecret)
+	}
+	stripePlans := make([]domainbilling.Plan, len(cfg.StripePlans))
+	for i, p := range cfg.StripePlans {
+		stripePlans[i] = domainbilling.Plan{
+			Code:                   p.PlanCode,
+			StripePriceID:          p.PriceID,
+			Name:                   p.Name,
+			Description:            p.Description,
+			PriceCents:             p.PriceCents,
+			Currency:               p.Currency,
+			MonthlyTokenAllocation: p.MonthlyTokenAllocation,
+		}
+	}
+	stripeTokenPackages := make([]domainbilling.TokenPackage, len(cfg.StripeTokenPackages))
+	for i, p := range cfg.StripeTokenPackages {
+		stripeTokenPackages[i] = domainbilling.TokenPackage{
+			Code:          p.PackageCode,
+			StripePriceID: p.PriceID,
+			Name:          p.Name,
+			Description:   p.Description,
+			PriceCents:    p.PriceCents,
+			Currency:      p.Currency,
+			Tokens:        p.Tokens,
+		}
+	}
 	// MessageHub is the Phase 10 swap point (see CLAUDE.md's Interface Swap
 	// Points table): MESSAGE_HUB_DRIVER selects InProcessHub (default), which
 	// only fans out within this single process, or RedisHub, which fans out
@@ -203,29 +323,12 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	// delivery. Both satisfy event.MessageHub, so nothing downstream (MsgUC,
 	// the WebSocket handler) needs to change based on this branch.
 	var messageHub event.MessageHub
-	var redisClient *redis.Client
 	switch cfg.MessageHubDriver {
 	case "redis":
-		opts, err := redis.ParseURL(cfg.RedisURL)
-		if err != nil {
-			pool.Close()
-			return nil, fmt.Errorf("parse REDIS_URL: %w", err)
-		}
-		redisClient = redis.NewClient(opts)
-
-		// Verify connectivity eagerly, mirroring database.NewPool's Ping check,
-		// so a misconfigured/unreachable Redis fails container construction
-		// immediately instead of lazily on the first message hub operation
-		// (e.g. the first WebSocket Publish/Subscribe call from a real user).
-		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		pingErr := redisClient.Ping(pingCtx).Err()
-		cancel()
-		if pingErr != nil {
-			_ = redisClient.Close()
-			pool.Close()
-			return nil, fmt.Errorf("ping redis: %w", pingErr)
-		}
-
+		// redisClient is guaranteed non-nil (and already Ping-verified) here:
+		// config.Load requires REDIS_URL whenever MESSAGE_HUB_DRIVER=redis, so
+		// the RedisClient/RateLimiter construction above already built and
+		// health-checked it from the same cfg.RedisURL.
 		messageHub = infraevent.NewRedisHub(redisClient)
 	default:
 		messageHub = event.NewInProcessHub()
@@ -237,12 +340,16 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
 	roomUC := roomusecase.NewRoomUsecase(roomRepo)
-	billingUC := billingusecase.NewBillingUsecase(billingRepo, roomRepo)
-	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub, billingUC)
+	billingUC := billingusecase.NewBillingUsecase(
+		billingRepo, roomRepo, subscriptionRepo, paymentRepo, stripeGateway,
+		stripePlans, stripeTokenPackages, cfg.StripeCheckoutSuccessURL, cfg.StripeCheckoutCancelURL,
+	)
+	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub, billingUC, attachmentRepo, objectStorage, cfg.DefaultAIModel)
 	userUC := userusecase.NewUserUsecase(userRepo)
 	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
 	modelUC := modelusecase.NewModelUsecase(llmGateway)
 	invitationUC := invitationusecase.NewInvitationUsecase(invitationRepo, roomRepo, userRepo)
+	groupUC := groupusecase.NewGroupUsecase(groupRepo, userRepo, invitationUC)
 
 	// Handlers
 	healthHandler := handler.NewHealthHandler()
@@ -256,24 +363,30 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	invitationHandler := handler.NewInvitationHandler(invitationUC)
 	tokenHandler := handler.NewTokenHandler(llmGateway)
 	billingHandler := handler.NewBillingHandler(billingUC)
+	groupHandler := handler.NewGroupHandler(groupUC)
 
 	return &Container{
 		Config:      cfg,
 		Pool:        pool,
 		Logger:      slog.Default(),
 		RedisClient: redisClient,
+		RateLimiter: rateLimiter,
 
-		UserRepo:       userRepo,
-		RoomRepo:       roomRepo,
-		MsgRepo:        msgRepo,
-		AttachmentRepo: attachmentRepo,
-		InvitationRepo: invitationRepo,
-		BillingRepo:    billingRepo,
+		UserRepo:         userRepo,
+		RoomRepo:         roomRepo,
+		MsgRepo:          msgRepo,
+		AttachmentRepo:   attachmentRepo,
+		InvitationRepo:   invitationRepo,
+		BillingRepo:      billingRepo,
+		GroupRepo:        groupRepo,
+		SubscriptionRepo: subscriptionRepo,
+		PaymentRepo:      paymentRepo,
 
 		AuthService:   authService,
 		LLMGateway:    llmGateway,
 		ObjectStorage: objectStorage,
 		MessageHub:    messageHub,
+		StripeGateway: stripeGateway,
 
 		AuthUC:       authUC,
 		RoomUC:       roomUC,
@@ -283,6 +396,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		ModelUC:      modelUC,
 		InvitationUC: invitationUC,
 		BillingUC:    billingUC,
+		GroupUC:      groupUC,
 
 		HealthHandler:     healthHandler,
 		AuthHandler:       authHandler,
@@ -295,6 +409,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		InvitationHandler: invitationHandler,
 		TokenHandler:      tokenHandler,
 		BillingHandler:    billingHandler,
+		GroupHandler:      groupHandler,
 	}, nil
 }
 

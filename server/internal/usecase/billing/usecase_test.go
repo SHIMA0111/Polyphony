@@ -6,9 +6,22 @@ import (
 	"testing"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	domainbilling "github.com/SHIMA0111/multi-user-ai/server/internal/domain/billing"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
+
+// newTestUsecase builds a BillingUsecase over the given Step 42
+// balance/room repos with every Step 49 dependency left at its zero value
+// (nil subscription/payment repos and Stripe gateway, no configured
+// plans/packages), for tests exercising only the Step 42
+// balance/transaction-history behavior. Step 49-specific tests build their
+// own BillingUsecase directly via NewBillingUsecase so they can supply
+// mocks.SubscriptionRepo/mocks.PaymentRepo/mocks.StripeGateway and a plan/
+// package catalog.
+func newTestUsecase(balanceRepo domainbilling.BalanceRepository, roomRepo domainroom.RoomRepository) *BillingUsecase {
+	return NewBillingUsecase(balanceRepo, roomRepo, nil, nil, nil, nil, nil, "", "")
+}
 
 func TestCheckBalancePositive(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
@@ -18,7 +31,7 @@ func TestCheckBalancePositive(t *testing.T) {
 	balanceRepo := &mocks.BalanceRepo{}
 	balanceRepo.SeedBalance("owner-1", 100)
 
-	uc := NewBillingUsecase(balanceRepo, roomRepo)
+	uc := newTestUsecase(balanceRepo, roomRepo)
 	if err := uc.CheckBalance(context.Background(), "room-1"); err != nil {
 		t.Fatalf("expected nil error for positive balance, got %v", err)
 	}
@@ -34,7 +47,7 @@ func TestCheckBalanceZeroOrNegative(t *testing.T) {
 			balanceRepo := &mocks.BalanceRepo{}
 			balanceRepo.SeedBalance("owner-1", bal)
 
-			uc := NewBillingUsecase(balanceRepo, roomRepo)
+			uc := newTestUsecase(balanceRepo, roomRepo)
 			err := uc.CheckBalance(context.Background(), "room-1")
 			if err != domain.ErrInsufficientBalance {
 				t.Fatalf("expected ErrInsufficientBalance, got %v", err)
@@ -47,7 +60,7 @@ func TestCheckBalanceRoomLookupFailurePropagates(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	balanceRepo := &mocks.BalanceRepo{}
 
-	uc := NewBillingUsecase(balanceRepo, roomRepo)
+	uc := newTestUsecase(balanceRepo, roomRepo)
 	err := uc.CheckBalance(context.Background(), "nonexistent-room")
 	if err != domain.ErrNotFound {
 		t.Fatalf("expected ErrNotFound to propagate from roomRepo.GetByID, got %v", err)
@@ -62,7 +75,7 @@ func TestRecordUsageDebitsWithComputedTotal(t *testing.T) {
 	balanceRepo := &mocks.BalanceRepo{}
 	balanceRepo.SeedBalance("owner-1", 1000)
 
-	uc := NewBillingUsecase(balanceRepo, roomRepo)
+	uc := newTestUsecase(balanceRepo, roomRepo)
 	if err := uc.RecordUsage(context.Background(), "room-1", "msg-1", "test-model", 30, 20); err != nil {
 		t.Fatalf("RecordUsage failed: %v", err)
 	}
@@ -95,7 +108,7 @@ func TestRecordUsageNoOpWhenTotalNonPositive(t *testing.T) {
 	balanceRepo := &mocks.BalanceRepo{}
 	balanceRepo.SeedBalance("owner-1", 1000)
 
-	uc := NewBillingUsecase(balanceRepo, roomRepo)
+	uc := newTestUsecase(balanceRepo, roomRepo)
 	if err := uc.RecordUsage(context.Background(), "room-1", "msg-1", "test-model", 0, 0); err != nil {
 		t.Fatalf("expected nil error for zero usage, got %v", err)
 	}
@@ -109,7 +122,7 @@ func TestRecordUsageRoomLookupFailurePropagates(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	balanceRepo := &mocks.BalanceRepo{}
 
-	uc := NewBillingUsecase(balanceRepo, roomRepo)
+	uc := newTestUsecase(balanceRepo, roomRepo)
 	err := uc.RecordUsage(context.Background(), "nonexistent-room", "msg-1", "test-model", 10, 10)
 	if err != domain.ErrNotFound {
 		t.Fatalf("expected ErrNotFound to propagate from roomRepo.GetByID, got %v", err)
@@ -121,13 +134,41 @@ func TestGetBalanceDelegates(t *testing.T) {
 	balanceRepo := &mocks.BalanceRepo{}
 	balanceRepo.SeedBalance("user-1", 42)
 
-	uc := NewBillingUsecase(balanceRepo, roomRepo)
+	uc := newTestUsecase(balanceRepo, roomRepo)
 	bal, err := uc.GetBalance(context.Background(), "user-1")
 	if err != nil {
 		t.Fatalf("GetBalance failed: %v", err)
 	}
 	if bal.Balance != 42 {
 		t.Fatalf("expected balance 42, got %d", bal.Balance)
+	}
+}
+
+// TestGetSubscriptionBillingNotConfigured asserts GetSubscription returns
+// domain.ErrBillingNotConfigured (instead of a nil-pointer panic) when
+// subscriptionRepo is nil.
+func TestGetSubscriptionBillingNotConfigured(t *testing.T) {
+	roomRepo := &mocks.RoomRepo{}
+	balanceRepo := &mocks.BalanceRepo{}
+
+	uc := newTestUsecase(balanceRepo, roomRepo)
+	_, err := uc.GetSubscription(context.Background(), "user-1")
+	if err != domain.ErrBillingNotConfigured {
+		t.Fatalf("expected ErrBillingNotConfigured, got %v", err)
+	}
+}
+
+// TestListPaymentHistoryBillingNotConfigured asserts ListPaymentHistory
+// returns domain.ErrBillingNotConfigured (instead of a nil-pointer panic)
+// when paymentRepo is nil.
+func TestListPaymentHistoryBillingNotConfigured(t *testing.T) {
+	roomRepo := &mocks.RoomRepo{}
+	balanceRepo := &mocks.BalanceRepo{}
+
+	uc := newTestUsecase(balanceRepo, roomRepo)
+	_, err := uc.ListPaymentHistory(context.Background(), "user-1", "", 0)
+	if err != domain.ErrBillingNotConfigured {
+		t.Fatalf("expected ErrBillingNotConfigured, got %v", err)
 	}
 }
 
@@ -141,7 +182,7 @@ func TestListTransactionsDelegatesAndClampsLimit(t *testing.T) {
 		}
 	}
 
-	uc := NewBillingUsecase(balanceRepo, roomRepo)
+	uc := newTestUsecase(balanceRepo, roomRepo)
 
 	// limit <= 0 defaults to 20
 	page, err := uc.ListTransactions(context.Background(), "user-1", "", 0)

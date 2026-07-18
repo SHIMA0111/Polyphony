@@ -24,7 +24,23 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        // Step 44 (oauth-dex.spec.ts): dex's `issuer` is the Docker-internal
+        // hostname `dex` (resolved automatically by Kratos server-side via
+        // Docker's DNS), but the OIDC authorization redirect sends *this*
+        // browser to that same hostname — which the host does not resolve
+        // by default. This maps it to the e2e stack's dedicated `dex-e2e`
+        // service's published host port (8095, not the dev `dex` service's
+        // 5556 — see docker-compose.yml's `dex-e2e` block, added so the two
+        // stacks' dex containers no longer collide on the same host port)
+        // without requiring a manual `/etc/hosts` edit (see ory/README.md
+        // for that equivalent, for anyone testing social login by hand
+        // against the dev stack).
+        launchOptions: {
+          args: ["--host-resolver-rules=MAP dex:5556 127.0.0.1:8095"],
+        },
+      },
     },
   ],
 })

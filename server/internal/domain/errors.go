@@ -80,6 +80,42 @@ var (
 	// out of the range the gRPC wire type (uint32) can represent -- negative,
 	// or greater than math.MaxUint32. See gateway.GRPCClient.Complete.
 	ErrInvalidMaxTokens = errors.New("invalid max_tokens value")
+
+	// ErrStripeNotConfigured indicates a Stripe-backed billing endpoint
+	// (checkout session creation, billing portal, subscription
+	// cancellation) was called without STRIPE_SECRET_KEY configured. It is
+	// mapped to HTTP 503, distinguishing "not set up yet" from a genuine
+	// client error. GET /billing/plans never returns this error — it is a
+	// pure config read that works even when Stripe is unconfigured.
+	ErrStripeNotConfigured = errors.New("stripe is not configured")
+
+	// ErrInvalidWebhookSignature indicates a Stripe webhook payload failed
+	// signature verification (unknown/wrong STRIPE_WEBHOOK_SECRET, or a
+	// tampered payload). POST /webhooks/stripe maps this to HTTP 400. It is
+	// not the only non-200 outcome for that endpoint: it also maps
+	// ErrStripeNotConfigured to 503, and any other dispatch error (e.g. a
+	// not-found subscription row awaiting redelivery, or an unexpected DB
+	// failure) to 500.
+	ErrInvalidWebhookSignature = errors.New("invalid stripe webhook signature")
+
+	// ErrBillingNotConfigured indicates a billing endpoint that needs
+	// SubscriptionRepository or PaymentRepository was called while that
+	// repository is nil (e.g. a deployment that has not wired Step 49's
+	// subscription/payment persistence yet). It is mapped to HTTP 503,
+	// alongside ErrStripeNotConfigured, distinguishing "not set up yet" from
+	// a genuine client error. See
+	// usecase/billing.BillingUsecase.GetSubscription and its sibling guarded
+	// methods.
+	ErrBillingNotConfigured = errors.New("billing is not configured")
+
+	// ErrSubscriptionAlreadyExists indicates a subscriptions row already
+	// exists for the given stripe_subscription_id (a unique-constraint
+	// violation on SubscriptionRepository.Create). In normal operation the
+	// webhook usecase avoids this by checking
+	// SubscriptionRepository.GetByStripeSubscriptionID before deciding
+	// whether to Create or Update; this sentinel only surfaces on a
+	// concurrent-redelivery race.
+	ErrSubscriptionAlreadyExists = errors.New("subscription already exists")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.

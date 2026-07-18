@@ -24,6 +24,12 @@ type AuthService struct {
 	LoginFunc func(ctx context.Context, email, password string) (*domainauth.TokenPair, error)
 	// ValidateTokenFunc, if set, overrides the default ValidateToken behavior.
 	ValidateTokenFunc func(ctx context.Context, token string) (*domainauth.Claims, error)
+	// RevokeFunc, if set, overrides the default Revoke behavior (a no-op
+	// returning nil). Setting it lets a test make AuthService satisfy
+	// domainauth.Revoker with assertable behavior (e.g. to verify
+	// AuthUsecase.Logout/CachedAuthService.Revoke delegate to it correctly);
+	// leaving it unset keeps every existing test's no-op behavior unchanged.
+	RevokeFunc func(ctx context.Context, token string) error
 
 	mu         sync.Mutex
 	Registered map[string]bool // default-Register bookkeeping of already-registered emails
@@ -86,4 +92,15 @@ func (a *AuthService) ValidateToken(ctx context.Context, token string) (*domaina
 		return a.ValidateTokenFunc(ctx, token)
 	}
 	return &domainauth.Claims{UserID: "user-1"}, nil
+}
+
+// Revoke satisfies domainauth.Revoker, making AuthService usable to test
+// Logout/CachedAuthService.Revoke's delegation to a Revoker. The default
+// implementation is a no-op returning nil; set RevokeFunc to assert Revoke
+// is called with the expected token.
+func (a *AuthService) Revoke(ctx context.Context, token string) error {
+	if a.RevokeFunc != nil {
+		return a.RevokeFunc(ctx, token)
+	}
+	return nil
 }

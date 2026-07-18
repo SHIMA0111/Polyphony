@@ -38,6 +38,21 @@ export interface Message {
    * id from this field rather than scanning the message list by position.
    */
   in_response_to_message_id: string | null
+  /**
+   * `true` for a soft-deleted message (see `DELETE
+   * /rooms/:roomId/messages/:messageId`). The server already omits
+   * soft-deleted rows from `GET /rooms/:roomId/messages`, so this is only
+   * ever `true` transiently on a not-yet-reconciled local cache entry — see
+   * `../lib/message-cache.ts`'s any-page helpers.
+   */
+  is_deleted: boolean
+  /**
+   * `true` once a message has been opted out of future AI context assembly
+   * via `PATCH /rooms/:roomId/messages/:messageId` (Step 23's
+   * `SetExcludeFromAI`). Toggled from `MessageBubble`'s per-message menu;
+   * `MessageInput`'s token meter filters these out of its estimate payload.
+   */
+  exclude_from_ai: boolean
   created_at: string
   updated_at: string
 }
@@ -55,18 +70,49 @@ export interface AIMessageResponse {
 }
 
 /**
- * An available LLM model. Deliberately structurally identical to
- * `ModelSelector`'s local `Model` interface so query data can be passed
- * straight through without a mapping step; token limits/pricing are added in
- * Step 34.
+ * An available LLM model, matching the flat JSON shape the Go API's
+ * `GET /models` serializes (`server/internal/interface/handler/dto.go`'s
+ * `ModelResponse` -- a pure passthrough of `ai.ModelInfo`).
+ *
+ * `context_window`/`input_price_per_million_tokens`/
+ * `output_price_per_million_tokens` are `0` when unknown (not "no limit"/
+ * "free"); `supports_image_input` is `false` for both "no" and "unknown".
+ * `ModelSelector` imports this type directly rather than maintaining a
+ * parallel `Model` type, to avoid drift.
  */
 export interface ModelInfo {
   id: string
   name: string
   provider: string
+  /** Maximum input+output token count the model supports; `0` if unknown. */
+  context_window: number
+  /** USD price per 1,000,000 input (prompt) tokens; `0` if unknown. */
+  input_price_per_million_tokens: number
+  /** USD price per 1,000,000 output (completion) tokens; `0` if unknown. */
+  output_price_per_million_tokens: number
+  /** Whether the model accepts image/Vision content parts. */
+  supports_image_input: boolean
 }
 
 /** Raw response from `GET /models`. */
 export interface ModelListResponse {
   models: ModelInfo[]
+}
+
+/**
+ * A single chat turn as sent in `POST /tokens/estimate`'s `messages` array
+ * (`server/internal/interface/handler/dto.go`'s `ChatMessageDTO`). Mirrors
+ * the human/AI distinction `Message.type` already models, but re-expressed
+ * as the `"user"`/`"assistant"` role vocabulary the LLM Gateway's token
+ * estimator expects.
+ */
+export interface EstimateChatMessage {
+  role: "user" | "assistant"
+  content: string
+}
+
+/** Response body for `POST /tokens/estimate`. */
+export interface TokenEstimateResponse {
+  model: string
+  estimated_tokens: number
 }

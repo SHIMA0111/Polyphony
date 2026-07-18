@@ -2,6 +2,8 @@ import { setupServer } from "msw/node"
 import { authHandlers } from "@/features/auth/api/handlers"
 import { roomsHandlers } from "@/features/rooms/api/handlers"
 import { messagesHandlers } from "@/features/messages/api/handlers"
+import { membersHandlers } from "@/features/members/api/handlers"
+import { billingHandlers } from "@/features/billing/api/handlers"
 
 /**
  * Node MSW server instance used by Vitest (`src/test/setup.ts` starts/stops
@@ -18,4 +20,6 @@ export const server = setupServer(
   ...authHandlers,
   ...roomsHandlers,
   ...messagesHandlers,
+  ...membersHandlers,
+  ...billingHandlers,
 )

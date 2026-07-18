@@ -25,23 +25,48 @@ type RoomRepository interface {
 	ListByUserIDWithRole(ctx context.Context, userID string) ([]*RoomWithRole, error)
 
 	// UpdateDetails updates only a room's name, description, and updated_at
-	// fields, leaving ai_context_cutoff_at (and every other column)
-	// untouched. Split out from a single full-row Update (which UpdateRoom
-	// and UpdateAIContextCutoff used to share) specifically so the two
-	// usecases can no longer lost-update each other: previously, each
-	// loaded the whole Room, mutated only the field-group it owns, and
-	// wrote back every column, so a concurrent UpdateAIContextCutoff call
-	// landing between UpdateRoom's read and write (or vice versa) had its
+	// fields, leaving ai_context_cutoff_at/ai_provider/ai_model (and every
+	// other column) untouched. Split out from a single full-row Update
+	// (which UpdateRoom, UpdateAIContextCutoff, and UpdateSettings used to
+	// share) specifically so those usecases can no longer lost-update each
+	// other: previously, each loaded the whole Room, mutated only the
+	// field-group it owns, and wrote back every column, so a concurrent
+	// sibling call landing between one call's read and write had its
 	// change silently clobbered by the other's stale copy of the column it
 	// never intended to touch. Returns ErrNotFound if the room does not
 	// exist.
 	UpdateDetails(ctx context.Context, roomID, name, description string, updatedAt time.Time) error
 
 	// UpdateAIContextCutoff updates only a room's ai_context_cutoff_at and
-	// updated_at fields, leaving name/description untouched. See
-	// UpdateDetails's GoDoc for why this is split out from a full-row
-	// update. Returns ErrNotFound if the room does not exist.
+	// updated_at fields, leaving name/description/ai_provider/ai_model
+	// untouched. See UpdateDetails's GoDoc for why this is split out from a
+	// full-row update. Returns ErrNotFound if the room does not exist.
 	UpdateAIContextCutoff(ctx context.Context, roomID string, cutoff *time.Time, updatedAt time.Time) error
+
+	// UpdateAISettings updates only a room's ai_provider, ai_model, and
+	// updated_at fields, leaving name/description/ai_context_cutoff_at
+	// untouched. See UpdateDetails's GoDoc for why this is split out from a
+	// full-row update.
+	//
+	// aiProvider and aiModel each independently carry their own
+	// nil/empty-string-sentinel/value convention straight through to the
+	// implementation, rather than the caller resolving it against a
+	// previously-read snapshot first:
+	//   - nil leaves the corresponding column untouched at the database
+	//     level -- implementations must not assign it any new value, so a
+	//     concurrent call that only touches the other field cannot be
+	//     lost-updated by this one.
+	//   - a pointer to "" (empty string) clears the column to SQL NULL.
+	//   - a pointer to any other non-empty value sets the column to that
+	//     value.
+	//
+	// A caller that updates only one of the two fields must therefore pass
+	// nil for the other rather than a value read from a prior GetByID, or
+	// it reintroduces the same lost-update race this convention exists to
+	// avoid. Implementations must apply both fields' assignments (or lack
+	// thereof) and the updated_at write within a single atomic statement.
+	// Returns ErrNotFound if the room does not exist.
+	UpdateAISettings(ctx context.Context, roomID string, aiProvider, aiModel *string, updatedAt time.Time) error
 
 	// Delete removes a room by ID. Returns ErrNotFound if not found.
 	Delete(ctx context.Context, id string) error

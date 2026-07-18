@@ -1,5 +1,7 @@
 package room
 
+import "github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+
 // Role represents a user's authorization level within a single room. It is a
 // closed, ordered 5-tier hierarchy — from least to most privileged:
 //
@@ -119,4 +121,25 @@ func (r Role) Allows(action Action) bool {
 	default:
 		return false
 	}
+}
+
+// Authorize checks whether role is permitted to perform action (per
+// Role.Allows's capability matrix) and returns domain.ErrForbidden if not,
+// or nil if it is.
+//
+// This lives in the domain layer (rather than interface/middleware, where
+// it used to live) specifically so usecase-layer callers that already hold
+// a loaded RoomMember (e.g. after their own membership lookup) can call it
+// without importing the interface layer — a usecase importing
+// interface/middleware is an upward dependency that violates this project's
+// Clean Architecture layering (see CLAUDE.md). interface/middleware.
+// RequireRole calls this same function for its route-level check, so the
+// authorization rule is still defined in exactly one place; it does not
+// force a second repository round-trip for callers that already have the
+// member's role in hand.
+func Authorize(role Role, action Action) error {
+	if !role.Allows(action) {
+		return domain.ErrForbidden
+	}
+	return nil
 }

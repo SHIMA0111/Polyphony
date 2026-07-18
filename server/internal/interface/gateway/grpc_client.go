@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -128,7 +129,7 @@ func (c *GRPCClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*
 
 	content := ""
 	if len(resp.GetChoices()) > 0 {
-		content = resp.GetChoices()[0].GetMessage().GetContent()
+		content = pbContentToText(resp.GetChoices()[0].GetMessage())
 	}
 
 	return &ai.CompletionResponse{
@@ -155,25 +156,50 @@ func (c *GRPCClient) ListModels(ctx context.Context) ([]ai.ModelInfo, error) {
 
 	models := make([]ai.ModelInfo, len(resp.GetModels()))
 	for i, m := range resp.GetModels() {
-		models[i] = ai.ModelInfo{
+		info := ai.ModelInfo{
 			ID:       m.GetId(),
 			Name:     m.GetName(),
 			Provider: m.GetProvider(),
 		}
+		if m.ContextWindow != nil {
+			info.ContextWindow = int(m.GetContextWindow())
+		}
+		if m.SupportsImageInput != nil {
+			info.SupportsImageInput = m.GetSupportsImageInput()
+		}
+		if pricing := m.GetPricing(); pricing != nil {
+			info.InputPricePerMillionTokens = pricing.GetInputPricePerMillionTokens()
+			info.OutputPricePerMillionTokens = pricing.GetOutputPricePerMillionTokens()
+		}
+		models[i] = info
 	}
 	return models, nil
 }
 
-// EstimateTokens is not yet supported over the gRPC transport: the shared
-// llmgateway.v1 proto contract (server/proto/llmgateway/v1) does not define a
-// token-estimation RPC (Step 27 added the REST-only POST /tokens/estimate
-// endpoint on the LLM Gateway and its Go proxy; wiring an equivalent gRPC
-// method is out of scope here — see Step 34's model-metadata work). It
-// always returns a domain.ErrLLMGateway-wrapped error so callers get the same
-// error type as a real transport failure, rather than silently
-// mis-estimating.
-func (c *GRPCClient) EstimateTokens(_ context.Context, _ *ai.TokenEstimateRequest) (*ai.TokenEstimateResponse, error) {
-	return nil, fmt.Errorf("%w: EstimateTokens is not supported over the gRPC transport", domain.ErrLLMGateway)
+// EstimateTokens sends a token estimation request to the LLM Gateway over
+// gRPC and returns the approximate token count, retrying transient failures
+// per callWithRetry. It returns a domain.ErrLLMGateway-wrapped error if the
+// request ultimately fails.
+func (c *GRPCClient) EstimateTokens(ctx context.Context, req *ai.TokenEstimateRequest) (*ai.TokenEstimateResponse, error) {
+	pbReq := &llmgatewaypb.TokenEstimateRequest{
+		Model:    req.Model,
+		Messages: toPBChatMessages(req.Messages),
+	}
+
+	var resp *llmgatewaypb.TokenEstimateResponse
+	err := c.callWithRetry(ctx, func(ctx context.Context) error {
+		var callErr error
+		resp, callErr = c.completionClient.EstimateTokens(ctx, pbReq)
+		return callErr
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: estimate tokens: %v", domain.ErrLLMGateway, err)
+	}
+
+	return &ai.TokenEstimateResponse{
+		Model:           resp.GetModel(),
+		EstimatedTokens: int(resp.GetEstimatedTokens()),
+	}, nil
 }
 
 // checkHealth calls the standard grpc.health.v1.Health service with an empty
@@ -256,17 +282,100 @@ func backoffDelay(base time.Duration, attempt int) time.Duration {
 }
 
 // toPBChatMessages converts domain ai.ChatMessage values to their gRPC
-// message counterparts, mapping each Role string to the matching ChatRole
-// enum value (an unrecognized role maps to CHAT_ROLE_UNSPECIFIED).
+// message counterparts via toPBChatMessage.
 func toPBChatMessages(messages []ai.ChatMessage) []*llmgatewaypb.ChatMessage {
 	out := make([]*llmgatewaypb.ChatMessage, len(messages))
 	for i, m := range messages {
-		out[i] = &llmgatewaypb.ChatMessage{
-			Role:    toPBChatRole(m.Role),
-			Content: m.Content,
-		}
+		out[i] = toPBChatMessage(m)
 	}
 	return out
+}
+
+// toPBChatMessage converts a single domain ai.ChatMessage to its gRPC
+// counterpart: Role maps to the matching ChatRole enum value (an
+// unrecognized role maps to CHAT_ROLE_UNSPECIFIED), and content maps to the
+// wire `content` oneof. A non-empty Parts takes precedence over Content
+// (mirroring how the REST LLMClient's chatMsgDTO.Content serializes the same
+// precedence): when Parts is set, the message becomes a
+// llmgatewaypb.ChatMessage_Parts; otherwise it becomes a plain
+// llmgatewaypb.ChatMessage_Text carrying Content (the common,
+// backward-compatible text-only case, including the empty string).
+//
+// The oneof's field type (llmgatewaypb.isChatMessage_Content) is unexported,
+// so this conversion must build the whole *llmgatewaypb.ChatMessage in one
+// function rather than returning the oneof value on its own.
+func toPBChatMessage(m ai.ChatMessage) *llmgatewaypb.ChatMessage {
+	pbMsg := &llmgatewaypb.ChatMessage{Role: toPBChatRole(m.Role)}
+	if len(m.Parts) > 0 {
+		pbMsg.Content = &llmgatewaypb.ChatMessage_Parts{Parts: toPBContentParts(m.Parts)}
+	} else {
+		pbMsg.Content = &llmgatewaypb.ChatMessage_Text{Text: m.Content}
+	}
+	return pbMsg
+}
+
+// toPBContentParts converts domain ai.ContentPart values to the wire-format
+// llmgatewaypb.ContentParts message.
+func toPBContentParts(parts []ai.ContentPart) *llmgatewaypb.ContentParts {
+	out := make([]*llmgatewaypb.ContentPart, len(parts))
+	for i, p := range parts {
+		out[i] = toPBContentPart(p)
+	}
+	return &llmgatewaypb.ContentParts{Parts: out}
+}
+
+// toPBContentPart converts a single domain ai.ContentPart to the wire-format
+// llmgatewaypb.ContentPart oneof, dispatching on p.Type (one of the
+// ai.ContentPartType* constants). An unrecognized Type falls back to a text
+// part carrying p.Text (defaulting to the empty string), the same lenient
+// fallback style used elsewhere in this client for unrecognized wire enums
+// (see toPBChatRole).
+func toPBContentPart(p ai.ContentPart) *llmgatewaypb.ContentPart {
+	switch p.Type {
+	case ai.ContentPartTypeImageURL:
+		return &llmgatewaypb.ContentPart{
+			Part: &llmgatewaypb.ContentPart_ImageUrl{ImageUrl: p.ImageURL},
+		}
+	case ai.ContentPartTypeImageBase64:
+		var img *llmgatewaypb.ImageBase64Data
+		if p.ImageBase64 != nil {
+			img = &llmgatewaypb.ImageBase64Data{
+				MediaType: p.ImageBase64.MediaType,
+				Data:      p.ImageBase64.Data,
+			}
+		}
+		return &llmgatewaypb.ContentPart{
+			Part: &llmgatewaypb.ContentPart_ImageBase64{ImageBase64: img},
+		}
+	default:
+		return &llmgatewaypb.ContentPart{
+			Part: &llmgatewaypb.ContentPart_Text{Text: p.Text},
+		}
+	}
+}
+
+// pbContentToText extracts the plain-text representation of a gRPC
+// ChatMessage's `content` oneof, mirroring the LLM Gateway domain's
+// MessageContent::as_text(): a ChatMessage_Text yields its text directly; a
+// ChatMessage_Parts concatenates only its text parts (image parts contribute
+// nothing). This client only ever needs plain text (ai.CompletionResponse.Content
+// is a plain string), so a multimodal response's non-text parts are
+// intentionally dropped here rather than represented further.
+func pbContentToText(msg *llmgatewaypb.ChatMessage) string {
+	switch c := msg.GetContent().(type) {
+	case *llmgatewaypb.ChatMessage_Text:
+		return c.Text
+	case *llmgatewaypb.ChatMessage_Parts:
+		var sb strings.Builder
+		for _, part := range c.Parts.GetParts() {
+			if t, ok := part.GetPart().(*llmgatewaypb.ContentPart_Text); ok {
+				sb.WriteString(t.Text)
+			}
+		}
+		return sb.String()
+	default:
+		return ""
+	}
 }
 
 // toPBChatRole maps a domain role string ("system", "user", "assistant",

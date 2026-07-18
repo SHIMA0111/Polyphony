@@ -1,6 +1,11 @@
 package room
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+)
 
 // allRoles lists the five defined roles in ascending privilege order,
 // matching roleRank.
@@ -121,5 +126,17 @@ func TestRoleAllowsUnknownAction(t *testing.T) {
 	}
 	if Role("bogus").Allows(ActionSendMessage) {
 		t.Error("an invalid role should never be allowed to perform any action")
+	}
+}
+
+// TestAuthorize proves Authorize maps Role.Allows to domain.ErrForbidden
+// (moved here from interface/middleware, which used to own this function —
+// see Authorize's doc comment for why it now lives in the domain layer).
+func TestAuthorize(t *testing.T) {
+	if err := Authorize(RoleMember, ActionInvokeAI); err != nil {
+		t.Fatalf("expected member to be authorized to invoke AI, got %v", err)
+	}
+	if err := Authorize(RoleGuest, ActionInvokeAI); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("expected guest to be forbidden from invoking AI with domain.ErrForbidden, got %v", err)
 	}
 }

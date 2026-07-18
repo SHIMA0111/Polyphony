@@ -66,8 +66,8 @@ func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 func (r *RoomRepository) GetByID(ctx context.Context, id string) (*room.Room, error) {
 	var rm room.Room
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, name, description, owner_id, ai_context_cutoff_at, created_at, updated_at FROM rooms WHERE id = $1`, id,
-	).Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.CreatedAt, &rm.UpdatedAt)
+		`SELECT id, name, description, owner_id, ai_context_cutoff_at, ai_provider, ai_model, created_at, updated_at FROM rooms WHERE id = $1`, id,
+	).Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.AIProvider, &rm.AIModel, &rm.CreatedAt, &rm.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
@@ -80,7 +80,7 @@ func (r *RoomRepository) GetByID(ctx context.Context, id string) (*room.Room, er
 // ListByUserID returns all rooms that the given user is a member of, ordered by creation time descending.
 func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*room.Room, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_context_cutoff_at, r.created_at, r.updated_at
+		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_context_cutoff_at, r.ai_provider, r.ai_model, r.created_at, r.updated_at
 		 FROM rooms r
 		 INNER JOIN room_members rm ON r.id = rm.room_id
 		 WHERE rm.user_id = $1
@@ -94,7 +94,7 @@ func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*ro
 	var rooms []*room.Room
 	for rows.Next() {
 		var rm room.Room
-		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.CreatedAt, &rm.UpdatedAt); err != nil {
+		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.AIProvider, &rm.AIModel, &rm.CreatedAt, &rm.UpdatedAt); err != nil {
 			return nil, err
 		}
 		rooms = append(rooms, &rm)
@@ -108,7 +108,7 @@ func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*ro
 // lookups per room).
 func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string) ([]*room.RoomWithRole, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_context_cutoff_at, r.created_at, r.updated_at, rm.role
+		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_context_cutoff_at, r.ai_provider, r.ai_model, r.created_at, r.updated_at, rm.role
 		 FROM rooms r
 		 INNER JOIN room_members rm ON r.id = rm.room_id
 		 WHERE rm.user_id = $1
@@ -123,7 +123,7 @@ func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string
 	for rows.Next() {
 		var rm room.Room
 		var roleStr string
-		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.CreatedAt, &rm.UpdatedAt, &roleStr); err != nil {
+		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.AIProvider, &rm.AIModel, &rm.CreatedAt, &rm.UpdatedAt, &roleStr); err != nil {
 			return nil, err
 		}
 		result = append(result, &room.RoomWithRole{Room: &rm, Role: room.Role(roleStr)})
@@ -133,9 +133,9 @@ func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string
 
 // UpdateDetails updates only a room's name, description, and updated_at
 // columns, per room.RoomRepository's UpdateDetails GoDoc (a deliberate
-// partial update that leaves ai_context_cutoff_at untouched, unlike the
-// full-row update this replaced). It returns domain.ErrNotFound if the room
-// does not exist.
+// partial update that leaves ai_context_cutoff_at/ai_provider/ai_model
+// untouched, unlike the full-row update this replaced). It returns
+// domain.ErrNotFound if the room does not exist.
 func (r *RoomRepository) UpdateDetails(ctx context.Context, roomID, name, description string, updatedAt time.Time) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE rooms SET name = $1, description = $2, updated_at = $3 WHERE id = $4`,
@@ -152,8 +152,9 @@ func (r *RoomRepository) UpdateDetails(ctx context.Context, roomID, name, descri
 
 // UpdateAIContextCutoff updates only a room's ai_context_cutoff_at and
 // updated_at columns, per room.RoomRepository's UpdateAIContextCutoff
-// GoDoc (a deliberate partial update that leaves name/description
-// untouched). It returns domain.ErrNotFound if the room does not exist.
+// GoDoc (a deliberate partial update that leaves name/description/
+// ai_provider/ai_model untouched). It returns domain.ErrNotFound if the
+// room does not exist.
 func (r *RoomRepository) UpdateAIContextCutoff(ctx context.Context, roomID string, cutoff *time.Time, updatedAt time.Time) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE rooms SET ai_context_cutoff_at = $1, updated_at = $2 WHERE id = $3`,
@@ -166,6 +167,64 @@ func (r *RoomRepository) UpdateAIContextCutoff(ctx context.Context, roomID strin
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+// UpdateAISettings updates only a room's ai_provider, ai_model, and
+// updated_at columns, per room.RoomRepository's UpdateAISettings GoDoc (a
+// deliberate partial update that leaves name/description/
+// ai_context_cutoff_at untouched, following the same narrow-setter
+// convention as UpdateDetails and UpdateAIContextCutoff).
+//
+// The two SET clauses below are each a CASE WHEN keyed on whether the
+// corresponding field was provided at all (aiSettingAssignment's set
+// return): when a field is omitted (aiProvider/aiModel == nil), its CASE
+// WHEN evaluates the ELSE branch and reassigns the column to its own
+// current value, so the UPDATE never depends on any value this call itself
+// read beforehand. That is what makes this safe against the lost-update
+// race a GetByID-then-write approach has: two concurrent UpdateAISettings
+// calls that each touch only one of the two fields (e.g. one sets only
+// aiProvider, the other only aiModel) can both commit their intended change
+// regardless of interleaving, because neither statement ever writes a value
+// for the column it was not asked to change.
+//
+// It returns domain.ErrNotFound if the room does not exist.
+func (r *RoomRepository) UpdateAISettings(ctx context.Context, roomID string, aiProvider, aiModel *string, updatedAt time.Time) error {
+	setProvider, providerValue := aiSettingAssignment(aiProvider)
+	setModel, modelValue := aiSettingAssignment(aiModel)
+
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE rooms SET
+			ai_provider = CASE WHEN $1 THEN $2::text ELSE ai_provider END,
+			ai_model = CASE WHEN $3 THEN $4::text ELSE ai_model END,
+			updated_at = $5
+		 WHERE id = $6`,
+		setProvider, providerValue, setModel, modelValue, updatedAt, roomID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// aiSettingAssignment translates UpdateAISettings's nil/empty-string-
+// sentinel/value *string convention for a single field into the (set,
+// value) pair its CASE WHEN SQL expects: set reports whether the column
+// should be assigned at all (false when field is nil, meaning "leave the
+// column untouched"), and value is the literal value to assign when set is
+// true (nil clears the column to SQL NULL; a non-nil pointer sets it to the
+// pointed-to value).
+func aiSettingAssignment(field *string) (set bool, value *string) {
+	if field == nil {
+		return false, nil
+	}
+	if *field == "" {
+		return true, nil
+	}
+	v := *field
+	return true, &v
 }
 
 // Delete removes a room by its unique identifier. It returns domain.ErrNotFound if the room does not exist.

@@ -32,7 +32,10 @@ export function middleware(request: NextRequest) {
     (path) => pathname === path || pathname.startsWith(`${path}/`),
   )
 
-  if (!hasSession && pathname.startsWith("/rooms")) {
+  if (
+    !hasSession &&
+    (pathname.startsWith("/rooms") || pathname.startsWith("/invite"))
+  ) {
     return NextResponse.redirect(new URL("/login", request.url))
   }
 

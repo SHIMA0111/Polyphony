@@ -5,14 +5,17 @@ import { Avatar, Box, Button, Flex, Heading, Menu, Portal } from "@chakra-ui/rea
 import { LogOut, Pen } from "lucide-react"
 import { useLogout } from "@/features/auth/hooks/use-logout"
 import { RoomRail } from "@/features/rooms/components/RoomRail"
+import { InvitationsBellButton } from "@/features/members/components/InvitationsBellButton"
+import { BalanceBadge } from "@/features/billing/components/BalanceBadge"
 
 /**
  * Persistent shell for every route under the `(main)` route group
  * (`/rooms` and `/rooms/[roomId]`).
  *
- * Renders a top bar (logo mark, "Polyphony" heading, and the avatar
- * `Menu.Root` with Logout — moved here from `RoomList` so it mounts
- * once instead of once per page) above a two-region body: the
+ * Renders a top bar (logo mark, "Polyphony" heading, the `BalanceBadge`
+ * token-balance widget, and the avatar `Menu.Root` with Logout — moved
+ * here from `RoomList` so it mounts once instead of once per page) above
+ * a two-region body: the
  * always-mounted `RoomRail` room-list rail and a content pane wrapping
  * `children` (`RoomList` at `/rooms`, `ChatRoom` at `/rooms/[roomId]`).
  * Navigating between `(main)` routes only swaps `children` via Next.js
@@ -63,37 +66,45 @@ export default function MainLayout({
             </Heading>
           </Flex>
 
-          <Menu.Root>
-            <Menu.Trigger asChild>
-              <Button
-                aria-label="Account menu"
-                variant="ghost"
-                rounded="full"
-                p={0}
-                h={9}
-                w={9}
-              >
-                <Avatar.Root size="sm" colorPalette="blue">
-                  <Avatar.Fallback name="User" />
-                </Avatar.Root>
-              </Button>
-            </Menu.Trigger>
-            <Portal>
-              <Menu.Positioner>
-                <Menu.Content w="56">
-                  <Menu.Item
-                    value="logout"
-                    color="fg.error"
-                    gap={2}
-                    onClick={() => logoutMutation.mutate()}
-                  >
-                    <LogOut size={16} />
-                    Log out
-                  </Menu.Item>
-                </Menu.Content>
-              </Menu.Positioner>
-            </Portal>
-          </Menu.Root>
+          <Flex align="center" gap={3}>
+            <InvitationsBellButton />
+            {/* Persistent balance widget, immediately left of the avatar
+                menu — its own slot, distinct from any other same-wave
+                top-bar insertion anchored between the logo and this menu. */}
+            <BalanceBadge />
+
+            <Menu.Root>
+              <Menu.Trigger asChild>
+                <Button
+                  aria-label="Account menu"
+                  variant="ghost"
+                  rounded="full"
+                  p={0}
+                  h={9}
+                  w={9}
+                >
+                  <Avatar.Root size="sm" colorPalette="blue">
+                    <Avatar.Fallback name="User" />
+                  </Avatar.Root>
+                </Button>
+              </Menu.Trigger>
+              <Portal>
+                <Menu.Positioner>
+                  <Menu.Content w="56">
+                    <Menu.Item
+                      value="logout"
+                      color="fg.error"
+                      gap={2}
+                      onClick={() => logoutMutation.mutate()}
+                    >
+                      <LogOut size={16} />
+                      Log out
+                    </Menu.Item>
+                  </Menu.Content>
+                </Menu.Positioner>
+              </Portal>
+            </Menu.Root>
+          </Flex>
         </Flex>
       </Box>
 

@@ -33,6 +33,16 @@ services:
       LLM_GATEWAY_GRPC_BASE_BACKOFF: ${LLM_GATEWAY_GRPC_BASE_BACKOFF:-100ms}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       MESSAGE_HUB_DRIVER: ${MESSAGE_HUB_DRIVER:-redis}
+      DEFAULT_AI_MODEL: ${DEFAULT_AI_MODEL:-gpt-5-mini}
+      RATE_LIMIT_LOGIN_PER_MINUTE: ${RATE_LIMIT_LOGIN_PER_MINUTE:-10}
+      RATE_LIMIT_AI_INVOKE_PER_MINUTE: ${RATE_LIMIT_AI_INVOKE_PER_MINUTE:-20}
+      WHOAMI_CACHE_TTL: ${WHOAMI_CACHE_TTL:-30s}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PLANS_JSON: ${STRIPE_PLANS_JSON:-}
+      STRIPE_TOKEN_PACKAGES_JSON: ${STRIPE_TOKEN_PACKAGES_JSON:-}
+      STRIPE_CHECKOUT_SUCCESS_URL: ${STRIPE_CHECKOUT_SUCCESS_URL:-http://localhost:3000/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}}
+      STRIPE_CHECKOUT_CANCEL_URL: ${STRIPE_CHECKOUT_CANCEL_URL:-http://localhost:3000/billing/checkout/cancel}
     ports:
       - "8080:8080"
     healthcheck:
@@ -67,12 +77,79 @@ services:
       timeout: 3s
       retries: 5
 
+  dex:
+    image: dexidp/dex:v2.43.1
+    volumes:
+      - ./ory/dex/config.yaml:/etc/dex/cfg/config.yaml:ro
+    command: dex serve /etc/dex/cfg/config.yaml
+    ports:
+      - "5556:5556"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:5556/dex/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  hydra:
+    image: oryd/hydra:v2.2.0
+    environment:
+      DSN: ${HYDRA_DSN:-postgres://hydra:hydra@hydra-db:5432/hydra?sslmode=disable}
+      SECRETS_SYSTEM: ${HYDRA_SYSTEM_SECRET:-change-me-32-byte-system-secret!}
+      URLS_SELF_ISSUER: ${HYDRA_PUBLIC_URL:-http://localhost:4444}/
+      URLS_LOGIN: ${HYDRA_LOGIN_UI_URL:-http://localhost:3000/oauth/login}
+      URLS_CONSENT: ${HYDRA_CONSENT_UI_URL:-http://localhost:3000/oauth/consent}
+    command: serve all -c /etc/config/hydra/hydra.yml --dev
+    volumes:
+      - ./ory/hydra:/etc/config/hydra:ro
+    ports:
+      - "4444:4444"
+      - "4445:4445"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4445/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      hydra-migrate:
+        condition: service_completed_successfully
+
+  hydra-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${HYDRA_DB_USER:-hydra}
+      POSTGRES_PASSWORD: ${HYDRA_DB_PASSWORD:-hydra}
+      POSTGRES_DB: ${HYDRA_DB_NAME:-hydra}
+    volumes:
+      - hydra_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${HYDRA_DB_USER:-hydra}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  hydra-migrate:
+    image: oryd/hydra:v2.2.0
+    environment:
+      DSN: ${HYDRA_DSN:-postgres://hydra:hydra@hydra-db:5432/hydra?sslmode=disable}
+    command: ["migrate", "sql", "-e", "--yes"]
+    volumes:
+      - ./ory/hydra:/etc/config/hydra:ro
+    depends_on:
+      hydra-db:
+        condition: service_healthy
+
   kratos:
     image: oryd/kratos:v1.3.1
     environment:
       DSN: ${KRATOS_DSN:-postgres://kratos:kratos@kratos-db:5432/kratos?sslmode=disable}
       SECRETS_COOKIE: ${KRATOS_COOKIE_SECRET:-dev-32-byte-kratos-cookie-secret}
       SECRETS_CIPHER: ${KRATOS_CIPHER_SECRET:-dev-32-byte-kratos-cipher-secret}
+      # Step 44: the entire OIDC providers array (dex/google/github, secrets
+      # included) is supplied as a single JSON-string env var so no secret is
+      # ever committed to ory/kratos/kratos.yml — see .env.example.
+      SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS: ${KRATOS_OIDC_PROVIDERS_JSON}
     command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
     volumes:
       - ./ory/kratos:/etc/config/kratos:ro
@@ -88,6 +165,8 @@ services:
     depends_on:
       kratos-migrate:
         condition: service_completed_successfully
+      dex:
+        condition: service_healthy
 
   kratos-db:
     image: postgres:17-alpine
@@ -202,6 +281,26 @@ services:
       timeout: 3s
       retries: 5
 
+  # Forwards Stripe test-mode webhook events to the api container so local
+  # development never needs a publicly reachable webhook URL (Step 49). On
+  # first start it prints an ephemeral `whsec_...` signing secret to its
+  # logs (`docker compose logs stripe-cli` / `task stripe:listen`) — copy
+  # that value into `.env`'s STRIPE_WEBHOOK_SECRET and restart the api
+  # service for signature verification to succeed.
+  #
+  # Scoped to the "tools" profile so a bare `docker compose up -d` (`task
+  # up`) does not start it: with no STRIPE_SECRET_KEY configured, stripe-cli
+  # loops failing to authenticate. `task stripe:listen` names this service
+  # explicitly (`docker compose up -d stripe-cli`), which starts it
+  # regardless of active profiles, so that task keeps working unchanged.
+  stripe-cli:
+    image: stripe/stripe-cli:v1.21.7
+    command: listen --api-key ${STRIPE_SECRET_KEY:-} --forward-to api:8080/webhooks/stripe --skip-verify
+    profiles: ["tools"]
+    depends_on:
+      api:
+        condition: service_started
+
   web:
     build:
       context: ./web
@@ -212,6 +311,7 @@ services:
       API_URL: ${API_URL:-http://api:8080}
       KRATOS_PUBLIC_URL: ${KRATOS_PUBLIC_URL:-http://kratos:4433}
       KRATOS_COOKIE_NAME: ${KRATOS_COOKIE_NAME:-ory_kratos_session}
+      HYDRA_ADMIN_URL: ${HYDRA_ADMIN_URL:-http://hydra:4445}
     ports:
       - "3000:3000"
     depends_on:
@@ -220,8 +320,8 @@ services:
 
   # ---------------------------------------------------------------------------
   # E2E test profile (docs/tasks/step10.md): an isolated copy of the stack on
-  # alternate host ports (5433, 8090, 8091, 8092, 3001), plus a canned
-  # OpenAI-compatible LLM stub, for Playwright specs. Disabled by default;
+  # alternate host ports (5433, 8090, 8091, 8092, 8093, 8094, 8095, 3001), plus a
+  # canned OpenAI-compatible LLM stub, for Playwright specs. Disabled by default;
   # only started with `--profile test` (see the `test:e2e:*` Taskfile tasks).
   # Kept as one contiguous, alphabetized-among-itself group rather than
   # interleaved into the dev-service alphabet above, to keep this step's diff
@@ -241,6 +341,14 @@ services:
       KRATOS_PUBLIC_URL: http://kratos-e2e:4433
       KRATOS_ADMIN_URL: http://kratos-e2e:4434
       KRATOS_COOKIE_NAME: ory_kratos_session
+      REDIS_URL: redis://redis-e2e:6379/0
+      # Much higher/looser than the dev-stack defaults above, and a short
+      # WHOAMI_CACHE_TTL rather than a long one, so Playwright specs never
+      # trip a 429 and logout/revocation specs are not slowed down waiting
+      # out a long cache window (Step 33).
+      RATE_LIMIT_LOGIN_PER_MINUTE: ${RATE_LIMIT_LOGIN_PER_MINUTE_E2E:-1000}
+      RATE_LIMIT_AI_INVOKE_PER_MINUTE: ${RATE_LIMIT_AI_INVOKE_PER_MINUTE_E2E:-1000}
+      WHOAMI_CACHE_TTL: ${WHOAMI_CACHE_TTL_E2E:-1s}
     ports:
       - "8090:8080"
     healthcheck:
@@ -256,6 +364,8 @@ services:
       llm-gateway-e2e:
         condition: service_healthy
       kratos-e2e:
+        condition: service_healthy
+      redis-e2e:
         condition: service_healthy
 
   db-e2e:
@@ -273,6 +383,36 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    profiles: ["test"]
+
+  # A dedicated e2e-only dex, distinct from the dev `dex` service above:
+  # both are started under different Compose projects (default vs
+  # `-p polyphony-e2e`), and Compose's project isolation does not extend to
+  # host-published ports — two containers from two different projects both
+  # trying to bind the same fixed host port collide (wave-5 review finding).
+  # `networks.default.aliases` keeps this container reachable as `dex` from
+  # inside the e2e project's own network (matching `KRATOS_OIDC_PROVIDERS_JSON`'s
+  # hardcoded `http://dex:5556/dex` issuer/discovery URL used by `kratos-e2e`,
+  # and `ory/dex/config.yaml`'s own `issuer`), while its host-published port
+  # (8095, distinct from the dev `dex`'s 5556) lets Playwright's browser reach
+  # it too — see `web/playwright.config.ts`'s `--host-resolver-rules` mapping.
+  dex-e2e:
+    image: dexidp/dex:v2.43.1
+    volumes:
+      - ./ory/dex/config.yaml:/etc/dex/cfg/config.yaml:ro
+    command: dex serve /etc/dex/cfg/config.yaml
+    ports:
+      - "8095:5556"
+    networks:
+      default:
+        aliases:
+          - dex
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:5556/dex/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     profiles: ["test"]
 
   kratos-db-e2e:
@@ -299,9 +439,47 @@ services:
       # otherwise.
       SECRETS_COOKIE: e2e-32-byte-kratos-cookie-secret
       SECRETS_CIPHER: e2e-32-byte-kratos-cipher-secret
+      # Step 44: same shared provider config as the dev `kratos` service (see
+      # .env.example) — dex is reachable from this project's own `dex-e2e`
+      # container (aliased as `dex`) via Docker's internal DNS either way.
+      SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS: ${KRATOS_OIDC_PROVIDERS_JSON}
+      # Step 44: unlike every other e2e-facing endpoint (reached only through
+      # web-e2e's same-origin `/api/kratos/*` proxy), the dex OIDC callback
+      # redirect is issued directly to the browser by dex and must resolve
+      # to *this* Kratos instance, not the dev `kratos` service sharing the
+      # same kratos.yml (whose serve.public.base_url is hardcoded to
+      # http://localhost:4433/). Overriding it here to a dedicated host port
+      # keeps the two instances' callback URLs distinct; see ory/dex/config.yaml
+      # (whose redirectURIs list includes this exact URL) and
+      # docs/tasks/step44.md's Implementation notes for the alternatives
+      # considered (e.g. routing through the web-e2e proxy instead).
+      SERVE_PUBLIC_BASE_URL: http://localhost:8093/
+      # Step 44: kratos.yml's default_browser_return_url/allowed_return_urls
+      # are hardcoded to http://localhost:3000/ (the dev `web` service) —
+      # after a successful OIDC callback, Kratos issues a real browser
+      # redirect straight to this URL (there is no `/api/kratos/*` proxy hop
+      # to rewrite it through), so left unoverridden the E2E browser would
+      # land on the dev app (or nowhere, if it isn't running) instead of
+      # `web-e2e` on :3001. Verified end to end against a standalone
+      # Kratos+dex pair while implementing this step.
+      SELFSERVICE_DEFAULT_BROWSER_RETURN_URL: http://localhost:3001/
+      SELFSERVICE_ALLOWED_RETURN_URLS: '["http://localhost:3001/"]'
+      # Wave-5 review (round 2): Kratos defaults
+      # selfservice.methods.password.config.haveibeenpwned_enabled to true,
+      # which makes every E2E registration depend on a live call to the
+      # external HIBP API. That is both non-hermetic (breaks the e2e stack
+      # offline) and a source of real flakes — a transient/false-positive
+      # HIBP hit (or a static spec password genuinely entering the public
+      # breach corpus over time) fails registration nondeterministically.
+      # Disabled only for this e2e instance; the dev `kratos` service above
+      # keeps the default (real) behavior.
+      SELFSERVICE_METHODS_PASSWORD_CONFIG_HAVEIBEENPWNED_ENABLED: "false"
     command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
     volumes:
       - ./ory/kratos:/etc/config/kratos:ro
+    ports:
+      - "8093:4433"
+      - "8094:4434"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4434/health/ready"]
       interval: 5s
@@ -312,6 +490,8 @@ services:
     depends_on:
       kratos-migrate-e2e:
         condition: service_completed_successfully
+      dex-e2e:
+        condition: service_healthy
 
   kratos-migrate-e2e:
     image: oryd/kratos:v1.3.1
@@ -393,6 +573,15 @@ services:
       db-e2e:
         condition: service_healthy
 
+  redis-e2e:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["test"]
+
   web-e2e:
     build:
       context: ./web
@@ -412,6 +601,7 @@ services:
 volumes:
   pgdata:
   pgdata-e2e:
+  hydra_pgdata:
   kratos_pgdata:
   kratos_pgdata-e2e:
   miniodata:

@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use llm_gateway::adapters::outbound::gemini::GeminiProvider;
 use llm_gateway::adapters::outbound::openai::OpenAIProvider;
 use llm_gateway::config::{HttpClientConfig, ProviderConfig};
@@ -17,7 +18,7 @@ use llm_gateway::domain::error::DomainError;
 use llm_gateway::domain::model::{ChatMessage, CompletionRequest, Role};
 use llm_gateway::ports::outbound::key_store::KeyStore;
 use llm_gateway::ports::outbound::provider::LLMProvider;
-use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::matchers::{body_partial_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// `KeyStore` stub that always resolves a fixed dummy key.
@@ -289,6 +290,230 @@ async fn test_complete_slow_response_maps_to_timeout() {
         .expect_err("a response slower than the configured timeout should be an error");
 
     assert!(matches!(err, DomainError::Timeout));
+}
+
+/// End-to-end Vision test: a `CompletionRequest` whose message carries mixed
+/// text+image `ContentPart`s produces the exact Gemini multimodal `parts` array shape
+/// on the wire (`text`, `fileData`, and `inlineData` parts). The mock only matches
+/// (and responds 200) if the outbound body equals `expected_body` exactly, so a
+/// successful `complete()` call here is itself the assertion that the gateway sent the
+/// expected multimodal JSON body.
+#[tokio::test]
+async fn test_complete_with_image_content_sends_gemini_multimodal_body() {
+    use llm_gateway::domain::model::{ContentPart, MessageContent};
+    use wiremock::matchers::body_json;
+
+    let mock_server = MockServer::start().await;
+    let expected_body = serde_json::json!({
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {"text": "what is this?"},
+                {"fileData": {"fileUri": "https://example.com/cat.png"}},
+                {"inlineData": {"mimeType": "image/png", "data": "abcd"}},
+            ],
+        }],
+    });
+    let response_fixture = serde_json::json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{"text": "It's a cat."}]},
+            "finishReason": "STOP",
+            "index": 0,
+        }],
+        "usageMetadata": {"promptTokenCount": 30, "candidatesTokenCount": 4, "totalTokenCount": 34},
+        "responseId": "resp-vision-1",
+    });
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-3-pro:generateContent"))
+        .and(body_json(&expected_body))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&response_fixture))
+        .mount(&mock_server)
+        .await;
+
+    let req = CompletionRequest {
+        model: "gemini-3-pro".to_string(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Parts(vec![
+                ContentPart::Text("what is this?".to_string()),
+                ContentPart::ImageUrl("https://example.com/cat.png".to_string()),
+                ContentPart::ImageBase64 {
+                    media_type: "image/png".to_string(),
+                    data: "abcd".to_string(),
+                },
+            ]),
+        }],
+        temperature: None,
+        max_tokens: None,
+    };
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let resp = provider
+        .complete(&req)
+        .await
+        .expect("complete should succeed once the mock's exact-body matcher accepts the request");
+
+    assert_eq!(resp.choices[0].message.content.as_text(), "It's a cat.");
+}
+
+/// Canned Gemini `streamGenerateContent` SSE body: two partial-text events followed by
+/// a final event carrying `finishReason`/`usageMetadata`.
+const GEMINI_SSE_FIXTURE: &str = concat!(
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hi\"}]},\"index\":0}]}\n\n",
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\" there!\"}]},\"index\":0}]}\n\n",
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4,\"totalTokenCount\":14}}\n\n",
+);
+
+#[tokio::test]
+async fn test_stream_success_yields_expected_chunk_sequence() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-3-pro:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(GEMINI_SSE_FIXTURE, "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let chunk_stream = provider
+        .stream(&make_request("gemini-3-pro"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let chunks: Vec<_> = chunk_stream
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|c| c.expect("every chunk should parse successfully"))
+        .collect();
+
+    assert_eq!(chunks.len(), 3);
+
+    let full_text: String = chunks.iter().filter_map(|c| c.delta.clone()).collect();
+    assert_eq!(full_text, "Hi there!");
+
+    // The synthetic id is generated once and reused across every chunk.
+    let id = chunks[0].id.clone();
+    assert!(!id.is_empty());
+    for chunk in &chunks {
+        assert_eq!(chunk.id, id);
+        assert_eq!(chunk.model, "gemini-3-pro");
+    }
+
+    let last = &chunks[2];
+    assert_eq!(last.finish_reason.as_deref(), Some("STOP"));
+    let usage = last.usage.as_ref().expect("final chunk should carry usage");
+    assert_eq!(usage.prompt_tokens, 10);
+    assert_eq!(usage.completion_tokens, 4);
+    assert_eq!(usage.total_tokens, 14);
+}
+
+/// Canned Gemini `streamGenerateContent` SSE body identical to [`GEMINI_SSE_FIXTURE`]
+/// except every event also carries the documented `responseId` field, which should be
+/// preferred over a synthetic UUID.
+const GEMINI_SSE_FIXTURE_WITH_RESPONSE_ID: &str = concat!(
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hi\"}]},\"index\":0}],\"responseId\":\"resp-stream-789\"}\n\n",
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\" there!\"}]},\"index\":0}],\"responseId\":\"resp-stream-789\"}\n\n",
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4,\"totalTokenCount\":14},\"responseId\":\"resp-stream-789\"}\n\n",
+);
+
+/// When Gemini's streaming events carry a `responseId`, the adapter must use it as
+/// `CompletionChunk::id` instead of synthesizing a UUID.
+#[tokio::test]
+async fn test_stream_uses_wire_response_id_when_present() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-3-pro:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(GEMINI_SSE_FIXTURE_WITH_RESPONSE_ID, "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let chunk_stream = provider
+        .stream(&make_request("gemini-3-pro"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let chunks: Vec<_> = chunk_stream
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|c| c.expect("every chunk should parse successfully"))
+        .collect();
+
+    assert_eq!(chunks.len(), 3);
+    for chunk in &chunks {
+        assert_eq!(chunk.id, "resp-stream-789");
+    }
+}
+
+#[tokio::test]
+async fn test_stream_malformed_event_yields_err_item_without_panicking() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-3-pro:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw("data: this is not valid JSON\n\n", "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let mut chunk_stream = provider
+        .stream(&make_request("gemini-3-pro"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let first = chunk_stream
+        .next()
+        .await
+        .expect("stream should yield exactly one item for the malformed event");
+    assert!(matches!(first, Err(DomainError::ProviderError { .. })));
+    assert!(
+        chunk_stream.next().await.is_none(),
+        "stream should end after the malformed event, not continue or panic"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_block_reason_yields_err_item_without_panicking() {
+    let mock_server = MockServer::start().await;
+    let fixture = "data: {\"candidates\":[],\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}\n\n";
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-3-pro:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(fixture, "text/event-stream"))
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let mut chunk_stream = provider
+        .stream(&make_request("gemini-3-pro"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let first = chunk_stream
+        .next()
+        .await
+        .expect("stream should yield exactly one item for the blocked event");
+    match first {
+        Err(DomainError::ProviderError { message, .. }) => {
+            assert!(
+                message.contains("SAFETY"),
+                "expected the block reason to be surfaced, got: {message}"
+            );
+        }
+        other => panic!("expected Err(DomainError::ProviderError), got {other:?}"),
+    }
+    assert!(chunk_stream.next().await.is_none());
 }
 
 /// Proves that `GeminiProvider`'s hardcoded model IDs (`gemini-` prefixed) do not

@@ -1,28 +1,90 @@
 "use client"
 
 import { useState, useRef, useCallback, useEffect } from "react"
+import Link from "next/link"
 import { Box, Button, Flex, Separator, Spacer, Text } from "@chakra-ui/react"
 import { ArrowUp, Sparkles } from "lucide-react"
 import { Tooltip } from "@/components/ui/tooltip"
-import { ModelSelector, type Model } from "./ModelSelector"
+import { estimateTokens } from "@/features/messages/api/estimate-tokens"
+import type { Message, ModelInfo } from "@/features/messages/types"
+import { ModelSelector } from "./ModelSelector"
+
+/** Debounce delay, in ms, before firing a token estimate request after the
+ * draft/model/visible-messages inputs settle — matches this file's existing
+ * plain-`setTimeout` style rather than pulling in a debounce dependency. */
+const TOKEN_ESTIMATE_DEBOUNCE_MS = 400
 
 interface MessageInputProps {
   onSend: (content: string) => Promise<void>
   onSendWithAI: (content: string, model: string) => Promise<void>
-  models: Model[]
+  models: ModelInfo[]
   disabled?: boolean
+  /**
+   * Whether the viewer may invoke AI in this room (Step 37's `RoomRole`
+   * gating: `guest` and below cannot). Defaults to `true` so every existing
+   * caller that doesn't pass this prop is unaffected. When `false`, the
+   * "Send with AI" button is omitted entirely rather than left visible and
+   * disabled — the control must not be visible, not just inert, since a
+   * guest attempting AI invocation is independently rejected server-side.
+   */
+  canInvokeAI?: boolean
+  /**
+   * The currently-visible message transcript, used to compute the live
+   * token estimate below the composer. Optional (defaults to an empty
+   * transcript) so existing callers/tests that don't care about the meter
+   * don't need to pass anything.
+   */
+  messages?: Message[]
+  /**
+   * Set by `ChatRoom`/`useChatRoom` when the most recent "Send with AI" was
+   * rejected with HTTP 402 (insufficient token balance); rendered as an
+   * inline error line beneath the button row with a link to `/billing/usage`.
+   * `undefined`/`null` (the default) renders nothing, so every other caller
+   * of this component is unaffected.
+   */
+  aiError?: string | null
 }
+
+const EMPTY_MESSAGES: Message[] = []
 
 export function MessageInput({
   onSend,
   onSendWithAI,
   models,
   disabled,
+  canInvokeAI = true,
+  messages = EMPTY_MESSAGES,
+  aiError,
 }: MessageInputProps) {
   const [input, setInput] = useState("")
   const [isSending, setIsSending] = useState(false)
-  const [selectedModel, setSelectedModel] = useState<Model | null>(null)
+  const [selectedModel, setSelectedModel] = useState<ModelInfo | null>(null)
+  const [estimatedTokens, setEstimatedTokens] = useState<number | null>(null)
+  // Locally dismisses the `aiError` prop once the user starts typing again
+  // or attempts another send, so a resolved error doesn't linger on screen
+  // even though `useChatRoom` only clears its own `aiError` state at the
+  // *start* of the next `handleSendWithAI` call.
+  const [aiErrorDismissed, setAiErrorDismissed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // Guards against an older, slower estimate response overwriting a newer
+  // one that already resolved (no built-in request cancellation for a plain
+  // `fetch`-backed call here).
+  const estimateRequestIdRef = useRef(0)
+
+  // A new (truthy) `aiError` always un-dismisses — it represents a fresh
+  // rejection, not the one just dismissed.
+  useEffect(() => {
+    if (aiError) {
+      setAiErrorDismissed(false)
+    }
+  }, [aiError])
+
+  const displayedAiError = aiErrorDismissed ? null : (aiError ?? null)
+
+  const handleInputChange = useCallback((value: string) => {
+    setInput(value)
+    setAiErrorDismissed(true)
+  }, [])
 
   // Set default model when models are loaded
   useEffect(() => {
@@ -41,9 +103,68 @@ export function MessageInput({
     }
   }, [input])
 
+  // Debounced live token estimate: recomputed whenever the draft, selected
+  // model, or visible message list changes. Skipped entirely when
+  // !canInvokeAI, since a viewer who cannot invoke AI has no use for an AI
+  // context-window estimate. Advisory only — a failed estimate is logged
+  // and swallowed rather than blocking or disabling send (see
+  // `estimateTokens`'s docstring).
+  useEffect(() => {
+    // Invalidate any in-flight estimate immediately (rather than only once
+    // the new one resolves) and clear the stale displayed count -- without
+    // this, an older, slower response arriving after this effect re-ran but
+    // before the new debounced request even fires would still be within its
+    // own request id check and could briefly redisplay a stale estimate.
+    estimateRequestIdRef.current++
+    setEstimatedTokens(null)
+
+    if (!selectedModel || !canInvokeAI) return
+
+    const timeoutId = setTimeout(() => {
+      const requestId = ++estimateRequestIdRef.current
+
+      // Defends against any not-yet-reconciled optimistic/WS cache entry
+      // that might transiently carry `is_deleted: true` even though the
+      // server already omits soft-deleted rows from `GET
+      // /rooms/:roomId/messages` (see `message-cache.ts`'s any-page
+      // helpers). Also excludes client-only `sending`/`failed` bubbles --
+      // only `completed` messages reflect what the server would actually
+      // include when building AI context.
+      const payload = messages
+        .filter(
+          (m) => !m.is_deleted && !m.exclude_from_ai && m.status === "completed",
+        )
+        .map((m) => ({
+          role: (m.type === "human" ? "user" : "assistant") as
+            | "user"
+            | "assistant",
+          content: m.content,
+        }))
+
+      const draft = input.trim()
+      if (draft) {
+        payload.push({ role: "user", content: draft })
+      }
+
+      estimateTokens(selectedModel.id, payload)
+        .then((res) => {
+          if (estimateRequestIdRef.current === requestId) {
+            setEstimatedTokens(res.estimated_tokens)
+          }
+        })
+        .catch((err: unknown) => {
+          // Advisory feature only — never blocks or disables send.
+          console.error("Failed to estimate tokens", err)
+        })
+    }, TOKEN_ESTIMATE_DEBOUNCE_MS)
+
+    return () => clearTimeout(timeoutId)
+  }, [input, selectedModel, messages, canInvokeAI])
+
   const handleSend = useCallback(async () => {
     const content = input.trim()
     if (!content || isSending) return
+    setAiErrorDismissed(true)
     setIsSending(true)
     try {
       await onSend(content)
@@ -62,6 +183,7 @@ export function MessageInput({
   const handleSendWithAI = useCallback(async () => {
     const content = input.trim()
     if (!content || isSending || !selectedModel) return
+    setAiErrorDismissed(true)
     setIsSending(true)
     try {
       await onSendWithAI(content, selectedModel.id)
@@ -78,7 +200,7 @@ export function MessageInput({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-      if (e.metaKey || e.ctrlKey) {
+      if ((e.metaKey || e.ctrlKey) && canInvokeAI) {
         e.preventDefault()
         handleSendWithAI()
       } else if (!e.shiftKey) {
@@ -113,7 +235,7 @@ export function MessageInput({
             <textarea
               ref={textareaRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => handleInputChange(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask me anything..."
               disabled={disabled || isSending}
@@ -161,48 +283,70 @@ export function MessageInput({
               <ArrowUp size={14} />
               Send
             </Button>
-            <Tooltip
-              content="Select a model to send with AI"
-              disabled={!!selectedModel}
-            >
-              {/*
-                A `disabled` native button doesn't fire pointer or focus
-                events in most browsers, so a Tooltip wrapping it directly
-                would never trigger — not on mouse hover, and not on
-                keyboard focus (Tab). Wrapping the Button in a focusable
-                (`tabIndex={0}`) `span` gives the tooltip an always-
-                interactive element to anchor to, so "Select a model to send
-                with AI" is reachable both by hovering and by tabbing to it,
-                even while the button itself is disabled.
-              */}
-              <Box as="span" display="inline-flex" tabIndex={0}>
-                <Button
-                  size="sm"
-                  onClick={handleSendWithAI}
-                  disabled={isAISendDisabled}
-                  h={8}
-                  px={3}
-                  fontSize="xs"
-                  fontWeight="medium"
-                  gap={1.5}
-                  rounded="lg"
-                  colorPalette="blue"
-                  bg="linear-gradient(to right, var(--chakra-colors-blue-500), var(--chakra-colors-blue-600))"
-                  color="white"
-                  _hover={{ opacity: 0.9 }}
-                >
-                  <Sparkles size={14} />
-                  Send with AI
-                </Button>
-              </Box>
-            </Tooltip>
+            {canInvokeAI && (
+              <Tooltip
+                content="Select a model to send with AI"
+                disabled={!!selectedModel}
+              >
+                {/*
+                  A `disabled` native button doesn't fire pointer or focus
+                  events in most browsers, so a Tooltip wrapping it directly
+                  would never trigger — not on mouse hover, and not on
+                  keyboard focus (Tab). Wrapping the Button in a focusable
+                  (`tabIndex={0}`) `span` gives the tooltip an always-
+                  interactive element to anchor to, so "Select a model to send
+                  with AI" is reachable both by hovering and by tabbing to it,
+                  even while the button itself is disabled.
+                */}
+                <Box as="span" display="inline-flex" tabIndex={0}>
+                  <Button
+                    size="sm"
+                    onClick={handleSendWithAI}
+                    disabled={isAISendDisabled}
+                    h={8}
+                    px={3}
+                    fontSize="xs"
+                    fontWeight="medium"
+                    gap={1.5}
+                    rounded="lg"
+                    colorPalette="blue"
+                    bg="linear-gradient(to right, var(--chakra-colors-blue-500), var(--chakra-colors-blue-600))"
+                    color="white"
+                    _hover={{ opacity: 0.9 }}
+                  >
+                    <Sparkles size={14} />
+                    Send with AI
+                  </Button>
+                </Box>
+              </Tooltip>
+            )}
           </Flex>
         </Box>
 
+        {displayedAiError && (
+          <Text role="alert" textAlign="center" fontSize="xs" color="fg.error">
+            {displayedAiError} Visit{" "}
+            <Link href="/billing/usage" style={{ textDecoration: "underline" }}>
+              Usage
+            </Link>{" "}
+            to check your balance.
+          </Text>
+        )}
+
         {/* Hint text */}
         <Text textAlign="center" fontSize="xs" color="fg.muted">
-          Enter to send, Shift+Enter for new line, Ctrl+Enter to send with AI
+          Enter to send, Shift+Enter for new line
+          {canInvokeAI && ", Ctrl+Enter to send with AI"}
         </Text>
+
+        {/* Live, debounced token estimate (Step 38) — advisory only, never
+            blocks send. Gated on canInvokeAI: a viewer who can't invoke AI
+            has no use for an AI context-window estimate. */}
+        {canInvokeAI && estimatedTokens !== null && (
+          <Text textAlign="center" fontSize="2xs" color="fg.muted">
+            ~{estimatedTokens} tokens
+          </Text>
+        )}
       </Flex>
     </Box>
   )

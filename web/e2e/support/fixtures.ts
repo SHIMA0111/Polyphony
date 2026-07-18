@@ -17,3 +17,17 @@ export const FIXTURE_USER = {
 
 /** Name of the room the seed routine ensures exists for the fixture user. */
 export const FIXTURE_ROOM_NAME = "E2E Fixture Room"
+
+/**
+ * dex's one static-password test user (Step 44) — sourced from the same
+ * `DEX_STATIC_TEST_EMAIL`/`DEX_STATIC_TEST_PASSWORD` values baked into
+ * `ory/dex/config.yaml`'s `staticPasswords`, so `oauth-dex.spec.ts` can
+ * complete a real dex login without any external service. Unlike
+ * {@link FIXTURE_USER}, this identity is *not* pre-seeded — Kratos creates it
+ * the first time a spec completes the dex OIDC flow (see that spec for the
+ * repeat-login/no-duplicate-identity assertion).
+ */
+export const DEX_FIXTURE_USER = {
+  email: process.env.DEX_STATIC_TEST_EMAIL ?? "oidc-fixture@example.com",
+  password: process.env.DEX_STATIC_TEST_PASSWORD ?? "DexFixtureP@ssw0rd!",
+} as const

@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::adapters::outbound::http_retry::send_with_retry;
 use crate::domain::error::DomainError;
 use crate::domain::model::{
-    ChatMessage, Choice, CompletionRequest, CompletionResponse, Role, Usage,
+    ChatMessage, Choice, CompletionRequest, CompletionResponse, ContentPart, MessageContent, Role,
+    Usage,
 };
 
 use super::{ANTHROPIC_VERSION, AnthropicProvider};
@@ -19,8 +20,8 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 // --- Anthropic-specific DTOs ---
 
-#[derive(Debug, Serialize)]
-struct AnthropicRequest {
+#[derive(Serialize)]
+pub(super) struct AnthropicRequest {
     model: String,
     max_tokens: u32,
     messages: Vec<AnthropicMessage>,
@@ -30,10 +31,49 @@ struct AnthropicRequest {
     temperature: Option<f32>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// An outbound Anthropic Messages API message. `content` is serialized as either a
+/// bare string (text-only) or an array of content blocks (Vision), matching
+/// Anthropic's own union shape for this field.
+#[derive(Serialize)]
 struct AnthropicMessage {
     role: String,
-    content: String,
+    content: AnthropicContent,
+}
+
+/// Anthropic's `content` union: a plain string for text-only messages, or an array of
+/// `AnthropicContentBlock`s for multimodal (Vision) messages. `#[serde(untagged)]`
+/// serializes `Text` as a bare JSON string and `Blocks` as a JSON array, matching
+/// Anthropic's Messages API exactly.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum AnthropicContent {
+    Text(String),
+    Blocks(Vec<AnthropicContentBlockDto>),
+}
+
+/// A single outbound content block of Anthropic's multimodal `content` array.
+///
+/// Named `*Dto` to disambiguate from `AnthropicContentBlock` below, which is the
+/// *inbound* (response-parsing) content-block shape and has a different structure
+/// (a flat `{type, text}` pair, since Anthropic's response blocks are simpler than
+/// its request blocks).
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicContentBlockDto {
+    Text { text: String },
+    Image { source: AnthropicImageSource },
+}
+
+/// The `source` object of an Anthropic `image` content block.
+///
+/// Anthropic supports both `"base64"` (inline bytes) and `"url"` (hosted image)
+/// source types for the same `image` block type; which one is used depends on
+/// which domain `ContentPart` variant it was built from (see `to_anthropic_content_block`).
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicImageSource {
+    Base64 { media_type: String, data: String },
+    Url { url: String },
 }
 
 #[derive(Deserialize)]
@@ -118,18 +158,23 @@ fn role_to_anthropic_str(role: &Role) -> &'static str {
 /// non-`Role::System` message: Anthropic's Messages API requires a non-empty
 /// `messages` array, and a request built from only system messages would
 /// otherwise be sent with `messages: []`, surfacing as an opaque remote HTTP
-/// 400 instead of a clear domain error.
-fn to_anthropic_request(req: &CompletionRequest) -> Result<AnthropicRequest, DomainError> {
+/// 400 instead of a clear domain error. Also returns `DomainError::InvalidRequest`
+/// if a system message's content is `MessageContent::Parts` containing any
+/// non-`ContentPart::Text` part (see `system_message_text`), since silently
+/// dropping an image from a system message would misrepresent what was sent.
+pub(super) fn to_anthropic_request(
+    req: &CompletionRequest,
+) -> Result<AnthropicRequest, DomainError> {
     let mut system_parts = Vec::new();
     let mut messages = Vec::new();
 
     for m in &req.messages {
         if m.role == Role::System {
-            system_parts.push(m.content.as_text());
+            system_parts.push(super::super::system_message_text(&m.content)?);
         } else {
             messages.push(AnthropicMessage {
                 role: role_to_anthropic_str(&m.role).to_string(),
-                content: m.content.as_text(),
+                content: to_anthropic_content(&m.content),
             });
         }
     }
@@ -153,6 +198,50 @@ fn to_anthropic_request(req: &CompletionRequest) -> Result<AnthropicRequest, Dom
         system,
         temperature: req.temperature,
     })
+}
+
+/// Converts a domain `MessageContent` into Anthropic's `content` union shape.
+///
+/// `MessageContent::Text` serializes as a bare JSON string (Anthropic accepts this
+/// shorthand for a single text block); `MessageContent::Parts` serializes as an
+/// explicit array of content blocks, one entry per `ContentPart` (see
+/// `to_anthropic_content_block`).
+///
+/// # Errors
+/// Never fails: every `ContentPart` variant has a representable Anthropic content
+/// block (see `to_anthropic_content_block`).
+fn to_anthropic_content(content: &MessageContent) -> AnthropicContent {
+    match content {
+        MessageContent::Text(s) => AnthropicContent::Text(s.clone()),
+        MessageContent::Parts(parts) => {
+            AnthropicContent::Blocks(parts.iter().map(to_anthropic_content_block).collect())
+        }
+    }
+}
+
+/// Converts a single domain `ContentPart` into an Anthropic content block.
+///
+/// `ContentPart::ImageBase64` maps to an `image` block with a `"base64"` source,
+/// Anthropic's native inline-image shape. `ContentPart::ImageUrl` maps to an `image`
+/// block with a `"url"` source: Anthropic's Messages API added the `"url"` image
+/// source type as an additive extension to the same `image` block (no
+/// `anthropic-version` bump was required for it, unlike some other API changes), so
+/// it is safe to pass through directly under [`ANTHROPIC_VERSION`] rather than
+/// rejecting it with `DomainError::InvalidRequest` — this is the deliberate choice
+/// documented in Step 39's plan for this adapter.
+fn to_anthropic_content_block(part: &ContentPart) -> AnthropicContentBlockDto {
+    match part {
+        ContentPart::Text(text) => AnthropicContentBlockDto::Text { text: text.clone() },
+        ContentPart::ImageUrl(url) => AnthropicContentBlockDto::Image {
+            source: AnthropicImageSource::Url { url: url.clone() },
+        },
+        ContentPart::ImageBase64 { media_type, data } => AnthropicContentBlockDto::Image {
+            source: AnthropicImageSource::Base64 {
+                media_type: media_type.clone(),
+                data: data.clone(),
+            },
+        },
+    }
 }
 
 /// Converts an `AnthropicResponse` into the shared domain `CompletionResponse`.
@@ -358,6 +447,73 @@ mod tests {
         assert!(anthropic_req.system.is_none());
     }
 
+    /// `MessageContent::Text` keeps serializing as a bare JSON string, matching
+    /// Anthropic's text-only shorthand.
+    #[test]
+    fn test_to_anthropic_content_text_serializes_as_bare_string() {
+        let content = to_anthropic_content(&MessageContent::Text("hello".to_string()));
+        assert_eq!(
+            serde_json::to_value(&content).unwrap(),
+            serde_json::json!("hello")
+        );
+    }
+
+    /// `MessageContent::Parts` serializes as an array of content blocks: a `text`
+    /// block, an `image`/`url` block for `ContentPart::ImageUrl`, and an
+    /// `image`/`base64` block for `ContentPart::ImageBase64`.
+    #[test]
+    fn test_to_anthropic_content_parts_serializes_as_blocks_array() {
+        let content = MessageContent::Parts(vec![
+            ContentPart::Text("look: ".to_string()),
+            ContentPart::ImageUrl("https://example.com/cat.png".to_string()),
+            ContentPart::ImageBase64 {
+                media_type: "image/png".to_string(),
+                data: "abcd".to_string(),
+            },
+        ]);
+
+        let json = serde_json::to_value(to_anthropic_content(&content)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {"type": "text", "text": "look: "},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.png"}},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abcd"}},
+            ])
+        );
+    }
+
+    /// End-to-end: a `CompletionRequest` with a mixed text+image message serializes to
+    /// the exact Anthropic request body shape.
+    #[test]
+    fn test_to_anthropic_request_with_image_parts_serializes_full_message_body() {
+        let req = CompletionRequest {
+            model: "claude-opus-4-6".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: MessageContent::Parts(vec![
+                    ContentPart::Text("what is this?".to_string()),
+                    ContentPart::ImageBase64 {
+                        media_type: "image/png".to_string(),
+                        data: "abcd".to_string(),
+                    },
+                ]),
+            }],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let anthropic_req = to_anthropic_request(&req).expect("request has a non-system message");
+        let json = serde_json::to_value(&anthropic_req).unwrap();
+        assert_eq!(
+            json["messages"][0]["content"],
+            serde_json::json!([
+                {"type": "text", "text": "what is this?"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abcd"}},
+            ])
+        );
+    }
+
     #[test]
     fn test_to_anthropic_request_system_only_is_invalid_request() {
         // A request built from only Role::System messages would otherwise produce
@@ -374,8 +530,10 @@ mod tests {
             max_tokens: None,
         };
 
-        let err = to_anthropic_request(&req)
-            .expect_err("a system-only request should be rejected as invalid");
+        let err = match to_anthropic_request(&req) {
+            Ok(_) => panic!("a system-only request should be rejected as invalid"),
+            Err(e) => e,
+        };
 
         match err {
             DomainError::InvalidRequest(message) => {
@@ -386,6 +544,65 @@ mod tests {
             }
             other => panic!("expected DomainError::InvalidRequest, got {other:?}"),
         }
+    }
+
+    /// A system message whose content is `MessageContent::Parts` containing an image
+    /// part must be rejected: silently dropping the image (as `as_text()` would) would
+    /// misrepresent what was actually sent to Anthropic.
+    #[test]
+    fn test_to_anthropic_request_system_message_with_image_part_is_invalid_request() {
+        let req = CompletionRequest {
+            model: "claude-opus-4-6".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: MessageContent::Parts(vec![
+                        ContentPart::Text("You are helpful.".to_string()),
+                        ContentPart::ImageBase64 {
+                            media_type: "image/png".to_string(),
+                            data: "abcd".to_string(),
+                        },
+                    ]),
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: "Hello".to_string().into(),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let err = match to_anthropic_request(&req) {
+            Ok(_) => panic!("a system message containing an image part should be rejected"),
+            Err(e) => e,
+        };
+
+        assert!(matches!(err, DomainError::InvalidRequest(_)));
+    }
+
+    /// A plain-text (non-`Parts`) system message is unaffected by the image-part
+    /// rejection and still hoists into `system` as before.
+    #[test]
+    fn test_to_anthropic_request_plain_text_system_message_unchanged() {
+        let req = CompletionRequest {
+            model: "claude-opus-4-6".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: "You are helpful.".to_string().into(),
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: "Hello".to_string().into(),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let anthropic_req = to_anthropic_request(&req).expect("plain text system message is valid");
+        assert_eq!(anthropic_req.system, Some("You are helpful.".to_string()));
     }
 
     #[test]

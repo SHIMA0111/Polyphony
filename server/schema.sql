@@ -20,6 +20,8 @@ CREATE TABLE rooms (
     description TEXT NOT NULL DEFAULT '',
     owner_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     ai_context_cutoff_at TIMESTAMPTZ,
+    ai_provider VARCHAR(50) NULL,
+    ai_model VARCHAR(100) NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -50,9 +52,11 @@ CREATE TABLE messages (
     in_response_to_message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
     is_deleted BOOLEAN NOT NULL DEFAULT false,
     exclude_from_ai BOOLEAN NOT NULL DEFAULT false,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'public',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT messages_room_sequence_unique UNIQUE (room_id, sequence)
+    CONSTRAINT messages_room_sequence_unique UNIQUE (room_id, sequence),
+    CONSTRAINT messages_visibility_check CHECK (visibility IN ('public', 'private'))
 );
 
 CREATE INDEX idx_messages_room_sequence ON messages(room_id, sequence DESC);
@@ -108,3 +112,61 @@ CREATE TABLE token_transactions (
 );
 
 CREATE INDEX idx_token_transactions_user_created ON token_transactions(user_id, created_at DESC, id DESC);
+
+CREATE TABLE groups (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE group_members (
+    id UUID PRIMARY KEY,
+    group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(group_id, user_id)
+);
+
+CREATE INDEX idx_groups_owner_id ON groups(owner_id);
+CREATE INDEX idx_group_members_user_id ON group_members(user_id);
+
+CREATE TABLE subscriptions (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    stripe_customer_id VARCHAR(255) NOT NULL,
+    stripe_subscription_id VARCHAR(255) NOT NULL,
+    stripe_price_id VARCHAR(255) NOT NULL,
+    plan_code VARCHAR(50) NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    monthly_token_allocation BIGINT NOT NULL,
+    current_period_start TIMESTAMPTZ NOT NULL,
+    current_period_end TIMESTAMPTZ NOT NULL,
+    cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+    canceled_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT subscriptions_stripe_subscription_id_unique UNIQUE (stripe_subscription_id)
+);
+
+CREATE INDEX idx_subscriptions_user_id ON subscriptions(user_id);
+
+CREATE TABLE payment_history (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    subscription_id UUID REFERENCES subscriptions(id) ON DELETE SET NULL,
+    payment_rail VARCHAR(20) NOT NULL DEFAULT 'stripe',
+    stripe_event_id VARCHAR(255) NOT NULL,
+    stripe_reference_id VARCHAR(255) NOT NULL DEFAULT '',
+    kind VARCHAR(20) NOT NULL,
+    amount_cents BIGINT NOT NULL,
+    currency VARCHAR(10) NOT NULL DEFAULT 'usd',
+    tokens_credited BIGINT NOT NULL DEFAULT 0,
+    status VARCHAR(20) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT payment_history_stripe_event_id_unique UNIQUE (stripe_event_id)
+);
+
+CREATE INDEX idx_payment_history_user_id ON payment_history(user_id, created_at DESC);

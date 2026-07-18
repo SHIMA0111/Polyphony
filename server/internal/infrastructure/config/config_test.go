@@ -6,31 +6,61 @@ import (
 )
 
 // withRequiredEnv sets the two required environment variables for the
-// duration of the test and clears them afterwards. It also clears every
-// optional env var Load reads (the DB_* duration variables, CORS_ORIGINS,
-// the S3_* variables, WS_TICKET_SECRET, AUTH_MODE, and the KRATOS_*
-// variables) so tests are isolated from any values inherited from the
-// surrounding environment (e.g. a developer's shell, or a docker-compose
-// `environment:` block set outside the test process).
+// duration of the test and clears every optional environment variable Load
+// reads (via t.Setenv("...", ""), which os.Getenv cannot distinguish from
+// unset, and which t.Setenv restores to its prior value after the test
+// regardless).
+//
+// Without this, a test asserting a default value (e.g.
+// TestLoadRateLimitAndWhoamiCacheDefaults) would silently pass or fail based
+// on whatever happened to already be set in the ambient shell/CI environment
+// (e.g. a developer's .env sourced into their shell, or leftover exported
+// vars from a previous docker compose run) rather than proving Load()'s own
+// default-selection logic. This list must be kept in sync with every
+// optional (non-required) os.Getenv("...") call in config.go.
 func withRequiredEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/db")
 	t.Setenv("JWT_SECRET", "test-secret")
-	t.Setenv("DB_MAX_CONN_LIFETIME", "")
-	t.Setenv("DB_MAX_CONN_IDLE_TIME", "")
-	t.Setenv("DB_HEALTH_CHECK_PERIOD", "")
-	t.Setenv("CORS_ORIGINS", "")
-	t.Setenv("S3_ENDPOINT", "")
-	t.Setenv("S3_REGION", "")
-	t.Setenv("S3_BUCKET", "")
-	t.Setenv("S3_ACCESS_KEY", "")
-	t.Setenv("S3_SECRET_KEY", "")
-	t.Setenv("S3_FORCE_PATH_STYLE", "")
-	t.Setenv("WS_TICKET_SECRET", "")
-	t.Setenv("AUTH_MODE", "")
-	t.Setenv("KRATOS_PUBLIC_URL", "")
-	t.Setenv("KRATOS_ADMIN_URL", "")
-	t.Setenv("KRATOS_COOKIE_NAME", "")
+
+	optionalEnvVars := []string{
+		"PORT",
+		"LLM_GATEWAY_URL",
+		"CORS_ORIGINS",
+		"DB_MAX_CONN_LIFETIME",
+		"DB_MAX_CONN_IDLE_TIME",
+		"DB_HEALTH_CHECK_PERIOD",
+		"S3_ENDPOINT",
+		"S3_REGION",
+		"S3_BUCKET",
+		"S3_ACCESS_KEY",
+		"S3_SECRET_KEY",
+		"S3_FORCE_PATH_STYLE",
+		"WS_TICKET_SECRET",
+		"AUTH_MODE",
+		"KRATOS_PUBLIC_URL",
+		"KRATOS_ADMIN_URL",
+		"KRATOS_COOKIE_NAME",
+		"LLM_GATEWAY_TRANSPORT",
+		"LLM_GATEWAY_GRPC_ADDR",
+		"LLM_GATEWAY_GRPC_MAX_RETRIES",
+		"LLM_GATEWAY_GRPC_BASE_BACKOFF",
+		"REDIS_URL",
+		"MESSAGE_HUB_DRIVER",
+		"DEFAULT_AI_MODEL",
+		"RATE_LIMIT_LOGIN_PER_MINUTE",
+		"RATE_LIMIT_AI_INVOKE_PER_MINUTE",
+		"WHOAMI_CACHE_TTL",
+		"STRIPE_SECRET_KEY",
+		"STRIPE_WEBHOOK_SECRET",
+		"STRIPE_PLANS_JSON",
+		"STRIPE_TOKEN_PACKAGES_JSON",
+		"STRIPE_CHECKOUT_SUCCESS_URL",
+		"STRIPE_CHECKOUT_CANCEL_URL",
+	}
+	for _, name := range optionalEnvVars {
+		t.Setenv(name, "")
+	}
 }
 
 // TestLoadDBDurationDefaults verifies Load falls back to the documented
@@ -366,6 +396,35 @@ func TestLoadMessageHubDriverInvalidReturnsError(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultAIModelDefault verifies Load falls back to the documented
+// default DefaultAIModel ("gpt-5-mini") when DEFAULT_AI_MODEL is unset.
+func TestLoadDefaultAIModelDefault(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.DefaultAIModel != "gpt-5-mini" {
+		t.Errorf("expected default DefaultAIModel %q, got %q", "gpt-5-mini", cfg.DefaultAIModel)
+	}
+}
+
+// TestLoadDefaultAIModelOverride verifies Load applies the DEFAULT_AI_MODEL
+// env var when it is set.
+func TestLoadDefaultAIModelOverride(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("DEFAULT_AI_MODEL", "claude-opus-5")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.DefaultAIModel != "claude-opus-5" {
+		t.Errorf("expected overridden DefaultAIModel %q, got %q", "claude-opus-5", cfg.DefaultAIModel)
+	}
+}
+
 func TestLoadKratosDefaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -483,5 +542,175 @@ func TestLoadLLMGatewayGRPCBaseBackoffInvalidFallsBackToDefault(t *testing.T) {
 	}
 	if cfg.LLMGatewayGRPCBaseBackoff != 100*time.Millisecond {
 		t.Errorf("expected fallback to default LLMGatewayGRPCBaseBackoff 100ms, got %v", cfg.LLMGatewayGRPCBaseBackoff)
+	}
+}
+
+// TestLoadRateLimitAndWhoamiCacheDefaults verifies Load falls back to the
+// documented default rate limits and whoami cache TTL when their env vars
+// are unset.
+func TestLoadRateLimitAndWhoamiCacheDefaults(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.RateLimitLoginPerMinute != 10 {
+		t.Errorf("expected default RateLimitLoginPerMinute 10, got %d", cfg.RateLimitLoginPerMinute)
+	}
+	if cfg.RateLimitAIInvokePerMinute != 20 {
+		t.Errorf("expected default RateLimitAIInvokePerMinute 20, got %d", cfg.RateLimitAIInvokePerMinute)
+	}
+	if cfg.WhoamiCacheTTL != 30*time.Second {
+		t.Errorf("expected default WhoamiCacheTTL 30s, got %v", cfg.WhoamiCacheTTL)
+	}
+}
+
+// TestLoadRateLimitAndWhoamiCacheOverrides verifies Load applies the rate
+// limit and whoami cache TTL env vars when they are set to valid values.
+func TestLoadRateLimitAndWhoamiCacheOverrides(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "5")
+	t.Setenv("RATE_LIMIT_AI_INVOKE_PER_MINUTE", "50")
+	t.Setenv("WHOAMI_CACHE_TTL", "1m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.RateLimitLoginPerMinute != 5 {
+		t.Errorf("expected overridden RateLimitLoginPerMinute 5, got %d", cfg.RateLimitLoginPerMinute)
+	}
+	if cfg.RateLimitAIInvokePerMinute != 50 {
+		t.Errorf("expected overridden RateLimitAIInvokePerMinute 50, got %d", cfg.RateLimitAIInvokePerMinute)
+	}
+	if cfg.WhoamiCacheTTL != time.Minute {
+		t.Errorf("expected overridden WhoamiCacheTTL 1m, got %v", cfg.WhoamiCacheTTL)
+	}
+}
+
+// TestLoadRateLimitInvalidFallsBackToDefault verifies Load falls back to the
+// default rate limits for values that fail to parse as an integer ("*number"
+// subtests), and for integers that parse successfully but are not positive
+// ("0" and "-1" subtests), since neither is a meaningful per-minute rate
+// limit.
+func TestLoadRateLimitInvalidFallsBackToDefault(t *testing.T) {
+	tests := []struct {
+		name        string
+		loginVal    string
+		aiInvokeVal string
+	}{
+		{name: "not-a-number", loginVal: "not-a-number", aiInvokeVal: "also-not-a-number"},
+		{name: "0", loginVal: "0", aiInvokeVal: "0"},
+		{name: "-1", loginVal: "-1", aiInvokeVal: "-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withRequiredEnv(t)
+			t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", tt.loginVal)
+			t.Setenv("RATE_LIMIT_AI_INVOKE_PER_MINUTE", tt.aiInvokeVal)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load should not fail on invalid rate-limit values, got: %v", err)
+			}
+			if cfg.RateLimitLoginPerMinute != 10 {
+				t.Errorf("expected fallback to default RateLimitLoginPerMinute 10, got %d", cfg.RateLimitLoginPerMinute)
+			}
+			if cfg.RateLimitAIInvokePerMinute != 20 {
+				t.Errorf("expected fallback to default RateLimitAIInvokePerMinute 20, got %d", cfg.RateLimitAIInvokePerMinute)
+			}
+		})
+	}
+}
+
+// TestLoadWhoamiCacheTTLInvalidFallsBackToDefault verifies Load falls back
+// to the default WhoamiCacheTTL when WHOAMI_CACHE_TTL fails to parse as a
+// duration.
+func TestLoadWhoamiCacheTTLInvalidFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("WHOAMI_CACHE_TTL", "not-a-duration")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on an invalid WHOAMI_CACHE_TTL, got: %v", err)
+	}
+	if cfg.WhoamiCacheTTL != 30*time.Second {
+		t.Errorf("expected fallback to default WhoamiCacheTTL 30s, got %v", cfg.WhoamiCacheTTL)
+	}
+}
+
+// TestLoadStripeDefaults verifies Load falls back to empty Stripe secrets,
+// no plans/packages, and the documented default checkout URLs when the
+// STRIPE_* env vars are unset.
+func TestLoadStripeDefaults(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.StripeSecretKey != "" || cfg.StripeWebhookSecret != "" {
+		t.Errorf("expected empty Stripe secret/webhook secret by default, got %q / %q", cfg.StripeSecretKey, cfg.StripeWebhookSecret)
+	}
+	if len(cfg.StripePlans) != 0 || len(cfg.StripeTokenPackages) != 0 {
+		t.Errorf("expected no plans/packages by default, got %v / %v", cfg.StripePlans, cfg.StripeTokenPackages)
+	}
+	wantSuccess := "http://localhost:3000/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}"
+	if cfg.StripeCheckoutSuccessURL != wantSuccess {
+		t.Errorf("expected default success url %q, got %q", wantSuccess, cfg.StripeCheckoutSuccessURL)
+	}
+	wantCancel := "http://localhost:3000/billing/checkout/cancel"
+	if cfg.StripeCheckoutCancelURL != wantCancel {
+		t.Errorf("expected default cancel url %q, got %q", wantCancel, cfg.StripeCheckoutCancelURL)
+	}
+}
+
+// TestLoadStripePlansAndPackagesParsed verifies Load reads the Stripe
+// secrets, checkout URLs, and correctly parses the STRIPE_PLANS_JSON and
+// STRIPE_TOKEN_PACKAGES_JSON env vars into StripePlan and StripeTokenPackage
+// values.
+func TestLoadStripePlansAndPackagesParsed(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("STRIPE_SECRET_KEY", "sk_test_123")
+	t.Setenv("STRIPE_WEBHOOK_SECRET", "whsec_123")
+	t.Setenv("STRIPE_PLANS_JSON", `[{"plan_code":"starter","price_id":"price_1","name":"Starter","description":"d","price_cents":500,"currency":"usd","monthly_token_allocation":100000}]`)
+	t.Setenv("STRIPE_TOKEN_PACKAGES_JSON", `[{"package_code":"topup_small","price_id":"price_2","name":"Small","description":"d2","price_cents":300,"currency":"usd","tokens":50000}]`)
+	t.Setenv("STRIPE_CHECKOUT_SUCCESS_URL", "https://example.com/success")
+	t.Setenv("STRIPE_CHECKOUT_CANCEL_URL", "https://example.com/cancel")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.StripeSecretKey != "sk_test_123" || cfg.StripeWebhookSecret != "whsec_123" {
+		t.Errorf("expected Stripe secret/webhook secret to be read from env, got %q / %q", cfg.StripeSecretKey, cfg.StripeWebhookSecret)
+	}
+	if len(cfg.StripePlans) != 1 || cfg.StripePlans[0].PlanCode != "starter" || cfg.StripePlans[0].MonthlyTokenAllocation != 100000 {
+		t.Fatalf("expected 1 parsed plan starter/100000, got %+v", cfg.StripePlans)
+	}
+	if len(cfg.StripeTokenPackages) != 1 || cfg.StripeTokenPackages[0].PackageCode != "topup_small" || cfg.StripeTokenPackages[0].Tokens != 50000 {
+		t.Fatalf("expected 1 parsed package topup_small/50000, got %+v", cfg.StripeTokenPackages)
+	}
+	if cfg.StripeCheckoutSuccessURL != "https://example.com/success" || cfg.StripeCheckoutCancelURL != "https://example.com/cancel" {
+		t.Errorf("expected overridden checkout URLs, got %q / %q", cfg.StripeCheckoutSuccessURL, cfg.StripeCheckoutCancelURL)
+	}
+}
+
+// TestLoadStripePlansInvalidJSONIgnoredNotFatal verifies Load ignores
+// malformed STRIPE_PLANS_JSON / STRIPE_TOKEN_PACKAGES_JSON values (falling
+// back to empty plans/packages) rather than failing Load outright.
+func TestLoadStripePlansInvalidJSONIgnoredNotFatal(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("STRIPE_PLANS_JSON", "not-valid-json")
+	t.Setenv("STRIPE_TOKEN_PACKAGES_JSON", "also-not-valid-json")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on invalid Stripe catalog JSON, got: %v", err)
+	}
+	if len(cfg.StripePlans) != 0 || len(cfg.StripeTokenPackages) != 0 {
+		t.Errorf("expected invalid JSON to be ignored (empty catalogs), got %v / %v", cfg.StripePlans, cfg.StripeTokenPackages)
 	}
 }

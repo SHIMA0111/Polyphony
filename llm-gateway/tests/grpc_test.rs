@@ -25,8 +25,9 @@ use futures::stream::BoxStream;
 use tonic::transport::Channel;
 
 use llm_gateway::adapters::inbound::grpc::pb::{
-    ChatMessage, ChatRole, CompletionRequest, CompletionResponse, ListModelsRequest,
-    ListModelsResponse, ModelInfo as ProtoModelInfo,
+    ChatMessage, ChatRole, CompletionRequest, CompletionResponse, ContentPart, ContentParts,
+    ImageBase64Data, ListModelsRequest, ListModelsResponse, ModelInfo as ProtoModelInfo,
+    TokenEstimateRequest, TokenEstimateResponse, chat_message, content_part,
 };
 use llm_gateway::adapters::inbound::grpc::serve_grpc;
 use llm_gateway::domain::error::DomainError;
@@ -73,6 +74,35 @@ impl CompletionUseCase for StubUseCase {
         req: model::CompletionRequest,
     ) -> BoxFuture<'_, Result<model::CompletionResponse, DomainError>> {
         Box::pin(async move {
+            // "vision-echo-model" echoes the first request message's content straight
+            // back as the assistant's reply, so a test can assert a `MessageContent`
+            // (in particular `Parts`) survives the proto round trip unchanged.
+            if req.model == "vision-echo-model" {
+                let content = req
+                    .messages
+                    .into_iter()
+                    .next()
+                    .map(|m| m.content)
+                    .unwrap_or_else(|| model::MessageContent::Text(String::new()));
+                return Ok(model::CompletionResponse {
+                    id: "stub-vision-completion-id".to_string(),
+                    model: req.model,
+                    choices: vec![model::Choice {
+                        index: 0,
+                        message: model::ChatMessage {
+                            role: model::Role::Assistant,
+                            content,
+                        },
+                        finish_reason: "stop".to_string(),
+                    }],
+                    usage: model::Usage {
+                        prompt_tokens: 3,
+                        completion_tokens: 2,
+                        total_tokens: 5,
+                    },
+                });
+            }
+
             if req.model != "stub-model" {
                 return Err(DomainError::ModelNotFound(req.model));
             }
@@ -193,6 +223,23 @@ async fn call_list_models(channel: Channel) -> Result<ListModelsResponse, tonic:
         .map(|resp| resp.into_inner())
 }
 
+/// Sends a unary `CompletionService/EstimateTokens` request via the same low-level
+/// path as `call_complete`.
+async fn call_estimate_tokens(
+    channel: Channel,
+    request: TokenEstimateRequest,
+) -> Result<TokenEstimateResponse, tonic::Status> {
+    let mut grpc = tonic::client::Grpc::new(channel);
+    grpc.ready().await.expect("channel should become ready");
+    let path = http::uri::PathAndQuery::from_static(
+        "/polyphony.llmgateway.v1.CompletionService/EstimateTokens",
+    );
+    let codec = tonic_prost::ProstCodec::<TokenEstimateRequest, TokenEstimateResponse>::default();
+    grpc.unary(tonic::Request::new(request), path, codec)
+        .await
+        .map(|resp| resp.into_inner())
+}
+
 #[tokio::test]
 async fn test_grpc_completion_models_and_health_services() {
     let channel = start_test_server_and_connect().await;
@@ -202,7 +249,7 @@ async fn test_grpc_completion_models_and_health_services() {
         model: "stub-model".to_string(),
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: "hello".to_string(),
+            content: Some(chat_message::Content::Text("hello".to_string())),
         }],
         temperature: None,
         max_tokens: None,
@@ -218,7 +265,10 @@ async fn test_grpc_completion_models_and_health_services() {
     assert_eq!(choice.finish_reason, "stop");
     let message = choice.message.as_ref().expect("message should be set");
     assert_eq!(message.role, ChatRole::Assistant as i32);
-    assert_eq!(message.content, "stub response");
+    assert_eq!(
+        message.content,
+        Some(chat_message::Content::Text("stub response".to_string()))
+    );
     let usage = response.usage.expect("usage should be set");
     assert_eq!(usage.prompt_tokens, 3);
     assert_eq!(usage.completion_tokens, 2);
@@ -229,7 +279,7 @@ async fn test_grpc_completion_models_and_health_services() {
         model: "nonexistent-model".to_string(),
         messages: vec![ChatMessage {
             role: ChatRole::User as i32,
-            content: "hello".to_string(),
+            content: Some(chat_message::Content::Text("hello".to_string())),
         }],
         temperature: None,
         max_tokens: None,
@@ -252,6 +302,93 @@ async fn test_grpc_completion_models_and_health_services() {
     assert_eq!(pricing.output_price_per_million_tokens, 2.0);
     assert_eq!(pricing.currency, "USD");
     assert_eq!(model.supports_image_input, Some(true));
+
+    // --- CompletionService/EstimateTokens ---
+    let estimate_request = TokenEstimateRequest {
+        model: "stub-model".to_string(),
+        messages: vec![ChatMessage {
+            role: ChatRole::User as i32,
+            content: Some(chat_message::Content::Text("hello world".to_string())),
+        }],
+    };
+    let estimate_response = call_estimate_tokens(channel.clone(), estimate_request)
+        .await
+        .expect("EstimateTokens should succeed");
+    assert_eq!(estimate_response.model, "stub-model");
+    assert!(estimate_response.estimated_tokens > 0);
+
+    // Unlike `Complete`, an unrecognized model name does not cause an error --
+    // estimation never dispatches to a provider.
+    let estimate_unknown_model = TokenEstimateRequest {
+        model: "totally-unknown-model".to_string(),
+        messages: vec![ChatMessage {
+            role: ChatRole::User as i32,
+            content: Some(chat_message::Content::Text("hi".to_string())),
+        }],
+    };
+    let estimate_unknown_response = call_estimate_tokens(channel.clone(), estimate_unknown_model)
+        .await
+        .expect("EstimateTokens should succeed even for an unrecognized model");
+    assert_eq!(estimate_unknown_response.model, "totally-unknown-model");
+    assert!(estimate_unknown_response.estimated_tokens > 0);
+
+    // --- CompletionService/Complete: multimodal (ContentParts) round trip ---
+    // Proves that a multimodal request message survives the full proto round trip:
+    // CompletionRequest.messages[0].content.parts -> domain MessageContent::Parts (via
+    // StubUseCase, which echoes it straight back as the assistant's reply) ->
+    // CompletionResponse.choices[0].message.content.parts. Reuses the same `channel`
+    // (rather than a second `start_test_server_and_connect()` call) since this test
+    // module binds a single fixed port shared by every assertion in this test
+    // function -- see the module doc comment.
+    let vision_request = CompletionRequest {
+        model: "vision-echo-model".to_string(),
+        messages: vec![ChatMessage {
+            role: ChatRole::User as i32,
+            content: Some(chat_message::Content::Parts(ContentParts {
+                parts: vec![
+                    ContentPart {
+                        part: Some(content_part::Part::Text("what is this?".to_string())),
+                    },
+                    ContentPart {
+                        part: Some(content_part::Part::ImageBase64(ImageBase64Data {
+                            media_type: "image/png".to_string(),
+                            data: "abcd".to_string(),
+                        })),
+                    },
+                ],
+            })),
+        }],
+        temperature: None,
+        max_tokens: None,
+    };
+    let vision_response = call_complete(channel.clone(), vision_request)
+        .await
+        .expect("Complete should succeed for the echo model");
+    let vision_message = vision_response.choices[0]
+        .message
+        .as_ref()
+        .expect("message should be set");
+    match vision_message
+        .content
+        .as_ref()
+        .expect("content should be set")
+    {
+        chat_message::Content::Parts(parts) => {
+            assert_eq!(parts.parts.len(), 2);
+            assert_eq!(
+                parts.parts[0].part,
+                Some(content_part::Part::Text("what is this?".to_string()))
+            );
+            assert_eq!(
+                parts.parts[1].part,
+                Some(content_part::Part::ImageBase64(ImageBase64Data {
+                    media_type: "image/png".to_string(),
+                    data: "abcd".to_string(),
+                }))
+            );
+        }
+        other => panic!("expected chat_message::Content::Parts, got {other:?}"),
+    }
 
     // --- grpc.health.v1.Health/Check ---
     let mut health_client = tonic_health::pb::health_client::HealthClient::new(channel);

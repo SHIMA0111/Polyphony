@@ -18,6 +18,15 @@ import (
 func NewRouter(c *Container) *echo.Echo {
 	e := echo.New()
 	e.HideBanner = true
+	// The API server is exposed directly in docker-compose (no reverse
+	// proxy in front of it), so client-supplied X-Forwarded-For / X-Real-IP
+	// headers are untrustworthy: any caller could forge them to spoof the
+	// key used by IP-based rate limiting. ExtractIPDirect ignores those
+	// headers and reads the IP from the raw TCP connection instead.
+	// TODO(Phase 21): once the API sits behind an ALB, switch to
+	// echo.ExtractIPFromXFFHeader() scoped to the ALB's CIDR so the real
+	// client IP (rather than the ALB's) is used for rate limiting.
+	e.IPExtractor = echo.ExtractIPDirect()
 	e.Use(echomw.Recover())
 	e.Use(echomw.RequestID())
 	e.Use(echomw.CORSWithConfig(echomw.CORSConfig{
@@ -35,19 +44,20 @@ func NewRouter(c *Container) *echo.Echo {
 
 	registerHealthRoutes(e, c)
 	registerModelRoutes(e, c)
-	registerAuthRoutes(e, c)
 
 	// Shared authenticated route group, used by every registrar below that
 	// needs the caller's identity.
 	authGroup := e.Group("", middleware.JWTAuth(c.AuthUC, c.Config.KratosCookieName))
+	registerAuthRoutes(e, authGroup, c)
 	registerRoomRoutes(authGroup, c)
 	registerMessageRoutes(authGroup, c)
 	registerUserRoutes(authGroup, c)
 	registerAttachmentRoutes(authGroup, c)
 	registerInvitationRoutes(authGroup, c)
+	registerGroupRoutes(authGroup, c)
 	registerWebSocketRoutes(e, authGroup, c)
 	registerTokenRoutes(authGroup, c)
-	registerBillingRoutes(authGroup, c)
+	registerBillingRoutes(e, authGroup, c)
 
 	return e
 }

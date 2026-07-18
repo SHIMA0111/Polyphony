@@ -126,13 +126,30 @@ tasks:
       # project, port-colliding with a running dev stack. Rather than reusing
       # those shared dev services, api-e2e/web-e2e point at their own
       # dedicated kratos-e2e/kratos-db-e2e/kratos-migrate-e2e/mailslurper-e2e
-      # services (also `profiles: ["test"]`, with no host `ports:` bindings)
-      # so the E2E stack never binds the dev stack's fixed 4433/4434/4436/
-      # 4437 host ports and can run fully alongside a running dev stack.
+      # services (also `profiles: ["test"]`) so the E2E stack never binds the
+      # dev stack's fixed 4433/4434/4436/4437 host ports and can run fully
+      # alongside a running dev stack. `kratos-e2e` is the one exception: it
+      # publishes its own dedicated 8093/8094 host ports (still distinct from
+      # the dev `kratos` service's 4433/4434) purely so dex's OIDC callback
+      # redirect — issued directly to the browser, not through the
+      # `/api/kratos/*` proxy — can reach it (Step 44; see docker-compose.yml's
+      # `kratos-e2e` block and ory/dex/config.yaml).
+      #
+      # `dex-e2e` (its own `profiles: ["test"]` service, distinct from the
+      # dev `dex` service) publishes its own dedicated 8095 host port so it
+      # can run fully alongside a running dev stack's `dex` on 5556 — the two
+      # used to be the same shared, non-profiled `dex` service, which
+      # port-collided whenever both stacks ran at once (a wave-5 review
+      # finding: the second `up` left one `dex` container attached to no
+      # network). `dex-e2e` is aliased as `dex` inside this project's own
+      # network so `KRATOS_OIDC_PROVIDERS_JSON`'s hardcoded `http://dex:5556/dex`
+      # issuer URL still resolves for `kratos-e2e` unchanged; only the
+      # host-published port differs, which `web/playwright.config.ts`'s
+      # `--host-resolver-rules` mapping accounts for.
       - >-
         docker compose -p polyphony-e2e --profile test up -d --build
-        db-e2e migrate-e2e llm-stub llm-gateway-e2e api-e2e web-e2e
-        kratos-db-e2e kratos-migrate-e2e kratos-e2e mailslurper-e2e
+        db-e2e dex-e2e migrate-e2e llm-stub llm-gateway-e2e api-e2e web-e2e
+        kratos-db-e2e kratos-migrate-e2e kratos-e2e mailslurper-e2e redis-e2e
 
   test:e2e:seed:
     desc: Seed the idempotent E2E fixture user + room against the running test stack
@@ -218,6 +235,35 @@ tasks:
       - bun run dev
 
   # ---------------------------------------------------------------------------
+  # OAuth2/OIDC provider (Ory Hydra, Step 55)
+  # ---------------------------------------------------------------------------
+  oauth:hydra:register-demo-client:
+    desc: >-
+      Register the first-party demo OAuth2 client against the running Hydra
+      admin API. Copy the printed client_id/client_secret into .env's
+      HYDRA_DEMO_CLIENT_ID/HYDRA_DEMO_CLIENT_SECRET (see ory/README.md to
+      register additional first-party clients with different scopes/redirect
+      URIs).
+    cmds:
+      - >-
+        docker compose exec hydra hydra create oauth2-client
+        --endpoint http://localhost:4445
+        --name "Polyphony Demo Client"
+        --grant-type authorization_code,refresh_token
+        --response-type code
+        --scope "openid offline_access profile email"
+        --redirect-uri http://localhost:9999/callback
+        --token-endpoint-auth-method client_secret_basic
+        --format json
+      - 'echo "Copy the client_id/client_secret above into .env as HYDRA_DEMO_CLIENT_ID/HYDRA_DEMO_CLIENT_SECRET, then re-run: task oauth:hydra:test"'
+
+  oauth:hydra:test:
+    desc: Run the scripted Hydra authorization-code flow end to end (registration through /userinfo)
+    dotenv: ['.env.local', '.env']
+    cmds:
+      - bun run ory/hydra/test-oauth-flow.ts
+
+  # ---------------------------------------------------------------------------
   # Billing
   # ---------------------------------------------------------------------------
   billing:topup:
@@ -236,3 +282,13 @@ tasks:
       DATABASE_URL: postgres://polyphony:polyphony@localhost:5432/polyphony?sslmode=disable
     cmds:
       - go run ./cmd/seed-tokens {{.CLI_ARGS}}
+
+  stripe:listen:
+    desc: >-
+      Start the stripe-cli service and tail its logs so a developer can grab
+      the printed webhook signing secret (whsec_...) — copy it into .env's
+      STRIPE_WEBHOOK_SECRET and run `task up` again to recreate the api
+      service with it (Step 49).
+    cmds:
+      - docker compose up -d stripe-cli
+      - docker compose logs -f stripe-cli

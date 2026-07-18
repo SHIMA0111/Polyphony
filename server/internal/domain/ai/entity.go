@@ -4,10 +4,55 @@
 package ai
 
 // ChatMessage represents a single message in a conversation context sent to the LLM.
+//
+// Content holds the message's plain-text body, the original (and still the common)
+// shape. Parts, when non-empty, holds multimodal content (text mixed with images)
+// built from the message's attachments (see usecase/message's attachment-enrichment
+// step, added in Step 39) and takes precedence over Content when this message is
+// serialized to the LLM Gateway (see interface/gateway/llm_client.go's chatMsgDTO and
+// grpc_client.go's toPBChatMessages): Content is left populated alongside Parts so
+// existing readers of Content (e.g. logging) keep working, but a non-empty Parts
+// always wins on the wire.
 type ChatMessage struct {
 	Role    string
 	Content string
+	Parts   []ContentPart
 }
+
+// ContentPart represents a single part of a multimodal message's content, mirroring
+// the LLM Gateway's `ContentPart` enum (`llm-gateway/src/domain/model.rs`) and its
+// REST/gRPC wire contracts.
+//
+// Exactly one of Text, ImageURL, or ImageBase64 holds meaningful data, discriminated
+// by Type (one of the ContentPartType* constants):
+//   - Type == ContentPartTypeText: Text holds the segment's text.
+//   - Type == ContentPartTypeImageURL: ImageURL holds the image's URL.
+//   - Type == ContentPartTypeImageBase64: ImageBase64 holds the inline image bytes.
+type ContentPart struct {
+	Type        string
+	Text        string
+	ImageURL    string
+	ImageBase64 *ImageBase64Data
+}
+
+// ImageBase64Data holds an inline base64-encoded image, referenced by a ContentPart
+// whose Type is ContentPartTypeImageBase64.
+type ImageBase64Data struct {
+	MediaType string
+	Data      string
+}
+
+// Content part type discriminators, matching the wire-format `"type"` values used by
+// the LLM Gateway's REST content-part contract
+// (llm-gateway/src/adapters/inbound/rest/request.rs's ContentPartDto).
+const (
+	// ContentPartTypeText marks a ContentPart carrying a plain text segment.
+	ContentPartTypeText = "text"
+	// ContentPartTypeImageURL marks a ContentPart referencing an image by URL.
+	ContentPartTypeImageURL = "image_url"
+	// ContentPartTypeImageBase64 marks a ContentPart carrying an inline base64-encoded image.
+	ContentPartTypeImageBase64 = "image_base64"
+)
 
 // CompletionRequest holds the parameters for an LLM completion request.
 type CompletionRequest struct {
@@ -30,6 +75,24 @@ type ModelInfo struct {
 	ID       string
 	Name     string
 	Provider string
+	// ContextWindow is the maximum input+output token count the model
+	// supports, as reported by the LLM Gateway. Zero means "unknown" -- the
+	// gateway did not report a context window for this model (its
+	// `context_window` field was `None`/absent on the wire) -- not that the
+	// model has no context limit.
+	ContextWindow int
+	// InputPricePerMillionTokens is the USD price per 1,000,000 input
+	// (prompt) tokens, per-1M being the project-wide canonical pricing unit
+	// (see llm-gateway's ModelPricing). Zero means "unknown", not "free".
+	InputPricePerMillionTokens float64
+	// OutputPricePerMillionTokens is the USD price per 1,000,000 output
+	// (completion) tokens. Zero means "unknown", not "free".
+	OutputPricePerMillionTokens float64
+	// SupportsImageInput reports whether the model accepts image/Vision
+	// content parts. False means either "no" or "unknown" -- the LLM Gateway
+	// collapses an absent value to false, since callers must treat an
+	// unreported capability as unsupported.
+	SupportsImageInput bool
 }
 
 // TokenEstimateRequest holds the parameters for a token estimation request:

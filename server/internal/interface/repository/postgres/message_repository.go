@@ -26,11 +26,15 @@ func NewMessageRepository(pool *pgxpool.Pool) *MessageRepository {
 
 // Create persists a new message to the database. is_deleted and
 // exclude_from_ai always start false for a newly-created message.
+// msg.Visibility is persisted as-is (the caller — MessageUsecase — always
+// sets it explicitly to MessageVisibilityPublic or MessageVisibilityPrivate;
+// the column has a NOT NULL DEFAULT 'public' at the schema level as a
+// belt-and-suspenders default for any row inserted outside that path).
 func (r *MessageRepository) Create(ctx context.Context, msg *message.Message) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO messages (id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, is_deleted, exclude_from_ai, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		msg.ID, msg.RoomID, msg.SenderID, msg.Content, string(msg.Type), string(msg.Status), msg.Sequence, msg.InResponseToMessageID, false, false, msg.CreatedAt, msg.UpdatedAt,
+		`INSERT INTO messages (id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, is_deleted, exclude_from_ai, visibility, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		msg.ID, msg.RoomID, msg.SenderID, msg.Content, string(msg.Type), string(msg.Status), msg.Sequence, msg.InResponseToMessageID, false, false, string(msg.Visibility), msg.CreatedAt, msg.UpdatedAt,
 	)
 	return err
 }
@@ -38,22 +42,38 @@ func (r *MessageRepository) Create(ctx context.Context, msg *message.Message) er
 // scanMessage scans a message row into a Message struct.
 func scanMessage(scanner interface{ Scan(dest ...any) error }) (*message.Message, error) {
 	var msg message.Message
-	var msgType, status string
-	err := scanner.Scan(&msg.ID, &msg.RoomID, &msg.SenderID, &msg.Content, &msgType, &status, &msg.Sequence, &msg.InResponseToMessageID, &msg.IsDeleted, &msg.ExcludeFromAI, &msg.CreatedAt, &msg.UpdatedAt)
+	var msgType, status, visibility string
+	err := scanner.Scan(&msg.ID, &msg.RoomID, &msg.SenderID, &msg.Content, &msgType, &status, &msg.Sequence, &msg.InResponseToMessageID, &msg.IsDeleted, &msg.ExcludeFromAI, &visibility, &msg.CreatedAt, &msg.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	msg.Type = message.MessageType(msgType)
 	msg.Status = message.MessageStatus(status)
+	msg.Visibility = message.MessageVisibility(visibility)
 	return &msg, nil
 }
 
-const messageColumns = `id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, is_deleted, exclude_from_ai, created_at, updated_at`
+const messageColumns = `id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, is_deleted, exclude_from_ai, visibility, created_at, updated_at`
 
-// GetByID retrieves a message by its unique identifier. It returns domain.ErrNotFound if the message does not exist.
-func (r *MessageRepository) GetByID(ctx context.Context, id string) (*message.Message, error) {
+// visibilityFilter is the SQL predicate applied to every read path
+// (GetByID, ListByRoom, ListByRoomUpTo) so a message with
+// visibility = 'private' is returned only to its own sender: for every
+// other requestingUserID it is excluded exactly as if the row did not
+// exist. paramIndex is the 1-based positional parameter number to bind
+// requestingUserID to in the enclosing query.
+func visibilityFilter(paramIndex int) string {
+	return fmt.Sprintf("(visibility = 'public' OR sender_id = $%d)", paramIndex)
+}
+
+// GetByID retrieves a message by its unique identifier. It returns
+// domain.ErrNotFound if the message does not exist. requestingUserID
+// controls visibility: a private message is returned only when
+// requestingUserID is its sender; otherwise this returns domain.ErrNotFound,
+// identical to a genuinely missing row, so a private message is never
+// distinguishable from a nonexistent one to a non-owner.
+func (r *MessageRepository) GetByID(ctx context.Context, id string, requestingUserID string) (*message.Message, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT `+messageColumns+` FROM messages WHERE id = $1`, id,
+		`SELECT `+messageColumns+` FROM messages WHERE id = $1 AND `+visibilityFilter(2), id, requestingUserID,
 	)
 	msg, err := scanMessage(row)
 	if err != nil {
@@ -68,21 +88,35 @@ func (r *MessageRepository) GetByID(ctx context.Context, id string) (*message.Me
 // ListByRoom returns messages for a room using cursor-based pagination, ordered newest first.
 // The cursor is a message ID; if empty, fetching starts from the most recent message.
 // It returns a CursorPage containing up to limit messages and a next cursor if more pages exist.
-func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, cursor string, limit int) (*message.CursorPage, error) {
+// requestingUserID controls visibility: a private message whose sender is
+// not requestingUserID is excluded from the page entirely, as if it does
+// not exist — it is invisible to every user other than its owner. This
+// applies to cursor resolution too: a cursor naming another user's private
+// message is treated identically to an unknown cursor (both return
+// domain.ErrNotFound), so a non-owner cannot use a guessed or observed
+// private message ID as a cursor to confirm its existence or page around it.
+func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, cursor string, limit int, requestingUserID string) (*message.CursorPage, error) {
 	var rows pgx.Rows
 	var err error
 
 	if cursor == "" {
 		rows, err = r.pool.Query(ctx,
-			`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND is_deleted = false
+			`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND is_deleted = false AND `+visibilityFilter(3)+`
 			 ORDER BY sequence DESC LIMIT $2`,
-			roomID, limit+1,
+			roomID, limit+1, requestingUserID,
 		)
 	} else {
-		// Get cursor message's sequence
+		// Get cursor message's sequence. This applies the same
+		// visibilityFilter as every other read path: without it, a cursor
+		// pointing at another user's private message would resolve to a
+		// real sequence number instead of domain.ErrNotFound, letting a
+		// non-owner infer that private message's existence and position
+		// (and page around it) purely from its ID -- an invisible message
+		// must fail cursor resolution identically to a genuinely unknown
+		// one.
 		var cursorSeq int64
 		err = r.pool.QueryRow(ctx,
-			`SELECT sequence FROM messages WHERE id = $1 AND room_id = $2`, cursor, roomID,
+			`SELECT sequence FROM messages WHERE id = $1 AND room_id = $2 AND `+visibilityFilter(3), cursor, roomID, requestingUserID,
 		).Scan(&cursorSeq)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -92,9 +126,9 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 		}
 
 		rows, err = r.pool.Query(ctx,
-			`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence < $2 AND is_deleted = false
+			`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence < $2 AND is_deleted = false AND `+visibilityFilter(4)+`
 			 ORDER BY sequence DESC LIMIT $3`,
-			roomID, cursorSeq, limit+1,
+			roomID, cursorSeq, limit+1, requestingUserID,
 		)
 	}
 	if err != nil {
@@ -127,12 +161,16 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 	return page, nil
 }
 
-// ListByRoomUpTo returns up to limit messages with sequence less than or equal to maxSequence, ordered newest first.
-func (r *MessageRepository) ListByRoomUpTo(ctx context.Context, roomID string, maxSequence int64, limit int) ([]*message.Message, error) {
+// ListByRoomUpTo returns up to limit messages with sequence less than or
+// equal to maxSequence, ordered newest first. requestingUserID controls
+// visibility: a private message whose sender is not requestingUserID is
+// excluded, as if it does not exist — this is what keeps another user's
+// private exchange out of AI context assembled for a different requester.
+func (r *MessageRepository) ListByRoomUpTo(ctx context.Context, roomID string, maxSequence int64, limit int, requestingUserID string) ([]*message.Message, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence <= $2 AND is_deleted = false
+		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence <= $2 AND is_deleted = false AND `+visibilityFilter(4)+`
 		 ORDER BY sequence DESC LIMIT $3`,
-		roomID, maxSequence, limit,
+		roomID, maxSequence, limit, requestingUserID,
 	)
 	if err != nil {
 		return nil, err

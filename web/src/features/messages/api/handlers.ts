@@ -4,6 +4,7 @@ import type {
   Message,
   MessagePage,
   ModelListResponse,
+  TokenEstimateResponse,
 } from "../types"
 
 /**
@@ -25,6 +26,8 @@ export const fixtureHumanMessage: Message = {
   status: "completed",
   sequence: 1,
   in_response_to_message_id: null,
+  is_deleted: false,
+  exclude_from_ai: false,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 }
@@ -38,8 +41,15 @@ export const fixtureAiMessage: Message = {
   status: "completed",
   sequence: 2,
   in_response_to_message_id: "message-1",
+  is_deleted: false,
+  exclude_from_ai: false,
   created_at: "2026-01-01T00:00:01Z",
   updated_at: "2026-01-01T00:00:01Z",
+}
+
+export const fixtureTokenEstimateResponse: TokenEstimateResponse = {
+  model: "gpt-5-mini",
+  estimated_tokens: 42,
 }
 
 export const fixtureMessagePage: MessagePage = {
@@ -56,8 +66,33 @@ export const fixtureAiMessageResponse: AIMessageResponse = {
 
 export const fixtureModelListResponse: ModelListResponse = {
   models: [
-    { id: "gpt-5-mini", name: "gpt-5-mini", provider: "OpenAI" },
-    { id: "gpt-5", name: "gpt-5", provider: "OpenAI" },
+    {
+      id: "gpt-5-mini",
+      name: "gpt-5-mini",
+      provider: "OpenAI",
+      context_window: 272_000,
+      input_price_per_million_tokens: 0.25,
+      output_price_per_million_tokens: 2.0,
+      supports_image_input: true,
+    },
+    {
+      id: "gpt-5",
+      name: "gpt-5",
+      provider: "OpenAI",
+      context_window: 272_000,
+      input_price_per_million_tokens: 1.25,
+      output_price_per_million_tokens: 10.0,
+      supports_image_input: true,
+    },
+    {
+      id: "claude-sonnet-4-6",
+      name: "Claude Sonnet 4.6",
+      provider: "Anthropic",
+      context_window: 200_000,
+      input_price_per_million_tokens: 3.0,
+      output_price_per_million_tokens: 15.0,
+      supports_image_input: true,
+    },
   ],
 }
 
@@ -103,5 +138,25 @@ export const messagesHandlers = [
 
   http.get("/api/proxy/models", () => {
     return HttpResponse.json<ModelListResponse>(fixtureModelListResponse)
+  }),
+
+  http.delete("/api/proxy/rooms/:roomId/messages/:messageId", () => {
+    return new HttpResponse(null, { status: 204 })
+  }),
+
+  http.patch(
+    "/api/proxy/rooms/:roomId/messages/:messageId",
+    async ({ request, params }) => {
+      const body = (await request.json()) as { exclude_from_ai: boolean }
+      return HttpResponse.json<Message>({
+        ...fixtureHumanMessage,
+        id: String(params.messageId),
+        exclude_from_ai: body.exclude_from_ai,
+      })
+    },
+  ),
+
+  http.post("/api/proxy/tokens/estimate", () => {
+    return HttpResponse.json<TokenEstimateResponse>(fixtureTokenEstimateResponse)
   }),
 ]

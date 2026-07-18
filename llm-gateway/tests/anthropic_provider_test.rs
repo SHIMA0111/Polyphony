@@ -9,13 +9,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use llm_gateway::adapters::outbound::anthropic::AnthropicProvider;
 use llm_gateway::config::{HttpClientConfig, ProviderConfig};
 use llm_gateway::domain::error::DomainError;
 use llm_gateway::domain::model::{ChatMessage, CompletionRequest, Role};
 use llm_gateway::ports::outbound::key_store::KeyStore;
 use llm_gateway::ports::outbound::provider::LLMProvider;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// `KeyStore` stub that always resolves a fixed dummy key.
@@ -287,4 +288,216 @@ async fn test_complete_slow_response_maps_to_timeout() {
         .expect_err("a response slower than the configured timeout should be an error");
 
     assert!(matches!(err, DomainError::Timeout));
+}
+
+/// End-to-end Vision test: a `CompletionRequest` whose message carries mixed
+/// text+image `ContentPart`s produces the exact Anthropic multimodal `content` array
+/// shape on the wire (a `text` block plus `image` blocks with `"url"`/`"base64"`
+/// sources). The mock only matches (and responds 200) if the outbound body equals
+/// `expected_body` exactly, so a successful `complete()` call here is itself the
+/// assertion that the gateway sent the expected multimodal JSON body.
+#[tokio::test]
+async fn test_complete_with_image_content_sends_anthropic_multimodal_body() {
+    use llm_gateway::domain::model::{ContentPart, MessageContent};
+    use wiremock::matchers::body_json;
+
+    let mock_server = MockServer::start().await;
+    let expected_body = serde_json::json!({
+        "model": "claude-opus-4-6",
+        "max_tokens": 4096,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is this?"},
+                {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.png"}},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abcd"}},
+            ],
+        }],
+    });
+    let response_fixture = serde_json::json!({
+        "id": "msg_vision_1",
+        "model": "claude-opus-4-6",
+        "content": [{"type": "text", "text": "It's a cat."}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 30, "output_tokens": 4},
+    });
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_json(&expected_body))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&response_fixture))
+        .mount(&mock_server)
+        .await;
+
+    let req = CompletionRequest {
+        model: "claude-opus-4-6".to_string(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: MessageContent::Parts(vec![
+                ContentPart::Text("what is this?".to_string()),
+                ContentPart::ImageUrl("https://example.com/cat.png".to_string()),
+                ContentPart::ImageBase64 {
+                    media_type: "image/png".to_string(),
+                    data: "abcd".to_string(),
+                },
+            ]),
+        }],
+        temperature: None,
+        max_tokens: None,
+    };
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let resp = provider
+        .complete(&req)
+        .await
+        .expect("complete should succeed once the mock's exact-body matcher accepts the request");
+
+    assert_eq!(resp.choices[0].message.content.as_text(), "It's a cat.");
+}
+
+/// Canned Anthropic Messages API streaming SSE body covering the full event sequence
+/// this adapter maps: `message_start` (captures id/model/input_tokens) →
+/// `content_block_start` (ignored) → two `content_block_delta` (`text_delta`) events →
+/// `content_block_stop` (ignored) → `message_delta` (final chunk with finish_reason +
+/// usage) → `message_stop` (ends the stream).
+const ANTHROPIC_SSE_FIXTURE: &str = concat!(
+    "event: message_start\n",
+    "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc123\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-4-6\",\"content\":[],\"usage\":{\"input_tokens\":20,\"output_tokens\":0}}}\n\n",
+    "event: content_block_start\n",
+    "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+    "event: content_block_delta\n",
+    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n",
+    "event: content_block_delta\n",
+    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" there!\"}}\n\n",
+    "event: content_block_stop\n",
+    "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    "event: message_delta\n",
+    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":6}}\n\n",
+    "event: message_stop\n",
+    "data: {\"type\":\"message_stop\"}\n\n",
+);
+
+#[tokio::test]
+async fn test_stream_success_yields_expected_chunk_sequence() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(serde_json::json!({"stream": true})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(ANTHROPIC_SSE_FIXTURE, "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let chunk_stream = provider
+        .stream(&make_request("claude-opus-4-6"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let chunks: Vec<_> = chunk_stream
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|c| c.expect("every chunk should parse successfully"))
+        .collect();
+
+    // message_start yields no chunk; content_block_start/stop are ignored;
+    // message_stop ends the stream without a chunk — so only the two text deltas plus
+    // the final message_delta chunk remain.
+    assert_eq!(chunks.len(), 3);
+
+    let full_text: String = chunks.iter().filter_map(|c| c.delta.clone()).collect();
+    assert_eq!(full_text, "Hi there!");
+
+    // id/model captured from message_start must appear on every chunk.
+    for chunk in &chunks {
+        assert_eq!(chunk.id, "msg_abc123");
+        assert_eq!(chunk.model, "claude-opus-4-6");
+    }
+
+    let last = &chunks[2];
+    assert_eq!(last.finish_reason.as_deref(), Some("end_turn"));
+    let usage = last.usage.as_ref().expect("final chunk should carry usage");
+    assert_eq!(
+        usage.prompt_tokens, 20,
+        "should match message_start's input_tokens"
+    );
+    assert_eq!(
+        usage.completion_tokens, 6,
+        "should match message_delta's output_tokens"
+    );
+    assert_eq!(usage.total_tokens, 26);
+
+    let received = mock_server
+        .received_requests()
+        .await
+        .expect("request recording should be enabled by default");
+    assert_eq!(received.len(), 1);
+    let body: serde_json::Value =
+        serde_json::from_slice(&received[0].body).expect("request body should be valid JSON");
+    assert_eq!(body["stream"], serde_json::json!(true));
+}
+
+#[tokio::test]
+async fn test_stream_malformed_event_yields_err_item_without_panicking() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw("data: this is not valid JSON\n\n", "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let mut chunk_stream = provider
+        .stream(&make_request("claude-opus-4-6"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let first = chunk_stream
+        .next()
+        .await
+        .expect("stream should yield exactly one item for the malformed event");
+    assert!(matches!(first, Err(DomainError::ProviderError { .. })));
+    assert!(
+        chunk_stream.next().await.is_none(),
+        "stream should end after the malformed event, not continue or panic"
+    );
+}
+
+#[tokio::test]
+async fn test_stream_error_event_yields_err_item_without_panicking() {
+    let mock_server = MockServer::start().await;
+    let fixture = concat!(
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(fixture, "text/event-stream"))
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let mut chunk_stream = provider
+        .stream(&make_request("claude-opus-4-6"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let first = chunk_stream
+        .next()
+        .await
+        .expect("stream should yield exactly one item for the error event");
+    match first {
+        Err(DomainError::ProviderError { message, .. }) => {
+            assert!(
+                message.contains("Overloaded"),
+                "expected the Anthropic error message to be surfaced, got: {message}"
+            );
+        }
+        other => panic!("expected Err(DomainError::ProviderError), got {other:?}"),
+    }
+    assert!(chunk_stream.next().await.is_none());
 }

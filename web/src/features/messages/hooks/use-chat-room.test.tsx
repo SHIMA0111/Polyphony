@@ -1,6 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react"
 import { http, HttpResponse } from "msw"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import {
@@ -34,6 +34,8 @@ describe("useChatRoom handleRegenerate", () => {
       status: "completed",
       sequence: 1,
       in_response_to_message_id: null,
+      is_deleted: false,
+      exclude_from_ai: false,
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     }
@@ -46,6 +48,8 @@ describe("useChatRoom handleRegenerate", () => {
       status: "completed",
       sequence: 2,
       in_response_to_message_id: null,
+      is_deleted: false,
+      exclude_from_ai: false,
       created_at: "2026-01-01T00:00:01Z",
       updated_at: "2026-01-01T00:00:01Z",
     }
@@ -53,6 +57,8 @@ describe("useChatRoom handleRegenerate", () => {
       ...fixtureAiMessage,
       id: "ai-1",
       in_response_to_message_id: "human-1",
+      is_deleted: false,
+      exclude_from_ai: false,
       sequence: 3,
       created_at: "2026-01-01T00:00:02Z",
       updated_at: "2026-01-01T00:00:02Z",
@@ -99,6 +105,8 @@ describe("useChatRoom handleRegenerate", () => {
       ...fixtureAiMessage,
       id: "ai-orphan",
       in_response_to_message_id: null,
+      is_deleted: false,
+      exclude_from_ai: false,
     }
 
     server.use(
@@ -278,5 +286,84 @@ describe("useChatRoom handleRetry", () => {
     // original model -- proof the intent was read from the QueryClient, not
     // lost with the first render's now-unmounted component.
     expect(capturedRetryBody).toEqual({ content: "Hello, AI!", model: "gpt-5" })
+  })
+})
+
+/**
+ * Step 48's 402 (insufficient token balance) handling: `handleSendWithAI`
+ * must distinguish a `402` rejection from any other failure, surfacing it
+ * via `aiError` (for `MessageInput`'s inline error) while still re-throwing
+ * so `useSendAIMessage`'s own optimistic-rollback `onError` still runs, and
+ * must invalidate `["billing", "balance"]` after a *successful* send.
+ */
+describe("useChatRoom handleSendWithAI", () => {
+  it("sets aiError and does not invalidate the balance query on a 402 response", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+        return HttpResponse.json(
+          { message: "insufficient token balance" },
+          { status: 402 },
+        )
+      }),
+    )
+
+    const queryClient = createTestQueryClient()
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries")
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.aiError).toBeNull()
+
+    await expect(
+      result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini"),
+    ).rejects.toThrow()
+
+    await waitFor(() => expect(result.current.aiError).toBe("Insufficient token balance."))
+    expect(invalidateQueriesSpy).not.toHaveBeenCalledWith({
+      queryKey: ["billing", "balance"],
+    })
+  })
+
+  it("clears any prior aiError and invalidates the balance query on a successful send", async () => {
+    const queryClient = createTestQueryClient()
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries")
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini")
+
+    expect(result.current.aiError).toBeNull()
+    await waitFor(() =>
+      expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+        queryKey: ["billing", "balance"],
+      }),
+    )
+  })
+
+  it("does not set aiError for a non-402 failure", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+        return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+      }),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await expect(
+      result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini"),
+    ).rejects.toThrow()
+
+    expect(result.current.aiError).toBeNull()
   })
 })

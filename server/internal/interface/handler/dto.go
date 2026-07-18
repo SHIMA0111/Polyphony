@@ -50,11 +50,27 @@ type UpdateRoomAIContextCutoffRequest struct {
 	CutoffAt *time.Time `json:"cutoff_at"`
 }
 
+// UpdateRoomSettingsRequest is the request body for
+// PATCH /rooms/:roomId/settings. Both fields are optional and each
+// independently follows RoomUsecase.UpdateSettings's nil/empty-string
+// convention: a field omitted from the JSON body (or explicit JSON null,
+// which decodes identically for a *string field) leaves the corresponding
+// stored value unchanged; an explicit empty string ("") clears it back to
+// NULL; any other value sets it.
+type UpdateRoomSettingsRequest struct {
+	AIProvider *string `json:"ai_provider"`
+	AIModel    *string `json:"ai_model"`
+}
+
 // RoomResponse is the response body for a room. Role is the requesting
 // user's role in this room (e.g. "reader", "guest", "member", "admin",
 // "master"), serialized as the plain string value of domainroom.Role so
 // clients can do direct string comparisons. AIContextCutoffAt is nil when
-// the room has no AI context cutoff configured.
+// the room has no AI context cutoff configured. AIProvider/AIModel are nil
+// when the room has no per-room AI default configured (see
+// UpdateRoomSettingsRequest / PATCH /rooms/:roomId/settings), in which case
+// AI requests fall through to the deployment-wide default
+// (Config.DefaultAIModel).
 type RoomResponse struct {
 	ID                string     `json:"id"`
 	Name              string     `json:"name"`
@@ -62,6 +78,8 @@ type RoomResponse struct {
 	OwnerID           string     `json:"owner_id"`
 	Role              string     `json:"role"`
 	AIContextCutoffAt *time.Time `json:"ai_context_cutoff_at"`
+	AIProvider        *string    `json:"ai_provider"`
+	AIModel           *string    `json:"ai_model"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
@@ -107,10 +125,15 @@ type SendMessageRequest struct {
 }
 
 // SendAIMessageRequest is the request body for POST /rooms/:roomId/messages/ai.
-// Content is required. Model is optional and defaults to the server-configured model.
+// Content is required. Model is optional and defaults to the
+// server-configured model. Private is optional and defaults to false; when
+// true, both the resulting human and AI messages are persisted with
+// visibility "private" (see MessageResponse.Visibility) and delivered over
+// WebSocket only to the requester (private AI mode, phases.md Phase 14).
 type SendAIMessageRequest struct {
 	Content string `json:"content"`
 	Model   string `json:"model"`
+	Private bool   `json:"private"`
 }
 
 // RegenerateAIMessageRequest is the request body for
@@ -138,7 +161,10 @@ type UpdateMessageExcludeRequest struct {
 // IsDeleted is true for a soft-deleted message (see DELETE
 // /rooms/:roomId/messages/:messageId); ExcludeFromAI is true when the
 // message has been opted out of AI context assembly (see PATCH
-// /rooms/:roomId/messages/:messageId).
+// /rooms/:roomId/messages/:messageId). Visibility is "public" (the default)
+// or "private"; a "private" message is returned by GET
+// /rooms/:roomId/messages only to its own sender (see
+// SendAIMessageRequest.Private).
 type MessageResponse struct {
 	ID                    string    `json:"id"`
 	RoomID                string    `json:"room_id"`
@@ -150,6 +176,7 @@ type MessageResponse struct {
 	InResponseToMessageID *string   `json:"in_response_to_message_id"`
 	IsDeleted             bool      `json:"is_deleted"`
 	ExcludeFromAI         bool      `json:"exclude_from_ai"`
+	Visibility            string    `json:"visibility"`
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
 }
@@ -172,10 +199,20 @@ type MessageListResponse struct {
 // --- Model DTOs ---
 
 // ModelResponse is the JSON response representation of an available LLM model.
+//
+// ContextWindow, InputPricePerMillionTokens, and OutputPricePerMillionTokens
+// are a flat, pure passthrough of ai.ModelInfo's equivalent fields: 0 means
+// "unknown" (the LLM Gateway did not report a value for this model), not
+// "no limit"/"free". SupportsImageInput is false for both "no" and
+// "unknown", per ai.ModelInfo's documented collapsing of Option<bool>/None.
 type ModelResponse struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
+	ID                          string  `json:"id"`
+	Name                        string  `json:"name"`
+	Provider                    string  `json:"provider"`
+	ContextWindow               int     `json:"context_window"`
+	InputPricePerMillionTokens  float64 `json:"input_price_per_million_tokens"`
+	OutputPricePerMillionTokens float64 `json:"output_price_per_million_tokens"`
+	SupportsImageInput          bool    `json:"supports_image_input"`
 }
 
 // ModelListResponse is the response body for GET /models.
@@ -322,6 +359,102 @@ type RoomMembershipResponse struct {
 	JoinedAt time.Time `json:"joined_at"`
 }
 
+// --- Group DTOs ---
+
+// CreateGroupRequest is the request body for POST /groups. Name is
+// required; Description is optional.
+type CreateGroupRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// UpdateGroupRequest is the request body for PUT /groups/:groupId. Name is
+// required; Description is optional.
+type UpdateGroupRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// GroupResponse is the JSON response representation of a single personal
+// group.
+type GroupResponse struct {
+	ID          string    `json:"id"`
+	OwnerID     string    `json:"owner_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// GroupListResponse is the response body for GET /groups.
+type GroupListResponse struct {
+	Groups []GroupResponse `json:"groups"`
+}
+
+// AddGroupMemberRequest is the request body for
+// POST /groups/:groupId/members. Username is required and is resolved to
+// an existing user.
+type AddGroupMemberRequest struct {
+	Username string `json:"username"`
+}
+
+// GroupMemberResponse is the JSON response representation of a single
+// group membership, with the member's username resolved.
+type GroupMemberResponse struct {
+	ID       string    `json:"id"`
+	GroupID  string    `json:"group_id"`
+	UserID   string    `json:"user_id"`
+	Username string    `json:"username"`
+	AddedAt  time.Time `json:"added_at"`
+}
+
+// GroupMemberListResponse is the response body for
+// GET /groups/:groupId/members.
+type GroupMemberListResponse struct {
+	Members []GroupMemberResponse `json:"members"`
+}
+
+// BatchInviteByGroupRequest is the request body for
+// POST /rooms/:roomId/invitations/batch-by-group. GroupID and Role are
+// required; Role must be one of the four non-"master" domainroom.Role
+// values. ExpiresInHours is optional and follows the same
+// [1, 720]-hour bounds as CreateInvitationRequest.ExpiresInHours.
+type BatchInviteByGroupRequest struct {
+	GroupID        string `json:"group_id"`
+	Role           string `json:"role"`
+	ExpiresInHours *int   `json:"expires_in_hours"`
+}
+
+// BatchInviteSkipResponse is the JSON response representation of a single
+// group member who was not invited by a batch-invitation call, along with
+// the reason (e.g. already a room member, already has a pending
+// invitation).
+type BatchInviteSkipResponse struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	Reason   string `json:"reason"`
+}
+
+// BatchInviteByGroupResponse is the response body for
+// POST /rooms/:roomId/invitations/batch-by-group. Invited contains every
+// invitation successfully created; Skipped contains one entry per group
+// member who was not invited, with a reason.
+//
+// Failed and Error are populated only when the batch was aborted partway
+// through by an unexpected (non-skippable) per-member error — see
+// groupusecase.GroupUsecase.BatchInviteToRoom's doc comment. In that case
+// Invited/Skipped still reflect everything accumulated before the abort
+// (an HTTP 500 response with a bare error body would otherwise silently
+// discard invitations already created), Failed is true, and Error carries
+// the aborting error's message. Both are omitted (zero value) on a fully
+// successful batch.
+type BatchInviteByGroupResponse struct {
+	Invited []InvitationResponse      `json:"invited"`
+	Skipped []BatchInviteSkipResponse `json:"skipped"`
+	Failed  bool                      `json:"failed,omitempty"`
+	Error   string                    `json:"error,omitempty"`
+}
+
 // --- Billing DTOs ---
 
 // TokenBalanceResponse is the JSON response representation of a user's
@@ -356,6 +489,87 @@ type TokenTransactionResponse struct {
 type TokenTransactionListResponse struct {
 	Transactions []TokenTransactionResponse `json:"transactions"`
 	NextCursor   *string                    `json:"next_cursor"`
+}
+
+// CreateCheckoutSessionRequest is the request body for
+// POST /billing/checkout-session. Type is "subscription" (PlanCode
+// required) or "token_purchase" (PackageCode required).
+type CreateCheckoutSessionRequest struct {
+	Type        string `json:"type"`
+	PlanCode    string `json:"plan_code,omitempty"`
+	PackageCode string `json:"package_code,omitempty"`
+}
+
+// CheckoutSessionResponse is the response body for
+// POST /billing/checkout-session: a Stripe-hosted Checkout page URL to
+// redirect the user to.
+type CheckoutSessionResponse struct {
+	CheckoutURL string `json:"checkout_url"`
+}
+
+// BillingPortalRequest is the request body for POST /billing/portal-session.
+type BillingPortalRequest struct {
+	ReturnURL string `json:"return_url"`
+}
+
+// BillingPortalResponse is the response body for
+// POST /billing/portal-session: a Stripe-hosted Billing Portal URL.
+type BillingPortalResponse struct {
+	PortalURL string `json:"portal_url"`
+}
+
+// SubscriptionResponse is the JSON response representation of a user's
+// Subscription, returned by GET /billing/subscription and
+// POST /billing/subscription/cancel. Field names match Step 53's web
+// contract exactly. CanceledAt is nil until the subscription has actually
+// ended (see billing.Subscription's CancelAtPeriodEnd/CanceledAt doc).
+type SubscriptionResponse struct {
+	Status                 string     `json:"status"`
+	PlanCode               string     `json:"plan_code"`
+	MonthlyTokenAllocation int64      `json:"monthly_token_allocation"`
+	CurrentPeriodStart     time.Time  `json:"current_period_start"`
+	CurrentPeriodEnd       time.Time  `json:"current_period_end"`
+	CancelAtPeriodEnd      bool       `json:"cancel_at_period_end"`
+	CanceledAt             *time.Time `json:"canceled_at"`
+}
+
+// PaymentRecordResponse is the JSON response representation of a single
+// payment_history row.
+type PaymentRecordResponse struct {
+	ID             string    `json:"id"`
+	Kind           string    `json:"kind"`
+	AmountCents    int64     `json:"amount_cents"`
+	Currency       string    `json:"currency"`
+	TokensCredited int64     `json:"tokens_credited"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// PaymentHistoryResponse is the response body for a paginated list of
+// payment records, returned by GET /billing/payments. NextCursor is nil
+// when there are no more pages.
+type PaymentHistoryResponse struct {
+	Payments   []PaymentRecordResponse `json:"payments"`
+	NextCursor *string                 `json:"next_cursor"`
+}
+
+// BillingPlanResponse is a single entry of the purchasable catalog served by
+// GET /billing/plans. Interval is "month" for a subscription plan or
+// "one_time" for a token package. stripe_price_id is deliberately not
+// exposed here.
+type BillingPlanResponse struct {
+	Code           string `json:"code"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	PriceCents     int64  `json:"price_cents"`
+	Currency       string `json:"currency"`
+	Interval       string `json:"interval"`
+	TokenAllowance int64  `json:"token_allowance"`
+}
+
+// BillingPlanListResponse is the response body for GET /billing/plans.
+type BillingPlanListResponse struct {
+	Plans []BillingPlanResponse `json:"plans"`
 }
 
 // --- Common DTOs ---

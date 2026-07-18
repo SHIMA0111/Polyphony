@@ -15,8 +15,21 @@ type Room struct {
 	// value means no cutoff is configured — the room's entire eligible
 	// history is considered.
 	AIContextCutoffAt *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// AIProvider is the room's configured default LLM provider (e.g.
+	// "anthropic", "openai"), stored for display/consistency alongside
+	// AIModel. It is not consulted by model resolution (see
+	// usecase/message.resolveModel), which resolves only a model string. A
+	// nil value means "not configured".
+	AIProvider *string
+	// AIModel is the room's configured default model string (e.g.
+	// "claude-opus-4"), used by usecase/message.resolveModel as the
+	// second-highest precedence tier (below an explicit per-request model,
+	// above the deployment-wide Config.DefaultAIModel). A nil or empty
+	// value means "not configured" — resolution falls through to the next
+	// tier.
+	AIModel   *string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // RoomMember represents a user's membership in a room, including their
