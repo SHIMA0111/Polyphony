@@ -22,12 +22,17 @@ vi.mock("next/navigation", async (importOriginal) => {
  * Component tests for the redesigned `billing/checkout/success/page.tsx`,
  * covering the `session_id`-driven confirmation mechanism that replaced the
  * `sessionStorage` `checkout-marker.ts` marker:
- * - no `session_id` renders the neutral "purchase received" message;
+ * - no `session_id` (or an empty/whitespace-only one) renders the neutral
+ *   "purchase received" message;
  * - a `session_id` matching a `payment_history` row's `stripe_reference_id`
  *   renders the token-purchase confirmation, even when a subscription also
  *   happens to be active (matching payment takes priority);
- * - a `session_id` with no matching payment but an active subscription
- *   renders the subscription confirmation;
+ * - a `session_id` matching the subscription's own
+ *   `stripe_checkout_session_id`, with no matching payment, renders the
+ *   subscription confirmation;
+ * - a `session_id` matching neither a payment record nor the subscription's
+ *   `stripe_checkout_session_id` keeps polling rather than confirming an
+ *   unrelated already-active subscription;
  * - a polled query erroring outright renders the distinct retryable error
  *   state.
  */
@@ -48,6 +53,19 @@ describe("BillingCheckoutSuccessPage", () => {
     expect(screen.queryByText(/Order reference/)).not.toBeInTheDocument()
   })
 
+  it("renders a neutral message when session_id is present but empty", async () => {
+    // `?session_id=` (present but valueless) must be normalized to the same
+    // "nothing to confirm" branch as an absent session_id, not poll forever
+    // against an empty string no payment or subscription record could ever
+    // match.
+    mockSearchParams.mockReturnValue(new URLSearchParams("session_id="))
+
+    render(<BillingCheckoutSuccessPage />)
+
+    await waitFor(() => expect(screen.getByText("Payment received")).toBeInTheDocument())
+    expect(screen.queryByText(/Order reference/)).not.toBeInTheDocument()
+  })
+
   it("confirms a token purchase when session_id matches a payment_history row, even with an active subscription", async () => {
     // The default /billing/subscription fixture is already "active" (see
     // `../../../../../features/billing/api/handlers.ts`'s fixtureSubscription),
@@ -64,15 +82,33 @@ describe("BillingCheckoutSuccessPage", () => {
     expect(screen.queryByText("You're all set")).not.toBeInTheDocument()
   })
 
-  it("confirms a subscription when session_id has no matching payment but the subscription is active", async () => {
-    mockSearchParams.mockReturnValue(new URLSearchParams("session_id=cs_test_sub_only"))
+  it("confirms a subscription when session_id matches the subscription's own stripe_checkout_session_id, with no matching payment", async () => {
+    // fixtureSubscription's stripe_checkout_session_id is "cs_test_fixture"
+    // (see ../../../../../features/billing/api/handlers.ts) and no
+    // payment_history fixture row references this session_id, so only the
+    // session-matched subscription branch can resolve this.
+    mockSearchParams.mockReturnValue(new URLSearchParams("session_id=cs_test_fixture"))
 
     render(<BillingCheckoutSuccessPage />)
 
     await waitFor(() => expect(screen.getByText("You're all set")).toBeInTheDocument())
     expect(screen.getByText("Pro")).toBeInTheDocument()
     expect(screen.getByText(/renews on/i)).toBeInTheDocument()
-    expect(screen.getByText(/Order reference: cs_test_sub_only/)).toBeInTheDocument()
+    expect(screen.getByText(/Order reference: cs_test_fixture/)).toBeInTheDocument()
+  })
+
+  it("keeps polling when session_id matches neither a payment record nor the subscription's stripe_checkout_session_id", async () => {
+    // The subscription fixture is active but its stripe_checkout_session_id
+    // is "cs_test_fixture", not this session_id — an active subscription
+    // that this checkout did not itself produce must not be mistaken for
+    // this session's confirmation (e.g. a stale/abandoned Checkout link for
+    // a user who already has an unrelated active subscription).
+    mockSearchParams.mockReturnValue(new URLSearchParams("session_id=cs_test_unrelated"))
+
+    render(<BillingCheckoutSuccessPage />)
+
+    await waitFor(() => expect(screen.getByText(/Confirming your payment/)).toBeInTheDocument())
+    expect(screen.queryByText("You're all set")).not.toBeInTheDocument()
   })
 
   it("renders a distinct retryable error state when a polled query fails", async () => {

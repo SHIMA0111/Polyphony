@@ -46,8 +46,14 @@ function formatDate(iso: string): string {
  * resolves first wins:
  *
  * - a *recurring* purchase is confirmed once {@link useSubscription} reports
- *   a status other than `"none"` — a subscription Checkout session always
- *   changes subscription state;
+ *   a subscription whose `stripe_checkout_session_id` equals this page's
+ *   `session_id` query parameter — matching Stripe's own Checkout Session
+ *   identity, the same way a token purchase is matched below, rather than
+ *   merely "some subscription is active" (that weaker check would also
+ *   fire for a user who already had an unrelated active subscription before
+ *   this particular checkout even started, e.g. one who abandons a plan
+ *   upgrade's Checkout and lands here via a stale link — this page must not
+ *   claim THIS session succeeded just because ANY subscription exists);
  * - a *token* purchase is confirmed once {@link usePaymentHistory} contains
  *   a row whose `stripe_reference_id` equals this page's `session_id` query
  *   parameter — matching Stripe's own Checkout Session identity, not a
@@ -60,10 +66,14 @@ function formatDate(iso: string): string {
  * payment_history row does not land until the later invoice.paid webhook,
  * well after checkout.session.completed.
  *
- * No `session_id` query parameter (a direct/bookmarked visit) renders a
- * neutral "purchase received" message with no polling at all — never
- * claiming a confirmed payment (nothing to confirm against) or a failure
- * (Stripe only redirects here on success).
+ * No `session_id` query parameter (a direct/bookmarked visit), OR one that
+ * is present but empty/whitespace-only (`?session_id=`, e.g. a
+ * misconfigured success URL that carries the literal query key with no
+ * value substituted), renders the same neutral "purchase received" message
+ * with no polling at all — never claiming a confirmed payment (nothing to
+ * confirm against) or a failure (Stripe only redirects here on success), and
+ * never getting stuck polling forever against an empty string no payment or
+ * subscription record could ever match.
  *
  * If a polled query errors outright, this renders a distinct retryable
  * error state (a manual "Try again" button) instead of silently continuing
@@ -73,7 +83,11 @@ function formatDate(iso: string): string {
  */
 function CheckoutSuccessContent() {
   const searchParams = useSearchParams()
-  const sessionId = searchParams.get("session_id")
+  // Trimmed and normalized to `null` when empty/whitespace-only, so
+  // `?session_id=` (present but valueless) follows the same "nothing to
+  // confirm" branch as no `session_id` at all, rather than polling forever
+  // against a string no payment or subscription record could ever match.
+  const sessionId = searchParams.get("session_id")?.trim() || null
   const queryClient = useQueryClient()
   const [attempts, setAttempts] = useState(0)
 
@@ -104,14 +118,22 @@ function CheckoutSuccessContent() {
   } = usePaymentHistory()
   const { data: plans } = usePlans()
 
-  const subscriptionActive = subscription !== undefined && subscription.status !== "none"
+  // Matches Stripe's own Checkout Session identity (see the doc comment
+  // above for why "any active subscription" is not sufficient): a
+  // subscription this session did not itself create/touch must not be
+  // mistaken for confirmation of this particular checkout.
+  const subscriptionMatchesSession =
+    sessionId !== null &&
+    subscription !== undefined &&
+    subscription.status !== "none" &&
+    subscription.stripe_checkout_session_id === sessionId
   const matchingPayment =
     sessionId !== null
       ? paymentHistory?.pages
           .flatMap((page) => page.payments)
           .find((payment) => payment.stripe_reference_id === sessionId)
       : undefined
-  const resolved = sessionId !== null && (matchingPayment !== undefined || subscriptionActive)
+  const resolved = sessionId !== null && (matchingPayment !== undefined || subscriptionMatchesSession)
 
   const isPending = sessionId !== null && !resolved && (subscriptionIsPending || paymentHistoryIsPending)
   const isError = sessionId !== null && !resolved && (subscriptionIsError || paymentHistoryIsError)
@@ -206,7 +228,7 @@ function CheckoutSuccessContent() {
     )
   }
 
-  if (subscriptionActive && subscription) {
+  if (subscriptionMatchesSession && subscription) {
     const planName =
       plans?.find((plan) => plan.code === subscription.plan_code)?.name ??
       subscription.plan_code ??

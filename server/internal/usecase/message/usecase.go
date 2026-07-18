@@ -608,14 +608,19 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 // hold at least domainroom.RoleAdmin in the room (a moderation delete by an
 // admin or master). Any other caller — including a non-sender member below
 // admin — gets domain.ErrForbidden. It returns domain.ErrNotFound if the
-// message does not exist or does not belong to roomID. On success it first
-// invalidates the room's cached context summary, then delegates to
-// msgRepo.Delete, which performs the soft delete (see
-// domainmessage.MessageRepository.Delete) — invalidate-before-mutate, not
-// the other way around; see the inline comment above the summaryRepo.
-// DeleteByRoom call for why. A failure in that first step is returned to
-// the caller and the message is NOT deleted — callers must not assume the
-// delete happened just because this method returned an error.
+// message does not exist or does not belong to roomID. On success it
+// delegates to msgRepo.DeleteAndInvalidateSummary, which atomically soft-
+// deletes the message AND invalidates the room's cached context summary in
+// a single database transaction (see
+// domainmessage.MessageRepository.DeleteAndInvalidateSummary's GoDoc for
+// why neither a separate invalidate-then-mutate nor mutate-then-invalidate
+// call sequence is safe: each one-sided ordering leaves open a race where a
+// concurrent summarization can either resurrect the about-to-be-removed
+// content into a freshly cached summary, or leave a stale, pre-delete
+// summary reachable indefinitely). A failure is returned to the caller and,
+// per that method's all-or-nothing contract, NEITHER the message nor the
+// summary cache was mutated — callers must not assume the delete happened
+// just because this method returned an error.
 //
 // DeleteMessage intentionally does not use domainroom.Action/Allows: the
 // Action enum has no message-level delete action, so the owner-or-admin
@@ -641,32 +646,7 @@ func (u *MessageUsecase) DeleteMessage(ctx context.Context, userID, roomID, mess
 		return domain.ErrForbidden
 	}
 
-	// Invalidate the room's cached context summary (Step 50) BEFORE
-	// deleting the message, not after: a deleted message may fall within
-	// the previously-summarized range, and coarsely wiping the whole room's
-	// cache on every delete (rather than checking whether it actually does)
-	// trades a possibly-unnecessary re-summarization for guaranteed
-	// correctness. This must run first because the alternative
-	// (mutate-then-invalidate) has a privacy gap: if the invalidation step
-	// failed after the message was already deleted, a summary computed
-	// before the delete — potentially built from this message's now-deleted
-	// content — would remain the cached, servable summary indefinitely,
-	// with no error path left to retry only the invalidation (returning the
-	// error at that point cannot undo the already-committed delete).
-	// Invalidating first instead means a DeleteByRoom failure here leaves
-	// the message NOT YET deleted, so the caller's error handling naturally
-	// covers both steps: nothing has changed, and a retry redoes both from
-	// scratch. The only cost is over-invalidation if the subsequent
-	// msgRepo.Delete itself then fails (the summary is wiped for a delete
-	// that never happened) — harmless, since the next context-assembly call
-	// simply recomputes a fresh summary from the (unchanged) current
-	// messages, at worst one avoidable AI call, never incorrect content.
-	if err := u.summaryRepo.DeleteByRoom(ctx, roomID); err != nil {
-		slog.Error("failed to invalidate cached context summary", "error", err, "room_id", roomID)
-		return err
-	}
-
-	if err := u.msgRepo.Delete(ctx, messageID); err != nil {
+	if err := u.msgRepo.DeleteAndInvalidateSummary(ctx, messageID, roomID); err != nil {
 		return err
 	}
 
@@ -679,15 +659,24 @@ func (u *MessageUsecase) DeleteMessage(ctx context.Context, userID, roomID, mess
 // domainroom.ActionInvokeAI (member or above; a reader or guest may not
 // toggle this flag) — the same role gate SendAIMessage/RegenerateAIMessage
 // use. It returns domain.ErrNotFound if the message does not exist or does
-// not belong to roomID. On success it first invalidates the room's cached
-// context summary, then persists the change via msgRepo.UpdateExcludeFromAI
-// and returns the mutated in-memory Message (mirroring
+// not belong to roomID. On success it delegates to
+// msgRepo.UpdateExcludeFromAIAndInvalidateSummary, which atomically toggles
+// the flag AND invalidates the room's cached context summary in a single
+// database transaction — see DeleteMessage's doc comment (and
+// domainmessage.MessageRepository.DeleteAndInvalidateSummary's GoDoc, which
+// UpdateExcludeFromAIAndInvalidateSummary's contract mirrors) for why a
+// one-sided invalidate-then-mutate or mutate-then-invalidate call sequence
+// is unsafe. It then returns the mutated in-memory Message (mirroring
 // RegenerateAIMessage's pattern of returning the updated struct rather than
-// re-fetching) — invalidate-before-mutate, not the other way around; see
-// DeleteMessage's identical ordering and its inline comment for the shared
-// rationale. A failure in that first step is returned to the caller and
-// the flag is NOT toggled — callers must not assume the toggle happened
-// just because this method returned an error.
+// re-fetching), stamping UpdatedAt with a local timestamp taken right after
+// the call returns (the combined method computes its own persisted
+// timestamp via SQL NOW() rather than accepting one from the caller, so
+// this is an approximation, not the exact persisted value — acceptable
+// here since no caller depends on byte-exact timestamp equality). A
+// failure is returned to the caller and, per that method's all-or-nothing
+// contract, NEITHER the flag nor the summary cache was mutated — callers
+// must not assume the toggle happened just because this method returned an
+// error.
 func (u *MessageUsecase) SetExcludeFromAI(ctx context.Context, userID, roomID, messageID string, exclude bool) (*domainmessage.Message, error) {
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
@@ -705,24 +694,11 @@ func (u *MessageUsecase) SetExcludeFromAI(ctx context.Context, userID, roomID, m
 		return nil, domain.ErrNotFound
 	}
 
-	// Invalidate the room's cached context summary (Step 50) BEFORE
-	// toggling the flag, not after: see DeleteMessage's identical
-	// invalidate-first ordering and its inline comment for the full
-	// rationale (the same privacy gap an invalidation failure after an
-	// already-applied mutation would otherwise leave, and the same
-	// harmless-over-invalidation tradeoff if the subsequent
-	// msgRepo.UpdateExcludeFromAI then fails).
-	if err := u.summaryRepo.DeleteByRoom(ctx, roomID); err != nil {
-		slog.Error("failed to invalidate cached context summary", "error", err, "room_id", roomID)
-		return nil, err
-	}
-
-	now := time.Now()
-	if err := u.msgRepo.UpdateExcludeFromAI(ctx, messageID, exclude, now); err != nil {
+	if err := u.msgRepo.UpdateExcludeFromAIAndInvalidateSummary(ctx, messageID, exclude, roomID); err != nil {
 		return nil, err
 	}
 	msg.ExcludeFromAI = exclude
-	msg.UpdatedAt = now
+	msg.UpdatedAt = time.Now()
 
 	return msg, nil
 }

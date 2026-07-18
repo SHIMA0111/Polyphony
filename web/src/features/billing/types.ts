@@ -85,10 +85,19 @@ export type SubscriptionStatus = "active" | "trialing" | "past_due" | "canceled"
 /**
  * The current user's subscription, returned by `GET /billing/subscription`
  * and `POST /billing/subscription/cancel` (`SubscriptionResponse`). All
- * fields besides `status`/`cancel_at_period_end` are `null` only in this
- * client-side `"none"` mapping — the server's own `200` response always
- * populates `plan_code`/`monthly_token_allocation`/`current_period_start`/
- * `current_period_end` (only `canceled_at` is nullable server-side).
+ * fields besides `status`/`cancel_at_period_end`/`stripe_checkout_session_id`
+ * are `null` only in this client-side `"none"` mapping — the server's own
+ * `200` response always populates `plan_code`/`monthly_token_allocation`/
+ * `current_period_start`/`current_period_end` (only `canceled_at` is
+ * nullable server-side).
+ *
+ * `stripe_checkout_session_id` is the Stripe Checkout Session ID that
+ * created or most recently updated this subscription, mirroring
+ * `Payment.stripe_reference_id`'s role for a token purchase: the checkout
+ * success page (`billing/checkout/success/page.tsx`) matches it against its
+ * own `session_id` query parameter to confirm THIS subscription — not some
+ * other, unrelated one already active for the user — is what its own
+ * checkout produced.
  */
 export interface Subscription {
   status: SubscriptionStatus
@@ -98,6 +107,7 @@ export interface Subscription {
   current_period_end: string | null
   cancel_at_period_end: boolean
   canceled_at: string | null
+  stripe_checkout_session_id: string
 }
 
 /** Response body for `POST /billing/checkout-session`. */

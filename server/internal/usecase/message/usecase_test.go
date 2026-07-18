@@ -912,21 +912,19 @@ func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 }
 
 // TestDeleteMessagePropagatesSummaryInvalidationFailure proves that
-// DeleteMessage surfaces a summaryRepo.DeleteByRoom failure to the caller
-// instead of only logging it, and that -- per the invalidate-before-mutate
-// ordering documented on DeleteMessage -- the message has NOT been deleted
-// when that happens: invalidation runs before the soft delete, so a failure
-// there means the mutation never ran at all, rather than having already
-// happened un-invalidated.
+// DeleteMessage surfaces a msgRepo.DeleteAndInvalidateSummary failure to the
+// caller instead of only logging it, and that -- per that method's
+// all-or-nothing transaction contract -- the message has NOT been deleted
+// when that happens: nothing is mutated when the combined call fails,
+// rather than the soft delete having already gone through un-invalidated.
 func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
-	msgRepo := &mocks.MessageRepo{}
+	invalidationErr := errors.New("boom: summary invalidation failed")
+	msgRepo := &mocks.MessageRepo{DeleteAndInvalidateSummaryErr: invalidationErr}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
-	invalidationErr := errors.New("boom: summary invalidation failed")
-	summaryRepo := &mocks.ContextSummaryRepo{DeleteByRoomErr: invalidationErr}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, summaryRepo, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -938,15 +936,15 @@ func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
 		t.Fatalf("expected DeleteMessage to propagate the summary invalidation error, got %v", err)
 	}
 
-	// The soft delete must NOT have gone through: invalidation runs first,
-	// so a failure there means DeleteMessage returned before ever calling
-	// msgRepo.Delete.
+	// Nothing must have been mutated: the combined call is all-or-nothing,
+	// so a failure means DeleteMessage returned without the soft delete
+	// having taken effect.
 	notDeleted, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
 	if err != nil {
 		t.Fatalf("GetByID after DeleteMessage: %v", err)
 	}
 	if notDeleted.IsDeleted {
-		t.Fatal("expected the message to remain NOT deleted when invalidation fails before the mutation runs")
+		t.Fatal("expected the message to remain NOT deleted when the combined delete-and-invalidate call fails")
 	}
 }
 
@@ -1051,20 +1049,20 @@ func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
 }
 
 // TestSetExcludeFromAIPropagatesSummaryInvalidationFailure proves that
-// SetExcludeFromAI surfaces a summaryRepo.DeleteByRoom failure to the
-// caller, and that -- per the invalidate-before-mutate ordering documented
-// on SetExcludeFromAI -- the flag has NOT been toggled when that happens:
-// invalidation runs before msgRepo.UpdateExcludeFromAI, so a failure there
-// means the mutation never ran at all.
+// SetExcludeFromAI surfaces a
+// msgRepo.UpdateExcludeFromAIAndInvalidateSummary failure to the caller, and
+// that -- per that method's all-or-nothing transaction contract -- the flag
+// has NOT been toggled when that happens: nothing is mutated when the
+// combined call fails, rather than the toggle having already gone through
+// un-invalidated.
 func TestSetExcludeFromAIPropagatesSummaryInvalidationFailure(t *testing.T) {
-	msgRepo := &mocks.MessageRepo{}
+	invalidationErr := errors.New("boom: summary invalidation failed")
+	msgRepo := &mocks.MessageRepo{UpdateExcludeFromAIAndInvalidateSummaryErr: invalidationErr}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
-	invalidationErr := errors.New("boom: summary invalidation failed")
-	summaryRepo := &mocks.ContextSummaryRepo{DeleteByRoomErr: invalidationErr}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, summaryRepo, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -1076,15 +1074,15 @@ func TestSetExcludeFromAIPropagatesSummaryInvalidationFailure(t *testing.T) {
 		t.Fatalf("expected SetExcludeFromAI to propagate the summary invalidation error, got %v", err)
 	}
 
-	// The underlying toggle must NOT have gone through: invalidation runs
-	// first, so a failure there means SetExcludeFromAI returned before ever
-	// calling msgRepo.UpdateExcludeFromAI.
+	// Nothing must have been mutated: the combined call is all-or-nothing,
+	// so a failure means SetExcludeFromAI returned without the toggle
+	// having taken effect.
 	notUpdated, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
 	if err != nil {
 		t.Fatalf("GetByID after SetExcludeFromAI: %v", err)
 	}
 	if notUpdated.ExcludeFromAI {
-		t.Fatal("expected ExcludeFromAI to remain false when invalidation fails before the mutation runs")
+		t.Fatal("expected ExcludeFromAI to remain false when the combined update-and-invalidate call fails")
 	}
 }
 

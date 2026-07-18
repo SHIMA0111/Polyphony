@@ -242,6 +242,112 @@ func (r *MessageRepository) UpdateExcludeFromAI(ctx context.Context, id string, 
 	return nil
 }
 
+// invalidateSummaryTx runs, inside tx, the exact same summary-invalidation
+// statement ContextSummaryRepository.DeleteByRoom runs (delete the cached
+// summary for roomID, if any, and atomically bump its invalidation revision
+// via the same data-modifying-CTE-feeding-INSERT), so that a caller
+// composing it into its own transaction gets identical semantics to a
+// standalone DeleteByRoom call. It does not take the pg_advisory_xact_lock
+// itself -- the caller must take it first via lockRoomSummaryTx, exactly
+// once per transaction, since both the message mutation and this statement
+// need to run under that same lock.
+func invalidateSummaryTx(ctx context.Context, tx pgx.Tx, roomID string) error {
+	_, err := tx.Exec(ctx,
+		`WITH deleted AS (
+		     DELETE FROM message_context_summaries WHERE room_id = $1
+		 )
+		 INSERT INTO context_summary_revisions (room_id, revision) VALUES ($1, 1)
+		 ON CONFLICT (room_id) DO UPDATE SET revision = context_summary_revisions.revision + 1`,
+		roomID,
+	)
+	return err
+}
+
+// lockRoomSummaryTx takes the room-scoped pg_advisory_xact_lock that
+// ContextSummaryRepository.Upsert/DeleteByRoom also take before their own
+// summary writes, so that DeleteAndInvalidateSummary/
+// UpdateExcludeFromAIAndInvalidateSummary's summary-invalidation half
+// serializes against a concurrently-committing Upsert for the same room --
+// see ContextSummaryRepository.Upsert's doc comment for the interleaving
+// this closes.
+func lockRoomSummaryTx(ctx context.Context, tx pgx.Tx, roomID string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, roomID)
+	return err
+}
+
+// DeleteAndInvalidateSummary implements
+// message.MessageRepository.DeleteAndInvalidateSummary (see its GoDoc for
+// the atomicity contract and the race it closes). It runs the same soft-
+// delete statement Delete uses and the same summary-delete-and-revision-
+// bump statement ContextSummaryRepository.DeleteByRoom uses, both inside a
+// single transaction gated by the room-scoped advisory lock, so they commit
+// or roll back together.
+func (r *MessageRepository) DeleteAndInvalidateSummary(ctx context.Context, messageID, roomID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := lockRoomSummaryTx(ctx, tx, roomID); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE messages SET is_deleted = true, updated_at = NOW() WHERE id = $1 AND is_deleted = false`, messageID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	if err := invalidateSummaryTx(ctx, tx, roomID); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// UpdateExcludeFromAIAndInvalidateSummary implements
+// message.MessageRepository.UpdateExcludeFromAIAndInvalidateSummary (see its
+// GoDoc for the atomicity contract and the race it closes). It runs the
+// same flag-toggle statement UpdateExcludeFromAI uses and the same
+// summary-delete-and-revision-bump statement
+// ContextSummaryRepository.DeleteByRoom uses, both inside a single
+// transaction gated by the room-scoped advisory lock, so they commit or
+// roll back together.
+func (r *MessageRepository) UpdateExcludeFromAIAndInvalidateSummary(ctx context.Context, messageID string, exclude bool, roomID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := lockRoomSummaryTx(ctx, tx, roomID); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE messages SET exclude_from_ai = $1, updated_at = NOW() WHERE id = $2`,
+		exclude, messageID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	if err := invalidateSummaryTx(ctx, tx, roomID); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
 // Delete soft-deletes a message by its unique identifier: it sets
 // is_deleted = true and updated_at = NOW() rather than physically removing
 // the row, so a soft-deleted message remains fetchable via GetByID but is

@@ -40,6 +40,36 @@ type MessageRepo struct {
 	// context-fetch failure (e.g. a database error) independent of the
 	// fake's other methods.
 	ListByRoomErr error
+	// DeleteAndInvalidateSummaryErr, if non-nil, makes
+	// DeleteAndInvalidateSummary return it instead of succeeding, without
+	// soft-deleting the message -- mirroring
+	// postgres.MessageRepository.DeleteAndInvalidateSummary's single-
+	// transaction all-or-nothing outcome when the summary-invalidation half
+	// of it fails (e.g. a simulated connection error), for tests exercising
+	// callers' handling of that failure (MessageUsecase.DeleteMessage
+	// propagates it; see its doc comment).
+	DeleteAndInvalidateSummaryErr error
+	// UpdateExcludeFromAIAndInvalidateSummaryErr is
+	// DeleteAndInvalidateSummaryErr's counterpart for
+	// UpdateExcludeFromAIAndInvalidateSummary (MessageUsecase.
+	// SetExcludeFromAI propagates it; see its doc comment).
+	UpdateExcludeFromAIAndInvalidateSummaryErr error
+	// SummaryRepo, if set, is invoked by DeleteAndInvalidateSummary/
+	// UpdateExcludeFromAIAndInvalidateSummary to actually invalidate the
+	// room's cached summary, mirroring how postgres.MessageRepository's
+	// combined methods reach into the same tables
+	// ContextSummaryRepository.DeleteByRoom writes to. This fake otherwise
+	// has no cached-summary state of its own to keep in sync, so wiring a
+	// *ContextSummaryRepo here (as PaymentRepo wires a *BalanceRepo) is what
+	// lets a test observe, through that same summaryRepo instance, that a
+	// DeleteMessage/SetExcludeFromAI call actually invalidated the cache --
+	// see TestAssembleAIContextInvalidationForcesFreshSummary. If unset
+	// (the common case, since most tests don't assert on cache-invalidation
+	// side effects), the combined methods only mutate the message. If
+	// SummaryRepo.DeleteByRoom returns an error, the combined method rolls
+	// back its own message mutation and returns that error, preserving the
+	// all-or-nothing contract end to end.
+	SummaryRepo *ContextSummaryRepo
 }
 
 func (m *MessageRepo) ensureInit() {
@@ -206,6 +236,46 @@ func (m *MessageRepo) UpdateExcludeFromAI(_ context.Context, id string, exclude 
 	return nil
 }
 
+// UpdateExcludeFromAIAndInvalidateSummary is UpdateExcludeFromAI's
+// all-or-nothing counterpart, mirroring
+// postgres.MessageRepository.UpdateExcludeFromAIAndInvalidateSummary.
+// Existence is checked before UpdateExcludeFromAIAndInvalidateSummaryErr so
+// a not-found message never masks (or is masked by) an injected
+// invalidation failure. If UpdateExcludeFromAIAndInvalidateSummaryErr is
+// set, it is returned and the flag is left untouched. Otherwise, if
+// SummaryRepo is wired (see its doc comment), this calls its DeleteByRoom
+// to actually invalidate roomID's cached summary; a failure there rolls
+// back the flag toggle and returns that error, so a caller observing this
+// fake sees the same all-or-nothing outcome the real transaction gives.
+func (m *MessageRepo) UpdateExcludeFromAIAndInvalidateSummary(ctx context.Context, id string, exclude bool, roomID string) error {
+	m.mu.Lock()
+	msg, ok := m.Messages[id]
+	if !ok {
+		m.mu.Unlock()
+		return domain.ErrNotFound
+	}
+	if m.UpdateExcludeFromAIAndInvalidateSummaryErr != nil {
+		m.mu.Unlock()
+		return m.UpdateExcludeFromAIAndInvalidateSummaryErr
+	}
+	prevExclude, prevUpdatedAt := msg.ExcludeFromAI, msg.UpdatedAt
+	msg.ExcludeFromAI = exclude
+	msg.UpdatedAt = time.Now()
+	summaryRepo := m.SummaryRepo
+	m.mu.Unlock()
+
+	if summaryRepo == nil {
+		return nil
+	}
+	if err := summaryRepo.DeleteByRoom(ctx, roomID); err != nil {
+		m.mu.Lock()
+		msg.ExcludeFromAI, msg.UpdatedAt = prevExclude, prevUpdatedAt
+		m.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
 // Delete soft-deletes a message by ID, setting IsDeleted rather than
 // removing it from Messages, mirroring postgres.MessageRepository.Delete.
 // Returns domain.ErrNotFound if the message does not exist or is already
@@ -220,6 +290,45 @@ func (m *MessageRepo) Delete(_ context.Context, id string) error {
 	}
 	msg.IsDeleted = true
 	msg.UpdatedAt = time.Now()
+	return nil
+}
+
+// DeleteAndInvalidateSummary is Delete's all-or-nothing counterpart,
+// mirroring postgres.MessageRepository.DeleteAndInvalidateSummary: see
+// UpdateExcludeFromAIAndInvalidateSummary's doc comment for the SummaryRepo
+// wiring this uses to invalidate roomID's cached summary. Existence is
+// checked before DeleteAndInvalidateSummaryErr so a not-found message never
+// masks (or is masked by) an injected invalidation failure. If
+// DeleteAndInvalidateSummaryErr is set, it is returned and the message is
+// left NOT deleted. Otherwise, if SummaryRepo.DeleteByRoom fails, the soft
+// delete is rolled back and that error is returned, preserving the
+// all-or-nothing contract.
+func (m *MessageRepo) DeleteAndInvalidateSummary(ctx context.Context, id string, roomID string) error {
+	m.mu.Lock()
+	msg, ok := m.Messages[id]
+	if !ok || msg.IsDeleted {
+		m.mu.Unlock()
+		return domain.ErrNotFound
+	}
+	if m.DeleteAndInvalidateSummaryErr != nil {
+		m.mu.Unlock()
+		return m.DeleteAndInvalidateSummaryErr
+	}
+	prevDeleted, prevUpdatedAt := msg.IsDeleted, msg.UpdatedAt
+	msg.IsDeleted = true
+	msg.UpdatedAt = time.Now()
+	summaryRepo := m.SummaryRepo
+	m.mu.Unlock()
+
+	if summaryRepo == nil {
+		return nil
+	}
+	if err := summaryRepo.DeleteByRoom(ctx, roomID); err != nil {
+		m.mu.Lock()
+		msg.IsDeleted, msg.UpdatedAt = prevDeleted, prevUpdatedAt
+		m.mu.Unlock()
+		return err
+	}
 	return nil
 }
 

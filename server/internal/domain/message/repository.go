@@ -48,12 +48,56 @@ type MessageRepository interface {
 	// Returns ErrNotFound if the message does not exist.
 	UpdateExcludeFromAI(ctx context.Context, id string, exclude bool, updatedAt time.Time) error
 
+	// UpdateExcludeFromAIAndInvalidateSummary atomically sets messageID's
+	// exclude_from_ai flag (per UpdateExcludeFromAI's semantics) and
+	// invalidates roomID's cached AI context summary (per
+	// ai.ContextSummaryRepository.DeleteByRoom's semantics), as a single
+	// all-or-nothing operation, for exactly the same reason
+	// DeleteAndInvalidateSummary must be atomic -- see that method's doc
+	// comment for the race a one-sided ordering leaves open in either
+	// direction, and why only same-transaction atomicity closes it.
+	//
+	// Returns ErrNotFound if messageID does not exist; on that path nothing
+	// is mutated, including the summary invalidation.
+	UpdateExcludeFromAIAndInvalidateSummary(ctx context.Context, messageID string, exclude bool, roomID string) error
+
 	// Delete soft-deletes a message by ID: it sets is_deleted = true (and
 	// updates updated_at) rather than physically removing the row. A
 	// soft-deleted message is excluded from ListByRoom, ListByRoomUpTo, and
 	// AI context assembly, but remains fetchable via GetByID. Returns
 	// ErrNotFound if the message does not exist or is already deleted.
 	Delete(ctx context.Context, id string) error
+
+	// DeleteAndInvalidateSummary atomically soft-deletes messageID (per
+	// Delete's semantics) and invalidates roomID's cached AI context summary
+	// (per ai.ContextSummaryRepository.DeleteByRoom's semantics: the cached
+	// summary is deleted and the room's invalidation revision is bumped),
+	// as a single all-or-nothing operation.
+	//
+	// This atomicity is required, not merely convenient: running the two
+	// steps as separate calls leaves a race window open no matter which
+	// order they run in. Invalidate-then-mutate (the prior implementation)
+	// has a window where a summarization already reading the pre-delete
+	// messages can start after the revision bump but finish and Upsert
+	// before the message mutation commits, caching a fresh summary that
+	// still contains the about-to-be-removed content -- the invalidation
+	// happened, but too early to invalidate the summary it was meant to
+	// invalidate. Mutate-then-invalidate has the opposite failure: if the
+	// mutation commits but the separate invalidation call then fails, a
+	// summary computed from the now-stale (pre-mutation) content remains
+	// the cached, servable summary indefinitely, with no way to retry only
+	// the invalidation half. Only performing both statements inside one
+	// database transaction -- as the postgres implementation does, gated by
+	// the same room-scoped advisory lock ai.ContextSummaryRepository's
+	// Upsert/DeleteByRoom take, so this also serializes against any
+	// concurrently-committing Upsert for roomID -- closes both directions:
+	// the message mutation and the summary invalidation either both commit
+	// or neither does.
+	//
+	// Returns ErrNotFound if messageID does not exist or is already deleted
+	// (mirroring Delete); on that path nothing is mutated, including the
+	// summary invalidation.
+	DeleteAndInvalidateSummary(ctx context.Context, messageID, roomID string) error
 
 	// ReserveSequenceRange atomically reserves count contiguous sequence
 	// numbers for the given room and returns the first one; the caller owns

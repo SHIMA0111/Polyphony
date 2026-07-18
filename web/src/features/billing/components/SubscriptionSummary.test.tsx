@@ -64,6 +64,7 @@ describe("SubscriptionSummary", () => {
       current_period_end: "2026-02-01T00:00:00Z",
       cancel_at_period_end: true,
       canceled_at: null,
+      stripe_checkout_session_id: "cs_test_canceling",
     }
     server.use(
       http.get("/api/proxy/billing/subscription", () => {

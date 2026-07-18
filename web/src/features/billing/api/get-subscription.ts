@@ -14,6 +14,7 @@ const NO_SUBSCRIPTION: Subscription = {
   current_period_end: null,
   cancel_at_period_end: false,
   canceled_at: null,
+  stripe_checkout_session_id: "",
 }
 
 /**

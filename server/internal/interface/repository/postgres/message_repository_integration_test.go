@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	domainuser "github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
@@ -720,5 +721,219 @@ func TestMessageRepository_CreateBatch(t *testing.T) {
 	}
 	if count != 4 {
 		t.Fatalf("expected CreateBatch's failure to roll back entirely (still 4 messages), got %d", count)
+	}
+}
+
+// seedMessageAndSummary creates a single message in rm and caches a summary
+// for rm via summaryRepo.Upsert (against revision 0, the starting revision
+// for a room with no prior invalidation history), for
+// DeleteAndInvalidateSummary/UpdateExcludeFromAIAndInvalidateSummary tests
+// that need a pre-existing cached summary to prove gets invalidated.
+func seedMessageAndSummary(ctx context.Context, t *testing.T, msgRepo *MessageRepository, summaryRepo *ContextSummaryRepository, rm *domainroom.Room) *domainmessage.Message {
+	t.Helper()
+
+	now := time.Now()
+	msg := &domainmessage.Message{
+		ID:         uuid.New().String(),
+		RoomID:     rm.ID,
+		SenderID:   &rm.OwnerID,
+		Content:    "to be mutated",
+		Type:       domainmessage.MessageTypeHuman,
+		Status:     domainmessage.MessageStatusCompleted,
+		Sequence:   1,
+		Visibility: domainmessage.MessageVisibilityPublic,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := msgRepo.Create(ctx, msg); err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	if err := summaryRepo.Upsert(ctx, &ai.ContextSummary{
+		RoomID:              rm.ID,
+		Model:               "gpt-5-mini",
+		CoveredUpToSequence: msg.Sequence,
+		SummaryText:         "cached summary covering the room so far",
+		TokenCount:          10,
+	}, 0); err != nil {
+		t.Fatalf("seed cached summary: %v", err)
+	}
+	if _, err := summaryRepo.Get(ctx, rm.ID); err != nil {
+		t.Fatalf("expected the seeded summary to be cached, Get failed: %v", err)
+	}
+
+	return msg
+}
+
+// TestMessageRepository_DeleteAndInvalidateSummary proves the atomic
+// success path: the message is soft-deleted, the room's cached summary is
+// gone, and its invalidation revision has advanced by 1 -- all as one
+// transaction (see domainmessage.MessageRepository.
+// DeleteAndInvalidateSummary's GoDoc for why this must be atomic).
+func TestMessageRepository_DeleteAndInvalidateSummary(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "delete-invalidate-owner")
+	msg := seedMessageAndSummary(ctx, t, msgRepo, summaryRepo, rm)
+
+	revisionBefore, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision before delete: %v", err)
+	}
+
+	if err := msgRepo.DeleteAndInvalidateSummary(ctx, msg.ID, rm.ID); err != nil {
+		t.Fatalf("DeleteAndInvalidateSummary failed: %v", err)
+	}
+
+	got, err := msgRepo.GetByID(ctx, msg.ID, rm.OwnerID)
+	if err != nil {
+		t.Fatalf("GetByID after DeleteAndInvalidateSummary: %v", err)
+	}
+	if !got.IsDeleted {
+		t.Error("expected the message to be soft-deleted")
+	}
+
+	if _, err := summaryRepo.Get(ctx, rm.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected the cached summary to be gone, Get returned %v", err)
+	}
+
+	revisionAfter, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision after delete: %v", err)
+	}
+	if revisionAfter != revisionBefore+1 {
+		t.Errorf("revision = %d, want %d (revisionBefore + 1)", revisionAfter, revisionBefore+1)
+	}
+}
+
+// TestMessageRepository_DeleteAndInvalidateSummaryNotFoundLeavesEverythingIntact
+// proves the atomic failure path: an unknown messageID returns
+// domain.ErrNotFound and leaves BOTH the (nonexistent) message mutation and
+// the cached summary/revision completely untouched -- the all-or-nothing
+// guarantee that motivated combining the two statements into one
+// transaction in the first place.
+func TestMessageRepository_DeleteAndInvalidateSummaryNotFoundLeavesEverythingIntact(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "delete-invalidate-notfound-owner")
+	seedMessageAndSummary(ctx, t, msgRepo, summaryRepo, rm)
+
+	revisionBefore, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision before delete: %v", err)
+	}
+
+	err = msgRepo.DeleteAndInvalidateSummary(ctx, uuid.New().String(), rm.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound for an unknown message ID, got %v", err)
+	}
+
+	if _, err := summaryRepo.Get(ctx, rm.ID); err != nil {
+		t.Errorf("expected the cached summary to survive a failed delete, Get returned %v", err)
+	}
+	revisionAfter, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision after failed delete: %v", err)
+	}
+	if revisionAfter != revisionBefore {
+		t.Errorf("revision = %d, want unchanged %d after a failed delete", revisionAfter, revisionBefore)
+	}
+}
+
+// TestMessageRepository_UpdateExcludeFromAIAndInvalidateSummary proves the
+// atomic success path: exclude_from_ai is set, the room's cached summary is
+// gone, and its invalidation revision has advanced by 1 -- all as one
+// transaction (see domainmessage.MessageRepository.
+// UpdateExcludeFromAIAndInvalidateSummary's GoDoc for why this must be
+// atomic).
+func TestMessageRepository_UpdateExcludeFromAIAndInvalidateSummary(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "exclude-invalidate-owner")
+	msg := seedMessageAndSummary(ctx, t, msgRepo, summaryRepo, rm)
+
+	revisionBefore, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision before update: %v", err)
+	}
+
+	if err := msgRepo.UpdateExcludeFromAIAndInvalidateSummary(ctx, msg.ID, true, rm.ID); err != nil {
+		t.Fatalf("UpdateExcludeFromAIAndInvalidateSummary failed: %v", err)
+	}
+
+	got, err := msgRepo.GetByID(ctx, msg.ID, rm.OwnerID)
+	if err != nil {
+		t.Fatalf("GetByID after UpdateExcludeFromAIAndInvalidateSummary: %v", err)
+	}
+	if !got.ExcludeFromAI {
+		t.Error("expected exclude_from_ai to be set")
+	}
+
+	if _, err := summaryRepo.Get(ctx, rm.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected the cached summary to be gone, Get returned %v", err)
+	}
+
+	revisionAfter, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision after update: %v", err)
+	}
+	if revisionAfter != revisionBefore+1 {
+		t.Errorf("revision = %d, want %d (revisionBefore + 1)", revisionAfter, revisionBefore+1)
+	}
+}
+
+// TestMessageRepository_UpdateExcludeFromAIAndInvalidateSummaryNotFoundLeavesEverythingIntact
+// proves the atomic failure path: an unknown messageID returns
+// domain.ErrNotFound and leaves BOTH the (nonexistent) flag mutation and the
+// cached summary/revision completely untouched.
+func TestMessageRepository_UpdateExcludeFromAIAndInvalidateSummaryNotFoundLeavesEverythingIntact(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "exclude-invalidate-notfound-owner")
+	seedMessageAndSummary(ctx, t, msgRepo, summaryRepo, rm)
+
+	revisionBefore, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision before update: %v", err)
+	}
+
+	err = msgRepo.UpdateExcludeFromAIAndInvalidateSummary(ctx, uuid.New().String(), true, rm.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound for an unknown message ID, got %v", err)
+	}
+
+	if _, err := summaryRepo.Get(ctx, rm.ID); err != nil {
+		t.Errorf("expected the cached summary to survive a failed update, Get returned %v", err)
+	}
+	revisionAfter, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision after failed update: %v", err)
+	}
+	if revisionAfter != revisionBefore {
+		t.Errorf("revision = %d, want unchanged %d after a failed update", revisionAfter, revisionBefore)
 	}
 }

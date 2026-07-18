@@ -80,20 +80,29 @@ type TransactionPage struct {
 // the subscription has ended yet — Status/CanceledAt only flip once Stripe's
 // webhook confirms the period actually ended.
 type Subscription struct {
-	ID                     string
-	UserID                 string
-	StripeCustomerID       string
-	StripeSubscriptionID   string
-	StripePriceID          string
-	PlanCode               string
-	Status                 string
-	MonthlyTokenAllocation int64
-	CurrentPeriodStart     time.Time
-	CurrentPeriodEnd       time.Time
-	CancelAtPeriodEnd      bool
-	CanceledAt             *time.Time
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	ID                   string
+	UserID               string
+	StripeCustomerID     string
+	StripeSubscriptionID string
+	StripePriceID        string
+	PlanCode             string
+	Status               string
+	// StripeCheckoutSessionID is the Stripe Checkout Session ID (cs_...) of
+	// the checkout.session.completed event that created or most recently
+	// updated this subscription (see CheckoutSessionData.SessionID). The web
+	// checkout success page matches it against the "session_id" query
+	// parameter Stripe's redirect carries, mirroring how
+	// PaymentRecord.StripeReferenceID confirms a token-purchase payment: a
+	// subscription this session did not itself create/touch must not be
+	// mistaken for confirmation of an unrelated, still-pending checkout.
+	StripeCheckoutSessionID string
+	MonthlyTokenAllocation  int64
+	CurrentPeriodStart      time.Time
+	CurrentPeriodEnd        time.Time
+	CancelAtPeriodEnd       bool
+	CanceledAt              *time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 // PaymentKind identifies what a PaymentRecord paid for.

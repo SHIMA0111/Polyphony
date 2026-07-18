@@ -323,6 +323,12 @@ func TestAssembleAIContextInvalidationForcesFreshSummary(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 	summaryRepo := &mocks.ContextSummaryRepo{}
+	// SetExcludeFromAI below now invalidates the cache via
+	// msgRepo.UpdateExcludeFromAIAndInvalidateSummary rather than a
+	// separate summaryRepo call, so msgRepo needs to be wired to the same
+	// summaryRepo instance for this test's cache-invalidation assertion to
+	// observe the effect (see mocks.MessageRepo.SummaryRepo's doc comment).
+	msgRepo.SummaryRepo = summaryRepo
 
 	gw := &mocks.LLMGateway{
 		Models:                []ai.ModelInfo{{ID: "gpt-5-mini", ContextWindow: 8000, SupportsImageInput: true}},
