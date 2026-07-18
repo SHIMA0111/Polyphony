@@ -93,7 +93,10 @@ func (c *GRPCClient) Close() error {
 }
 
 // Complete sends a chat completion request to the LLM Gateway over gRPC and
-// returns the response. It returns a domain.ErrLLMGateway-wrapped error if
+// returns the response. A req.MaxTokens that is negative or exceeds
+// math.MaxUint32 (the proto field is a uint32) is rejected with a
+// domain.ErrLLMGateway-wrapped error before dispatch, as is any request
+// failure — it returns a domain.ErrLLMGateway-wrapped error if
 // the request fails.
 //
 // Unlike ListModels and EstimateTokens, Complete deliberately does NOT go
