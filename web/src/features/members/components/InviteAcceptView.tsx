@@ -1,7 +1,7 @@
 "use client"
 
 import { useRouter } from "next/navigation"
-import { Button, Card, Flex, Heading, Spinner, Text } from "@chakra-ui/react"
+import { Box, Button, Card, Flex, Heading, Spinner, Text } from "@chakra-ui/react"
 import { Check, X } from "lucide-react"
 import { formatUtcDate } from "@/lib/format"
 import { getErrorMessage } from "@/lib/get-error-message"
@@ -23,10 +23,13 @@ interface InviteAcceptViewProps {
  * link invitation has no meaningful "reject" per Step 21, so navigating
  * away is the only alternative offered for those).
  *
- * Every failure mode this page can hit (404 on the by-code fetch; 403/409/410
- * on accept/reject) renders a short inline status message in place of the
- * action buttons rather than letting the error surface as an unhandled
- * exception.
+ * Every failure mode this page can hit renders a short inline status
+ * message rather than letting the error surface as an unhandled exception:
+ * a 404 on the by-code fetch replaces the whole card body, while a
+ * 403/409/410 on accept/reject surfaces as a banner above the still-visible
+ * Accept/Reject buttons so the viewer can retry either action. Each button
+ * also disables while the *other* mutation is pending, since both share the
+ * same invitation id and firing both concurrently would race.
  */
 export function InviteAcceptView({ code }: InviteAcceptViewProps) {
   const router = useRouter()
@@ -80,16 +83,16 @@ export function InviteAcceptView({ code }: InviteAcceptViewProps) {
 
               {rejectMutation.isSuccess ? (
                 <Text color="fg.muted">Invitation rejected.</Text>
-              ) : acceptMutation.isError ? (
-                <Text color="fg.error" role="alert">
-                  {getErrorMessage(acceptMutation.error, "Could not accept this invitation.")}
-                </Text>
-              ) : rejectMutation.isError ? (
-                <Text color="fg.error" role="alert">
-                  {getErrorMessage(rejectMutation.error, "Could not reject this invitation.")}
-                </Text>
               ) : (
                 <Flex direction="column" align="center" gap={3} w="full">
+                  {(acceptMutation.isError || rejectMutation.isError) && (
+                    <Box w="full" fontSize="sm" color="fg.error" role="alert">
+                      {getErrorMessage(
+                        acceptMutation.error ?? rejectMutation.error,
+                        "Something went wrong.",
+                      )}
+                    </Box>
+                  )}
                   {invitationQuery.data.invitee_id === null && (
                     <Text fontSize="xs" color="fg.muted" textAlign="center">
                       Anyone with this link can join — you can simply
@@ -102,6 +105,7 @@ export function InviteAcceptView({ code }: InviteAcceptViewProps) {
                       colorPalette="blue"
                       gap={2}
                       loading={acceptMutation.isPending}
+                      disabled={acceptMutation.isPending || rejectMutation.isPending}
                       onClick={handleAccept}
                     >
                       <Check size={16} />
@@ -114,6 +118,7 @@ export function InviteAcceptView({ code }: InviteAcceptViewProps) {
                         colorPalette="red"
                         gap={2}
                         loading={rejectMutation.isPending}
+                        disabled={acceptMutation.isPending || rejectMutation.isPending}
                         onClick={handleReject}
                       >
                         <X size={16} />

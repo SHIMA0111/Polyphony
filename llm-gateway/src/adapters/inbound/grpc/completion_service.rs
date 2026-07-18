@@ -69,7 +69,7 @@ fn proto_request_to_domain(req: CompletionRequest) -> Result<domain::CompletionR
 ///
 /// # Errors
 /// Returns `tonic::Status::invalid_argument` if any message carries an unrecognized
-/// `ChatRole`.
+/// `ChatRole` or a malformed content part (see `proto_content_to_domain`).
 fn proto_token_estimate_to_domain(
     req: TokenEstimateRequest,
 ) -> Result<domain::TokenEstimateRequest, Status> {
@@ -153,8 +153,9 @@ impl CompletionService for GrpcCompletionService {
     ///
     /// # Errors
     /// Returns `tonic::Status::invalid_argument` if any message carries an unrecognized
-    /// `ChatRole`. Unlike `complete`, an unrecognized model name never causes an error
-    /// (estimation does not require a known model — see `CompletionUseCase::estimate_tokens`).
+    /// `ChatRole` or a malformed content part (see `proto_content_to_domain`). Unlike
+    /// `complete`, an unrecognized model name never causes an error (estimation does
+    /// not require a known model — see `CompletionUseCase::estimate_tokens`).
     async fn estimate_tokens(
         &self,
         request: Request<TokenEstimateRequest>,

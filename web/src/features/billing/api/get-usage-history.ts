@@ -27,16 +27,18 @@ export function getUsageHistory(
 }
 
 /**
- * `infiniteQueryOptions()` factory for the `["billing", "transactions"]`
- * query — cursor-based "load more" pagination via `useInfiniteQuery`,
- * mirroring `get-messages.ts`'s `getMessagesInfiniteQueryOptions`.
+ * `infiniteQueryOptions()` factory for the `["billing", "transactions",
+ * { limit }]` query — cursor-based "load more" pagination via
+ * `useInfiniteQuery`, mirroring `get-messages.ts`'s
+ * `getMessagesInfiniteQueryOptions`. `limit` is part of the key so distinct
+ * page sizes don't share (and corrupt) each other's cached pages.
  */
 export function getUsageHistoryQueryOptions(
   limit = USAGE_HISTORY_PAGE_LIMIT,
   fetcher: Fetcher = apiRequest,
 ) {
   return infiniteQueryOptions({
-    queryKey: ["billing", "transactions"] as const,
+    queryKey: ["billing", "transactions", { limit }] as const,
     queryFn: ({ pageParam }): Promise<TokenTransactionPage> =>
       getUsageHistory({ cursor: pageParam, limit }, fetcher),
     initialPageParam: undefined as string | undefined,

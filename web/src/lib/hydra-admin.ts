@@ -10,6 +10,13 @@ import "server-only"
 const HYDRA_ADMIN_URL = process.env.HYDRA_ADMIN_URL ?? "http://hydra:4445"
 
 /**
+ * Upper bound, in milliseconds, on each {@link hydraAdminRequest} call. A
+ * stalled Hydra admin API (rather than a clean connection error) would
+ * otherwise hang the login/consent Route Handlers indefinitely.
+ */
+const HYDRA_ADMIN_REQUEST_TIMEOUT_MS = 5000
+
+/**
  * Shape of Hydra's `GET /admin/oauth2/auth/requests/login` response,
  * limited to the fields `web/src/app/(auth)/oauth/login/route.ts` reads.
  */
@@ -70,7 +77,8 @@ export interface AcceptConsentRequestBody {
  * @param path - Path (including query string) relative to `HYDRA_ADMIN_URL`.
  * @param init - Optional `fetch` overrides (method, body).
  * @returns The parsed JSON response body.
- * @throws If Hydra responds with a non-2xx status.
+ * @throws If Hydra responds with a non-2xx status, times out after
+ *   {@link HYDRA_ADMIN_REQUEST_TIMEOUT_MS}, or is otherwise unreachable.
  */
 async function hydraAdminRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${HYDRA_ADMIN_URL}${path}`, {
@@ -81,10 +89,14 @@ async function hydraAdminRequest<T>(path: string, init?: RequestInit): Promise<T
       ...init?.headers,
     },
     cache: "no-store",
+    signal: AbortSignal.timeout(HYDRA_ADMIN_REQUEST_TIMEOUT_MS),
   })
 
   if (!res.ok) {
-    throw new Error(`Hydra admin API request failed: ${init?.method ?? "GET"} ${path} -> HTTP ${res.status}`)
+    const body = await res.text().catch(() => "<failed to read response body>")
+    throw new Error(
+      `Hydra admin API request failed: ${init?.method ?? "GET"} ${path} -> HTTP ${res.status}: ${body}`,
+    )
   }
 
   return (await res.json()) as T

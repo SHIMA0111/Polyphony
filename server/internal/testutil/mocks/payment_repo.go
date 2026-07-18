@@ -2,6 +2,7 @@ package mocks
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -73,6 +74,11 @@ func (r *PaymentRepo) Create(_ context.Context, payment *billing.PaymentRecord) 
 // hit the alreadyProcessed short-circuit above and never retry the credit,
 // permanently losing it.
 func (r *PaymentRepo) CreateAndCredit(ctx context.Context, payment *billing.PaymentRecord, userID string, amount int64, description string) (bool, error) {
+	if payment.UserID != userID || payment.TokensCredited != amount {
+		return false, fmt.Errorf("%w: payment.UserID=%q userID=%q payment.TokensCredited=%d amount=%d",
+			billing.ErrInconsistentPayment, payment.UserID, userID, payment.TokensCredited, amount)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ensureInit()

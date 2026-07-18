@@ -370,8 +370,11 @@ func TestBatchInviteToRoomDuplicatePendingInviteSkip(t *testing.T) {
 // TestBatchInviteToRoomAbortsOnUnrecognizedError asserts that a per-member
 // CreateInvitation error other than domain.ErrAlreadyMember or
 // domain.ErrInvitationAlreadyExists is not swallowed into a skip entry: it
-// aborts the whole batch immediately, returning (nil, err), rather than
-// continuing to the remaining members.
+// aborts the whole batch immediately. Since it happens on the very first
+// (and only) member here, the returned *BatchInviteResult is non-nil but
+// empty — nothing had been accumulated yet — distinguishing it from the
+// i==0 domain.ErrForbidden short-circuit, which returns a nil result (see
+// TestBatchInviteToRoomShortCircuitsOnRBACFailure).
 func TestBatchInviteToRoomAbortsOnUnrecognizedError(t *testing.T) {
 	uc, groupRepo, _, _, invitationRepo := newTestFixture()
 	ctx := context.Background()
@@ -392,11 +395,54 @@ func TestBatchInviteToRoomAbortsOnUnrecognizedError(t *testing.T) {
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected domain.ErrNotFound to abort the batch, got result=%+v err=%v", result, err)
 	}
-	if result != nil {
-		t.Fatalf("expected a nil result on abort, got %+v", result)
+	if result == nil {
+		t.Fatal("expected a non-nil (empty) partial result on a mid-batch abort, got nil")
+	}
+	if len(result.Invited) != 0 || len(result.Skipped) != 0 {
+		t.Fatalf("expected an empty partial result (the abort happened on the first member), got %+v", result)
 	}
 	if len(invitationRepo.Invitations) != 0 {
 		t.Fatalf("expected zero invitations persisted when the batch aborts, got %d", len(invitationRepo.Invitations))
+	}
+}
+
+// TestBatchInviteToRoomPartialResultOnMidBatchUnexpectedError asserts that
+// when the *second* member's CreateInvitation call fails with an
+// unrecognized error, BatchInviteToRoom returns the first member's already-
+// accumulated outcome alongside the error, rather than discarding it as the
+// pre-round-1 behavior did (returning (nil, err) unconditionally).
+func TestBatchInviteToRoomPartialResultOnMidBatchUnexpectedError(t *testing.T) {
+	uc, groupRepo, _, _, invitationRepo := newTestFixture()
+	ctx := context.Background()
+
+	g, err := uc.CreateGroup(ctx, "owner-1", "Team", "")
+	if err != nil {
+		t.Fatalf("CreateGroup failed: %v", err)
+	}
+	// bob is a registered user and is processed first, so his invitation
+	// succeeds. dave was never registered in userRepo, so his
+	// CreateInvitation call (second in insertion order) fails with
+	// domain.ErrNotFound, which is not a recognized skip reason.
+	if _, err := uc.AddMember(ctx, "owner-1", g.ID, "bob"); err != nil {
+		t.Fatalf("AddMember bob failed: %v", err)
+	}
+	groupRepo.SeedMember(g.ID, "dave-1", "dave")
+
+	result, err := uc.BatchInviteToRoom(ctx, "owner-1", "room-1", g.ID, domainroom.RoleMember, nil)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound to abort the batch, got result=%+v err=%v", result, err)
+	}
+	if result == nil {
+		t.Fatal("expected a non-nil partial result reflecting bob's already-created invitation, got nil")
+	}
+	if len(result.Invited) != 1 || result.Invited[0].InviteeID == nil || *result.Invited[0].InviteeID != "bob-1" {
+		t.Fatalf("expected bob's invitation preserved in the partial result, got %+v", result.Invited)
+	}
+	if len(result.Skipped) != 0 {
+		t.Fatalf("expected no skips in the partial result, got %+v", result.Skipped)
+	}
+	if len(invitationRepo.Invitations) != 1 {
+		t.Fatalf("expected bob's invitation to remain persisted (no rollback) after the abort, got %d", len(invitationRepo.Invitations))
 	}
 }
 
@@ -404,20 +450,23 @@ func TestBatchInviteToRoomShortCircuitsOnRBACFailure(t *testing.T) {
 	uc, _, _, _, invitationRepo := newTestFixture()
 	ctx := context.Background()
 
-	g, err := uc.CreateGroup(ctx, "owner-1", "Team", "")
+	// The group must be owned by the caller (member-1) so getOwnedGroup
+	// passes and the batch invite reaches CreateInvitation's room-RBAC
+	// check. member-1 is only a plain RoleMember in room-1, not Admin+
+	// (see newTestFixture's SeedMember calls), so that check must fail
+	// immediately with ErrForbidden on the first member rather than
+	// producing per-member skips.
+	g, err := uc.CreateGroup(ctx, "member-1", "Team", "")
 	if err != nil {
 		t.Fatalf("CreateGroup failed: %v", err)
 	}
-	if _, err := uc.AddMember(ctx, "owner-1", g.ID, "bob"); err != nil {
+	if _, err := uc.AddMember(ctx, "member-1", g.ID, "bob"); err != nil {
 		t.Fatalf("AddMember bob failed: %v", err)
 	}
-	if _, err := uc.AddMember(ctx, "owner-1", g.ID, "carol"); err != nil {
+	if _, err := uc.AddMember(ctx, "member-1", g.ID, "carol"); err != nil {
 		t.Fatalf("AddMember carol failed: %v", err)
 	}
 
-	// member-1 is only a plain RoleMember in room-1, not Admin+, so the
-	// batch invite must fail immediately with ErrForbidden rather than
-	// producing two per-member skips.
 	if _, err := uc.BatchInviteToRoom(ctx, "member-1", "room-1", g.ID, domainroom.RoleMember, nil); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}

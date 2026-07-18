@@ -22,9 +22,11 @@ func TestUpdateSettingsAdminCanSet(t *testing.T) {
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
-	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+	if err := repo.AddMember(ctx, &domainroom.RoomMember{
 		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleAdmin,
-	})
+	}); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
 
 	updated, err := uc.UpdateSettings(ctx, "user-2", rwr.Room.ID, strPtr("anthropic"), strPtr("claude-opus-4"))
 	if err != nil {
@@ -64,9 +66,11 @@ func TestUpdateSettingsMemberForbidden(t *testing.T) {
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
-	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+	if err := repo.AddMember(ctx, &domainroom.RoomMember{
 		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
-	})
+	}); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
 
 	if _, err := uc.UpdateSettings(ctx, "user-2", rwr.Room.ID, nil, strPtr("claude-opus-4")); err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden for member, got %v", err)
@@ -81,9 +85,11 @@ func TestUpdateSettingsGuestForbidden(t *testing.T) {
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
-	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+	if err := repo.AddMember(ctx, &domainroom.RoomMember{
 		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleGuest,
-	})
+	}); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
 
 	if _, err := uc.UpdateSettings(ctx, "user-2", rwr.Room.ID, nil, strPtr("claude-opus-4")); err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden for guest, got %v", err)
@@ -98,9 +104,11 @@ func TestUpdateSettingsReaderForbidden(t *testing.T) {
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
-	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+	if err := repo.AddMember(ctx, &domainroom.RoomMember{
 		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleReader,
-	})
+	}); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
 
 	if _, err := uc.UpdateSettings(ctx, "user-2", rwr.Room.ID, nil, strPtr("claude-opus-4")); err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden for reader, got %v", err)

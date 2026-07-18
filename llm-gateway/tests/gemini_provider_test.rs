@@ -357,11 +357,21 @@ async fn test_complete_with_image_content_sends_gemini_multimodal_body() {
 }
 
 /// Canned Gemini `streamGenerateContent` SSE body: two partial-text events followed by
-/// a final event carrying `finishReason`/`usageMetadata`.
+/// a final event carrying `finishReason`/`usageMetadata`. No event carries a
+/// `responseId`, exercising the synthetic-UUID fallback path.
 const GEMINI_SSE_FIXTURE: &str = concat!(
     "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hi\"}]},\"index\":0}]}\n\n",
     "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\" there!\"}]},\"index\":0}]}\n\n",
     "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4,\"totalTokenCount\":14}}\n\n",
+);
+
+/// Same shape as [`GEMINI_SSE_FIXTURE`], but every event carries Gemini's documented
+/// `responseId`, exercising the path where the wire value is preferred over the
+/// synthetic UUID fallback.
+const GEMINI_SSE_FIXTURE_WITH_RESPONSE_ID: &str = concat!(
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hi\"}]},\"index\":0}],\"responseId\":\"resp-stream-1\"}\n\n",
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\" there!\"}]},\"index\":0}],\"responseId\":\"resp-stream-1\"}\n\n",
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4,\"totalTokenCount\":14},\"responseId\":\"resp-stream-1\"}\n\n",
 );
 
 #[tokio::test]
@@ -394,7 +404,8 @@ async fn test_stream_success_yields_expected_chunk_sequence() {
     let full_text: String = chunks.iter().filter_map(|c| c.delta.clone()).collect();
     assert_eq!(full_text, "Hi there!");
 
-    // The synthetic id is generated once and reused across every chunk.
+    // No event carries `responseId`, so the synthetic id is generated once and reused
+    // across every chunk.
     let id = chunks[0].id.clone();
     assert!(!id.is_empty());
     for chunk in &chunks {
@@ -408,6 +419,40 @@ async fn test_stream_success_yields_expected_chunk_sequence() {
     assert_eq!(usage.prompt_tokens, 10);
     assert_eq!(usage.completion_tokens, 4);
     assert_eq!(usage.total_tokens, 14);
+}
+
+/// When Gemini does echo `responseId` on stream events, every yielded chunk's `id` must
+/// be that wire value, not a synthetic UUID.
+#[tokio::test]
+async fn test_stream_success_prefers_wire_response_id_over_synthetic_uuid() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-3-pro:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(GEMINI_SSE_FIXTURE_WITH_RESPONSE_ID, "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let chunk_stream = provider
+        .stream(&make_request("gemini-3-pro"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let chunks: Vec<_> = chunk_stream
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|c| c.expect("every chunk should parse successfully"))
+        .collect();
+
+    assert_eq!(chunks.len(), 3);
+    for chunk in &chunks {
+        assert_eq!(chunk.id, "resp-stream-1");
+    }
 }
 
 #[tokio::test]

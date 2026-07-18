@@ -14,6 +14,7 @@ import {
   Text,
 } from "@chakra-ui/react"
 import { Copy, Link2, UserPlus } from "lucide-react"
+import { toaster } from "@/components/ui/toaster"
 import { getErrorMessage } from "@/lib/get-error-message"
 import { GroupPicker } from "@/features/groups/components/GroupPicker"
 import { useBatchInviteByGroup } from "@/features/groups/hooks/use-batch-invite-by-group"
@@ -75,6 +76,12 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null)
   const [groupRole, setGroupRole] = useState<RoomRole>("member")
   const [groupExpiresInHours, setGroupExpiresInHours] = useState("")
+  // The username and link flows below share `createInvitationMutation`
+  // (one `POST /invitations` endpoint for both), so `isPending` alone can't
+  // tell which flow's button should show a spinner — without this, sending
+  // a username invite would also spin the "Generate link" button. Set
+  // immediately before each `mutateAsync` call.
+  const [pendingAction, setPendingAction] = useState<"username" | "link" | null>(null)
 
   const createInvitationMutation = useCreateInvitation(roomId)
   const batchInviteByGroupMutation = useBatchInviteByGroup(roomId)
@@ -88,12 +95,14 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
     setSelectedGroup(null)
     setGroupRole("member")
     setGroupExpiresInHours("")
+    setPendingAction(null)
     createInvitationMutation.reset()
     batchInviteByGroupMutation.reset()
   }
 
   const handleInviteByUsername = async () => {
     if (!username.trim()) return
+    setPendingAction("username")
     try {
       await createInvitationMutation.mutateAsync({
         invitee_username: username.trim(),
@@ -106,6 +115,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
   }
 
   const handleGenerateLink = async () => {
+    setPendingAction("link")
     try {
       const invitation = await createInvitationMutation.mutateAsync({
         role: linkRole,
@@ -123,8 +133,20 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
 
   const handleCopy = async () => {
     if (!inviteUrl) return
-    await navigator.clipboard.writeText(inviteUrl)
-    setCopied(true)
+    try {
+      await navigator.clipboard.writeText(inviteUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // navigator.clipboard.writeText rejects if the browser denies clipboard
+      // permission or the page isn't in a secure context — mirrors
+      // `CodeBlock.tsx`'s guarded copy handler.
+      toaster.create({
+        type: "error",
+        title: "Failed to copy",
+        description: "Your browser blocked access to the clipboard.",
+      })
+    }
   }
 
   const handleBatchInviteByGroup = async () => {
@@ -204,7 +226,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                     variant="outline"
                     alignSelf="flex-start"
                     disabled={!username.trim()}
-                    loading={createInvitationMutation.isPending}
+                    loading={createInvitationMutation.isPending && pendingAction === "username"}
                     onClick={handleInviteByUsername}
                   >
                     Send invitation
@@ -246,7 +268,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                     variant="outline"
                     alignSelf="flex-start"
                     gap={2}
-                    loading={createInvitationMutation.isPending}
+                    loading={createInvitationMutation.isPending && pendingAction === "link"}
                     onClick={handleGenerateLink}
                   >
                     <Link2 size={14} />

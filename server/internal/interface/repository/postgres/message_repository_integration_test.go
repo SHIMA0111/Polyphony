@@ -264,6 +264,36 @@ func TestMessageRepository_PrivateVisibilityFiltering(t *testing.T) {
 	if !found {
 		t.Fatal("expected owner ListByRoom to include the private message")
 	}
+
+	// ListByRoomUpTo: same private-message inclusion/exclusion contract as
+	// ListByRoom above, asserted directly rather than only indirectly via
+	// ListByRoom, since ListByRoomUpTo is what feeds
+	// MessageUsecase.assembleAIContext's AI-context-window fetch (see
+	// server/internal/usecase/message.usecase.go) and had no direct test
+	// coverage of its own.
+	otherUpTo, err := msgRepo.ListByRoomUpTo(ctx, rm.ID, privateMsg.Sequence, 20, other.ID)
+	if err != nil {
+		t.Fatalf("ListByRoomUpTo (non-owner) failed: %v", err)
+	}
+	for _, m := range otherUpTo {
+		if m.ID == privateMsg.ID {
+			t.Fatal("expected non-owner ListByRoomUpTo to exclude the private message")
+		}
+	}
+
+	ownerUpTo, err := msgRepo.ListByRoomUpTo(ctx, rm.ID, privateMsg.Sequence, 20, rm.OwnerID)
+	if err != nil {
+		t.Fatalf("ListByRoomUpTo (owner) failed: %v", err)
+	}
+	foundUpTo := false
+	for _, m := range ownerUpTo {
+		if m.ID == privateMsg.ID {
+			foundUpTo = true
+		}
+	}
+	if !foundUpTo {
+		t.Fatal("expected owner ListByRoomUpTo to include the private message")
+	}
 }
 
 // TestMessageRepository_CountByRoom proves CountByRoom returns the total

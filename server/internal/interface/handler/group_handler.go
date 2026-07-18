@@ -28,6 +28,12 @@ func NewGroupHandler(usecase *groupusecase.GroupUsecase) *GroupHandler {
 	return &GroupHandler{usecase: usecase}
 }
 
+// maxGroupNameLength mirrors groups.name's VARCHAR(255) column limit
+// (server/schema.sql). Create and Update reject an over-length name with
+// HTTP 400 rather than letting it reach the DB, where it would surface as
+// an unhandled HTTP 500.
+const maxGroupNameLength = 255
+
 // Create handles POST /groups. It creates a new personal group owned by the
 // authenticated caller. The request body must include a non-empty name and
 // may include an optional description. On success it returns HTTP 201 with
@@ -41,6 +47,9 @@ func (h *GroupHandler) Create(c echo.Context) error {
 	}
 	if req.Name == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "name is required"})
+	}
+	if len(req.Name) > maxGroupNameLength {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "name must be at most 255 characters"})
 	}
 
 	g, err := h.usecase.CreateGroup(c.Request().Context(), userID, req.Name, req.Description)
@@ -100,6 +109,9 @@ func (h *GroupHandler) Update(c echo.Context) error {
 	}
 	if req.Name == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "name is required"})
+	}
+	if len(req.Name) > maxGroupNameLength {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "name must be at most 255 characters"})
 	}
 
 	g, err := h.usecase.UpdateGroup(c.Request().Context(), userID, groupID, req.Name, req.Description)
@@ -195,6 +207,14 @@ func (h *GroupHandler) RemoveMember(c echo.Context) error {
 // lacks Admin+ in the room) is returned as one top-level error (HTTP 403)
 // rather than N per-member skips. It returns HTTP 403 if the caller does
 // not own the group.
+//
+// If GroupUsecase.BatchInviteToRoom aborts partway through on an
+// unexpected per-member error, it returns a non-nil partial
+// *groupusecase.BatchInviteResult alongside the error (see its GoDoc). In
+// that case this handler does not discard the partial work: it renders the
+// partial result with aborted=true and an error message, using the
+// domain-error-mapped HTTP status rather than always 200, so the caller can
+// see exactly which members were already invited/skipped before the abort.
 func (h *GroupHandler) BatchInviteByGroup(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")
@@ -217,7 +237,19 @@ func (h *GroupHandler) BatchInviteByGroup(c echo.Context) error {
 
 	result, err := h.usecase.BatchInviteToRoom(c.Request().Context(), userID, roomID, req.GroupID, role, req.ExpiresInHours)
 	if err != nil {
-		return handleGroupError(c, err)
+		if result == nil {
+			return handleGroupError(c, err)
+		}
+		// A partial result: BatchInviteToRoom aborted mid-batch on an
+		// unexpected per-member error after already inviting/skipping some
+		// members. Render that partial work instead of discarding it, with
+		// an explicit failure indication, at the same HTTP status
+		// handleGroupError would have used for a total failure.
+		middleware.GetLogger(c).Error("batch invite aborted mid-batch", "error", err)
+		resp := toBatchInviteByGroupResponse(result)
+		resp.Aborted = true
+		resp.Error = "batch invite aborted before all group members were processed"
+		return c.JSON(groupErrorStatus(err), resp)
 	}
 
 	return c.JSON(http.StatusOK, toBatchInviteByGroupResponse(result))
@@ -271,15 +303,39 @@ func toBatchInviteByGroupResponse(result *groupusecase.BatchInviteResult) BatchI
 // handleGroupError maps a domain error returned by GroupUsecase to the
 // corresponding HTTP response, mirroring handleRoomError/handleInvitationError.
 func handleGroupError(c echo.Context, err error) error {
+	status := groupErrorStatus(err)
+	if status == http.StatusInternalServerError {
+		middleware.GetLogger(c).Error("unhandled group error", "error", err)
+	}
+
+	var message string
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		return c.JSON(http.StatusNotFound, ErrorResponse{Message: "not found"})
+		message = "not found"
 	case errors.Is(err, domain.ErrForbidden):
-		return c.JSON(http.StatusForbidden, ErrorResponse{Message: "forbidden"})
+		message = "forbidden"
 	case errors.Is(err, domain.ErrAlreadyMember):
-		return c.JSON(http.StatusConflict, ErrorResponse{Message: "user is already a member of this group"})
+		message = "user is already a member of this group"
 	default:
-		middleware.GetLogger(c).Error("unhandled group error", "error", err)
-		return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
+		message = "internal server error"
+	}
+	return c.JSON(status, ErrorResponse{Message: message})
+}
+
+// groupErrorStatus maps a domain error returned by GroupUsecase to the HTTP
+// status handleGroupError would use, without writing a response. Shared
+// with BatchInviteByGroup's partial-result path, which needs the same
+// status mapping but writes a BatchInviteByGroupResponse body instead of an
+// ErrorResponse.
+func groupErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, domain.ErrForbidden):
+		return http.StatusForbidden
+	case errors.Is(err, domain.ErrAlreadyMember):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
 	}
 }

@@ -28,7 +28,8 @@ type GroupRepository interface {
 	// not exist.
 	Delete(ctx context.Context, id string) error
 
-	// AddMember adds a user to a group.
+	// AddMember adds a user to a group. Returns domain.ErrAlreadyMember if
+	// (member.GroupID, member.UserID) is already a member.
 	AddMember(ctx context.Context, member *GroupMember) error
 
 	// GetMember retrieves a specific group membership by group ID and user

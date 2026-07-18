@@ -26,8 +26,14 @@ function formatContextWindow(tokens: number): string {
   return `${tokens}`
 }
 
-/** Formats a USD per-1M-token price for compact display, e.g. `2.5` -> `"$2.50"`. */
+/**
+ * Formats a USD per-1M-token price for compact display, e.g. `2.5` ->
+ * `"$2.50"`. `0` (and any non-positive value) means "unknown" per
+ * `ModelInfo`'s type contract, matching {@link formatContextWindow}'s
+ * existing unknown convention, so it renders as `"?"` rather than `"$0.00"`.
+ */
 function formatPrice(price: number): string {
+  if (price <= 0) return "?"
   return `$${price.toFixed(2)}`
 }
 

@@ -28,6 +28,19 @@ type MessageRepo struct {
 	// failure (e.g. MessageUsecase.SendAIMessage's failed-AI-placeholder
 	// path), without needing a real error condition inside this fake.
 	ListByRoomErr error
+
+	// CreateCallCount counts every Create invocation (1-indexed by the time
+	// FailCreateOnCall is compared against it). FailCreateOnCall, if
+	// positive, makes the Create call whose ordinal equals it return
+	// FailCreateErr instead of persisting, leaving every other call
+	// (before and after) to succeed normally — for tests exercising a
+	// failure on one specific Create within a multi-Create flow (e.g.
+	// MessageUsecase.SendAIMessage's completed-AI-message Create, which is
+	// the second Create after the human message) without making every
+	// Create fail.
+	CreateCallCount  int
+	FailCreateOnCall int
+	FailCreateErr    error
 }
 
 func (m *MessageRepo) ensureInit() {
@@ -39,11 +52,18 @@ func (m *MessageRepo) ensureInit() {
 	}
 }
 
-// Create persists a new message.
+// Create persists a new message, unless this call's ordinal matches
+// FailCreateOnCall, in which case it returns FailCreateErr without
+// persisting (see FailCreateOnCall's doc comment).
 func (m *MessageRepo) Create(_ context.Context, msg *message.Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ensureInit()
+
+	m.CreateCallCount++
+	if m.FailCreateOnCall != 0 && m.CreateCallCount == m.FailCreateOnCall {
+		return m.FailCreateErr
+	}
 
 	m.Messages[msg.ID] = msg
 	return nil

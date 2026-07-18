@@ -25,28 +25,36 @@ interface RolePickerProps {
  * A `Menu.Root` letting an admin/master change another member's role to
  * one of the four non-owner roles, with the current role pre-highlighted
  * via a checkmark and a brief inline error if the mutation rejects (e.g. a
- * `409` when unexpectedly targeting the owner).
+ * `409` when unexpectedly targeting the owner). The menu closes as soon as
+ * a selection is made (not only on mutation success) and the trigger
+ * disables while a change is in flight, so a second PATCH can't be fired
+ * before the first resolves and race the role display out of order.
  */
 export function RolePicker({ roomId, userId, currentRole }: RolePickerProps) {
   const [open, setOpen] = useState(false)
   const changeRoleMutation = useChangeMemberRole(roomId)
 
   const handleSelect = (role: RoomRole) => {
-    if (role === currentRole) {
-      setOpen(false)
-      return
-    }
-    changeRoleMutation.mutate(
-      { userId, role },
-      { onSuccess: () => setOpen(false) },
-    )
+    // A prior selection may still be in flight (its PATCH hasn't resolved
+    // yet); starting a second one here could let responses land out of
+    // order and leave `currentRole` showing a stale role.
+    if (changeRoleMutation.isPending) return
+    setOpen(false)
+    if (role === currentRole) return
+    changeRoleMutation.mutate({ userId, role })
   }
 
   return (
     <Box>
       <Menu.Root open={open} onOpenChange={(e) => setOpen(e.open)}>
         <Menu.Trigger asChild>
-          <Button variant="outline" size="xs" gap={1} px={2}>
+          <Button
+            variant="outline"
+            size="xs"
+            gap={1}
+            px={2}
+            disabled={changeRoleMutation.isPending}
+          >
             <RoleBadge role={currentRole} />
             <ChevronDown size={12} />
           </Button>

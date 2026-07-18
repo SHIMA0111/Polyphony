@@ -169,6 +169,20 @@ func (u *BillingUsecase) findTokenPackage(packageCode string) *domainbilling.Tok
 	return nil
 }
 
+// findPlanByStripePriceID returns the configured Plan whose StripePriceID
+// matches priceID, or nil if none matches. Used to resync PlanCode and
+// MonthlyTokenAllocation — not just StripePriceID — when a Stripe Billing
+// Portal plan change delivers a new price via
+// customer.subscription.updated; see handleSubscriptionUpdated.
+func (u *BillingUsecase) findPlanByStripePriceID(priceID string) *domainbilling.Plan {
+	for i := range u.plans {
+		if u.plans[i].StripePriceID == priceID {
+			return &u.plans[i]
+		}
+	}
+	return nil
+}
+
 // CreateSubscriptionCheckoutSession resolves planCode against the
 // configured plan catalog and returns a Stripe Checkout Session URL for it.
 // It returns domain.ErrStripeNotConfigured if Stripe is unconfigured, or
@@ -329,6 +343,14 @@ func (u *BillingUsecase) ListPlanCatalog() []domainbilling.PlanCatalogEntry {
 // unrecognized event type, or an idempotency short-circuit on a
 // already-processed stripe_event_id, are treated as a successful no-op
 // (nil error) — see step49.md's webhook dispatch table.
+//
+// Every dispatched handler below derefs paymentRepo and/or subscriptionRepo
+// (both nilable per NewBillingUsecase's doc comment); this guards each
+// branch before dispatch and returns domain.ErrBillingNotConfigured rather
+// than panicking, mirroring the nil-repo guards on GetSubscription,
+// CancelSubscription, CreateBillingPortalSession, and ListPaymentHistory.
+// balanceRepo and roomRepo are never nil in practice (NewBillingUsecase's
+// callers always wire them), so they are not separately guarded here.
 func (u *BillingUsecase) HandleWebhookEvent(ctx context.Context, payload []byte, sigHeader string) error {
 	if u.stripeGateway == nil {
 		return domain.ErrStripeNotConfigured
@@ -341,12 +363,24 @@ func (u *BillingUsecase) HandleWebhookEvent(ctx context.Context, payload []byte,
 
 	switch event.Type {
 	case domainbilling.EventTypeCheckoutSessionCompleted:
+		if u.paymentRepo == nil || u.subscriptionRepo == nil {
+			return domain.ErrBillingNotConfigured
+		}
 		return u.handleCheckoutSessionCompleted(ctx, event)
 	case domainbilling.EventTypeInvoicePaid:
+		if u.subscriptionRepo == nil || u.paymentRepo == nil {
+			return domain.ErrBillingNotConfigured
+		}
 		return u.handleInvoicePaid(ctx, event)
 	case domainbilling.EventTypeSubscriptionUpdated:
+		if u.subscriptionRepo == nil {
+			return domain.ErrBillingNotConfigured
+		}
 		return u.handleSubscriptionUpdated(ctx, event)
 	case domainbilling.EventTypeSubscriptionDeleted:
+		if u.subscriptionRepo == nil {
+			return domain.ErrBillingNotConfigured
+		}
 		return u.handleSubscriptionDeleted(ctx, event)
 	default:
 		return nil
@@ -518,6 +552,18 @@ func (u *BillingUsecase) handleInvoicePaid(ctx context.Context, event domainbill
 // (rather than swallowing it into nil) makes HandleWebhookEvent return a
 // non-2xx response so Stripe redelivers this event until the local row
 // exists — see handleInvoicePaid's identical rationale.
+//
+// When the incoming StripePriceID differs from the stored one (e.g. the
+// customer changed plans via the Stripe Billing Portal), PlanCode and
+// MonthlyTokenAllocation are resynced together with it via
+// findPlanByStripePriceID — not just StripePriceID in isolation — since
+// handleInvoicePaid credits every renewal by
+// sub.MonthlyTokenAllocation: leaving it stale after a plan change would
+// permanently mis-credit the account. If the new price isn't in the
+// configured catalog, the plan/entitlement fields are left untouched and a
+// warning is logged (mirroring upsertSubscriptionFromCheckout's
+// unrecognized-plan_code handling); status/period/cancellation fields are
+// still synced in that case.
 func (u *BillingUsecase) handleSubscriptionUpdated(ctx context.Context, event domainbilling.WebhookEvent) error {
 	data := event.Subscription
 	if data == nil {
@@ -541,8 +587,16 @@ func (u *BillingUsecase) handleSubscriptionUpdated(ctx context.Context, event do
 	if !data.CurrentPeriodEnd.IsZero() {
 		sub.CurrentPeriodEnd = data.CurrentPeriodEnd
 	}
-	if data.StripePriceID != "" {
-		sub.StripePriceID = data.StripePriceID
+	if data.StripePriceID != "" && data.StripePriceID != sub.StripePriceID {
+		plan := u.findPlanByStripePriceID(data.StripePriceID)
+		if plan == nil {
+			slog.Warn("customer.subscription.updated with unrecognized stripe_price_id, skipping plan/entitlement resync",
+				"stripe_subscription_id", data.StripeSubscriptionID, "stripe_price_id", data.StripePriceID)
+		} else {
+			sub.StripePriceID = plan.StripePriceID
+			sub.PlanCode = plan.Code
+			sub.MonthlyTokenAllocation = plan.MonthlyTokenAllocation
+		}
 	}
 	return u.subscriptionRepo.Update(ctx, sub)
 }

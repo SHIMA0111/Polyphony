@@ -159,16 +159,26 @@ export function MessageInput({
   useEffect(() => {
     if (!effectiveModel) return
 
-    const timeoutId = setTimeout(() => {
-      const requestId = ++estimateRequestIdRef.current
+    // Invalidate any in-flight estimate and clear the stale display
+    // synchronously, before scheduling the debounce below -- otherwise an
+    // older, slower request already in flight from the *previous* deps could
+    // still resolve during this debounce window and briefly overwrite the
+    // display with a now-stale token count.
+    setEstimatedTokens(null)
+    const requestId = ++estimateRequestIdRef.current
 
+    const timeoutId = setTimeout(() => {
       // Defends against any not-yet-reconciled optimistic/WS cache entry
       // that might transiently carry `is_deleted: true` even though the
       // server already omits soft-deleted rows from `GET
       // /rooms/:roomId/messages` (see `message-cache.ts`'s any-page
-      // helpers).
+      // helpers). `status === "completed"` excludes client-only
+      // sending/failed bubbles that were never (or won't be) persisted, so
+      // they aren't counted as if they were part of the AI's context.
       const payload = messages
-        .filter((m) => !m.is_deleted && !m.exclude_from_ai)
+        .filter(
+          (m) => !m.is_deleted && !m.exclude_from_ai && m.status === "completed",
+        )
         .map((m) => ({
           role: (m.type === "human" ? "user" : "assistant") as
             | "user"
@@ -274,7 +284,12 @@ export function MessageInput({
     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
       if (e.metaKey || e.ctrlKey) {
         e.preventDefault()
-        handleSendWithAI()
+        // Mirrors the "Send with AI" button's own gating below -- without
+        // this guard, a guest with no AI access (`canInvokeAI: false`,
+        // button omitted entirely) could still trigger it via the shortcut.
+        if (canInvokeAI) {
+          handleSendWithAI()
+        }
       } else if (!e.shiftKey) {
         e.preventDefault()
         handleSend()
@@ -491,7 +506,8 @@ export function MessageInput({
 
         {/* Hint text */}
         <Text textAlign="center" fontSize="xs" color="fg.muted">
-          Enter to send, Shift+Enter for new line, Ctrl+Enter to send with AI
+          Enter to send, Shift+Enter for new line
+          {canInvokeAI && ", Ctrl+Enter to send with AI"}
         </Text>
 
         {/* Live, debounced token estimate (Step 38) — advisory only, never

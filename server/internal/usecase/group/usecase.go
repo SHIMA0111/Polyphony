@@ -223,9 +223,15 @@ func (u *GroupUsecase) RemoveMember(ctx context.Context, callerID, groupID, user
 // (BatchInviteSkipReasonInvitationAlreadyExists). Any other error —
 // including domain.ErrNotFound, domain.ErrForbidden past the first member,
 // or an infrastructure failure — is not classified as a skip: it aborts the
-// batch immediately, returning (nil, err), since such errors are not
-// per-member outcomes a caller should expect to see silently swallowed into
-// a skip list.
+// batch immediately. Unlike the i==0 domain.ErrForbidden short-circuit
+// above (which returns a nil result, since nothing was created), this
+// unexpected-error abort returns the *BatchInviteResult accumulated so far
+// alongside the error: every member already invited or skipped before the
+// failing one is real, committed work that the caller should not lose sight
+// of. Callers must check the error first and treat a non-nil result
+// received alongside it as partial, not complete — the handler renders it
+// with an explicit failure indication rather than silently returning 200.
+// No rollback of the already-created invitations is performed.
 func (u *GroupUsecase) BatchInviteToRoom(
 	ctx context.Context,
 	callerID, roomID, groupID string,
@@ -262,8 +268,10 @@ func (u *GroupUsecase) BatchInviteToRoom(
 				reason = BatchInviteSkipReasonInvitationAlreadyExists
 			default:
 				// Any other error is not a recognized per-member outcome:
-				// fail the whole batch rather than guessing at a reason.
-				return nil, err
+				// fail the whole batch rather than guessing at a reason, but
+				// return the partial result accumulated so far — see this
+				// method's GoDoc.
+				return result, err
 			}
 
 			result.Skipped = append(result.Skipped, BatchInviteSkip{

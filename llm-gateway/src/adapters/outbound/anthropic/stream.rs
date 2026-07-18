@@ -40,6 +40,12 @@ enum AnthropicStreamEvent {
     Error {
         error: AnthropicStreamError,
     },
+    /// Catches any `type` value not covered by the variants above (e.g. a future
+    /// event type Anthropic adds). Falling through here rather than failing
+    /// deserialization lets the stream keep going instead of aborting on an
+    /// unrecognized-but-harmless event.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -121,6 +127,9 @@ struct StreamState {
 /// - `message_stop` ends the stream (no chunk). `content_block_start`/
 ///   `content_block_stop`/`ping` are ignored. An `error` event yields a single `Err`
 ///   item and ends the stream.
+/// - A top-level event `type` not covered by any variant above (a future Anthropic
+///   event type) deserializes to [`AnthropicStreamEvent::Unknown`] and is skipped with
+///   a `tracing::warn!`, rather than aborting the stream with a deserialization error.
 ///
 /// # Arguments
 /// * `provider` — The `AnthropicProvider` holding the HTTP client, base URL,
@@ -275,10 +284,34 @@ pub(super) fn stream<'a>(
                     AnthropicStreamEvent::ContentBlockStart
                     | AnthropicStreamEvent::ContentBlockStop
                     | AnthropicStreamEvent::Ping => {}
+                    AnthropicStreamEvent::Unknown => {
+                        tracing::warn!(
+                            "skipping unrecognized Anthropic streaming event type"
+                        );
+                    }
                 }
             }
         };
 
         Ok(Box::pin(chunks) as BoxStream<'static, Result<CompletionChunk, DomainError>>)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An SSE event whose `type` is not one of the known Anthropic streaming event
+    /// types (e.g. a future event Anthropic adds) must deserialize into
+    /// `AnthropicStreamEvent::Unknown` rather than failing, so `stream` can skip over
+    /// it (with a `tracing::warn!`) instead of aborting the whole stream.
+    #[test]
+    fn test_unrecognized_event_type_deserializes_to_unknown() {
+        let json = r#"{"type":"content_block_signature_delta","index":0}"#;
+
+        let parsed: AnthropicStreamEvent =
+            serde_json::from_str(json).expect("unrecognized event type should still deserialize");
+
+        assert!(matches!(parsed, AnthropicStreamEvent::Unknown));
+    }
 }

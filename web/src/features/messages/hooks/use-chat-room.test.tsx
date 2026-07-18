@@ -1,6 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react"
 import { http, HttpResponse } from "msw"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import {
@@ -238,8 +238,11 @@ describe("useChatRoom handleSendWithAI", () => {
       }),
     )
 
+    const queryClient = createTestQueryClient()
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries")
+
     const { result } = renderHook(() => useChatRoom("room-1"), {
-      wrapper: createQueryClientWrapper(),
+      wrapper: createQueryClientWrapper(queryClient),
     })
 
     await waitFor(() => expect(result.current.isLoading).toBe(false))
@@ -250,11 +253,18 @@ describe("useChatRoom handleSendWithAI", () => {
     ).rejects.toThrow()
 
     await waitFor(() => expect(result.current.aiError).toBe("Insufficient token balance."))
+
+    expect(invalidateSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["billing", "balance"] }),
+    )
   })
 
   it("clears any prior aiError and invalidates the balance query on a successful send", async () => {
+    const queryClient = createTestQueryClient()
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries")
+
     const { result } = renderHook(() => useChatRoom("room-1"), {
-      wrapper: createQueryClientWrapper(),
+      wrapper: createQueryClientWrapper(queryClient),
     })
 
     await waitFor(() => expect(result.current.isLoading).toBe(false))
@@ -262,6 +272,9 @@ describe("useChatRoom handleSendWithAI", () => {
     await result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini")
 
     expect(result.current.aiError).toBeNull()
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["billing", "balance"] }),
+    )
   })
 
   it("does not set aiError for a non-402 failure", async () => {

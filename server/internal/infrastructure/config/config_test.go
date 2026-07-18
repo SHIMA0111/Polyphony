@@ -696,3 +696,30 @@ func TestLoadStripePlansInvalidJSONIgnoredNotFatal(t *testing.T) {
 		t.Errorf("expected invalid JSON to be ignored (empty catalogs), got %v / %v", cfg.StripePlans, cfg.StripeTokenPackages)
 	}
 }
+
+// TestLoadDefaultAIModelDefault proves DefaultAIModel falls back to "gpt-5-mini" when DEFAULT_AI_MODEL is unset.
+func TestLoadDefaultAIModelDefault(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.DefaultAIModel != "gpt-5-mini" {
+		t.Errorf("expected default DefaultAIModel gpt-5-mini, got %q", cfg.DefaultAIModel)
+	}
+}
+
+// TestLoadDefaultAIModelOverride proves DefaultAIModel is read from DEFAULT_AI_MODEL when set.
+func TestLoadDefaultAIModelOverride(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("DEFAULT_AI_MODEL", "claude-opus-4")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.DefaultAIModel != "claude-opus-4" {
+		t.Errorf("expected overridden DefaultAIModel claude-opus-4, got %q", cfg.DefaultAIModel)
+	}
+}

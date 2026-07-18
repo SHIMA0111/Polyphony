@@ -41,6 +41,7 @@ type fakeCompletionServer struct {
 	estimateCalls     int
 	estimateFailTimes int
 	estimateFailCode  codes.Code
+	lastEstimateReq   *llmgatewaypb.TokenEstimateRequest
 }
 
 func (s *fakeCompletionServer) Complete(_ context.Context, _ *llmgatewaypb.CompletionRequest) (*llmgatewaypb.CompletionResponse, error) {
@@ -58,10 +59,11 @@ func (s *fakeCompletionServer) Complete(_ context.Context, _ *llmgatewaypb.Compl
 // failTimes/failCode -- kept as a separate counter/config pair so a test can
 // exercise EstimateTokens' retry behavior (GRPCClient.callWithRetry, still
 // used for this read-only RPC) independently of Complete's.
-func (s *fakeCompletionServer) EstimateTokens(_ context.Context, _ *llmgatewaypb.TokenEstimateRequest) (*llmgatewaypb.TokenEstimateResponse, error) {
+func (s *fakeCompletionServer) EstimateTokens(_ context.Context, req *llmgatewaypb.TokenEstimateRequest) (*llmgatewaypb.TokenEstimateResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.estimateCalls++
+	s.lastEstimateReq = req
 	if s.estimateCalls <= s.estimateFailTimes {
 		return nil, status.Error(s.estimateFailCode, "injected failure")
 	}
@@ -72,6 +74,15 @@ func (s *fakeCompletionServer) estimateCallCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.estimateCalls
+}
+
+// getLastEstimateReq returns the most recently observed EstimateTokens
+// request under the same mutex that guards writes to it from the server
+// goroutine, so tests can assert on the mapped request without a data race.
+func (s *fakeCompletionServer) getLastEstimateReq() *llmgatewaypb.TokenEstimateRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastEstimateReq
 }
 
 func (s *fakeCompletionServer) callCount() int {
@@ -240,9 +251,9 @@ func TestGRPCClientCompleteRejectsOutOfRangeMaxTokens(t *testing.T) {
 	for name, maxTokens := range map[string]int{"negative": negative, "too large": tooLarge} {
 		t.Run(name, func(t *testing.T) {
 			req := &ai.CompletionRequest{
-				Model:       "gpt-5.2",
-				Messages:    []ai.ChatMessage{{Role: "user", Content: "hi"}},
-				MaxTokens:   &maxTokens,
+				Model:     "gpt-5.2",
+				Messages:  []ai.ChatMessage{{Role: "user", Content: "hi"}},
+				MaxTokens: &maxTokens,
 			}
 			_, err := fixture.client.Complete(context.Background(), req)
 			if err == nil {
@@ -321,8 +332,17 @@ func TestGRPCClientEstimateTokensHappyPath(t *testing.T) {
 	}
 
 	req := &ai.TokenEstimateRequest{
-		Model:    "gpt-5.2",
-		Messages: []ai.ChatMessage{{Role: "user", Content: "hello"}},
+		Model: "gpt-5.2",
+		Messages: []ai.ChatMessage{
+			{Role: "user", Content: "hello"},
+			{
+				Role: "user",
+				Parts: []ai.ContentPart{
+					{Type: ai.ContentPartTypeText, Text: "what is this?"},
+					{Type: ai.ContentPartTypeImageURL, ImageURL: "https://example.com/cat.png"},
+				},
+			},
+		},
 	}
 	resp, err := fixture.client.EstimateTokens(context.Background(), req)
 	if err != nil {
@@ -333,6 +353,30 @@ func TestGRPCClientEstimateTokensHappyPath(t *testing.T) {
 	}
 	if resp.EstimatedTokens != 42 {
 		t.Errorf("expected EstimatedTokens 42, got %d", resp.EstimatedTokens)
+	}
+
+	sent := fixture.completion.getLastEstimateReq()
+	if sent == nil {
+		t.Fatal("expected the server to have observed an EstimateTokens request")
+	}
+	if sent.GetModel() != "gpt-5.2" {
+		t.Errorf("expected mapped request model %q, got %q", "gpt-5.2", sent.GetModel())
+	}
+	if len(sent.GetMessages()) != 2 {
+		t.Fatalf("expected 2 mapped messages, got %d", len(sent.GetMessages()))
+	}
+	if text, ok := sent.GetMessages()[0].GetContent().(*llmgatewaypb.ChatMessage_Text); !ok || text.Text != "hello" {
+		t.Errorf("expected message[0] to be plain text %q, got %+v", "hello", sent.GetMessages()[0].GetContent())
+	}
+	parts, ok := sent.GetMessages()[1].GetContent().(*llmgatewaypb.ChatMessage_Parts)
+	if !ok || len(parts.Parts.GetParts()) != 2 {
+		t.Fatalf("expected message[1] to carry 2 content parts, got %+v", sent.GetMessages()[1].GetContent())
+	}
+	if _, ok := parts.Parts.GetParts()[0].GetPart().(*llmgatewaypb.ContentPart_Text); !ok {
+		t.Errorf("expected content part[0] to be a text part, got %+v", parts.Parts.GetParts()[0].GetPart())
+	}
+	if imageURL, ok := parts.Parts.GetParts()[1].GetPart().(*llmgatewaypb.ContentPart_ImageUrl); !ok || imageURL.ImageUrl != "https://example.com/cat.png" {
+		t.Errorf("expected content part[1] to be an image_url part %q, got %+v", "https://example.com/cat.png", parts.Parts.GetParts()[1].GetPart())
 	}
 }
 

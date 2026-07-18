@@ -433,6 +433,103 @@ func TestHandleWebhookEventSubscriptionUpdated(t *testing.T) {
 	}
 }
 
+// TestHandleWebhookEventSubscriptionUpdatedPlanChangeResyncsEntitlements
+// asserts that when a Billing Portal plan change delivers a new
+// StripePriceID via customer.subscription.updated, PlanCode and
+// MonthlyTokenAllocation are resynced together with it (not just
+// StripePriceID) — see handleSubscriptionUpdated's doc comment: leaving
+// them stale would permanently mis-credit every subsequent
+// handleInvoicePaid renewal.
+func TestHandleWebhookEventSubscriptionUpdatedPlanChangeResyncsEntitlements(t *testing.T) {
+	balanceRepo := &mocks.BalanceRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	subRepo := &mocks.SubscriptionRepo{}
+	paymentRepo := &mocks.PaymentRepo{BalanceRepo: balanceRepo}
+	gw := &mocks.StripeGateway{}
+
+	plans := []domainbilling.Plan{
+		{Code: "starter", StripePriceID: "price_starter", Name: "Starter", Description: "100K tokens/month",
+			PriceCents: 500, Currency: "usd", MonthlyTokenAllocation: 100000},
+		{Code: "pro", StripePriceID: "price_pro", Name: "Pro", Description: "500K tokens/month",
+			PriceCents: 2000, Currency: "usd", MonthlyTokenAllocation: 500000},
+	}
+	uc := NewBillingUsecase(balanceRepo, roomRepo, subRepo, paymentRepo, gw,
+		plans, testPackages(), "https://example.com/success", "https://example.com/cancel")
+
+	if err := subRepo.Create(context.Background(), &domainbilling.Subscription{
+		ID: "sub-row-1", UserID: "user-1", StripeSubscriptionID: "sub_1", Status: "active",
+		StripePriceID: "price_starter", PlanCode: "starter", MonthlyTokenAllocation: 100000,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	gw.WebhookEvent = domainbilling.WebhookEvent{
+		ID:   "evt_sub_updated_plan_change",
+		Type: domainbilling.EventTypeSubscriptionUpdated,
+		Subscription: &domainbilling.SubscriptionEventData{
+			StripeSubscriptionID: "sub_1", Status: "active", StripePriceID: "price_pro",
+		},
+	}
+
+	if err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig"); err != nil {
+		t.Fatalf("HandleWebhookEvent failed: %v", err)
+	}
+
+	sub, err := subRepo.GetByStripeSubscriptionID(context.Background(), "sub_1")
+	if err != nil {
+		t.Fatalf("GetByStripeSubscriptionID failed: %v", err)
+	}
+	if sub.StripePriceID != "price_pro" {
+		t.Fatalf("expected stripe_price_id=price_pro, got %s", sub.StripePriceID)
+	}
+	if sub.PlanCode != "pro" {
+		t.Fatalf("expected plan_code=pro, got %s", sub.PlanCode)
+	}
+	if sub.MonthlyTokenAllocation != 500000 {
+		t.Fatalf("expected monthly_token_allocation=500000, got %d", sub.MonthlyTokenAllocation)
+	}
+}
+
+// TestHandleWebhookEventSubscriptionUpdatedUnrecognizedPriceSkipsResync
+// asserts that an unrecognized StripePriceID leaves PlanCode and
+// MonthlyTokenAllocation untouched (warn-and-skip, mirroring
+// upsertSubscriptionFromCheckout's unrecognized-plan_code handling) while
+// still syncing status.
+func TestHandleWebhookEventSubscriptionUpdatedUnrecognizedPriceSkipsResync(t *testing.T) {
+	gw := &mocks.StripeGateway{}
+	uc, _, subRepo, _ := newStripeTestUsecase(gw)
+
+	if err := subRepo.Create(context.Background(), &domainbilling.Subscription{
+		ID: "sub-row-1", UserID: "user-1", StripeSubscriptionID: "sub_1", Status: "active",
+		StripePriceID: "price_starter", PlanCode: "starter", MonthlyTokenAllocation: 100000,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	gw.WebhookEvent = domainbilling.WebhookEvent{
+		ID:   "evt_sub_updated_unknown_price",
+		Type: domainbilling.EventTypeSubscriptionUpdated,
+		Subscription: &domainbilling.SubscriptionEventData{
+			StripeSubscriptionID: "sub_1", Status: "active", StripePriceID: "price_does_not_exist",
+		},
+	}
+
+	if err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig"); err != nil {
+		t.Fatalf("HandleWebhookEvent failed: %v", err)
+	}
+
+	sub, err := subRepo.GetByStripeSubscriptionID(context.Background(), "sub_1")
+	if err != nil {
+		t.Fatalf("GetByStripeSubscriptionID failed: %v", err)
+	}
+	if sub.StripePriceID != "price_starter" || sub.PlanCode != "starter" || sub.MonthlyTokenAllocation != 100000 {
+		t.Fatalf("expected plan/entitlements untouched for unrecognized price, got %+v", sub)
+	}
+	if sub.Status != "active" {
+		t.Fatalf("expected status still synced to active, got %s", sub.Status)
+	}
+}
+
 func TestHandleWebhookEventSubscriptionDeleted(t *testing.T) {
 	gw := &mocks.StripeGateway{}
 	uc, _, subRepo, _ := newStripeTestUsecase(gw)

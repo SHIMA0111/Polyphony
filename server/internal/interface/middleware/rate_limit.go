@@ -4,6 +4,7 @@ package middleware
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-redis/redis_rate/v10"
 	"github.com/labstack/echo/v4"
@@ -38,9 +39,13 @@ type RateLimitConfig struct {
 // On each request it computes key := cfg.KeyPrefix + ":" + cfg.KeyFunc(c) and
 // calls cfg.Limiter.Allow(ctx, key, cfg.Limit). If the limit is exceeded
 // (res.Allowed == 0), it sets the Retry-After response header to the number
-// of whole seconds until the bucket next admits a request and returns HTTP
-// 429 with the package-local errorResponse{Message: "rate limit exceeded"}
-// body (the same shape JWTAuth's 401 responses use).
+// of whole seconds until the bucket next admits a request -- rounded up
+// (never down, which would under-report the wait for a sub-second window)
+// and clamped to a minimum of 1 (a client must never be told Retry-After: 0,
+// which would invite an immediate retry against a bucket that is still
+// empty) -- and returns HTTP 429 with the package-local
+// errorResponse{Message: "rate limit exceeded"} body (the same shape
+// JWTAuth's 401 responses use).
 //
 // If cfg.Limiter.Allow itself returns an error (e.g. Redis is unreachable),
 // RateLimit fails open: it logs the error at Warn via GetLogger(c) and calls
@@ -72,9 +77,13 @@ func RateLimit(cfg RateLimitConfig) echo.MiddlewareFunc {
 			}
 
 			if res.Allowed == 0 {
-				retryAfterSeconds := int(res.RetryAfter.Seconds())
-				if retryAfterSeconds < 0 {
-					retryAfterSeconds = 0
+				// Round up to whole seconds -- integer truncation toward zero
+				// would report Retry-After: 0 for any sub-second window, and
+				// then clamp to a minimum of 1 so a client is never told it
+				// can retry immediately.
+				retryAfterSeconds := int((res.RetryAfter + time.Second - 1) / time.Second)
+				if retryAfterSeconds < 1 {
+					retryAfterSeconds = 1
 				}
 				c.Response().Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
 				return c.JSON(http.StatusTooManyRequests, errorResponse{Message: "rate limit exceeded"})

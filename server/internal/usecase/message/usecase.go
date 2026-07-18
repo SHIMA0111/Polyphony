@@ -404,6 +404,17 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	aiMsg.Status = domainmessage.MessageStatusCompleted
 
 	if err = u.msgRepo.Create(ctx, aiMsg); err != nil {
+		// humanMsg is already durably persisted (see the comment above
+		// contextPage's fetch), so this failure must still go through
+		// persistFailedAIPlaceholder — best-effort, since aiMsg itself
+		// could not be created — to uphold SendAIMessage's invariant that
+		// every error path after humanMsg exists leaves a failed AI
+		// placeholder for a client retry to land on via
+		// RegenerateAIMessage's UPDATE-in-place path.
+		if _, phErr := u.persistFailedAIPlaceholder(ctx, roomID, userID, humanMsg, aiSeq, visibility, private, usedSummary); phErr != nil {
+			slog.Error("failed to persist failed AI message placeholder after completed AI message create error",
+				"error", phErr, "room_id", roomID, "human_message_id", humanMsg.ID)
+		}
 		return nil, err
 	}
 	u.publishMessageEvent(ctx, event.RoomEvent{

@@ -78,6 +78,11 @@ func (r *PaymentRepository) Create(ctx context.Context, payment *billing.Payment
 // CreateAndCredit atomically inserts payment and credits userID's balance.
 // See billing.PaymentRepository.CreateAndCredit.
 func (r *PaymentRepository) CreateAndCredit(ctx context.Context, payment *billing.PaymentRecord, userID string, amount int64, description string) (bool, error) {
+	if payment.UserID != userID || payment.TokensCredited != amount {
+		return false, fmt.Errorf("%w: payment.UserID=%q userID=%q payment.TokensCredited=%d amount=%d",
+			billing.ErrInconsistentPayment, payment.UserID, userID, payment.TokensCredited, amount)
+	}
+
 	if payment.PaymentRail == "" {
 		payment.PaymentRail = "stripe"
 	}

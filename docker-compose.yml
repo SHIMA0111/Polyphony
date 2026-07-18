@@ -292,6 +292,7 @@ services:
   # service for signature verification to succeed.
   stripe-cli:
     image: stripe/stripe-cli:v1.21.7
+    profiles: ["tools"]
     command: listen --api-key ${STRIPE_SECRET_KEY:-} --forward-to api:8080/webhooks/stripe --skip-verify
     depends_on:
       api:

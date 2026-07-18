@@ -5,8 +5,28 @@ import (
 	"testing"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
+
+// nonRevokerAuthService implements only domainauth.AuthService, deliberately
+// without a Revoke method, so it does NOT satisfy domainauth.Revoker. Unlike
+// mocks.AuthService -- which always has a Revoke method, and so always
+// satisfies domainauth.Revoker even with a nil RevokeFunc -- this type is
+// needed to exercise AuthUsecase.Logout's actual no-Revoker branch.
+type nonRevokerAuthService struct{}
+
+func (nonRevokerAuthService) Register(_ context.Context, _, _, _ string) (*domainauth.TokenPair, error) {
+	return &domainauth.TokenPair{AccessToken: "tok"}, nil
+}
+
+func (nonRevokerAuthService) Login(_ context.Context, _, _ string) (*domainauth.TokenPair, error) {
+	return &domainauth.TokenPair{AccessToken: "tok"}, nil
+}
+
+func (nonRevokerAuthService) ValidateToken(_ context.Context, _ string) (*domainauth.Claims, error) {
+	return &domainauth.Claims{}, nil
+}
 
 func TestAuthUsecaseRegister(t *testing.T) {
 	svc := &mocks.AuthService{}
@@ -83,10 +103,13 @@ func TestAuthUsecaseLogoutDelegatesToRevoker(t *testing.T) {
 }
 
 // TestAuthUsecaseLogoutNoOpWithoutRevoker proves that Logout returns nil for
-// an AuthService with no RevokeFunc configured (the documented no-op
-// behavior for a backend without server-side session revocation).
+// an AuthService that does not implement domainauth.Revoker at all (the
+// documented no-op behavior for a backend without server-side session
+// revocation). It deliberately does not use mocks.AuthService, which always
+// implements Revoker (even with a nil RevokeFunc) and so would exercise
+// Logout's Revoker branch instead of the no-op branch under test.
 func TestAuthUsecaseLogoutNoOpWithoutRevoker(t *testing.T) {
-	svc := &mocks.AuthService{}
+	svc := nonRevokerAuthService{}
 	uc := NewAuthUsecase(svc)
 	ctx := context.Background()
 

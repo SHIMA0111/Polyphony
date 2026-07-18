@@ -88,6 +88,57 @@ func TestCreateGroupHandlerMissingName400(t *testing.T) {
 	}
 }
 
+// TestCreateGroupHandlerNameTooLong400 asserts that a name exceeding
+// groups.name's VARCHAR(255) limit is rejected with HTTP 400 rather than
+// reaching the usecase/DB, where it would otherwise surface as an
+// unhandled HTTP 500.
+func TestCreateGroupHandlerNameTooLong400(t *testing.T) {
+	e, h, _, _, _ := setupGroupTest()
+
+	body, err := json.Marshal(map[string]string{"name": strings.Repeat("a", 256)})
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/groups", strings.NewReader(string(body)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set("user_id", "owner-1")
+
+	if err := h.Create(c); err != nil {
+		t.Fatalf("Create handler error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+// TestUpdateGroupHandlerNameTooLong400 is Update's counterpart to
+// TestCreateGroupHandlerNameTooLong400.
+func TestUpdateGroupHandlerNameTooLong400(t *testing.T) {
+	e, h, _, _, _ := setupGroupTest()
+	groupID := createTestGroup(t, e, h, "owner-1")
+
+	body, err := json.Marshal(map[string]string{"name": strings.Repeat("a", 256)})
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/groups/"+groupID, strings.NewReader(string(body)))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("groupId")
+	c.SetParamValues(groupID)
+	c.Set("user_id", "owner-1")
+
+	if err := h.Update(c); err != nil {
+		t.Fatalf("Update handler error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
 func createTestGroup(t *testing.T, e *echo.Echo, h *GroupHandler, ownerID string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/groups", strings.NewReader(`{"name":"Team","description":""}`))

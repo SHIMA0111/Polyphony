@@ -2,16 +2,14 @@
 // LLM Gateway gRPC contract defined in server/proto/llmgateway/v1/*.proto
 // (CompletionService, ModelsService, and their message types).
 //
-// These files are generated -- do not hand-edit them. Regenerate with, from
-// server/:
-//
-//	buf generate
-//
-// This requires protoc-gen-go and protoc-gen-go-grpc on PATH (see buf.gen.yaml's
-// header comment for install instructions). The module root scoping in buf.yaml
-// is intended to keep the output flat in this directory (completion.pb.go,
-// completion_grpc.pb.go, models.pb.go, models_grpc.pb.go) rather than mirroring
-// the llmgateway/v1/ proto package path.
+// These files are generated -- do not hand-edit them. Regenerate with plain
+// `protoc`, not `buf generate` -- see the Known discrepancy paragraph below
+// for why `buf generate` is currently unusable here. This requires
+// protoc-gen-go and protoc-gen-go-grpc on PATH (see buf.gen.yaml's header
+// comment for install instructions). The module root scoping in buf.yaml is
+// intended to keep the output flat in this directory (completion.pb.go,
+// completion_grpc.pb.go, models.pb.go, models_grpc.pb.go) rather than
+// mirroring the llmgateway/v1/ proto package path.
 //
 // Known discrepancy (as of Step 34, buf v1.60.0 + protoc-gen-go v1.36.6): running
 // `buf generate` with the committed buf.gen.yaml (`paths=source_relative`) nests

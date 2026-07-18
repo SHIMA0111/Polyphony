@@ -73,9 +73,11 @@ func TestRoomHandlerUpdateSettings(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateRoom failed: %v", err)
 		}
-		_ = repo.AddMember(context.Background(), &domainroom.RoomMember{
+		if err := repo.AddMember(context.Background(), &domainroom.RoomMember{
 			ID: "m2", RoomID: created.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
-		})
+		}); err != nil {
+			t.Fatalf("AddMember failed: %v", err)
+		}
 
 		req := httptest.NewRequest(http.MethodPatch, "/rooms/"+created.Room.ID+"/settings",
 			strings.NewReader(`{"ai_model":"claude-opus-4"}`))

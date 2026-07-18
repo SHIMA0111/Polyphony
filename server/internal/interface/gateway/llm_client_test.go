@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -163,30 +164,46 @@ func TestLLMClientListModelsFlattensMetadata(t *testing.T) {
 // single-element array).
 func TestLLMClientCompleteTextOnlyMessageMarshalsPlainStringContent(t *testing.T) {
 	var capturedBody completionReqDTO
+	// handlerErr records a failure observed inside the httptest handler
+	// closure, which runs on its own goroutine: calling t.Fatalf there would
+	// invoke runtime.Goexit mid-handler rather than failing the test, so
+	// failures are recorded here and asserted from the main test goroutine
+	// after Complete returns.
+	var handlerErr string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("failed to read request body: %v", err)
+			handlerErr = fmt.Sprintf("failed to read request body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 		// Decode into a generic map first so the test can assert the raw JSON
 		// shape of `content` (string, not array) before also decoding into
 		// completionReqDTO for field-level assertions.
 		var raw map[string]any
 		if err := json.Unmarshal(body, &raw); err != nil {
-			t.Fatalf("failed to decode raw request body: %v", err)
+			handlerErr = fmt.Sprintf("failed to decode raw request body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 		messages, _ := raw["messages"].([]any)
 		if len(messages) != 1 {
-			t.Fatalf("expected 1 message in raw body, got %+v", raw["messages"])
+			handlerErr = fmt.Sprintf("expected 1 message in raw body, got %+v", raw["messages"])
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 		msg, _ := messages[0].(map[string]any)
 		if _, ok := msg["content"].(string); !ok {
-			t.Fatalf("expected content to be a plain JSON string, got %+v (%T)", msg["content"], msg["content"])
+			handlerErr = fmt.Sprintf("expected content to be a plain JSON string, got %+v (%T)", msg["content"], msg["content"])
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 
 		if err := json.Unmarshal(body, &capturedBody); err != nil {
-			t.Fatalf("failed to decode request body: %v", err)
+			handlerErr = fmt.Sprintf("failed to decode request body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -211,6 +228,9 @@ func TestLLMClientCompleteTextOnlyMessageMarshalsPlainStringContent(t *testing.T
 	if err != nil {
 		t.Fatalf("Complete returned error: %v", err)
 	}
+	if handlerErr != "" {
+		t.Fatalf("handler observed a failure: %s", handlerErr)
+	}
 
 	if len(capturedBody.Messages) != 1 || capturedBody.Messages[0].Content != "hello world" {
 		t.Fatalf("expected marshalled content to be the plain string hello world, got %+v", capturedBody.Messages)
@@ -227,14 +247,24 @@ func TestLLMClientCompleteTextOnlyMessageMarshalsPlainStringContent(t *testing.T
 // image_url part, and an image_base64 part.
 func TestLLMClientCompleteImagePartsMessageMarshalsContentPartsArray(t *testing.T) {
 	var capturedRaw map[string]any
+	// handlerErr records a failure observed inside the httptest handler
+	// closure, which runs on its own goroutine: calling t.Fatalf there would
+	// invoke runtime.Goexit mid-handler rather than failing the test, so
+	// failures are recorded here and asserted from the main test goroutine
+	// after Complete returns.
+	var handlerErr string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("failed to read request body: %v", err)
+			handlerErr = fmt.Sprintf("failed to read request body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 		if err := json.Unmarshal(body, &capturedRaw); err != nil {
-			t.Fatalf("failed to decode raw request body: %v", err)
+			handlerErr = fmt.Sprintf("failed to decode raw request body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -273,6 +303,9 @@ func TestLLMClientCompleteImagePartsMessageMarshalsContentPartsArray(t *testing.
 	resp, err := client.Complete(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Complete returned error: %v", err)
+	}
+	if handlerErr != "" {
+		t.Fatalf("handler observed a failure: %s", handlerErr)
 	}
 	if resp.Content != "it's a cat" {
 		t.Fatalf("expected decoded content %q, got %q", "it's a cat", resp.Content)

@@ -345,6 +345,55 @@ func TestSendAIMessageContextEnrichmentFailureCreatesFailedPlaceholder(t *testin
 	}
 }
 
+// TestSendAIMessageCompletedMessageCreateFailureCreatesFailedPlaceholder
+// asserts that when the LLM call succeeds but persisting the completed AI
+// message fails (msgRepo.Create's second call — the first is humanMsg),
+// SendAIMessage still upholds its own invariant that every error path after
+// humanMsg exists leaves a failed AI placeholder for a client retry to land
+// on via RegenerateAIMessage's UPDATE-in-place path (mirroring the
+// context-fetch/context-enrichment failure regression tests above), instead
+// of returning bare (nil, err) with nothing persisted at aiSeq.
+func TestSendAIMessageCompletedMessageCreateFailureCreatesFailedPlaceholder(t *testing.T) {
+	createErr := errors.New("boom: completed AI message create failed")
+	msgRepo := &mocks.MessageRepo{FailCreateOnCall: 2, FailCreateErr: createErr}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
+	if !errors.Is(err, createErr) {
+		t.Fatalf("expected the original create error to be returned, got %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected a nil result on failure, got %+v", result)
+	}
+
+	var humanCount, failedAICount int
+	for _, m := range msgRepo.Messages {
+		if m.RoomID != "room-1" {
+			continue
+		}
+		switch m.Type {
+		case domainmessage.MessageTypeHuman:
+			humanCount++
+		case domainmessage.MessageTypeAI:
+			if m.Status != domainmessage.MessageStatusFailed {
+				t.Fatalf("expected the AI message to have failed status, got %s", m.Status)
+			}
+			failedAICount++
+		}
+	}
+	if humanCount != 1 {
+		t.Fatalf("expected exactly 1 human message, got %d", humanCount)
+	}
+	if failedAICount != 1 {
+		t.Fatalf("expected exactly 1 failed AI message placeholder, got %d", failedAICount)
+	}
+}
+
 // TestPublishMessageEventSuppressesOwnerlessPrivateMessage proves that
 // publishMessageEvent skips the hub entirely for a private message whose
 // SenderID is nil (an "ownerless" private message — see its doc comment for
