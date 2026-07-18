@@ -223,7 +223,7 @@ func (r *MessageRepository) UpdateAIResponse(ctx context.Context, id string, con
 // message. It returns domain.ErrNotFound if the message does not exist.
 func (r *MessageRepository) UpdateExcludeFromAI(ctx context.Context, id string, exclude bool, updatedAt time.Time) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE messages SET exclude_from_ai = $1, updated_at = $2 WHERE id = $3`,
+		`UPDATE messages SET exclude_from_ai = $1, updated_at = $2 WHERE id = $3 AND room_id = $4`,
 		exclude, updatedAt, id,
 	)
 	if err != nil {
@@ -286,7 +286,8 @@ func (r *MessageRepository) DeleteAndInvalidateSummary(ctx context.Context, mess
 	}
 
 	tag, err := tx.Exec(ctx,
-		`UPDATE messages SET is_deleted = true, updated_at = NOW() WHERE id = $1 AND is_deleted = false`, messageID)
+		`UPDATE messages SET is_deleted = true, updated_at = NOW() WHERE id = $1 AND room_id = $2 AND is_deleted = false`,
+		messageID, roomID)
 	if err != nil {
 		return err
 	}
@@ -330,8 +331,8 @@ func (r *MessageRepository) UpdateExcludeFromAIAndInvalidateSummary(ctx context.
 	}
 
 	tag, err := tx.Exec(ctx,
-		`UPDATE messages SET exclude_from_ai = $1, updated_at = $2 WHERE id = $3`,
-		exclude, updatedAt, messageID)
+		`UPDATE messages SET exclude_from_ai = $1, updated_at = $2 WHERE id = $3 AND room_id = $4`,
+		exclude, updatedAt, messageID, roomID)
 	if err != nil {
 		return err
 	}
