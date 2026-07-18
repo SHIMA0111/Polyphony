@@ -104,14 +104,18 @@ func toTokenTransactionResponse(txn *domainbilling.TokenTransaction) TokenTransa
 // the rest of the handler package, even though a balance lookup for the
 // authenticated user's own ID should never realistically 404 in practice
 // (GetOrCreateBalance always creates the row on first access).
-// domain.ErrStripeNotConfigured is mapped to 503, distinguishing "billing
-// isn't set up yet" from a genuine client/server error (Step 49).
+// domain.ErrStripeNotConfigured and domain.ErrBillingNotConfigured are both
+// mapped to 503, distinguishing "billing isn't set up yet" from a genuine
+// client/server error (Step 49).
 func handleBillingError(c echo.Context, err error) error {
 	if errors.Is(err, domain.ErrNotFound) {
 		return c.JSON(http.StatusNotFound, ErrorResponse{Message: "not found"})
 	}
 	if errors.Is(err, domain.ErrStripeNotConfigured) {
 		return c.JSON(http.StatusServiceUnavailable, ErrorResponse{Message: "stripe is not configured"})
+	}
+	if errors.Is(err, domain.ErrBillingNotConfigured) {
+		return c.JSON(http.StatusServiceUnavailable, ErrorResponse{Message: "billing is not configured"})
 	}
 	middleware.GetLogger(c).Error("unhandled billing error", "error", err)
 	return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})

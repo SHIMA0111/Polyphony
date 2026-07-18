@@ -265,3 +265,93 @@ func TestMessageRepository_PrivateVisibilityFiltering(t *testing.T) {
 		t.Fatal("expected owner ListByRoom to include the private message")
 	}
 }
+
+// TestMessageRepository_PrivateCursorMatchesUnknownCursor proves that
+// ListByRoom's cursor-resolution subquery applies the same visibilityFilter
+// as the surrounding list queries: a non-owner using another user's private
+// message ID as the cursor must get domain.ErrNotFound, indistinguishable
+// from passing a cursor ID that does not exist at all. Without this, a
+// non-owner could use a private message's ID as a cursor to confirm its
+// existence (and its position in the sequence) purely from the presence or
+// absence of an error, even though that same message is correctly excluded
+// from every listed page.
+func TestMessageRepository_PrivateCursorMatchesUnknownCursor(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "private-cursor-owner")
+
+	other := &domainuser.User{
+		ID:           uuid.New().String(),
+		Email:        "private-cursor-other@example.com",
+		Username:     "private-cursor-other",
+		PasswordHash: "hash",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if err := userRepo.Create(ctx, other); err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+
+	now := time.Now()
+	privateMsg := &domainmessage.Message{
+		ID:         uuid.New().String(),
+		RoomID:     rm.ID,
+		SenderID:   &rm.OwnerID,
+		Content:    "a private cursor target",
+		Type:       domainmessage.MessageTypeHuman,
+		Status:     domainmessage.MessageStatusCompleted,
+		Sequence:   1,
+		Visibility: domainmessage.MessageVisibilityPrivate,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := msgRepo.Create(ctx, privateMsg); err != nil {
+		t.Fatalf("create private message: %v", err)
+	}
+	// A second, later message so a successful cursor page would have
+	// something to return -- if the visibility filter were missing, the
+	// non-owner's ListByRoom call below would succeed and (incorrectly)
+	// page starting after the private message's sequence.
+	second := &domainmessage.Message{
+		ID:         uuid.New().String(),
+		RoomID:     rm.ID,
+		SenderID:   &rm.OwnerID,
+		Content:    "a later public message",
+		Type:       domainmessage.MessageTypeHuman,
+		Status:     domainmessage.MessageStatusCompleted,
+		Sequence:   2,
+		Visibility: domainmessage.MessageVisibilityPublic,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := msgRepo.Create(ctx, second); err != nil {
+		t.Fatalf("create second message: %v", err)
+	}
+
+	// Baseline: an unknown cursor ID (never inserted) yields ErrNotFound.
+	_, unknownErr := msgRepo.ListByRoom(ctx, rm.ID, uuid.New().String(), 20, other.ID)
+	if !errors.Is(unknownErr, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an unknown cursor, got %v", unknownErr)
+	}
+
+	// A non-owner using the private message's real ID as the cursor must
+	// get the identical error.
+	_, privateErr := msgRepo.ListByRoom(ctx, rm.ID, privateMsg.ID, 20, other.ID)
+	if !errors.Is(privateErr, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for a non-owner's private-message cursor, got %v", privateErr)
+	}
+
+	// The owner, by contrast, can use the same ID as a cursor successfully.
+	ownerPage, err := msgRepo.ListByRoom(ctx, rm.ID, privateMsg.ID, 20, rm.OwnerID)
+	if err != nil {
+		t.Fatalf("expected owner cursor resolution to succeed, got error: %v", err)
+	}
+	if len(ownerPage.Messages) != 0 {
+		t.Fatalf("expected no messages before sequence 1, got %d", len(ownerPage.Messages))
+	}
+}

@@ -1390,3 +1390,200 @@ func TestSendAIMessagePrivateWSDeliveryTargetsOnlySender(t *testing.T) {
 		t.Fatal("expected events for both the human and AI private messages")
 	}
 }
+
+// --- Failed AI placeholder on post-human-persist errors (Step 21 review fix) ---
+
+// TestSendAIMessageEnrichmentFailureSavesFailedPlaceholder asserts that when
+// SendAIMessage fails after the human message is already durably persisted
+// -- here, via an attachment-enrichment failure (objStorage.PresignView
+// erroring) -- it still creates a status=failed AI placeholder linked to
+// that human message, exactly as the LLM-call-failure path does, before
+// returning the underlying error. Without this, a client that retries after
+// the error would resubmit the same content via SendAIMessage and duplicate
+// the human message, because nothing would record that this human message
+// is already (unsuccessfully) answered; with the placeholder saved, the
+// client's existing RegenerateAIMessage retry path applies instead.
+//
+// enrichWithAttachments is exercised here (rather than the ListByRoom
+// context-fetch step) because it is the failure the test doubles in this
+// package can trigger deterministically; both steps share the exact same
+// error-handling code path in SendAIMessage (see its doc comment), so this
+// covers that shared path.
+func TestSendAIMessageEnrichmentFailureSavesFailedPlaceholder(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	attachmentRepo := &mocks.AttachmentRepo{}
+	objStorage := &mocks.ObjectStorage{}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, attachmentRepo, objStorage, "gpt-5-mini")
+	ctx := context.Background()
+
+	// Seed an earlier message carrying an image attachment, so that a later
+	// SendAIMessage call's context-assembly enrichment step has something to
+	// fail on.
+	attachmentBearing, err := uc.SendMessage(ctx, "user-1", "room-1", "check this out")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+	if err := attachmentRepo.Create(ctx, &domainattachment.Attachment{
+		ID:        "att-1",
+		RoomID:    "room-1",
+		S3Key:     "attachments/room-1/att-1",
+		MimeType:  "image/png",
+		SizeBytes: 1024,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+	if _, err := attachmentRepo.AttachToMessage(ctx, "att-1", attachmentBearing.ID, "room-1"); err != nil {
+		t.Fatalf("AttachToMessage failed: %v", err)
+	}
+
+	// Force PresignView to fail for the enrichment step triggered by the
+	// SendAIMessage call under test.
+	objStorage.ShouldErr = true
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is it?", "test-model", false)
+	if err == nil {
+		t.Fatal("expected SendAIMessage to return the enrichment error")
+	}
+	if result != nil {
+		t.Fatalf("expected a nil result on error, got %+v", result)
+	}
+
+	// Exactly one new human message (the "What is it?" content passed to
+	// the failing call) and exactly one failed AI message (its placeholder)
+	// should have been created; the pre-existing attachment-bearing message
+	// must not have been duplicated or altered.
+	var newHuman *domainmessage.Message
+	var humanCount, aiCount int
+	for _, m := range msgRepo.Messages {
+		switch m.Type {
+		case domainmessage.MessageTypeHuman:
+			humanCount++
+			if m.Content == "What is it?" {
+				newHuman = m
+			}
+		case domainmessage.MessageTypeAI:
+			aiCount++
+		}
+	}
+	if humanCount != 2 {
+		t.Fatalf("expected exactly 2 human messages (1 seeded + 1 new), got %d", humanCount)
+	}
+	if newHuman == nil {
+		t.Fatal("expected to find the new human message created by the failing SendAIMessage call")
+	}
+	if aiCount != 1 {
+		t.Fatalf("expected exactly 1 AI message (the failed placeholder), got %d", aiCount)
+	}
+
+	var aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		if m.Type == domainmessage.MessageTypeAI {
+			aiMsg = m
+		}
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected the AI placeholder status to be failed, got %s", aiMsg.Status)
+	}
+	if aiMsg.Content != "" {
+		t.Fatalf("expected empty content on the failed AI placeholder, got %q", aiMsg.Content)
+	}
+	if aiMsg.InResponseToMessageID == nil || *aiMsg.InResponseToMessageID != newHuman.ID {
+		t.Fatalf("expected the failed AI placeholder to link back to the new human message %s, got %v", newHuman.ID, aiMsg.InResponseToMessageID)
+	}
+
+	// The retry path this placeholder exists for: RegenerateAIMessage on the
+	// new human message must now succeed once the underlying failure clears.
+	objStorage.ShouldErr = false
+	regenerated, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", newHuman.ID, "test-model")
+	if err != nil {
+		t.Fatalf("expected RegenerateAIMessage to recover the failed placeholder, got error: %v", err)
+	}
+	if regenerated.ID != aiMsg.ID {
+		t.Fatalf("expected RegenerateAIMessage to update the existing placeholder %s, got a different message %s", aiMsg.ID, regenerated.ID)
+	}
+	if regenerated.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected regenerated status completed, got %s", regenerated.Status)
+	}
+}
+
+// --- Ownerless private message publish suppression (Step 22 review fix) ---
+
+// TestPublishMessageEventSuppressesOwnerlessPrivateMessage asserts that
+// publishMessageEvent does not call hub.Publish for a private message whose
+// SenderID is nil (reachable in production because sender_id is
+// ON DELETE SET NULL — see publishMessageEvent's doc comment): broadcasting
+// it would be wrong (event.RoomEvent.TargetUserIDs' nil/empty meaning is
+// "everyone"), and there is no TargetUserIDs value that means "nobody", so
+// the only safe behavior is to drop the event rather than publish it either
+// way.
+func TestPublishMessageEventSuppressesOwnerlessPrivateMessage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	hub := event.NewInProcessHub()
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	orphaned := &domainmessage.Message{
+		ID:         "msg-orphaned",
+		RoomID:     "room-1",
+		SenderID:   nil,
+		Content:    "a private message whose sender row was later deleted",
+		Type:       domainmessage.MessageTypeHuman,
+		Visibility: domainmessage.MessageVisibilityPrivate,
+	}
+
+	// Call the unexported publish path directly (this test file is in
+	// `package message`): every SendAIMessage/RegenerateAIMessage call site
+	// goes through publishMessageEvent, so exercising it directly is the
+	// most targeted way to assert the suppression itself, independent of
+	// how an ownerless private message could arise upstream.
+	uc.publishMessageEvent(ctx, event.EventMessageCreated, "room-1", orphaned, time.Now())
+
+	select {
+	case evt := <-sub:
+		t.Fatalf("expected no event to be published for an ownerless private message, got %+v", evt)
+	case <-time.After(100 * time.Millisecond):
+		// Expected: nothing published.
+	}
+}
+
+// TestSendAIMessagePublishesNormallyForOwnedPrivateMessage is the control
+// for TestPublishMessageEventSuppressesOwnerlessPrivateMessage: a private
+// message that does have a SenderID (the ordinary case) must still be
+// published (targeted at its owner), so the suppression added for the
+// ownerless case does not regress normal private-message delivery.
+func TestSendAIMessagePublishesNormallyForOwnedPrivateMessage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	if _, err := uc.SendAIMessage(ctx, "user-1", "room-1", "secret question", "test-model", true); err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+
+	select {
+	case evt := <-sub:
+		if evt.Message.Visibility != domainmessage.MessageVisibilityPrivate {
+			t.Fatalf("expected a private message event, got visibility %s", evt.Message.Visibility)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the owned private message's event")
+	}
+}

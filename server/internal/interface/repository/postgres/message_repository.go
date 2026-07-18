@@ -90,7 +90,11 @@ func (r *MessageRepository) GetByID(ctx context.Context, id string, requestingUs
 // It returns a CursorPage containing up to limit messages and a next cursor if more pages exist.
 // requestingUserID controls visibility: a private message whose sender is
 // not requestingUserID is excluded from the page entirely, as if it does
-// not exist — it is invisible to every user other than its owner.
+// not exist — it is invisible to every user other than its owner. This
+// applies to cursor resolution too: a cursor naming another user's private
+// message is treated identically to an unknown cursor (both return
+// domain.ErrNotFound), so a non-owner cannot use a guessed or observed
+// private message ID as a cursor to confirm its existence or page around it.
 func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, cursor string, limit int, requestingUserID string) (*message.CursorPage, error) {
 	var rows pgx.Rows
 	var err error
@@ -102,10 +106,17 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 			roomID, limit+1, requestingUserID,
 		)
 	} else {
-		// Get cursor message's sequence
+		// Get cursor message's sequence. This applies the same
+		// visibilityFilter as every other read path: without it, a cursor
+		// pointing at another user's private message would resolve to a
+		// real sequence number instead of domain.ErrNotFound, letting a
+		// non-owner infer that private message's existence and position
+		// (and page around it) purely from its ID -- an invisible message
+		// must fail cursor resolution identically to a genuinely unknown
+		// one.
 		var cursorSeq int64
 		err = r.pool.QueryRow(ctx,
-			`SELECT sequence FROM messages WHERE id = $1 AND room_id = $2`, cursor, roomID,
+			`SELECT sequence FROM messages WHERE id = $1 AND room_id = $2 AND `+visibilityFilter(3), cursor, roomID, requestingUserID,
 		).Scan(&cursorSeq)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

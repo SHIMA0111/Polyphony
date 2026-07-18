@@ -14,6 +14,8 @@ func strPtr(v string) *string { return &v }
 
 // --- UpdateSettings (Step 24: per-room AI provider/model settings) ---
 
+// TestUpdateSettingsAdminCanSet asserts that a room admin can set both
+// aiProvider and aiModel via UpdateSettings.
 func TestUpdateSettingsAdminCanSet(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -36,6 +38,8 @@ func TestUpdateSettingsAdminCanSet(t *testing.T) {
 	}
 }
 
+// TestUpdateSettingsMasterCanSet asserts that a room master (the owner) can
+// set aiModel via UpdateSettings.
 func TestUpdateSettingsMasterCanSet(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -52,6 +56,8 @@ func TestUpdateSettingsMasterCanSet(t *testing.T) {
 	}
 }
 
+// TestUpdateSettingsMemberForbidden asserts that a room.RoleMember is
+// rejected with domain.ErrForbidden when calling UpdateSettings.
 func TestUpdateSettingsMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -67,6 +73,8 @@ func TestUpdateSettingsMemberForbidden(t *testing.T) {
 	}
 }
 
+// TestUpdateSettingsGuestForbidden asserts that a room.RoleGuest is
+// rejected with domain.ErrForbidden when calling UpdateSettings.
 func TestUpdateSettingsGuestForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -82,6 +90,8 @@ func TestUpdateSettingsGuestForbidden(t *testing.T) {
 	}
 }
 
+// TestUpdateSettingsReaderForbidden asserts that a room.RoleReader is
+// rejected with domain.ErrForbidden when calling UpdateSettings.
 func TestUpdateSettingsReaderForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
@@ -97,6 +107,9 @@ func TestUpdateSettingsReaderForbidden(t *testing.T) {
 	}
 }
 
+// TestUpdateSettingsNonMemberForbidden asserts that a caller with no
+// membership in the room at all is rejected with domain.ErrForbidden when
+// calling UpdateSettings.
 func TestUpdateSettingsNonMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)

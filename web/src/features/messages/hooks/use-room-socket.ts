@@ -60,6 +60,17 @@ function withJitter(backoffMs: number): number {
  * any abnormal close or failed ticket fetch, resetting the backoff delay
  * back to the base value on every successful `onopen`.
  *
+ * This WS connection is push-only with no missed-event replay, so any
+ * `message_created`/`message_updated` frame published while the connection
+ * was down (a dropped wifi connection, a server restart, a laptop sleeping,
+ * etc.) is gone for good as far as this socket is concerned. To reconcile
+ * that gap, every `onopen` *after* the first one (i.e. one that follows a
+ * real disconnect/reconnect cycle, not the initial mount) invalidates
+ * `["rooms", roomId, "messages"]` so `useMessages`'s own query refetches the
+ * latest page from the REST API. The very first `onopen` does not
+ * invalidate -- that would just be a redundant duplicate of the fetch
+ * `useMessages` already performs on mount.
+ *
  * Fully inert — constructs no `WebSocket` at all and reports a static
  * `"offline"` status — when the app is running under MSW mock mode
  * (`isMockMode()`), since the MSW-mocked REST handlers have no live event
@@ -88,6 +99,10 @@ export function useRoomSocket(roomId: string): ConnectionStatus {
     let socket: WebSocket | null = null
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
     let backoffMs = BASE_BACKOFF_MS
+    // Set once the first connection succeeds; gates the reconnect-backfill
+    // invalidation below so only a *recovering* onopen (one that follows a
+    // real disconnect) triggers it, not the initial mount.
+    let hasConnectedOnce = false
 
     function scheduleReconnect() {
       if (cancelled) return
@@ -125,6 +140,13 @@ export function useRoomSocket(roomId: string): ConnectionStatus {
         if (cancelled) return
         backoffMs = BASE_BACKOFF_MS
         setStatus("connected")
+
+        if (hasConnectedOnce) {
+          // Recovering from a drop: reconcile whatever was missed while
+          // disconnected via a fresh REST fetch (see this hook's docstring).
+          void queryClient.invalidateQueries({ queryKey })
+        }
+        hasConnectedOnce = true
       }
 
       ws.onmessage = (messageEvent: MessageEvent<string>) => {

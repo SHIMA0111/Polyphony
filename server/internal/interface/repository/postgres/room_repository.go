@@ -173,12 +173,32 @@ func (r *RoomRepository) UpdateAIContextCutoff(ctx context.Context, roomID strin
 // updated_at columns, per room.RoomRepository's UpdateAISettings GoDoc (a
 // deliberate partial update that leaves name/description/
 // ai_context_cutoff_at untouched, following the same narrow-setter
-// convention as UpdateDetails and UpdateAIContextCutoff). It returns
-// domain.ErrNotFound if the room does not exist.
+// convention as UpdateDetails and UpdateAIContextCutoff).
+//
+// The two SET clauses below are each a CASE WHEN keyed on whether the
+// corresponding field was provided at all (aiSettingAssignment's set
+// return): when a field is omitted (aiProvider/aiModel == nil), its CASE
+// WHEN evaluates the ELSE branch and reassigns the column to its own
+// current value, so the UPDATE never depends on any value this call itself
+// read beforehand. That is what makes this safe against the lost-update
+// race a GetByID-then-write approach has: two concurrent UpdateAISettings
+// calls that each touch only one of the two fields (e.g. one sets only
+// aiProvider, the other only aiModel) can both commit their intended change
+// regardless of interleaving, because neither statement ever writes a value
+// for the column it was not asked to change.
+//
+// It returns domain.ErrNotFound if the room does not exist.
 func (r *RoomRepository) UpdateAISettings(ctx context.Context, roomID string, aiProvider, aiModel *string, updatedAt time.Time) error {
+	setProvider, providerValue := aiSettingAssignment(aiProvider)
+	setModel, modelValue := aiSettingAssignment(aiModel)
+
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE rooms SET ai_provider = $1, ai_model = $2, updated_at = $3 WHERE id = $4`,
-		aiProvider, aiModel, updatedAt, roomID,
+		`UPDATE rooms SET
+			ai_provider = CASE WHEN $1 THEN $2::text ELSE ai_provider END,
+			ai_model = CASE WHEN $3 THEN $4::text ELSE ai_model END,
+			updated_at = $5
+		 WHERE id = $6`,
+		setProvider, providerValue, setModel, modelValue, updatedAt, roomID,
 	)
 	if err != nil {
 		return err
@@ -187,6 +207,24 @@ func (r *RoomRepository) UpdateAISettings(ctx context.Context, roomID string, ai
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+// aiSettingAssignment translates UpdateAISettings's nil/empty-string-
+// sentinel/value *string convention for a single field into the (set,
+// value) pair its CASE WHEN SQL expects: set reports whether the column
+// should be assigned at all (false when field is nil, meaning "leave the
+// column untouched"), and value is the literal value to assign when set is
+// true (nil clears the column to SQL NULL; a non-nil pointer sets it to the
+// pointed-to value).
+func aiSettingAssignment(field *string) (set bool, value *string) {
+	if field == nil {
+		return false, nil
+	}
+	if *field == "" {
+		return true, nil
+	}
+	v := *field
+	return true, &v
 }
 
 // Delete removes a room by its unique identifier. It returns domain.ErrNotFound if the room does not exist.

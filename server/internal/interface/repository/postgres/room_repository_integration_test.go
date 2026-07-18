@@ -663,7 +663,12 @@ func TestRemoveMemberSerializedAgainstTransferOwnership(t *testing.T) {
 // and UpdateAISettings (the narrow setter that replaced the old full-row
 // Update for this field group): a freshly created room has both as nil
 // (NULL), and after UpdateAISettings sets them to non-nil values, GetByID,
-// ListByUserID, and ListByUserIDWithRole all observe the same values.
+// ListByUserID, and ListByUserIDWithRole all observe the same values. It
+// also exercises UpdateAISettings's nil/empty-string-sentinel/value
+// convention end to end against real Postgres: a nil argument leaves the
+// corresponding column untouched (proven by updating only aiModel and
+// checking aiProvider survives), and a pointer to "" clears a column back
+// to NULL.
 func TestRoomRepositoryAIProviderModelRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -737,8 +742,28 @@ func TestRoomRepositoryAIProviderModelRoundTrip(t *testing.T) {
 		t.Fatalf("expected ListByUserIDWithRole to include room %s", rm.ID)
 	}
 
-	// Clearing back to nil round-trips as well.
-	if err := roomRepo.UpdateAISettings(ctx, rm.ID, nil, nil, time.Now()); err != nil {
+	// A nil argument leaves the corresponding column untouched: updating
+	// only ai_model (nil ai_provider) must not disturb the ai_provider set
+	// above.
+	newModel := "claude-sonnet-4"
+	if err := roomRepo.UpdateAISettings(ctx, rm.ID, nil, &newModel, time.Now()); err != nil {
+		t.Fatalf("UpdateAISettings (partial, nil provider) failed: %v", err)
+	}
+	afterPartial, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID after partial update failed: %v", err)
+	}
+	if afterPartial.AIProvider == nil || *afterPartial.AIProvider != provider {
+		t.Fatalf("expected ai_provider to remain %q after a nil-provider partial update, got %v", provider, afterPartial.AIProvider)
+	}
+	if afterPartial.AIModel == nil || *afterPartial.AIModel != newModel {
+		t.Fatalf("expected ai_model %q after partial update, got %v", newModel, afterPartial.AIModel)
+	}
+
+	// Clearing back to nil via the empty-string sentinel round-trips as
+	// well.
+	emptyProvider, emptyModel := "", ""
+	if err := roomRepo.UpdateAISettings(ctx, rm.ID, &emptyProvider, &emptyModel, time.Now()); err != nil {
 		t.Fatalf("UpdateAISettings (clear) failed: %v", err)
 	}
 	cleared, err := roomRepo.GetByID(ctx, rm.ID)
@@ -747,6 +772,96 @@ func TestRoomRepositoryAIProviderModelRoundTrip(t *testing.T) {
 	}
 	if cleared.AIProvider != nil || cleared.AIModel != nil {
 		t.Fatalf("expected nil ai_provider/ai_model after clearing, got %v / %v", cleared.AIProvider, cleared.AIModel)
+	}
+}
+
+// TestConcurrentUpdateAISettingsNoLostUpdate is a concurrency regression
+// test for Step 24/Wave 5: two UpdateAISettings calls that each touch only
+// one of the two fields (one sets only ai_provider, leaving ai_model nil;
+// the other sets only ai_model, leaving ai_provider nil), run concurrently
+// against the same room, must both land -- neither call may clobber the
+// other's field back to whatever the column held before either write ran.
+//
+// This is the scenario a GetByID-then-write approach is vulnerable to: if
+// both calls read the room before either wrote, whichever wrote last would
+// overwrite the other's field with its own stale snapshot of it (a lost
+// update). UpdateAISettings avoids this by resolving the
+// nil/empty-string-sentinel/value convention directly inside a single
+// UPDATE ... CASE WHEN statement (see its GoDoc), so an omitted field is
+// never assigned any value by the SQL itself -- there is no read-then-write
+// window for the other goroutine's write to land in and be lost.
+//
+// Unlike TestUpdateMemberRoleSerializedAgainstTransferOwnership (which
+// mirrors this test's goroutine/WaitGroup/channel structure), this test
+// asserts both writes always land rather than one of two acceptable
+// outcomes: the whole point of the atomic CASE WHEN is that these two
+// calls' field sets are disjoint, so there is no legitimate reason for
+// either to fail or for one to be silently dropped.
+//
+// Run with -race to also catch any data race in the driver/pool usage.
+func TestConcurrentUpdateAISettingsNoLostUpdate(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "ai-settings-concurrent-owner")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "Concurrent AI Settings Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	provider := "anthropic"
+	model := "claude-opus-4"
+
+	var wg sync.WaitGroup
+	var ready sync.WaitGroup
+	ready.Add(2)
+	start := make(chan struct{})
+
+	var providerErr, modelErr error
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-start
+		providerErr = roomRepo.UpdateAISettings(ctx, rm.ID, &provider, nil, time.Now())
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-start
+		modelErr = roomRepo.UpdateAISettings(ctx, rm.ID, nil, &model, time.Now())
+	}()
+
+	ready.Wait()
+	close(start)
+	wg.Wait()
+
+	if providerErr != nil {
+		t.Fatalf("UpdateAISettings(provider only) failed: %v", providerErr)
+	}
+	if modelErr != nil {
+		t.Fatalf("UpdateAISettings(model only) failed: %v", modelErr)
+	}
+
+	final, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if final.AIProvider == nil || *final.AIProvider != provider {
+		t.Fatalf("expected ai_provider %q to survive the concurrent model-only update, got %v (lost update)", provider, final.AIProvider)
+	}
+	if final.AIModel == nil || *final.AIModel != model {
+		t.Fatalf("expected ai_model %q to survive the concurrent provider-only update, got %v (lost update)", model, final.AIModel)
 	}
 }
 

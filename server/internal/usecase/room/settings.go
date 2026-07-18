@@ -5,7 +5,6 @@ import (
 	"time"
 
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
 )
 
 // UpdateSettings sets a room's default AI provider/model
@@ -35,16 +34,37 @@ import (
 //   - a pointer to any other non-empty value sets the stored field to that
 //     value.
 //
-// It follows the same get-check-mutate-persist shape as UpdateRoom and
-// UpdateAIContextCutoff, returning a domainroom.RoomWithRole pairing the
-// updated room with the caller's role so handlers can map the result to
-// RoomResponse without special-casing this endpoint.
+// Unlike UpdateRoom and UpdateAIContextCutoff, this is not a plain
+// get-check-mutate-persist: aiProvider and aiModel are passed straight
+// through to roomRepo.UpdateAISettings, which applies their
+// omitted/clear/set semantics itself in a single atomic UPDATE (see its
+// GoDoc) rather than this usecase computing final column values from a
+// GetByID snapshot and writing both columns back. That distinction matters
+// specifically because the two fields can be updated independently: if this
+// method instead read the room, merged in just the caller's field, and
+// wrote both columns back (as it used to), two concurrent UpdateSettings
+// calls each touching only one field (e.g. one setting only aiProvider, the
+// other only aiModel) could lost-update each other whenever both calls'
+// reads happened before either call's write -- whichever write landed last
+// would silently clobber the other's field back to its own stale snapshot
+// of it. Pushing the omitted/clear/set resolution down into the single
+// UPDATE statement removes that read-then-write window entirely: an omitted
+// field is never assigned a new value by the SQL itself, so a concurrent
+// write to the other field cannot be overwritten.
+//
+// The returned domainroom.RoomWithRole pairs the caller's role with a Room
+// reflecting this call's own view of the result: AIProvider/AIModel are
+// computed by applying aiProvider/aiModel to a GetByID snapshot taken
+// before the write, purely for the response, and may not match the row
+// UpdateAISettings actually just persisted if a concurrent UpdateSettings
+// call raced this one -- callers that need a guaranteed-fresh read should
+// GetByID again.
 func (u *RoomUsecase) UpdateSettings(ctx context.Context, userID, roomID string, aiProvider, aiModel *string) (*domainroom.RoomWithRole, error) {
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
 		return nil, err
 	}
-	if err := middleware.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
+	if err := domainroom.Authorize(member.Role, domainroom.ActionManageRoom); err != nil {
 		return nil, err
 	}
 
@@ -52,14 +72,15 @@ func (u *RoomUsecase) UpdateSettings(ctx context.Context, userID, roomID string,
 	if err != nil {
 		return nil, err
 	}
+	updatedAt := time.Now()
+
+	if err = u.roomRepo.UpdateAISettings(ctx, roomID, aiProvider, aiModel, updatedAt); err != nil {
+		return nil, err
+	}
 
 	rm.AIProvider = applySettingField(rm.AIProvider, aiProvider)
 	rm.AIModel = applySettingField(rm.AIModel, aiModel)
-	rm.UpdatedAt = time.Now()
-
-	if err = u.roomRepo.UpdateAISettings(ctx, roomID, rm.AIProvider, rm.AIModel, rm.UpdatedAt); err != nil {
-		return nil, err
-	}
+	rm.UpdatedAt = updatedAt
 
 	return &domainroom.RoomWithRole{Room: rm, Role: member.Role}, nil
 }

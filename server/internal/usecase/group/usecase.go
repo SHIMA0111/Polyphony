@@ -23,10 +23,24 @@ import (
 	invitationusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/invitation"
 )
 
+// Stable, client-facing reason strings recorded on a BatchInviteSkip. These
+// are the only two per-member errors CreateInvitation can return that
+// BatchInviteToRoom treats as skippable (see BatchInviteToRoom's doc
+// comment); any other error fails the whole batch instead of producing a
+// skip, so no other reason string is ever emitted.
+const (
+	// BatchInviteReasonAlreadyMember is recorded when the invitee is
+	// already a member of the target room.
+	BatchInviteReasonAlreadyMember = "already_member"
+	// BatchInviteReasonInvitationAlreadyExists is recorded when a pending
+	// invitation already exists for the (room, invitee) pair.
+	BatchInviteReasonInvitationAlreadyExists = "invitation_already_exists"
+)
+
 // BatchInviteSkip records why one group member was not invited by a
-// BatchInviteToRoom call: they were already a room member, already had a
-// pending invitation, or some other per-member error occurred while
-// creating their invitation.
+// BatchInviteToRoom call: they were already a room member, or already had a
+// pending invitation. Reason is always one of the BatchInviteReason*
+// constants.
 type BatchInviteSkip struct {
 	UserID   string
 	Username string
@@ -196,10 +210,13 @@ func (u *GroupUsecase) RemoveMember(ctx context.Context, callerID, groupID, user
 // (callerID lacks domainroom.RoleAdmin in roomID — the same RBAC check
 // applies identically to every member since it depends only on
 // callerID/roomID, not on the invitee), BatchInviteToRoom returns that
-// error immediately without iterating further. Any other per-member error
-// (domain.ErrAlreadyMember, domain.ErrInvitationAlreadyExists, etc.) is
-// recorded as a skip (with the error's message as the reason) and
-// iteration continues to the next member.
+// error immediately without iterating further. Of the remaining per-member
+// errors, only domain.ErrAlreadyMember and domain.ErrInvitationAlreadyExists
+// are recorded as a skip (with the matching BatchInviteReason* constant as
+// the reason) and let iteration continue to the next member; any other
+// error is not a known skippable case and fails the whole batch
+// immediately (nil, err), rather than risk silently swallowing an
+// unrecognized failure.
 func (u *GroupUsecase) BatchInviteToRoom(
 	ctx context.Context,
 	callerID, roomID, groupID string,
@@ -227,10 +244,21 @@ func (u *GroupUsecase) BatchInviteToRoom(
 			if i == 0 && errors.Is(err, domain.ErrForbidden) {
 				return nil, err
 			}
+			var reason string
+			switch {
+			case errors.Is(err, domain.ErrAlreadyMember):
+				reason = BatchInviteReasonAlreadyMember
+			case errors.Is(err, domain.ErrInvitationAlreadyExists):
+				reason = BatchInviteReasonInvitationAlreadyExists
+			default:
+				// Not a known skippable case: fail the whole batch rather
+				// than silently swallowing an unrecognized error.
+				return nil, err
+			}
 			result.Skipped = append(result.Skipped, BatchInviteSkip{
 				UserID:   member.UserID,
 				Username: member.Username,
-				Reason:   err.Error(),
+				Reason:   reason,
 			})
 			continue
 		}

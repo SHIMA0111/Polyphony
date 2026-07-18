@@ -86,12 +86,16 @@ describe("InvitationsInbox", () => {
       }),
     )
 
+    const push = vi.fn()
+    useRouterMock.mockReturnValue({ push })
+
     const user = userEvent.setup()
     render(<InvitationsInbox />)
 
     await user.click(await screen.findByRole("button", { name: "Accept" }))
 
     await waitFor(() => expect(acceptCalled).toBe(true))
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/rooms/room-9"))
   })
 
   it("calls reject on click for a username-targeted invitation", async () => {

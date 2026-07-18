@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
@@ -102,14 +104,27 @@ func (r *GroupRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// AddMember adds a user to a group.
+// AddMember adds a user to a group. It returns domain.ErrAlreadyMember if
+// the user is already a member of the group (a concurrent AddMember for the
+// same (group_id, user_id) pair losing the group_members_group_id_user_id_key
+// unique-constraint race), so callers relying on Postgres for correctness
+// under concurrency see the same domain error the usecase layer's
+// check-then-insert already returns for the common non-racing case.
 func (r *GroupRepository) AddMember(ctx context.Context, member *group.GroupMember) error {
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO group_members (id, group_id, user_id, added_at)
 		 VALUES ($1, $2, $3, $4)`,
 		member.ID, member.GroupID, member.UserID, member.AddedAt,
 	)
-	return err
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation &&
+			pgErr.ConstraintName == "group_members_group_id_user_id_key" {
+			return domain.ErrAlreadyMember
+		}
+		return err
+	}
+	return nil
 }
 
 // GetMember retrieves a specific group membership by group ID and user ID.

@@ -283,6 +283,7 @@ export function MessageBubble({
                 minW={7}
                 opacity={0}
                 _groupHover={{ opacity: 1 }}
+                _focusVisible={{ opacity: 1 }}
                 transition="opacity 0.2s"
               >
                 <MoreVertical size={14} />

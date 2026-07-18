@@ -307,3 +307,48 @@ func TestLLMClientCompleteImagePartsMessageMarshalsContentPartsArray(t *testing.
 		t.Fatalf("unexpected image_base64 part: %+v", imageBase64Part)
 	}
 }
+
+// TestLLMClientCompleteResponseContentPartsArrayConcatenatesText asserts
+// that a completion response whose message content decodes as a
+// content-parts array (rather than the common bare-string shape) is
+// flattened via contentDTOToText: text parts are concatenated in order and
+// image parts contribute nothing, mirroring the gRPC transport's
+// pbContentToText instead of silently returning empty (the pre-fix
+// behavior, which only asserted content as a string).
+func TestLLMClientCompleteResponseContentPartsArrayConcatenatesText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"model": "gpt-5.2",
+			"choices": [
+				{
+					"message": {
+						"role": "assistant",
+						"content": [
+							{"type": "text", "text": "it's a "},
+							{"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+							{"type": "text", "text": "cat"}
+						]
+					}
+				}
+			],
+			"usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	req := &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "what is this?"}},
+	}
+
+	resp, err := client.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if resp.Content != "it's a cat" {
+		t.Fatalf("expected decoded content to concatenate text parts and skip image parts, got %q", resp.Content)
+	}
+}

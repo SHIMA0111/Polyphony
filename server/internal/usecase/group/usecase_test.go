@@ -320,8 +320,8 @@ func TestBatchInviteToRoomMixedSuccessAndSkip(t *testing.T) {
 	if len(result.Skipped) != 1 || result.Skipped[0].UserID != "bob-1" {
 		t.Fatalf("expected bob skipped, got %+v", result.Skipped)
 	}
-	if result.Skipped[0].Reason == "" {
-		t.Fatal("expected a non-empty skip reason")
+	if result.Skipped[0].Reason != BatchInviteReasonAlreadyMember {
+		t.Fatalf("expected reason %q, got %q", BatchInviteReasonAlreadyMember, result.Skipped[0].Reason)
 	}
 }
 
@@ -361,6 +361,46 @@ func TestBatchInviteToRoomDuplicatePendingInviteSkip(t *testing.T) {
 	}
 	if len(result2.Skipped) != 1 || result2.Skipped[0].UserID != "bob-1" {
 		t.Fatalf("expected bob skipped on second call, got %+v", result2.Skipped)
+	}
+	if result2.Skipped[0].Reason != BatchInviteReasonInvitationAlreadyExists {
+		t.Fatalf("expected reason %q, got %q", BatchInviteReasonInvitationAlreadyExists, result2.Skipped[0].Reason)
+	}
+}
+
+// errCreateInvitationBoom is a sentinel used to simulate a per-member
+// CreateInvitation error that is neither domain.ErrAlreadyMember nor
+// domain.ErrInvitationAlreadyExists, exercising BatchInviteToRoom's
+// fail-the-batch branch for unrecognized errors.
+var errCreateInvitationBoom = errors.New("boom")
+
+func TestBatchInviteToRoomFailsBatchOnUnrecognizedError(t *testing.T) {
+	uc, _, _, _, invitationRepo := newTestFixture()
+	ctx := context.Background()
+
+	g, err := uc.CreateGroup(ctx, "owner-1", "Team", "")
+	if err != nil {
+		t.Fatalf("CreateGroup failed: %v", err)
+	}
+	if _, err := uc.AddMember(ctx, "owner-1", g.ID, "bob"); err != nil {
+		t.Fatalf("AddMember bob failed: %v", err)
+	}
+	if _, err := uc.AddMember(ctx, "owner-1", g.ID, "carol"); err != nil {
+		t.Fatalf("AddMember carol failed: %v", err)
+	}
+
+	// Forcing every CreateInvitation call to fail with an error that is
+	// neither domain.ErrAlreadyMember nor domain.ErrInvitationAlreadyExists
+	// (and is not domain.ErrForbidden, so the i==0 RBAC short-circuit does
+	// not apply either) must fail the whole batch (nil, err), not record a
+	// skip.
+	invitationRepo.CreateErr = errCreateInvitationBoom
+
+	result, err := uc.BatchInviteToRoom(ctx, "owner-1", "room-1", g.ID, domainroom.RoleMember, nil)
+	if !errors.Is(err, errCreateInvitationBoom) {
+		t.Fatalf("expected errCreateInvitationBoom, got %v (result: %+v)", err, result)
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on batch failure, got %+v", result)
 	}
 }
 

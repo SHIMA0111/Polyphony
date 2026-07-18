@@ -22,5 +22,5 @@ CREATE TABLE "group_members" (
   CONSTRAINT "group_members_group_id_fkey" FOREIGN KEY ("group_id") REFERENCES "groups" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
   CONSTRAINT "group_members_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON UPDATE NO ACTION ON DELETE CASCADE
 );
--- Create index "idx_group_members_group_id" to table: "group_members"
-CREATE INDEX "idx_group_members_group_id" ON "group_members" ("group_id");
+-- Create index "idx_group_members_user_id" to table: "group_members"
+CREATE INDEX "idx_group_members_user_id" ON "group_members" ("user_id");

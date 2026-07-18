@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
@@ -50,10 +51,10 @@ type completionReqDTO struct {
 // for multimodal (Vision) messages. On the outbound (request) side, build it
 // with toContentDTO rather than assigning a raw string/slice directly, so the
 // two shapes stay centralized in one place. On the inbound (response) side,
-// json.Unmarshal decodes a bare JSON string into a Go string held by this
-// `any` (every completion response's message content is plain text today, no
-// provider adapter yet echoes image content back) -- see Complete's use of a
-// type assertion when reading it back out.
+// json.Unmarshal decodes either a bare JSON string into a Go string, or a
+// content-parts array into a []interface{} of map[string]interface{}, held
+// by this `any` -- see Complete's use of contentDTOToText when reading it
+// back out.
 type chatMsgDTO struct {
 	Role    string `json:"role"`
 	Content any    `json:"content"`
@@ -92,6 +93,41 @@ func toContentDTO(m ai.ChatMessage) any {
 		parts[i] = toContentPartDTO(p)
 	}
 	return parts
+}
+
+// contentDTOToText extracts the plain-text representation of a decoded
+// chatMsgDTO.Content value, mirroring the gRPC transport's pbContentToText
+// (see grpc_client.go) so both transports agree on what a multimodal
+// response flattens to. json.Unmarshal decodes the gateway's untagged
+// `content` union into one of two shapes when read back into this `any`
+// field: a bare JSON string decodes as a Go string (the common, text-only
+// case); an array of content-part objects decodes as []interface{} of
+// map[string]interface{}, each keyed by "type" (mirroring contentPartDTO's
+// JSON tags). Only "text" parts contribute their "text" field; "image_url"
+// and "image_base64" parts (and any unrecognized type) are ignored. Any
+// other shape -- including a value that fails these assertions -- yields the
+// empty string rather than panicking.
+func contentDTOToText(content any) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case []interface{}:
+		var sb strings.Builder
+		for _, part := range c {
+			m, ok := part.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if t, _ := m["type"].(string); t == "text" {
+				if text, ok := m["text"].(string); ok {
+					sb.WriteString(text)
+				}
+			}
+		}
+		return sb.String()
+	default:
+		return ""
+	}
 }
 
 // toContentPartDTO converts a single domain ai.ContentPart to its wire-format
@@ -208,16 +244,14 @@ func (c *LLMClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*a
 		return nil, fmt.Errorf("%w: decode response: %v", domain.ErrLLMGateway, err)
 	}
 
-	// The gateway's completion response message content is always plain text
-	// today (no provider adapter yet echoes image content back in a
-	// response), so it always decodes as a bare JSON string; a non-string
-	// value here (e.g. a future multimodal response) is treated as empty
-	// rather than panicking on a failed type assertion.
+	// contentDTOToText handles both shapes the gateway's untagged `content`
+	// union can decode to: a bare JSON string (today's common case, since no
+	// provider adapter yet echoes image content back in a response) and a
+	// content-parts array (a future multimodal response), mirroring the gRPC
+	// transport's pbContentToText so both transports agree on the result.
 	content := ""
 	if len(result.Choices) > 0 {
-		if s, ok := result.Choices[0].Message.Content.(string); ok {
-			content = s
-		}
+		content = contentDTOToText(result.Choices[0].Message.Content)
 	}
 
 	return &ai.CompletionResponse{

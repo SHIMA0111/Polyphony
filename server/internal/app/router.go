@@ -18,6 +18,15 @@ import (
 func NewRouter(c *Container) *echo.Echo {
 	e := echo.New()
 	e.HideBanner = true
+	// The API server is exposed directly in docker-compose (no reverse
+	// proxy in front of it), so client-supplied X-Forwarded-For / X-Real-IP
+	// headers are untrustworthy: any caller could forge them to spoof the
+	// key used by IP-based rate limiting. ExtractIPDirect ignores those
+	// headers and reads the IP from the raw TCP connection instead.
+	// TODO(Phase 21): once the API sits behind an ALB, switch to
+	// echo.ExtractIPFromXFFHeader() scoped to the ALB's CIDR so the real
+	// client IP (rather than the ALB's) is used for rate limiting.
+	e.IPExtractor = echo.ExtractIPDirect()
 	e.Use(echomw.Recover())
 	e.Use(echomw.RequestID())
 	e.Use(echomw.CORSWithConfig(echomw.CORSConfig{

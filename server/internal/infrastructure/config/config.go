@@ -384,6 +384,12 @@ func Load() (*Config, error) {
 	rateLimitLoginPerMinute := defaultRateLimitLoginPerMinute
 	if v := os.Getenv("RATE_LIMIT_LOGIN_PER_MINUTE"); v != "" {
 		n, err := strconv.Atoi(v)
+		if err == nil && n <= 0 {
+			// A zero or negative limit parses successfully but is nonsensical
+			// for a per-minute rate limit -- treat it like a parse failure
+			// rather than passing it through.
+			err = fmt.Errorf("must be a positive integer")
+		}
 		if err != nil {
 			slog.Default().Warn("invalid RATE_LIMIT_LOGIN_PER_MINUTE, using default",
 				"value", v, "default", defaultRateLimitLoginPerMinute, "error", err)
@@ -395,6 +401,12 @@ func Load() (*Config, error) {
 	rateLimitAIInvokePerMinute := defaultRateLimitAIInvokePerMinute
 	if v := os.Getenv("RATE_LIMIT_AI_INVOKE_PER_MINUTE"); v != "" {
 		n, err := strconv.Atoi(v)
+		if err == nil && n <= 0 {
+			// A zero or negative limit parses successfully but is nonsensical
+			// for a per-minute rate limit -- treat it like a parse failure
+			// rather than passing it through.
+			err = fmt.Errorf("must be a positive integer")
+		}
 		if err != nil {
 			slog.Default().Warn("invalid RATE_LIMIT_AI_INVOKE_PER_MINUTE, using default",
 				"value", v, "default", defaultRateLimitAIInvokePerMinute, "error", err)

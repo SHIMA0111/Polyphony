@@ -234,7 +234,13 @@ func (r *RoomRepo) UpdateAIContextCutoff(_ context.Context, roomID string, cutof
 // UpdateAISettings updates only a room's AIProvider, AIModel, and UpdatedAt
 // fields, mirroring postgres.RoomRepository.UpdateAISettings's
 // partial-update shape (Name/Description/AIContextCutoffAt are left
-// untouched). Returns domain.ErrNotFound if the room does not exist.
+// untouched) and its nil/empty-string-sentinel/value convention: a nil
+// field leaves the corresponding stored field untouched, a pointer to ""
+// clears it to nil, and any other pointer value sets it to a copy of the
+// pointed-to value. The whole read-then-conditionally-write happens while
+// holding r.mu, giving the same atomicity guarantee the real UPDATE ...
+// CASE WHEN statement provides against a concurrent call touching only the
+// other field. Returns domain.ErrNotFound if the room does not exist.
 func (r *RoomRepo) UpdateAISettings(_ context.Context, roomID string, aiProvider, aiModel *string, updatedAt time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -243,8 +249,22 @@ func (r *RoomRepo) UpdateAISettings(_ context.Context, roomID string, aiProvider
 	if !ok {
 		return domain.ErrNotFound
 	}
-	rm.AIProvider = aiProvider
-	rm.AIModel = aiModel
+	if aiProvider != nil {
+		if *aiProvider == "" {
+			rm.AIProvider = nil
+		} else {
+			v := *aiProvider
+			rm.AIProvider = &v
+		}
+	}
+	if aiModel != nil {
+		if *aiModel == "" {
+			rm.AIModel = nil
+		} else {
+			v := *aiModel
+			rm.AIModel = &v
+		}
+	}
 	rm.UpdatedAt = updatedAt
 	return nil
 }

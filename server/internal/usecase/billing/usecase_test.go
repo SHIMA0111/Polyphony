@@ -144,6 +144,34 @@ func TestGetBalanceDelegates(t *testing.T) {
 	}
 }
 
+// TestGetSubscriptionBillingNotConfigured asserts GetSubscription returns
+// domain.ErrBillingNotConfigured (instead of a nil-pointer panic) when
+// subscriptionRepo is nil.
+func TestGetSubscriptionBillingNotConfigured(t *testing.T) {
+	roomRepo := &mocks.RoomRepo{}
+	balanceRepo := &mocks.BalanceRepo{}
+
+	uc := newTestUsecase(balanceRepo, roomRepo)
+	_, err := uc.GetSubscription(context.Background(), "user-1")
+	if err != domain.ErrBillingNotConfigured {
+		t.Fatalf("expected ErrBillingNotConfigured, got %v", err)
+	}
+}
+
+// TestListPaymentHistoryBillingNotConfigured asserts ListPaymentHistory
+// returns domain.ErrBillingNotConfigured (instead of a nil-pointer panic)
+// when paymentRepo is nil.
+func TestListPaymentHistoryBillingNotConfigured(t *testing.T) {
+	roomRepo := &mocks.RoomRepo{}
+	balanceRepo := &mocks.BalanceRepo{}
+
+	uc := newTestUsecase(balanceRepo, roomRepo)
+	_, err := uc.ListPaymentHistory(context.Background(), "user-1", "", 0)
+	if err != domain.ErrBillingNotConfigured {
+		t.Fatalf("expected ErrBillingNotConfigured, got %v", err)
+	}
+}
+
 func TestListTransactionsDelegatesAndClampsLimit(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	balanceRepo := &mocks.BalanceRepo{}

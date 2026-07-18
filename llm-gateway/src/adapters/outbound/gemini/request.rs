@@ -267,14 +267,17 @@ fn to_gemini_part(part: &ContentPart) -> GeminiPartDto {
 /// non-`Role::System` message: Gemini's `generateContent` requires a non-empty
 /// `contents` array, and a request built from only system messages would
 /// otherwise be sent with `contents: []`, surfacing as an opaque remote HTTP
-/// 400 instead of a clear domain error.
+/// 400 instead of a clear domain error. Also returns `DomainError::InvalidRequest`
+/// if a system message's content is `MessageContent::Parts` containing any
+/// non-`ContentPart::Text` part (see `system_message_text`), since silently
+/// dropping an image from a system message would misrepresent what was sent.
 pub(super) fn to_gemini_request(req: &CompletionRequest) -> Result<GeminiRequest, DomainError> {
     let mut system_texts = Vec::new();
     let mut contents = Vec::new();
 
     for m in &req.messages {
         match m.role {
-            Role::System => system_texts.push(m.content.as_text()),
+            Role::System => system_texts.push(super::super::system_message_text(&m.content)?),
             _ => contents.push(GeminiRequestContent {
                 role: Some(role_to_gemini_role(&m.role).to_string()),
                 parts: to_gemini_parts(&m.content),
@@ -661,6 +664,71 @@ mod tests {
             }
             other => panic!("expected DomainError::InvalidRequest, got {other:?}"),
         }
+    }
+
+    /// A system message whose content is `MessageContent::Parts` containing an image
+    /// part must be rejected: silently dropping the image (as `as_text()` would) would
+    /// misrepresent what was actually sent to Gemini.
+    #[test]
+    fn test_to_gemini_request_system_message_with_image_part_is_invalid_request() {
+        let req = CompletionRequest {
+            model: "gemini-3-pro".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: MessageContent::Parts(vec![
+                        ContentPart::Text("You are helpful.".to_string()),
+                        ContentPart::ImageBase64 {
+                            media_type: "image/png".to_string(),
+                            data: "abcd".to_string(),
+                        },
+                    ]),
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: "Hello".to_string().into(),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let err = match to_gemini_request(&req) {
+            Ok(_) => panic!("a system message containing an image part should be rejected"),
+            Err(e) => e,
+        };
+
+        assert!(matches!(err, DomainError::InvalidRequest(_)));
+    }
+
+    /// A plain-text (non-`Parts`) system message is unaffected by the image-part
+    /// rejection and still hoists into `system_instruction` as before.
+    #[test]
+    fn test_to_gemini_request_plain_text_system_message_unchanged() {
+        let req = CompletionRequest {
+            model: "gemini-3-pro".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: "You are helpful.".to_string().into(),
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: "Hello".to_string().into(),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let gemini_req = to_gemini_request(&req).expect("plain text system message is valid");
+        let system_instruction = gemini_req
+            .system_instruction
+            .expect("system message should produce a system_instruction");
+        assert_eq!(
+            serde_json::to_value(&system_instruction.parts[0]).unwrap(),
+            serde_json::json!({"text": "You are helpful."})
+        );
     }
 
     #[test]

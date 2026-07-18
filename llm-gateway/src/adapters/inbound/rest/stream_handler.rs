@@ -101,6 +101,11 @@ impl From<CompletionChunk> for CompletionChunkDto {
 /// * `service` — Shared `CompletionUseCase` state.
 /// * `dto` — Same request shape as `POST /completions`.
 ///
+/// # Returns
+/// `200` with a `text/event-stream` body: a `data:` JSON [`CompletionChunkDto`] per
+/// chunk, `event: error` frames for mid-stream failures, terminated by a literal
+/// `data: [DONE]` event. See the module-level docs for the full SSE contract.
+///
 /// # Errors
 /// Returns `AppError` (mapped to the existing non-SSE HTTP status codes) if the DTO
 /// fails to convert to a domain request, or if `CompletionUseCase::stream` itself fails
@@ -117,14 +122,25 @@ pub async fn complete_stream(
 
     let events = chunk_stream.map(|item| {
         let event = match item {
-            Ok(chunk) => Event::default()
-                .json_data(CompletionChunkDto::from(chunk))
-                .unwrap_or_else(|e| {
-                    Event::default()
-                        .event("error")
-                        .data(format!("failed to encode completion chunk: {e}"))
-                }),
-            Err(err) => Event::default().event("error").data(err.to_string()),
+            Ok(chunk) => {
+                let model = chunk.model.clone();
+                Event::default()
+                    .json_data(CompletionChunkDto::from(chunk))
+                    .unwrap_or_else(|e| {
+                        tracing::error!(
+                            error = %e,
+                            model = %model,
+                            "failed to JSON-encode completion chunk for SSE"
+                        );
+                        Event::default()
+                            .event("error")
+                            .data(format!("failed to encode completion chunk: {e}"))
+                    })
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "upstream provider stream yielded an error");
+                Event::default().event("error").data(err.to_string())
+            }
         };
         Ok(event)
     });

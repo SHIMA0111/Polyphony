@@ -46,11 +46,26 @@ type RoomRepository interface {
 	// UpdateAISettings updates only a room's ai_provider, ai_model, and
 	// updated_at fields, leaving name/description/ai_context_cutoff_at
 	// untouched. See UpdateDetails's GoDoc for why this is split out from a
-	// full-row update. aiProvider and aiModel are final values to persist
-	// (nil clears the column to SQL NULL) — the usecase layer is
-	// responsible for resolving its own nil/empty-string-sentinel/value
-	// request convention before calling this method. Returns ErrNotFound if
-	// the room does not exist.
+	// full-row update.
+	//
+	// aiProvider and aiModel each independently carry their own
+	// nil/empty-string-sentinel/value convention straight through to the
+	// implementation, rather than the caller resolving it against a
+	// previously-read snapshot first:
+	//   - nil leaves the corresponding column untouched at the database
+	//     level -- implementations must not assign it any new value, so a
+	//     concurrent call that only touches the other field cannot be
+	//     lost-updated by this one.
+	//   - a pointer to "" (empty string) clears the column to SQL NULL.
+	//   - a pointer to any other non-empty value sets the column to that
+	//     value.
+	//
+	// A caller that updates only one of the two fields must therefore pass
+	// nil for the other rather than a value read from a prior GetByID, or
+	// it reintroduces the same lost-update race this convention exists to
+	// avoid. Implementations must apply both fields' assignments (or lack
+	// thereof) and the updated_at write within a single atomic statement.
+	// Returns ErrNotFound if the room does not exist.
 	UpdateAISettings(ctx context.Context, roomID string, aiProvider, aiModel *string, updatedAt time.Time) error
 
 	// Delete removes a room by ID. Returns ErrNotFound if not found.

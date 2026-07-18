@@ -98,12 +98,18 @@ type Container struct {
 	MsgRepo  domainmessage.MessageRepository
 	// AttachmentRepo is the domain/attachment.AttachmentRepository backing
 	// AttachmentUC's presign/link/list operations.
-	AttachmentRepo   domainattachment.AttachmentRepository
-	InvitationRepo   domaininvitation.InvitationRepository
-	BillingRepo      domainbilling.BalanceRepository
-	GroupRepo        domaingroup.GroupRepository
+	AttachmentRepo domainattachment.AttachmentRepository
+	InvitationRepo domaininvitation.InvitationRepository
+	BillingRepo    domainbilling.BalanceRepository
+	// GroupRepo backs GroupUC's cross-room group persistence.
+	GroupRepo domaingroup.GroupRepository
+	// SubscriptionRepo backs BillingUC's Step 49 subscription lifecycle
+	// methods (GetSubscription, CancelSubscription, CreateBillingPortalSession).
 	SubscriptionRepo domainbilling.SubscriptionRepository
-	PaymentRepo      domainbilling.PaymentRepository
+	// PaymentRepo backs BillingUC's Step 49 payment-history and
+	// checkout/webhook credit-recording methods (ListPaymentHistory,
+	// HandleWebhookEvent).
+	PaymentRepo domainbilling.PaymentRepository
 
 	// Services / Gateways
 	AuthService domainauth.AuthService
@@ -136,7 +142,8 @@ type Container struct {
 	ModelUC      *modelusecase.ModelUsecase
 	InvitationUC *invitationusecase.InvitationUsecase
 	BillingUC    *billingusecase.BillingUsecase
-	GroupUC      *groupusecase.GroupUsecase
+	// GroupUC implements cross-room group business logic, backed by GroupRepo.
+	GroupUC *groupusecase.GroupUsecase
 
 	// Handlers
 	HealthHandler  *handler.HealthHandler
@@ -154,7 +161,8 @@ type Container struct {
 	InvitationHandler *handler.InvitationHandler
 	TokenHandler      *handler.TokenHandler
 	BillingHandler    *handler.BillingHandler
-	GroupHandler      *handler.GroupHandler
+	// GroupHandler serves the cross-room group endpoints, delegating to GroupUC.
+	GroupHandler *handler.GroupHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,

@@ -486,6 +486,9 @@ func TestLoadLLMGatewayGRPCBaseBackoffInvalidFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestLoadRateLimitAndWhoamiCacheDefaults verifies Load falls back to the
+// documented default rate limits and whoami cache TTL when their env vars
+// are unset.
 func TestLoadRateLimitAndWhoamiCacheDefaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -504,6 +507,8 @@ func TestLoadRateLimitAndWhoamiCacheDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadRateLimitAndWhoamiCacheOverrides verifies Load applies the rate
+// limit and whoami cache TTL env vars when they are set to valid values.
 func TestLoadRateLimitAndWhoamiCacheOverrides(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "5")
@@ -525,23 +530,45 @@ func TestLoadRateLimitAndWhoamiCacheOverrides(t *testing.T) {
 	}
 }
 
+// TestLoadRateLimitInvalidFallsBackToDefault verifies Load falls back to the
+// default rate limits for values that fail to parse as an integer ("*number"
+// subtests), and for integers that parse successfully but are not positive
+// ("0" and "-1" subtests), since neither is a meaningful per-minute rate
+// limit.
 func TestLoadRateLimitInvalidFallsBackToDefault(t *testing.T) {
-	withRequiredEnv(t)
-	t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "not-a-number")
-	t.Setenv("RATE_LIMIT_AI_INVOKE_PER_MINUTE", "also-not-a-number")
+	tests := []struct {
+		name        string
+		loginVal    string
+		aiInvokeVal string
+	}{
+		{name: "not-a-number", loginVal: "not-a-number", aiInvokeVal: "also-not-a-number"},
+		{name: "0", loginVal: "0", aiInvokeVal: "0"},
+		{name: "-1", loginVal: "-1", aiInvokeVal: "-1"},
+	}
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load should not fail on invalid rate-limit values, got: %v", err)
-	}
-	if cfg.RateLimitLoginPerMinute != 10 {
-		t.Errorf("expected fallback to default RateLimitLoginPerMinute 10, got %d", cfg.RateLimitLoginPerMinute)
-	}
-	if cfg.RateLimitAIInvokePerMinute != 20 {
-		t.Errorf("expected fallback to default RateLimitAIInvokePerMinute 20, got %d", cfg.RateLimitAIInvokePerMinute)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withRequiredEnv(t)
+			t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", tt.loginVal)
+			t.Setenv("RATE_LIMIT_AI_INVOKE_PER_MINUTE", tt.aiInvokeVal)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load should not fail on invalid rate-limit values, got: %v", err)
+			}
+			if cfg.RateLimitLoginPerMinute != 10 {
+				t.Errorf("expected fallback to default RateLimitLoginPerMinute 10, got %d", cfg.RateLimitLoginPerMinute)
+			}
+			if cfg.RateLimitAIInvokePerMinute != 20 {
+				t.Errorf("expected fallback to default RateLimitAIInvokePerMinute 20, got %d", cfg.RateLimitAIInvokePerMinute)
+			}
+		})
 	}
 }
 
+// TestLoadWhoamiCacheTTLInvalidFallsBackToDefault verifies Load falls back
+// to the default WhoamiCacheTTL when WHOAMI_CACHE_TTL fails to parse as a
+// duration.
 func TestLoadWhoamiCacheTTLInvalidFallsBackToDefault(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("WHOAMI_CACHE_TTL", "not-a-duration")
@@ -555,6 +582,9 @@ func TestLoadWhoamiCacheTTLInvalidFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestLoadStripeDefaults verifies Load falls back to empty Stripe secrets,
+// no plans/packages, and the documented default checkout URLs when the
+// STRIPE_* env vars are unset.
 func TestLoadStripeDefaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -578,6 +608,10 @@ func TestLoadStripeDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadStripePlansAndPackagesParsed verifies Load reads the Stripe
+// secrets, checkout URLs, and correctly parses the STRIPE_PLANS_JSON and
+// STRIPE_TOKEN_PACKAGES_JSON env vars into StripePlan and StripeTokenPackage
+// values.
 func TestLoadStripePlansAndPackagesParsed(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("STRIPE_SECRET_KEY", "sk_test_123")
@@ -605,6 +639,9 @@ func TestLoadStripePlansAndPackagesParsed(t *testing.T) {
 	}
 }
 
+// TestLoadStripePlansInvalidJSONIgnoredNotFatal verifies Load ignores
+// malformed STRIPE_PLANS_JSON / STRIPE_TOKEN_PACKAGES_JSON values (falling
+// back to empty plans/packages) rather than failing Load outright.
 func TestLoadStripePlansInvalidJSONIgnoredNotFatal(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("STRIPE_PLANS_JSON", "not-valid-json")

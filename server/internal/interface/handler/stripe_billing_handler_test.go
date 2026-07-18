@@ -45,6 +45,8 @@ func setupStripeBillingTest(gw *mocks.StripeGateway) (*echo.Echo, *BillingHandle
 	return echo.New(), NewBillingHandler(uc), balanceRepo, subRepo
 }
 
+// TestBillingHandlerCreateCheckoutSessionMissingType asserts a request body
+// with no "type" field is rejected with HTTP 400.
 func TestBillingHandlerCreateCheckoutSessionMissingType(t *testing.T) {
 	e, h, _, _ := setupStripeBillingTest(&mocks.StripeGateway{})
 
@@ -62,6 +64,8 @@ func TestBillingHandlerCreateCheckoutSessionMissingType(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerCreateCheckoutSessionSubscriptionMissingPlanCode asserts
+// type=subscription with no "plan_code" field is rejected with HTTP 400.
 func TestBillingHandlerCreateCheckoutSessionSubscriptionMissingPlanCode(t *testing.T) {
 	e, h, _, _ := setupStripeBillingTest(&mocks.StripeGateway{})
 
@@ -79,6 +83,8 @@ func TestBillingHandlerCreateCheckoutSessionSubscriptionMissingPlanCode(t *testi
 	}
 }
 
+// TestBillingHandlerCreateCheckoutSessionUnknownPlan asserts an unrecognized
+// plan_code is rejected with HTTP 404.
 func TestBillingHandlerCreateCheckoutSessionUnknownPlan(t *testing.T) {
 	e, h, _, _ := setupStripeBillingTest(&mocks.StripeGateway{})
 
@@ -97,6 +103,9 @@ func TestBillingHandlerCreateCheckoutSessionUnknownPlan(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerCreateCheckoutSessionTokenPurchaseSuccess asserts a
+// valid type=token_purchase request returns HTTP 201 with the gateway's
+// checkout_url.
 func TestBillingHandlerCreateCheckoutSessionTokenPurchaseSuccess(t *testing.T) {
 	gw := &mocks.StripeGateway{CheckoutURL: "https://checkout.stripe.com/session-1"}
 	e, h, _, _ := setupStripeBillingTest(gw)
@@ -119,6 +128,8 @@ func TestBillingHandlerCreateCheckoutSessionTokenPurchaseSuccess(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerCreatePortalSessionMissingReturnURL asserts a request
+// body with no "return_url" field is rejected with HTTP 400.
 func TestBillingHandlerCreatePortalSessionMissingReturnURL(t *testing.T) {
 	e, h, _, _ := setupStripeBillingTest(&mocks.StripeGateway{})
 
@@ -136,6 +147,8 @@ func TestBillingHandlerCreatePortalSessionMissingReturnURL(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerCreatePortalSessionNoSubscription asserts a user with
+// no subscription row gets HTTP 404 rather than a portal URL.
 func TestBillingHandlerCreatePortalSessionNoSubscription(t *testing.T) {
 	e, h, _, _ := setupStripeBillingTest(&mocks.StripeGateway{})
 
@@ -154,6 +167,8 @@ func TestBillingHandlerCreatePortalSessionNoSubscription(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerGetSubscriptionNoContent asserts a user with no
+// subscription row gets HTTP 204 rather than a 404.
 func TestBillingHandlerGetSubscriptionNoContent(t *testing.T) {
 	e, h, _, _ := setupStripeBillingTest(&mocks.StripeGateway{})
 
@@ -170,6 +185,8 @@ func TestBillingHandlerGetSubscriptionNoContent(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerGetSubscriptionFound asserts an existing subscription
+// row is returned as HTTP 200 with its plan_code in the body.
 func TestBillingHandlerGetSubscriptionFound(t *testing.T) {
 	e, h, _, subRepo := setupStripeBillingTest(&mocks.StripeGateway{})
 	if err := subRepo.Create(context.Background(), &domainbilling.Subscription{
@@ -195,6 +212,8 @@ func TestBillingHandlerGetSubscriptionFound(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerCancelSubscriptionNotFound asserts a user with no
+// subscription row gets HTTP 404 from a cancel request.
 func TestBillingHandlerCancelSubscriptionNotFound(t *testing.T) {
 	e, h, _, _ := setupStripeBillingTest(&mocks.StripeGateway{})
 
@@ -211,6 +230,8 @@ func TestBillingHandlerCancelSubscriptionNotFound(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerCancelSubscriptionSuccess asserts canceling an existing
+// subscription returns HTTP 200 with cancel_at_period_end set true.
 func TestBillingHandlerCancelSubscriptionSuccess(t *testing.T) {
 	e, h, _, subRepo := setupStripeBillingTest(&mocks.StripeGateway{})
 	if err := subRepo.Create(context.Background(), &domainbilling.Subscription{
@@ -236,6 +257,9 @@ func TestBillingHandlerCancelSubscriptionSuccess(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerListPlans asserts the configured plan and token-package
+// catalog is returned with the correct interval tags and without exposing
+// the internal Stripe price ID.
 func TestBillingHandlerListPlans(t *testing.T) {
 	e, h, _, _ := setupStripeBillingTest(&mocks.StripeGateway{})
 
@@ -262,6 +286,9 @@ func TestBillingHandlerListPlans(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerListPlansEmptyWhenUnconfigured asserts that with no
+// plans/packages/Stripe gateway configured, GET /billing/plans still
+// returns HTTP 200 with an empty plans array rather than an error.
 func TestBillingHandlerListPlansEmptyWhenUnconfigured(t *testing.T) {
 	balanceRepo := &mocks.BalanceRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -285,6 +312,9 @@ func TestBillingHandlerListPlansEmptyWhenUnconfigured(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerStripeWebhookValidSignature asserts a validly-signed
+// webhook of an unrecognized event type returns HTTP 200 and forwards the
+// raw request body and Stripe-Signature header to the gateway verbatim.
 func TestBillingHandlerStripeWebhookValidSignature(t *testing.T) {
 	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
 		ID: "evt_1", Type: "customer.created", // unrecognized type: exercises the "processed successfully" 200 path
@@ -310,6 +340,8 @@ func TestBillingHandlerStripeWebhookValidSignature(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerStripeWebhookInvalidSignature asserts a webhook that
+// fails signature verification returns HTTP 400.
 func TestBillingHandlerStripeWebhookInvalidSignature(t *testing.T) {
 	gw := &mocks.StripeGateway{WebhookErr: domain.ErrInvalidWebhookSignature}
 	e, h, _, _ := setupStripeBillingTest(gw)
@@ -327,6 +359,9 @@ func TestBillingHandlerStripeWebhookInvalidSignature(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerStripeWebhookIdempotentReplayReturns200 asserts that
+// redelivering the same checkout.session.completed event twice returns
+// HTTP 200 both times while crediting the balance exactly once.
 func TestBillingHandlerStripeWebhookIdempotentReplayReturns200(t *testing.T) {
 	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
 		ID:   "evt_replay_handler_1",

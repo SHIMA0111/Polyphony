@@ -1,6 +1,9 @@
 package app
 
-import "github.com/labstack/echo/v4"
+import (
+	"github.com/labstack/echo/v4"
+	echomw "github.com/labstack/echo/v4/middleware"
+)
 
 // registerBillingRoutes registers the authenticated token balance / usage
 // history / Stripe checkout-and-subscription endpoints on the given group
@@ -19,5 +22,9 @@ func registerBillingRoutes(e *echo.Echo, g *echo.Group, c *Container) {
 	g.POST("/billing/subscription/cancel", c.BillingHandler.CancelSubscription)
 	g.GET("/billing/payments", c.BillingHandler.ListPayments)
 
-	e.POST("/webhooks/stripe", c.BillingHandler.HandleStripeWebhook)
+	// BodyLimit guards against unauthenticated callers buffering unbounded
+	// request bodies before Stripe signature verification even runs — this
+	// route accepts no JWT, so it has no other admission control ahead of
+	// the handler.
+	e.POST("/webhooks/stripe", c.BillingHandler.HandleStripeWebhook, echomw.BodyLimit("1M"))
 }

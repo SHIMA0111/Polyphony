@@ -433,6 +433,79 @@ func TestHandleWebhookEventSubscriptionUpdated(t *testing.T) {
 	}
 }
 
+// TestHandleWebhookEventInvoicePaidUnrecognizedSubscriptionReturnsError
+// asserts that an invoice.paid event for a subscription this server has no
+// local record of returns a non-nil (not-found) error rather than a silent
+// no-op, so the webhook handler responds non-2xx and Stripe redelivers
+// until the corresponding checkout.session.completed has landed.
+func TestHandleWebhookEventInvoicePaidUnrecognizedSubscriptionReturnsError(t *testing.T) {
+	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
+		ID:   "evt_invoice_unrecognized",
+		Type: domainbilling.EventTypeInvoicePaid,
+		Invoice: &domainbilling.InvoiceData{
+			InvoiceID: "in_3", StripeSubscriptionID: "sub_does_not_exist", BillingReason: "subscription_cycle",
+			AmountPaid: 500, Currency: "usd",
+		},
+	}}
+	uc, _, _, _ := newStripeTestUsecase(gw)
+
+	err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+	if err == nil {
+		t.Fatal("expected a non-nil error for an unrecognized subscription, got nil (event would be ACKed and dropped)")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected the error to wrap domain.ErrNotFound, got %v", err)
+	}
+}
+
+// TestHandleWebhookEventSubscriptionUpdatedUnrecognizedSubscriptionReturnsError
+// asserts that a customer.subscription.updated event for a subscription
+// this server has no local record of returns a non-nil (not-found) error
+// rather than a silent no-op, for the same redelivery reason as the
+// invoice.paid case above.
+func TestHandleWebhookEventSubscriptionUpdatedUnrecognizedSubscriptionReturnsError(t *testing.T) {
+	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
+		ID:   "evt_sub_updated_unrecognized",
+		Type: domainbilling.EventTypeSubscriptionUpdated,
+		Subscription: &domainbilling.SubscriptionEventData{
+			StripeSubscriptionID: "sub_does_not_exist", Status: "past_due",
+		},
+	}}
+	uc, _, _, _ := newStripeTestUsecase(gw)
+
+	err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+	if err == nil {
+		t.Fatal("expected a non-nil error for an unrecognized subscription, got nil (event would be ACKed and dropped)")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected the error to wrap domain.ErrNotFound, got %v", err)
+	}
+}
+
+// TestHandleWebhookEventSubscriptionDeletedUnrecognizedSubscriptionReturnsError
+// asserts that a customer.subscription.deleted event for a subscription
+// this server has no local record of returns a non-nil (not-found) error
+// rather than a silent no-op, for the same redelivery reason as the
+// invoice.paid case above.
+func TestHandleWebhookEventSubscriptionDeletedUnrecognizedSubscriptionReturnsError(t *testing.T) {
+	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
+		ID:   "evt_sub_deleted_unrecognized",
+		Type: domainbilling.EventTypeSubscriptionDeleted,
+		Subscription: &domainbilling.SubscriptionEventData{
+			StripeSubscriptionID: "sub_does_not_exist",
+		},
+	}}
+	uc, _, _, _ := newStripeTestUsecase(gw)
+
+	err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+	if err == nil {
+		t.Fatal("expected a non-nil error for an unrecognized subscription, got nil (event would be ACKed and dropped)")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected the error to wrap domain.ErrNotFound, got %v", err)
+	}
+}
+
 func TestHandleWebhookEventSubscriptionDeleted(t *testing.T) {
 	gw := &mocks.StripeGateway{}
 	uc, _, subRepo, _ := newStripeTestUsecase(gw)

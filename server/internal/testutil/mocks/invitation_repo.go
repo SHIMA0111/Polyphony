@@ -17,6 +17,12 @@ import (
 //
 // InvitationRepo is safe for concurrent use.
 type InvitationRepo struct {
+	// CreateErr, if non-nil, is returned by every Create call instead of
+	// persisting the invitation, for tests exercising a per-member
+	// CreateInvitation failure that is neither invitation.ErrInviteCodeConflict
+	// nor one of the two usecase-level skippable errors.
+	CreateErr error
+
 	mu          sync.Mutex
 	Invitations map[string]*invitation.Invitation // keyed by ID
 
@@ -61,11 +67,16 @@ func cloneInvitation(inv *invitation.Invitation) *invitation.Invitation {
 
 // Create persists a new invitation. Returns invitation.ErrInviteCodeConflict
 // if inv.InviteCode collides with an existing invitation's code, mirroring
-// postgres.InvitationRepository's unique-constraint behavior.
+// postgres.InvitationRepository's unique-constraint behavior. If CreateErr
+// is non-nil, it is returned immediately instead and nothing is persisted.
 func (r *InvitationRepo) Create(_ context.Context, inv *invitation.Invitation) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ensureInit()
+
+	if r.CreateErr != nil {
+		return r.CreateErr
+	}
 
 	for _, existing := range r.Invitations {
 		if existing.InviteCode == inv.InviteCode {
