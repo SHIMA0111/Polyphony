@@ -19,6 +19,7 @@ function makeMessage(overrides: Partial<Message> & Pick<Message, "id">): Message
     is_deleted: false,
     exclude_from_ai: false,
     used_context_summary: false,
+    visibility: "public",
     created_at: "2026-01-01T12:00:00.000Z",
     updated_at: "2026-01-01T12:00:00.000Z",
     ...overrides,

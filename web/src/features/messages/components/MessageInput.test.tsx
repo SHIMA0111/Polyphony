@@ -37,6 +37,7 @@ const humanMessage: Message = {
   is_deleted: false,
   exclude_from_ai: false,
   used_context_summary: false,
+  visibility: "public",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 }
@@ -179,5 +180,136 @@ describe("MessageInput aiError", () => {
     await user.type(screen.getByPlaceholderText("Ask me anything..."), "x")
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * Component-level tests for `MessageInput`'s Step 47 private-mode toggle:
+ * off by default, toggles on click, forwards the correct boolean as
+ * `onSendWithAI`'s 4th argument, has no effect on the plain `onSend` path,
+ * resets to off after a successful "Send with AI", and is omitted entirely
+ * when `canInvokeAI` is `false` (mirroring the "Send with AI" button itself).
+ */
+describe("MessageInput private mode toggle", () => {
+  it("is off by default and toggles on when clicked", async () => {
+    const user = userEvent.setup()
+    render(
+      <MessageInput roomId="room-1" {...noopHandlers} models={models} />,
+    )
+
+    const toggle = screen.getByRole("button", { name: "Private mode off" })
+    expect(toggle).toHaveAttribute("aria-pressed", "false")
+
+    await user.click(toggle)
+
+    expect(
+      screen.getByRole("button", { name: "Private mode on" }),
+    ).toHaveAttribute("aria-pressed", "true")
+  })
+
+  it("passes isPrivate=false to onSendWithAI by default", async () => {
+    const onSendWithAI = vi.fn().mockResolvedValue(undefined)
+    const user = userEvent.setup()
+
+    render(
+      <MessageInput
+        roomId="room-1"
+        onSend={vi.fn()}
+        onSendWithAI={onSendWithAI}
+        models={models}
+      />,
+    )
+
+    await user.type(
+      screen.getByPlaceholderText("Ask me anything..."),
+      "Public question",
+    )
+    await user.click(screen.getByRole("button", { name: "Send with AI" }))
+
+    await waitFor(() =>
+      expect(onSendWithAI).toHaveBeenCalledWith(
+        "Public question",
+        "gpt-5-mini",
+        [],
+        false,
+      ),
+    )
+  })
+
+  it("passes isPrivate=true when the toggle is on, then resets the toggle to off after the send resolves", async () => {
+    const onSendWithAI = vi.fn().mockResolvedValue(undefined)
+    const user = userEvent.setup()
+
+    render(
+      <MessageInput
+        roomId="room-1"
+        onSend={vi.fn()}
+        onSendWithAI={onSendWithAI}
+        models={models}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: "Private mode off" }))
+    await user.type(
+      screen.getByPlaceholderText("Ask me anything..."),
+      "Secret question",
+    )
+    await user.click(screen.getByRole("button", { name: "Send with AI" }))
+
+    await waitFor(() =>
+      expect(onSendWithAI).toHaveBeenCalledWith(
+        "Secret question",
+        "gpt-5-mini",
+        [],
+        true,
+      ),
+    )
+
+    // Opt-in per message, not sticky: back to off once the send resolves.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Private mode off" }),
+      ).toBeInTheDocument(),
+    )
+  })
+
+  it("has no effect on the plain Send path", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined)
+    const user = userEvent.setup()
+
+    render(
+      <MessageInput
+        roomId="room-1"
+        onSend={onSend}
+        onSendWithAI={vi.fn().mockResolvedValue(undefined)}
+        models={models}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: "Private mode off" }))
+    await user.type(
+      screen.getByPlaceholderText("Ask me anything..."),
+      "Just a normal message",
+    )
+    await user.click(screen.getByRole("button", { name: "Send" }))
+
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith("Just a normal message", []),
+    )
+  })
+
+  it("omits the private-mode toggle when canInvokeAI is false", () => {
+    render(
+      <MessageInput
+        roomId="room-1"
+        {...noopHandlers}
+        models={models}
+        canInvokeAI={false}
+      />,
+    )
+
+    expect(
+      screen.queryByRole("button", { name: /Private mode/ }),
+    ).not.toBeInTheDocument()
   })
 })

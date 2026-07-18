@@ -11,15 +11,21 @@ import type { AIMessageResponse } from "../types"
  * `private: true` with HTTP 400 (private AI mode is not yet supported for
  * streaming — see `server/internal/interface/handler/message_handler.go`),
  * so any private-mode send must keep using this function.
+ *
+ * `isPrivate` maps directly onto the request body's `private` field (Step
+ * 41's `SendAIMessageRequest.Private`, `server/internal/interface/handler/
+ * dto.go`); omitted/`false` sends `private: false`, matching the field's
+ * own server-side default.
  */
 export function sendAIMessage(
   roomId: string,
   content: string,
   model?: string,
+  isPrivate?: boolean,
 ): Promise<AIMessageResponse> {
   return apiRequest<AIMessageResponse>(`/rooms/${roomId}/messages/ai`, {
     method: "POST",
-    body: JSON.stringify({ content, model }),
+    body: JSON.stringify({ content, model, private: isPrivate ?? false }),
   })
 }
 

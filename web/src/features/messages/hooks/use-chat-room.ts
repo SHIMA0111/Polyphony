@@ -195,11 +195,14 @@ export interface UseChatRoomResult {
   /** Sends a message with an AI response, optionally linking
    * `attachmentIds` and then regenerating the AI reply so it sees them (see
    * `linkAttachments`'s docstring and this function's own body for why a
-   * single call can't do both). */
+   * single call can't do both). `isPrivate` (Step 47) sets both the human
+   * message and the AI reply's `visibility` to `"private"` -- see
+   * `SendAIMessageRequest.Private`. */
   handleSendWithAI: (
     content: string,
     model: string,
     attachmentIds?: string[],
+    isPrivate?: boolean,
   ) => Promise<void>
   handleRegenerate: (aiMessageId: string) => Promise<void>
   /** Re-sends a failed human message's original content, replacing its
@@ -273,10 +276,19 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
   )
 
   const handleSendWithAI = useCallback(
-    async (content: string, model: string, attachmentIds: string[] = []) => {
+    async (
+      content: string,
+      model: string,
+      attachmentIds: string[] = [],
+      isPrivate = false,
+    ) => {
       setAiError(null)
       try {
-        const res = await sendAIMessageMutation.mutateAsync({ content, model })
+        const res = await sendAIMessageMutation.mutateAsync({
+          content,
+          model,
+          private: isPrivate,
+        })
         // Refresh the top-bar balance promptly after a successful AI send,
         // rather than waiting for `useBalance`'s background poll — a send
         // debits the room owner's balance server-side (see
