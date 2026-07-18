@@ -828,7 +828,7 @@ func TestMessageRepository_DeleteAndInvalidateSummaryNotFoundLeavesEverythingInt
 	summaryRepo := NewContextSummaryRepository(pool)
 
 	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "delete-invalidate-notfound-owner")
-	seedMessageAndSummary(ctx, t, msgRepo, summaryRepo, rm)
+	seeded := seedMessageAndSummary(ctx, t, msgRepo, summaryRepo, rm)
 
 	revisionBefore, err := summaryRepo.GetRevision(ctx, rm.ID)
 	if err != nil {
@@ -838,6 +838,19 @@ func TestMessageRepository_DeleteAndInvalidateSummaryNotFoundLeavesEverythingInt
 	err = msgRepo.DeleteAndInvalidateSummary(ctx, uuid.New().String(), rm.ID)
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected domain.ErrNotFound for an unknown message ID, got %v", err)
+	}
+
+	// A real message paired with a room it does not belong to must also be
+	// rejected: the mutation predicate binds on room_id, so a mismatched
+	// pair can neither delete the message nor invalidate the other room's
+	// summary.
+	otherRoom := seedUserAndRoom(ctx, t, userRepo, roomRepo, "delete-invalidate-mismatch-owner")
+	err = msgRepo.DeleteAndInvalidateSummary(ctx, seeded.ID, otherRoom.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound for a room-mismatched message, got %v", err)
+	}
+	if got, err := msgRepo.GetByID(ctx, seeded.ID, rm.OwnerID); err != nil || got.IsDeleted {
+		t.Errorf("expected the message to survive a room-mismatched delete (err=%v, deleted=%v)", err, got != nil && got.IsDeleted)
 	}
 
 	if _, err := summaryRepo.Get(ctx, rm.ID); err != nil {

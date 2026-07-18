@@ -250,7 +250,7 @@ func (m *MessageRepo) UpdateExcludeFromAI(_ context.Context, id string, exclude 
 func (m *MessageRepo) UpdateExcludeFromAIAndInvalidateSummary(ctx context.Context, id string, exclude bool, roomID string) error {
 	m.mu.Lock()
 	msg, ok := m.Messages[id]
-	if !ok {
+	if !ok || msg.RoomID != roomID {
 		m.mu.Unlock()
 		return domain.ErrNotFound
 	}
@@ -306,7 +306,7 @@ func (m *MessageRepo) Delete(_ context.Context, id string) error {
 func (m *MessageRepo) DeleteAndInvalidateSummary(ctx context.Context, id string, roomID string) error {
 	m.mu.Lock()
 	msg, ok := m.Messages[id]
-	if !ok || msg.IsDeleted {
+	if !ok || msg.IsDeleted || msg.RoomID != roomID {
 		m.mu.Unlock()
 		return domain.ErrNotFound
 	}
