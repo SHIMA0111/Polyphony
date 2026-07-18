@@ -2,6 +2,7 @@
 package middleware
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 
@@ -72,9 +73,14 @@ func RateLimit(cfg RateLimitConfig) echo.MiddlewareFunc {
 			}
 
 			if res.Allowed == 0 {
-				retryAfterSeconds := int(res.RetryAfter.Seconds())
-				if retryAfterSeconds < 0 {
-					retryAfterSeconds = 0
+				// Round up to a whole second and clamp to a minimum of 1:
+				// truncating toward zero (int(...)) would report
+				// "Retry-After: 0" for any sub-second window, which tells
+				// the client it may retry immediately even though it is
+				// still rate-limited.
+				retryAfterSeconds := int(math.Ceil(res.RetryAfter.Seconds()))
+				if retryAfterSeconds < 1 {
+					retryAfterSeconds = 1
 				}
 				c.Response().Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
 				return c.JSON(http.StatusTooManyRequests, errorResponse{Message: "rate limit exceeded"})

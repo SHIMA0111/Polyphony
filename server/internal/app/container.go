@@ -258,6 +258,9 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		grpcClient, err := gateway.NewGRPCClient(
 			cfg.LLMGatewayGRPCAddr, cfg.LLMGatewayGRPCMaxRetries, cfg.LLMGatewayGRPCBaseBackoff)
 		if err != nil {
+			if redisClient != nil {
+				_ = redisClient.Close()
+			}
 			pool.Close()
 			return nil, fmt.Errorf("build gRPC LLM Gateway client: %w", err)
 		}

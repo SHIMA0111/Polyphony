@@ -433,6 +433,166 @@ func TestHandleWebhookEventSubscriptionUpdated(t *testing.T) {
 	}
 }
 
+// TestHandleWebhookEventSubscriptionUpdatedPlanChangeResyncsEntitlements
+// asserts that a customer.subscription.updated event reporting a new Stripe
+// price (a Billing Portal plan change) resyncs StripePriceID, PlanCode, and
+// MonthlyTokenAllocation together, so the next invoice.paid credits the new
+// plan's allocation rather than the stale one it was created with.
+func TestHandleWebhookEventSubscriptionUpdatedPlanChangeResyncsEntitlements(t *testing.T) {
+	plans := []domainbilling.Plan{
+		{Code: "starter", StripePriceID: "price_starter", Name: "Starter",
+			PriceCents: 500, Currency: "usd", MonthlyTokenAllocation: 100000},
+		{Code: "pro", StripePriceID: "price_pro", Name: "Pro",
+			PriceCents: 2000, Currency: "usd", MonthlyTokenAllocation: 500000},
+	}
+	balanceRepo := &mocks.BalanceRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	subRepo := &mocks.SubscriptionRepo{}
+	paymentRepo := &mocks.PaymentRepo{BalanceRepo: balanceRepo}
+	gw := &mocks.StripeGateway{}
+	uc := NewBillingUsecase(balanceRepo, roomRepo, subRepo, paymentRepo, gw,
+		plans, nil, "https://example.com/success", "https://example.com/cancel")
+
+	if err := subRepo.Create(context.Background(), &domainbilling.Subscription{
+		ID: "sub-row-1", UserID: "user-1", StripeCustomerID: "cus_1", StripeSubscriptionID: "sub_1",
+		StripePriceID: "price_starter", PlanCode: "starter", Status: "active", MonthlyTokenAllocation: 100000,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	gw.WebhookEvent = domainbilling.WebhookEvent{
+		ID:   "evt_sub_plan_change_1",
+		Type: domainbilling.EventTypeSubscriptionUpdated,
+		Subscription: &domainbilling.SubscriptionEventData{
+			StripeSubscriptionID: "sub_1", Status: "active", StripePriceID: "price_pro",
+		},
+	}
+
+	if err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig"); err != nil {
+		t.Fatalf("HandleWebhookEvent failed: %v", err)
+	}
+
+	sub, err := subRepo.GetByStripeSubscriptionID(context.Background(), "sub_1")
+	if err != nil {
+		t.Fatalf("GetByStripeSubscriptionID failed: %v", err)
+	}
+	if sub.StripePriceID != "price_pro" || sub.PlanCode != "pro" || sub.MonthlyTokenAllocation != 500000 {
+		t.Fatalf("expected resync to price_pro/pro/500000, got %+v", sub)
+	}
+}
+
+// TestHandleWebhookEventSubscriptionUpdatedUnrecognizedPriceSkipsResync
+// asserts that a customer.subscription.updated event reporting a Stripe
+// price not present in the configured plan catalog leaves
+// StripePriceID/PlanCode/MonthlyTokenAllocation untouched (warn-and-skip),
+// rather than desyncing StripePriceID from PlanCode/MonthlyTokenAllocation.
+func TestHandleWebhookEventSubscriptionUpdatedUnrecognizedPriceSkipsResync(t *testing.T) {
+	gw := &mocks.StripeGateway{}
+	uc, _, subRepo, _ := newStripeTestUsecase(gw)
+
+	if err := subRepo.Create(context.Background(), &domainbilling.Subscription{
+		ID: "sub-row-1", UserID: "user-1", StripeCustomerID: "cus_1", StripeSubscriptionID: "sub_1",
+		StripePriceID: "price_starter", PlanCode: "starter", Status: "active", MonthlyTokenAllocation: 100000,
+	}); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	gw.WebhookEvent = domainbilling.WebhookEvent{
+		ID:   "evt_sub_plan_change_unrecognized",
+		Type: domainbilling.EventTypeSubscriptionUpdated,
+		Subscription: &domainbilling.SubscriptionEventData{
+			StripeSubscriptionID: "sub_1", Status: "active", StripePriceID: "price_does_not_exist",
+		},
+	}
+
+	if err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig"); err != nil {
+		t.Fatalf("HandleWebhookEvent failed: %v", err)
+	}
+
+	sub, err := subRepo.GetByStripeSubscriptionID(context.Background(), "sub_1")
+	if err != nil {
+		t.Fatalf("GetByStripeSubscriptionID failed: %v", err)
+	}
+	if sub.StripePriceID != "price_starter" || sub.PlanCode != "starter" || sub.MonthlyTokenAllocation != 100000 {
+		t.Fatalf("expected unrecognized price to leave plan/entitlements unchanged, got %+v", sub)
+	}
+	// Status should still update even when the plan resync is skipped.
+	if sub.Status != "active" {
+		t.Fatalf("expected status to still sync, got %s", sub.Status)
+	}
+}
+
+// TestHandleWebhookEventDispatchNilRepoReturnsBillingNotConfigured asserts
+// that each dispatched handler guards its required repositories and returns
+// domain.ErrBillingNotConfigured (rather than panicking on a nil dereference)
+// when they are unset.
+func TestHandleWebhookEventDispatchNilRepoReturnsBillingNotConfigured(t *testing.T) {
+	tests := []struct {
+		name  string
+		event domainbilling.WebhookEvent
+	}{
+		{
+			name: "checkout_session_completed_token_purchase",
+			event: domainbilling.WebhookEvent{
+				ID: "evt_nil_1", Type: domainbilling.EventTypeCheckoutSessionCompleted,
+				CheckoutSession: &domainbilling.CheckoutSessionData{
+					SessionID: "cs_1", Mode: domainbilling.CheckoutModePayment, Kind: "token_purchase",
+					UserID: "user-1", PackageCode: "topup_small", AmountTotal: 300, Currency: "usd",
+				},
+			},
+		},
+		{
+			name: "checkout_session_completed_subscription",
+			event: domainbilling.WebhookEvent{
+				ID: "evt_nil_2", Type: domainbilling.EventTypeCheckoutSessionCompleted,
+				CheckoutSession: &domainbilling.CheckoutSessionData{
+					SessionID: "cs_2", Mode: domainbilling.CheckoutModeSubscription,
+					UserID: "user-1", PlanCode: "starter", StripeSubscriptionID: "sub_1", StripeCustomerID: "cus_1",
+				},
+			},
+		},
+		{
+			name: "invoice_paid",
+			event: domainbilling.WebhookEvent{
+				ID: "evt_nil_3", Type: domainbilling.EventTypeInvoicePaid,
+				Invoice: &domainbilling.InvoiceData{
+					InvoiceID: "in_1", StripeSubscriptionID: "sub_1", BillingReason: "subscription_cycle",
+					AmountPaid: 500, Currency: "usd",
+				},
+			},
+		},
+		{
+			name: "subscription_updated",
+			event: domainbilling.WebhookEvent{
+				ID: "evt_nil_4", Type: domainbilling.EventTypeSubscriptionUpdated,
+				Subscription: &domainbilling.SubscriptionEventData{StripeSubscriptionID: "sub_1", Status: "active"},
+			},
+		},
+		{
+			name: "subscription_deleted",
+			event: domainbilling.WebhookEvent{
+				ID: "evt_nil_5", Type: domainbilling.EventTypeSubscriptionDeleted,
+				Subscription: &domainbilling.SubscriptionEventData{StripeSubscriptionID: "sub_1"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw := &mocks.StripeGateway{WebhookEvent: tt.event}
+			// balanceRepo, subscriptionRepo, and paymentRepo are all nil —
+			// only stripeGateway and the plan catalog are wired.
+			uc := NewBillingUsecase(nil, &mocks.RoomRepo{}, nil, nil, gw,
+				testPlans(), testPackages(), "https://example.com/success", "https://example.com/cancel")
+
+			err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+			if !errors.Is(err, domain.ErrBillingNotConfigured) {
+				t.Fatalf("expected domain.ErrBillingNotConfigured, got %v", err)
+			}
+		})
+	}
+}
+
 // TestHandleWebhookEventInvoicePaidUnrecognizedSubscriptionReturnsError
 // asserts that an invoice.paid event for a subscription this server has no
 // local record of returns a non-nil (not-found) error rather than a silent

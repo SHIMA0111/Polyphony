@@ -6,31 +6,53 @@ import (
 )
 
 // withRequiredEnv sets the two required environment variables for the
-// duration of the test and clears them afterwards. It also clears every
-// optional env var Load reads (the DB_* duration variables, CORS_ORIGINS,
-// the S3_* variables, WS_TICKET_SECRET, AUTH_MODE, and the KRATOS_*
-// variables) so tests are isolated from any values inherited from the
-// surrounding environment (e.g. a developer's shell, or a docker-compose
-// `environment:` block set outside the test process).
+// duration of the test and clears every optional environment variable Load
+// reads (via t.Setenv("...", ""), which os.Getenv cannot distinguish from
+// unset, and which t.Setenv restores to its prior value after the test
+// regardless).
+//
+// Without this, a test asserting a default value (e.g.
+// TestLoadRateLimitAndWhoamiCacheDefaults) would silently pass or fail based
+// on whatever happened to already be set in the ambient shell/CI environment
+// (e.g. a developer's .env sourced into their shell, or leftover exported
+// vars from a previous docker compose run) rather than proving Load()'s own
+// default-selection logic. This list must be kept in sync with every
+// optional (non-required) os.Getenv("...") call in config.go.
 func withRequiredEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/db")
 	t.Setenv("JWT_SECRET", "test-secret")
-	t.Setenv("DB_MAX_CONN_LIFETIME", "")
-	t.Setenv("DB_MAX_CONN_IDLE_TIME", "")
-	t.Setenv("DB_HEALTH_CHECK_PERIOD", "")
-	t.Setenv("CORS_ORIGINS", "")
-	t.Setenv("S3_ENDPOINT", "")
-	t.Setenv("S3_REGION", "")
-	t.Setenv("S3_BUCKET", "")
-	t.Setenv("S3_ACCESS_KEY", "")
-	t.Setenv("S3_SECRET_KEY", "")
-	t.Setenv("S3_FORCE_PATH_STYLE", "")
-	t.Setenv("WS_TICKET_SECRET", "")
-	t.Setenv("AUTH_MODE", "")
-	t.Setenv("KRATOS_PUBLIC_URL", "")
-	t.Setenv("KRATOS_ADMIN_URL", "")
-	t.Setenv("KRATOS_COOKIE_NAME", "")
+
+	optionalEnvVars := []string{
+		"DB_MAX_CONN_LIFETIME",
+		"DB_MAX_CONN_IDLE_TIME",
+		"DB_HEALTH_CHECK_PERIOD",
+		"CORS_ORIGINS",
+		"S3_ENDPOINT",
+		"S3_REGION",
+		"S3_BUCKET",
+		"S3_ACCESS_KEY",
+		"S3_SECRET_KEY",
+		"S3_FORCE_PATH_STYLE",
+		"WS_TICKET_SECRET",
+		"AUTH_MODE",
+		"KRATOS_PUBLIC_URL",
+		"KRATOS_ADMIN_URL",
+		"KRATOS_COOKIE_NAME",
+		"DEFAULT_AI_MODEL",
+		"RATE_LIMIT_LOGIN_PER_MINUTE",
+		"RATE_LIMIT_AI_INVOKE_PER_MINUTE",
+		"WHOAMI_CACHE_TTL",
+		"STRIPE_SECRET_KEY",
+		"STRIPE_WEBHOOK_SECRET",
+		"STRIPE_PLANS_JSON",
+		"STRIPE_TOKEN_PACKAGES_JSON",
+		"STRIPE_CHECKOUT_SUCCESS_URL",
+		"STRIPE_CHECKOUT_CANCEL_URL",
+	}
+	for _, name := range optionalEnvVars {
+		t.Setenv(name, "")
+	}
 }
 
 // TestLoadDBDurationDefaults verifies Load falls back to the documented
@@ -363,6 +385,35 @@ func TestLoadMessageHubDriverInvalidReturnsError(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected Load to fail for an unrecognized MESSAGE_HUB_DRIVER value")
+	}
+}
+
+// TestLoadDefaultAIModelDefault verifies Load falls back to the documented
+// default DefaultAIModel ("gpt-5-mini") when DEFAULT_AI_MODEL is unset.
+func TestLoadDefaultAIModelDefault(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.DefaultAIModel != "gpt-5-mini" {
+		t.Errorf("expected default DefaultAIModel %q, got %q", "gpt-5-mini", cfg.DefaultAIModel)
+	}
+}
+
+// TestLoadDefaultAIModelOverride verifies Load applies the DEFAULT_AI_MODEL
+// env var when it is set.
+func TestLoadDefaultAIModelOverride(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("DEFAULT_AI_MODEL", "claude-opus-5")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.DefaultAIModel != "claude-opus-5" {
+		t.Errorf("expected overridden DefaultAIModel %q, got %q", "claude-opus-5", cfg.DefaultAIModel)
 	}
 }
 

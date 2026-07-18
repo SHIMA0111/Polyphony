@@ -11,6 +11,14 @@ import type { KratosSession } from "@/features/auth/types"
 const KRATOS_PUBLIC_URL = process.env.KRATOS_PUBLIC_URL ?? "http://localhost:4433"
 
 /**
+ * Upper bound, in milliseconds, on the `sessions/whoami` request below.
+ * Without this, a stalled Kratos instance would hang the OAuth2
+ * login/consent Route Handlers indefinitely instead of failing cleanly.
+ * Mirrors the timeout pattern in `web/src/lib/http-client.ts`.
+ */
+const KRATOS_WHOAMI_FETCH_TIMEOUT_MS = 5000
+
+/**
  * Resolves the Kratos session (if any) carried by a raw `Cookie` header.
  *
  * This is the server-only counterpart to
@@ -42,6 +50,7 @@ export async function getKratosSessionFromCookie(
       ...(cookieHeader ? { Cookie: cookieHeader } : {}),
     },
     cache: "no-store",
+    signal: AbortSignal.timeout(KRATOS_WHOAMI_FETCH_TIMEOUT_MS),
   })
 
   if (res.status === 401 || res.status === 404) {

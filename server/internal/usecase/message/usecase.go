@@ -236,8 +236,9 @@ func (u *MessageUsecase) ListMessages(ctx context.Context, userID, roomID, curso
 // RegenerateAIMessage can retry later via UPDATE only. The same placeholder is
 // saved — and this function then returns the underlying error — if a failure
 // occurs anywhere after the human message is durably persisted but before the
-// AI message is (context-fetch via ListByRoom, or attachment enrichment):
-// without it, a client that retries after such an error would resubmit the
+// AI message is (context-fetch via ListByRoom, attachment enrichment, or the
+// completed AI message's own msgRepo.Create call failing): without it, a
+// client that retries after such an error would resubmit the
 // same content and duplicate the human message, because nothing on the
 // server records that this human message is still unanswered. With the
 // placeholder saved, the exchange looks exactly like an LLM-call failure, so
@@ -364,6 +365,12 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	}
 
 	if err = u.msgRepo.Create(ctx, aiMsg); err != nil {
+		// The human message is already durably persisted (see the doc
+		// comment above), so this failure must also get a failed placeholder
+		// saved before returning, exactly like the context-fetch and
+		// attachment-enrichment failure paths above -- otherwise a client
+		// retry would resubmit and duplicate the human message.
+		u.saveFailedAIPlaceholderOnError(ctx, roomID, userID, humanMsg.ID, aiSeq, visibility, private, "completed AI message create", err)
 		return nil, err
 	}
 	u.publishMessageEvent(ctx, event.EventMessageCreated, roomID, aiMsg, aiNow)

@@ -410,6 +410,49 @@ async fn test_stream_success_yields_expected_chunk_sequence() {
     assert_eq!(usage.total_tokens, 14);
 }
 
+/// Canned Gemini `streamGenerateContent` SSE body identical to [`GEMINI_SSE_FIXTURE`]
+/// except every event also carries the documented `responseId` field, which should be
+/// preferred over a synthetic UUID.
+const GEMINI_SSE_FIXTURE_WITH_RESPONSE_ID: &str = concat!(
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hi\"}]},\"index\":0}],\"responseId\":\"resp-stream-789\"}\n\n",
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\" there!\"}]},\"index\":0}],\"responseId\":\"resp-stream-789\"}\n\n",
+    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4,\"totalTokenCount\":14},\"responseId\":\"resp-stream-789\"}\n\n",
+);
+
+/// When Gemini's streaming events carry a `responseId`, the adapter must use it as
+/// `CompletionChunk::id` instead of synthesizing a UUID.
+#[tokio::test]
+async fn test_stream_uses_wire_response_id_when_present() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-3-pro:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(GEMINI_SSE_FIXTURE_WITH_RESPONSE_ID, "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let chunk_stream = provider
+        .stream(&make_request("gemini-3-pro"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let chunks: Vec<_> = chunk_stream
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|c| c.expect("every chunk should parse successfully"))
+        .collect();
+
+    assert_eq!(chunks.len(), 3);
+    for chunk in &chunks {
+        assert_eq!(chunk.id, "resp-stream-789");
+    }
+}
+
 #[tokio::test]
 async fn test_stream_malformed_event_yields_err_item_without_panicking() {
     let mock_server = MockServer::start().await;

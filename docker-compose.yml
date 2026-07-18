@@ -287,9 +287,16 @@ services:
   # logs (`docker compose logs stripe-cli` / `task stripe:listen`) — copy
   # that value into `.env`'s STRIPE_WEBHOOK_SECRET and restart the api
   # service for signature verification to succeed.
+  #
+  # Scoped to the "tools" profile so a bare `docker compose up -d` (`task
+  # up`) does not start it: with no STRIPE_SECRET_KEY configured, stripe-cli
+  # loops failing to authenticate. `task stripe:listen` names this service
+  # explicitly (`docker compose up -d stripe-cli`), which starts it
+  # regardless of active profiles, so that task keeps working unchanged.
   stripe-cli:
     image: stripe/stripe-cli:v1.21.7
     command: listen --api-key ${STRIPE_SECRET_KEY:-} --forward-to api:8080/webhooks/stripe --skip-verify
+    profiles: ["tools"]
     depends_on:
       api:
         condition: service_started

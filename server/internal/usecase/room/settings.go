@@ -52,13 +52,18 @@ import (
 // field is never assigned a new value by the SQL itself, so a concurrent
 // write to the other field cannot be overwritten.
 //
-// The returned domainroom.RoomWithRole pairs the caller's role with a Room
-// reflecting this call's own view of the result: AIProvider/AIModel are
-// computed by applying aiProvider/aiModel to a GetByID snapshot taken
-// before the write, purely for the response, and may not match the row
-// UpdateAISettings actually just persisted if a concurrent UpdateSettings
-// call raced this one -- callers that need a guaranteed-fresh read should
-// GetByID again.
+// The room is re-read via GetByID after UpdateAISettings's write completes,
+// rather than merged into a pre-write snapshot, so the returned
+// domainroom.RoomWithRole reflects the room's true persisted state --
+// including any field this call left untouched -- instead of a value this
+// usecase computed itself from a snapshot taken before the write. Filling in
+// the untouched field(s) from a pre-write snapshot here would reintroduce
+// exactly the lost-update race UpdateAISettings's single-UPDATE design was
+// built to avoid (see above): if a concurrent UpdateSettings call touching
+// only the other field persisted between this call's snapshot read and its
+// own write, returning a value derived from that stale snapshot would
+// misreport the room's state back to this caller even though the database
+// row itself is correct.
 func (u *RoomUsecase) UpdateSettings(ctx context.Context, userID, roomID string, aiProvider, aiModel *string) (*domainroom.RoomWithRole, error) {
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
@@ -68,34 +73,14 @@ func (u *RoomUsecase) UpdateSettings(ctx context.Context, userID, roomID string,
 		return nil, err
 	}
 
+	if err := u.roomRepo.UpdateAISettings(ctx, roomID, aiProvider, aiModel, time.Now()); err != nil {
+		return nil, err
+	}
+
 	rm, err := u.roomRepo.GetByID(ctx, roomID)
 	if err != nil {
 		return nil, err
 	}
-	updatedAt := time.Now()
-
-	if err = u.roomRepo.UpdateAISettings(ctx, roomID, aiProvider, aiModel, updatedAt); err != nil {
-		return nil, err
-	}
-
-	rm.AIProvider = applySettingField(rm.AIProvider, aiProvider)
-	rm.AIModel = applySettingField(rm.AIModel, aiModel)
-	rm.UpdatedAt = updatedAt
 
 	return &domainroom.RoomWithRole{Room: rm, Role: member.Role}, nil
-}
-
-// applySettingField applies UpdateSettings's nil/empty-string-sentinel/value
-// convention to a single nullable string field: a nil update leaves current
-// unchanged, a pointer to "" clears the field to nil, and any other pointer
-// value replaces current with a copy of the pointed-to value.
-func applySettingField(current *string, update *string) *string {
-	if update == nil {
-		return current
-	}
-	if *update == "" {
-		return nil
-	}
-	v := *update
-	return &v
 }

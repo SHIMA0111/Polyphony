@@ -1511,6 +1511,76 @@ func TestSendAIMessageEnrichmentFailureSavesFailedPlaceholder(t *testing.T) {
 	}
 }
 
+// TestSendAIMessageCompletedCreateFailureSavesFailedPlaceholder asserts that
+// when the LLM call succeeds but msgRepo.Create for the resulting completed
+// AI message itself fails, SendAIMessage still saves a status=failed AI
+// placeholder linked to the human message (via
+// saveFailedAIPlaceholderOnError) before returning the original error --
+// exactly like the context-fetch, attachment-enrichment, and LLM-call
+// failure paths -- instead of returning the bare error with no placeholder,
+// which would leave a client retry unable to tell "still unanswered" from
+// "never asked" and would resubmit and duplicate the human message.
+func TestSendAIMessageCompletedCreateFailureSavesFailedPlaceholder(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	createErr := fmt.Errorf("simulated create failure")
+	var createCalls int
+	msgRepo.CreateFunc = func(_ context.Context, msg *domainmessage.Message) error {
+		createCalls++
+		// The 1st Create call persists the human message and the 3rd
+		// persists the failed AI placeholder saved on this test's error
+		// path; only the 2nd -- the completed AI message SendAIMessage
+		// builds after a successful LLM call -- is made to fail.
+		if createCalls == 2 {
+			return createErr
+		}
+		msgRepo.Messages[msg.ID] = msg
+		return nil
+	}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model", false)
+	if err != createErr {
+		t.Fatalf("expected SendAIMessage to return the original create error, got %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected a nil result on error, got %+v", result)
+	}
+	if createCalls != 3 {
+		t.Fatalf("expected 3 msgRepo.Create calls (human, failed completed AI, failed placeholder), got %d", createCalls)
+	}
+
+	var humanMsg, aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		switch m.Type {
+		case domainmessage.MessageTypeHuman:
+			humanMsg = m
+		case domainmessage.MessageTypeAI:
+			aiMsg = m
+		}
+	}
+	if humanMsg == nil {
+		t.Fatal("expected the human message to have been persisted despite the AI Create failure")
+	}
+	if aiMsg == nil {
+		t.Fatal("expected a failed AI placeholder to have been persisted")
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected the AI placeholder status to be failed, got %s", aiMsg.Status)
+	}
+	if aiMsg.Content != "" {
+		t.Fatalf("expected empty content on the failed AI placeholder, got %q", aiMsg.Content)
+	}
+	if aiMsg.InResponseToMessageID == nil || *aiMsg.InResponseToMessageID != humanMsg.ID {
+		t.Fatalf("expected the failed AI placeholder to link back to the human message %s, got %v", humanMsg.ID, aiMsg.InResponseToMessageID)
+	}
+}
+
 // --- Ownerless private message publish suppression (Step 22 review fix) ---
 
 // TestPublishMessageEventSuppressesOwnerlessPrivateMessage asserts that

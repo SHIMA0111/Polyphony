@@ -77,9 +77,9 @@ type ModelInfo struct {
 	Provider string
 	// ContextWindow is the maximum input+output token count the model
 	// supports, as reported by the LLM Gateway. Zero means "unknown" -- the
-	// gateway did not report a context window for this model (its `pricing`
-	// field was `None`/absent on the wire) -- not that the model has no
-	// context limit.
+	// gateway did not report a context window for this model (its
+	// `context_window` field was `None`/absent on the wire) -- not that the
+	// model has no context limit.
 	ContextWindow int
 	// InputPricePerMillionTokens is the USD price per 1,000,000 input
 	// (prompt) tokens, per-1M being the project-wide canonical pricing unit

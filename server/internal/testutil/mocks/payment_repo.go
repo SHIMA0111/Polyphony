@@ -2,6 +2,7 @@ package mocks
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -68,6 +69,14 @@ func (r *PaymentRepo) Create(_ context.Context, payment *billing.PaymentRecord) 
 // and silently losing the tokens. It returns alreadyProcessed=true (with
 // the balance left untouched) for a replayed payment.StripeEventID.
 func (r *PaymentRepo) CreateAndCredit(ctx context.Context, payment *billing.PaymentRecord, userID string, amount int64, description string) (bool, error) {
+	// Consistency guard, mirroring postgres.PaymentRepository.CreateAndCredit:
+	// payment and the (userID, amount) credit args must describe the same
+	// event.
+	if payment.UserID != userID || payment.TokensCredited != amount {
+		return false, fmt.Errorf("mocks.PaymentRepo: CreateAndCredit args mismatch: payment.UserID=%q userID=%q payment.TokensCredited=%d amount=%d",
+			payment.UserID, userID, payment.TokensCredited, amount)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ensureInit()

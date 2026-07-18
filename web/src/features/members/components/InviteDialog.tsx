@@ -14,8 +14,15 @@ import {
   Text,
 } from "@chakra-ui/react"
 import { Copy, Link2, UserPlus } from "lucide-react"
+import { toaster } from "@/components/ui/toaster"
 import { useCreateInvitation } from "../hooks/use-create-invitation"
 import type { Invitation, RoomRole } from "../types"
+
+/** How long the copy button shows its "copied" state before reverting — mirrors `CodeBlock.tsx`. */
+const COPY_FEEDBACK_MS = 2000
+
+/** Which of the two independent invite flows currently has a mutation in flight. */
+type PendingAction = "username" | "link" | null
 
 /** Roles an inviter may offer — never `master` (see `RolePicker`'s same restriction). */
 const INVITABLE_ROLES: RoomRole[] = ["reader", "guest", "member", "admin"]
@@ -36,6 +43,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
   const [linkRole, setLinkRole] = useState<RoomRole>("member")
   const [linkInvitation, setLinkInvitation] = useState<Invitation | null>(null)
   const [copied, setCopied] = useState(false)
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null)
 
   const createInvitationMutation = useCreateInvitation(roomId)
 
@@ -45,11 +53,13 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
     setLinkRole("member")
     setLinkInvitation(null)
     setCopied(false)
+    setPendingAction(null)
     createInvitationMutation.reset()
   }
 
   const handleInviteByUsername = async () => {
     if (!username.trim()) return
+    setPendingAction("username")
     try {
       await createInvitationMutation.mutateAsync({
         invitee_username: username.trim(),
@@ -62,6 +72,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
   }
 
   const handleGenerateLink = async () => {
+    setPendingAction("link")
     try {
       const invitation = await createInvitationMutation.mutateAsync({
         role: linkRole,
@@ -79,8 +90,17 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
 
   const handleCopy = async () => {
     if (!inviteUrl) return
-    await navigator.clipboard.writeText(inviteUrl)
-    setCopied(true)
+    try {
+      await navigator.clipboard.writeText(inviteUrl)
+      setCopied(true)
+      setTimeout(() => setCopied(false), COPY_FEEDBACK_MS)
+    } catch {
+      toaster.create({
+        type: "error",
+        title: "Failed to copy invite link",
+        description: "Please try again.",
+      })
+    }
   }
 
   return (
@@ -144,7 +164,10 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                     variant="outline"
                     alignSelf="flex-start"
                     disabled={!username.trim()}
-                    loading={createInvitationMutation.isPending}
+                    loading={
+                      createInvitationMutation.isPending &&
+                      pendingAction === "username"
+                    }
                     onClick={handleInviteByUsername}
                   >
                     Send invitation
@@ -186,7 +209,9 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                     variant="outline"
                     alignSelf="flex-start"
                     gap={2}
-                    loading={createInvitationMutation.isPending}
+                    loading={
+                      createInvitationMutation.isPending && pendingAction === "link"
+                    }
                     onClick={handleGenerateLink}
                   >
                     <Link2 size={14} />

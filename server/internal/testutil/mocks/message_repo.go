@@ -18,6 +18,12 @@ import (
 // first write.
 //
 // MessageRepo is safe for concurrent use.
+//
+// CreateFunc, if set, overrides Create entirely, taking priority over the
+// default in-memory-store behavior; it is invoked while holding mu, so
+// implementations must not call back into MessageRepo. Use it to simulate a
+// Create failure (optionally on only a specific call, e.g. by counting
+// invocations in the closure) without affecting the fake's other methods.
 type MessageRepo struct {
 	mu sync.Mutex
 	// Messages is the backing store of messages, keyed by message ID;
@@ -26,6 +32,9 @@ type MessageRepo struct {
 	// Seqs is the per-room next-sequence counter, keyed by room ID; access
 	// only while holding mu.
 	Seqs map[string]int64 // roomID -> next sequence to allocate
+	// CreateFunc, if set, overrides Create entirely. See the type doc
+	// comment above.
+	CreateFunc func(ctx context.Context, msg *message.Message) error
 }
 
 func (m *MessageRepo) ensureInit() {
@@ -37,11 +46,16 @@ func (m *MessageRepo) ensureInit() {
 	}
 }
 
-// Create persists a new message.
-func (m *MessageRepo) Create(_ context.Context, msg *message.Message) error {
+// Create persists a new message, or delegates to CreateFunc if set (see the
+// type doc comment).
+func (m *MessageRepo) Create(ctx context.Context, msg *message.Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ensureInit()
+
+	if m.CreateFunc != nil {
+		return m.CreateFunc(ctx, msg)
+	}
 
 	m.Messages[msg.ID] = msg
 	return nil

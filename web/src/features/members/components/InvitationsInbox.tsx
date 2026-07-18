@@ -42,6 +42,19 @@ export function InvitationsInbox() {
     )
   }
 
+  if (invitationsQuery.isError) {
+    return (
+      <Flex direction="column" align="flex-start" gap={2} p={2}>
+        <Text fontSize="sm" color="fg.error" role="alert">
+          Failed to load invitations.
+        </Text>
+        <Button size="xs" variant="outline" onClick={() => invitationsQuery.refetch()}>
+          Retry
+        </Button>
+      </Flex>
+    )
+  }
+
   if (invitations.length === 0) {
     return (
       <Text fontSize="sm" color="fg.muted" p={2}>
@@ -85,6 +98,7 @@ export function InvitationsInbox() {
               gap={1}
               flex={1}
               loading={acceptMutation.isPending}
+              disabled={acceptMutation.isPending || rejectMutation.isPending}
               onClick={() => handleAccept(invitation.id)}
             >
               <Check size={12} />
@@ -98,6 +112,7 @@ export function InvitationsInbox() {
                 gap={1}
                 flex={1}
                 loading={rejectMutation.isPending}
+                disabled={acceptMutation.isPending || rejectMutation.isPending}
                 onClick={() => rejectMutation.mutate(invitation.id)}
               >
                 <X size={12} />

@@ -5,6 +5,7 @@ import { Avatar, Box, Button, Dialog, Flex, Portal, Text } from "@chakra-ui/reac
 import { Crown } from "lucide-react"
 import { useMembers } from "../hooks/use-members"
 import { useTransferOwnership } from "../hooks/use-transfer-ownership"
+import { isOwnerRole } from "../lib/roles"
 import type { Room } from "@/features/rooms/types"
 
 interface TransferOwnershipDialogProps {
@@ -26,7 +27,7 @@ export function TransferOwnershipDialog({ room }: TransferOwnershipDialogProps) 
   const transferMutation = useTransferOwnership(room.id)
 
   const candidates = (membersQuery.data?.members ?? []).filter(
-    (member) => member.role !== "master",
+    (member) => !isOwnerRole(member.role),
   )
 
   const handleConfirm = async () => {

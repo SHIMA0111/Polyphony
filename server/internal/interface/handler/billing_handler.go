@@ -282,7 +282,7 @@ func (h *BillingHandler) ListPlans(c echo.Context) error {
 // intentionally ignored (an unrecognized event type, or an
 // idempotency short-circuit on an already-processed event) so Stripe does
 // not retry; it returns HTTP 400 only when signature verification itself
-// fails, and 503 if Stripe is unconfigured.
+// fails, and 503 if Stripe or billing itself is unconfigured.
 func (h *BillingHandler) HandleStripeWebhook(c echo.Context) error {
 	payload, err := io.ReadAll(c.Request().Body)
 	if err != nil {
@@ -297,6 +297,9 @@ func (h *BillingHandler) HandleStripeWebhook(c echo.Context) error {
 		}
 		if errors.Is(err, domain.ErrStripeNotConfigured) {
 			return c.JSON(http.StatusServiceUnavailable, ErrorResponse{Message: "stripe is not configured"})
+		}
+		if errors.Is(err, domain.ErrBillingNotConfigured) {
+			return c.JSON(http.StatusServiceUnavailable, ErrorResponse{Message: "billing is not configured"})
 		}
 		middleware.GetLogger(c).Error("failed to process stripe webhook event", "error", err)
 		return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})

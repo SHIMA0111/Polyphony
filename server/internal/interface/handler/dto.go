@@ -439,9 +439,20 @@ type BatchInviteSkipResponse struct {
 // POST /rooms/:roomId/invitations/batch-by-group. Invited contains every
 // invitation successfully created; Skipped contains one entry per group
 // member who was not invited, with a reason.
+//
+// Failed and Error are populated only when the batch was aborted partway
+// through by an unexpected (non-skippable) per-member error — see
+// groupusecase.GroupUsecase.BatchInviteToRoom's doc comment. In that case
+// Invited/Skipped still reflect everything accumulated before the abort
+// (an HTTP 500 response with a bare error body would otherwise silently
+// discard invitations already created), Failed is true, and Error carries
+// the aborting error's message. Both are omitted (zero value) on a fully
+// successful batch.
 type BatchInviteByGroupResponse struct {
 	Invited []InvitationResponse      `json:"invited"`
 	Skipped []BatchInviteSkipResponse `json:"skipped"`
+	Failed  bool                      `json:"failed,omitempty"`
+	Error   string                    `json:"error,omitempty"`
 }
 
 // --- Billing DTOs ---

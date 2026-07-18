@@ -40,6 +40,12 @@ enum AnthropicStreamEvent {
     Error {
         error: AnthropicStreamError,
     },
+    /// Catch-all for event types not modeled above (e.g. future additions to the
+    /// Messages API streaming protocol). Mirrors `AnthropicStreamDelta`'s `Other`
+    /// variant: an unrecognized top-level event is logged and skipped rather than
+    /// aborting the stream with a deserialization error.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -275,10 +281,31 @@ pub(super) fn stream<'a>(
                     AnthropicStreamEvent::ContentBlockStart
                     | AnthropicStreamEvent::ContentBlockStop
                     | AnthropicStreamEvent::Ping => {}
+                    AnthropicStreamEvent::Unknown => {
+                        tracing::warn!(
+                            "skipping unrecognized Anthropic streaming event type"
+                        );
+                    }
                 }
             }
         };
 
         Ok(Box::pin(chunks) as BoxStream<'static, Result<CompletionChunk, DomainError>>)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An event `type` not modeled by `AnthropicStreamEvent` (e.g. a future addition
+    /// to the Messages API streaming protocol) deserializes into the `Unknown`
+    /// catch-all instead of failing, mirroring `AnthropicStreamDelta`'s existing
+    /// `#[serde(other)]` handling for delta types.
+    #[test]
+    fn test_unrecognized_event_type_deserializes_to_unknown() {
+        let json = r#"{"type":"some_future_event_type","foo":"bar"}"#;
+        let parsed: AnthropicStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(parsed, AnthropicStreamEvent::Unknown));
+    }
 }

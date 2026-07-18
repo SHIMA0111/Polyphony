@@ -80,8 +80,8 @@ func TestRateLimitAllowsThenDenies(t *testing.T) {
 		t.Fatal("3rd request: expected a Retry-After header, got none")
 	}
 	n, err := strconv.Atoi(retryAfter)
-	if err != nil || n < 0 {
-		t.Fatalf("3rd request: expected Retry-After to be a non-negative integer, got %q (err=%v)", retryAfter, err)
+	if err != nil || n <= 0 {
+		t.Fatalf("3rd request: expected Retry-After to be a positive integer (RateLimit ceils to whole seconds and clamps to a minimum of 1), got %q (err=%v)", retryAfter, err)
 	}
 }
 

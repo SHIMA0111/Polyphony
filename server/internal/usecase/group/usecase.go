@@ -200,23 +200,29 @@ func (u *GroupUsecase) RemoveMember(ctx context.Context, callerID, groupID, user
 // invitationusecase.InvitationUsecase.CreateInvitation once per member —
 // exactly as a human operator would call the single-invite endpoint
 // repeatedly. It does not reimplement CreateInvitation's RBAC check,
-// privilege-escalation guard, or duplicate-pending-invite detection.
+// privilege-escalation guard, or duplicate-pending-invite detection. There
+// is no transactional rollback: invitations already created by earlier
+// iterations are never undone by a later failure.
 //
-// callerID must own groupID; it returns domain.ErrForbidden (with zero
-// CreateInvitation calls made) otherwise, and domain.ErrNotFound if
-// groupID does not exist.
+// callerID must own groupID; it returns (nil, domain.ErrForbidden) (with
+// zero CreateInvitation calls made) otherwise, and (nil, domain.ErrNotFound)
+// if groupID does not exist.
 //
 // If the very first CreateInvitation call returns domain.ErrForbidden
 // (callerID lacks domainroom.RoleAdmin in roomID — the same RBAC check
 // applies identically to every member since it depends only on
-// callerID/roomID, not on the invitee), BatchInviteToRoom returns that
-// error immediately without iterating further. Of the remaining per-member
-// errors, only domain.ErrAlreadyMember and domain.ErrInvitationAlreadyExists
-// are recorded as a skip (with the matching BatchInviteReason* constant as
-// the reason) and let iteration continue to the next member; any other
-// error is not a known skippable case and fails the whole batch
-// immediately (nil, err), rather than risk silently swallowing an
-// unrecognized failure.
+// callerID/roomID, not on the invitee), BatchInviteToRoom returns
+// (nil, err) immediately without iterating further, since nothing was
+// created. Of the remaining per-member errors, only
+// domain.ErrAlreadyMember and domain.ErrInvitationAlreadyExists are
+// recorded as a skip (with the matching BatchInviteReason* constant as the
+// reason) and let iteration continue to the next member; any other
+// (unexpected) error is not a known skippable case and aborts the batch
+// immediately, but — unlike the i==0 short-circuit — returns the
+// already-accumulated (result, err) rather than (nil, err), since prior
+// iterations may already have created invitations that the caller needs to
+// see. Callers must check err first and, when non-nil, treat a non-nil
+// result as partial rather than complete.
 func (u *GroupUsecase) BatchInviteToRoom(
 	ctx context.Context,
 	callerID, roomID, groupID string,
@@ -240,7 +246,8 @@ func (u *GroupUsecase) BatchInviteToRoom(
 			// The RBAC check (caller must be Admin+ in roomID) depends only
 			// on callerID/roomID, so if it fails for the first member it
 			// fails identically for every member: short-circuit rather than
-			// recording N redundant per-member skips.
+			// recording N redundant per-member skips. Nothing has been
+			// created yet, so return nil rather than an empty result.
 			if i == 0 && errors.Is(err, domain.ErrForbidden) {
 				return nil, err
 			}
@@ -251,9 +258,11 @@ func (u *GroupUsecase) BatchInviteToRoom(
 			case errors.Is(err, domain.ErrInvitationAlreadyExists):
 				reason = BatchInviteReasonInvitationAlreadyExists
 			default:
-				// Not a known skippable case: fail the whole batch rather
-				// than silently swallowing an unrecognized error.
-				return nil, err
+				// Not a known skippable case: abort the batch, but return
+				// what has been accumulated so far (invitations already
+				// created, members already skipped) alongside the error,
+				// rather than discarding it.
+				return result, err
 			}
 			result.Skipped = append(result.Skipped, BatchInviteSkip{
 				UserID:   member.UserID,

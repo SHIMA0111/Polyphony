@@ -159,6 +159,19 @@ func (u *BillingUsecase) findPlan(planCode string) *domainbilling.Plan {
 	return nil
 }
 
+// findPlanByStripePriceID returns the configured Plan with the given Stripe
+// price ID, or nil if none matches. Used by handleSubscriptionUpdated to
+// resync PlanCode/MonthlyTokenAllocation when a Billing Portal plan change
+// reports a new price.
+func (u *BillingUsecase) findPlanByStripePriceID(stripePriceID string) *domainbilling.Plan {
+	for i := range u.plans {
+		if u.plans[i].StripePriceID == stripePriceID {
+			return &u.plans[i]
+		}
+	}
+	return nil
+}
+
 // findTokenPackage returns the configured TokenPackage with the given code, or nil if none matches.
 func (u *BillingUsecase) findTokenPackage(packageCode string) *domainbilling.TokenPackage {
 	for i := range u.tokenPackages {
@@ -364,6 +377,9 @@ func (u *BillingUsecase) handleCheckoutSessionCompleted(ctx context.Context, eve
 	}
 
 	if session.Mode == domainbilling.CheckoutModePayment && session.Kind == "token_purchase" {
+		if u.balanceRepo == nil || u.paymentRepo == nil {
+			return domain.ErrBillingNotConfigured
+		}
 		pkg := u.findTokenPackage(session.PackageCode)
 		if pkg == nil || session.UserID == "" {
 			slog.Warn("checkout.session.completed token_purchase with unrecognized package/user, ignoring",
@@ -399,6 +415,9 @@ func (u *BillingUsecase) handleCheckoutSessionCompleted(ctx context.Context, eve
 	}
 
 	if session.Mode == domainbilling.CheckoutModeSubscription {
+		if u.subscriptionRepo == nil {
+			return domain.ErrBillingNotConfigured
+		}
 		return u.upsertSubscriptionFromCheckout(ctx, session)
 	}
 
@@ -470,6 +489,9 @@ func (u *BillingUsecase) handleInvoicePaid(ctx context.Context, event domainbill
 	if invoice.BillingReason != "subscription_create" && invoice.BillingReason != "subscription_cycle" {
 		return nil
 	}
+	if u.subscriptionRepo == nil || u.balanceRepo == nil || u.paymentRepo == nil {
+		return domain.ErrBillingNotConfigured
+	}
 
 	sub, err := u.subscriptionRepo.GetByStripeSubscriptionID(ctx, invoice.StripeSubscriptionID)
 	if err != nil {
@@ -518,6 +540,9 @@ func (u *BillingUsecase) handleSubscriptionUpdated(ctx context.Context, event do
 	if data == nil {
 		return nil
 	}
+	if u.subscriptionRepo == nil {
+		return domain.ErrBillingNotConfigured
+	}
 
 	sub, err := u.subscriptionRepo.GetByStripeSubscriptionID(ctx, data.StripeSubscriptionID)
 	if err != nil {
@@ -536,8 +561,20 @@ func (u *BillingUsecase) handleSubscriptionUpdated(ctx context.Context, event do
 	if !data.CurrentPeriodEnd.IsZero() {
 		sub.CurrentPeriodEnd = data.CurrentPeriodEnd
 	}
-	if data.StripePriceID != "" {
-		sub.StripePriceID = data.StripePriceID
+	// A Stripe Billing Portal plan change delivers the new price on this
+	// event; resync StripePriceID, PlanCode, and MonthlyTokenAllocation
+	// together so the next invoice.paid credits the new plan's allocation
+	// instead of permanently crediting the stale one.
+	if data.StripePriceID != "" && data.StripePriceID != sub.StripePriceID {
+		plan := u.findPlanByStripePriceID(data.StripePriceID)
+		if plan == nil {
+			slog.Warn("customer.subscription.updated with unrecognized stripe price id, skipping plan/entitlement resync",
+				"stripe_subscription_id", data.StripeSubscriptionID, "stripe_price_id", data.StripePriceID)
+		} else {
+			sub.StripePriceID = plan.StripePriceID
+			sub.PlanCode = plan.Code
+			sub.MonthlyTokenAllocation = plan.MonthlyTokenAllocation
+		}
 	}
 	return u.subscriptionRepo.Update(ctx, sub)
 }
@@ -552,6 +589,9 @@ func (u *BillingUsecase) handleSubscriptionDeleted(ctx context.Context, event do
 	data := event.Subscription
 	if data == nil {
 		return nil
+	}
+	if u.subscriptionRepo == nil {
+		return domain.ErrBillingNotConfigured
 	}
 
 	sub, err := u.subscriptionRepo.GetByStripeSubscriptionID(ctx, data.StripeSubscriptionID)

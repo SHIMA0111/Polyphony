@@ -12,6 +12,13 @@ use super::OpenAIProvider;
 
 // --- OpenAI-specific DTOs ---
 
+/// Outbound request body for the OpenAI Chat Completions API
+/// (`POST /v1/chat/completions`).
+///
+/// Built from a domain `CompletionRequest` via [`to_openai_request`]; the streaming
+/// adapter reuses this same type and injects a `"stream": true` field into the
+/// serialized JSON rather than adding it here, so this struct always represents the
+/// non-streaming request shape.
 #[derive(Serialize)]
 pub(super) struct OpenAIRequest {
     model: String,
@@ -119,6 +126,20 @@ fn role_to_openai_str(role: &Role) -> &'static str {
     }
 }
 
+/// Converts a domain `CompletionRequest` into an [`OpenAIRequest`].
+///
+/// # Arguments
+/// * `req` — Domain completion request to convert.
+///
+/// # Returns
+/// An `OpenAIRequest` with `req`'s messages mapped via `role_to_openai_str` and
+/// `to_openai_content`, and `temperature`/`max_tokens` carried through unchanged as
+/// `temperature`/`max_completion_tokens`.
+///
+/// # Errors
+/// Never fails: every domain `Role` and `MessageContent` has a representable OpenAI
+/// counterpart (see `role_to_openai_str` and `to_openai_content`), so this function
+/// returns infallibly rather than a `Result`.
 pub(super) fn to_openai_request(req: &CompletionRequest) -> OpenAIRequest {
     OpenAIRequest {
         model: req.model.clone(),

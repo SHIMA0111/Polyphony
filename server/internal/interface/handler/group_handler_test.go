@@ -88,6 +88,51 @@ func TestCreateGroupHandlerMissingName400(t *testing.T) {
 	}
 }
 
+// TestCreateGroupHandlerNameTooLong400 verifies that a name exceeding the
+// groups.name VARCHAR(255) column limit is rejected with HTTP 400 by the
+// handler, rather than reaching the usecase/repository and surfacing as an
+// HTTP 500 database error.
+func TestCreateGroupHandlerNameTooLong400(t *testing.T) {
+	e, h, _, _, _ := setupGroupTest()
+
+	tooLong := strings.Repeat("a", maxGroupNameLength+1)
+	req := httptest.NewRequest(http.MethodPost, "/groups", strings.NewReader(`{"name":"`+tooLong+`"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.Set("user_id", "owner-1")
+
+	if err := h.Create(c); err != nil {
+		t.Fatalf("Create handler error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpdateGroupHandlerNameTooLong400 mirrors
+// TestCreateGroupHandlerNameTooLong400 for PUT /groups/:groupId.
+func TestUpdateGroupHandlerNameTooLong400(t *testing.T) {
+	e, h, _, _, _ := setupGroupTest()
+	groupID := createTestGroup(t, e, h, "owner-1")
+
+	tooLong := strings.Repeat("a", maxGroupNameLength+1)
+	req := httptest.NewRequest(http.MethodPut, "/groups/"+groupID, strings.NewReader(`{"name":"`+tooLong+`"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("groupId")
+	c.SetParamValues(groupID)
+	c.Set("user_id", "owner-1")
+
+	if err := h.Update(c); err != nil {
+		t.Fatalf("Update handler error: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func createTestGroup(t *testing.T, e *echo.Echo, h *GroupHandler, ownerID string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/groups", strings.NewReader(`{"name":"Team","description":""}`))
@@ -370,5 +415,59 @@ func TestBatchInviteByGroupHandlerForbiddenWhenCallerDoesNotOwnGroup(t *testing.
 	}
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+// TestBatchInviteByGroupHandlerPartialFailure500 exercises the case where
+// groupusecase.GroupUsecase.BatchInviteToRoom aborts partway through with a
+// non-nil (result, err): the handler must render the accumulated partial
+// result (here, bob's already-created invitation) with an explicit failure
+// indication, rather than discarding it behind a bare error body.
+func TestBatchInviteByGroupHandlerPartialFailure500(t *testing.T) {
+	e, h, groupRepo, _, _ := setupGroupTest()
+	groupID := createTestGroup(t, e, h, "owner-1")
+
+	req := httptest.NewRequest(http.MethodPost, "/groups/"+groupID+"/members", strings.NewReader(`{"username":"bob"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("groupId")
+	c.SetParamValues(groupID)
+	c.Set("user_id", "owner-1")
+	if err := h.AddMember(c); err != nil {
+		t.Fatalf("AddMember handler error: %v", err)
+	}
+
+	// Seed a second group member directly whose username does not resolve
+	// to any registered user, so the second CreateInvitation call fails
+	// with domain.ErrNotFound -- an unrecognized (non-skippable) error --
+	// after the first (bob) has already succeeded.
+	groupRepo.SeedMember(groupID, "ghost-1", "ghost")
+
+	req2 := httptest.NewRequest(http.MethodPost, "/rooms/room-1/invitations/batch-by-group",
+		strings.NewReader(`{"group_id":"`+groupID+`","role":"member"}`))
+	req2.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec2 := httptest.NewRecorder()
+	c2 := e.NewContext(req2, rec2)
+	c2.SetParamNames("roomId")
+	c2.SetParamValues("room-1")
+	c2.Set("user_id", "owner-1")
+
+	if err := h.BatchInviteByGroup(c2); err != nil {
+		t.Fatalf("BatchInviteByGroup handler error: %v", err)
+	}
+	if rec2.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var resp BatchInviteByGroupResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if !resp.Failed || resp.Error == "" {
+		t.Fatalf("expected Failed=true with a non-empty Error, got %+v", resp)
+	}
+	if len(resp.Invited) != 1 {
+		t.Fatalf("expected bob's invitation preserved in the partial result, got %+v", resp.Invited)
 	}
 }

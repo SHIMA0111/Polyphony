@@ -391,21 +391,30 @@ func TestBatchInviteToRoomFailsBatchOnUnrecognizedError(t *testing.T) {
 	// Forcing every CreateInvitation call to fail with an error that is
 	// neither domain.ErrAlreadyMember nor domain.ErrInvitationAlreadyExists
 	// (and is not domain.ErrForbidden, so the i==0 RBAC short-circuit does
-	// not apply either) must fail the whole batch (nil, err), not record a
-	// skip.
+	// not apply either) must abort the batch, but — since this is not the
+	// i==0 ErrForbidden short-circuit — still return the (here: empty)
+	// accumulated result alongside the error rather than nil.
 	invitationRepo.CreateErr = errCreateInvitationBoom
 
 	result, err := uc.BatchInviteToRoom(ctx, "owner-1", "room-1", g.ID, domainroom.RoleMember, nil)
 	if !errors.Is(err, errCreateInvitationBoom) {
 		t.Fatalf("expected errCreateInvitationBoom, got %v (result: %+v)", err, result)
 	}
-	if result != nil {
-		t.Fatalf("expected nil result on batch failure, got %+v", result)
+	if result == nil {
+		t.Fatalf("expected non-nil accumulated result alongside the error")
+	}
+	if len(result.Invited) != 0 || len(result.Skipped) != 0 {
+		t.Fatalf("expected empty accumulated result (failure on first member), got %+v", result)
 	}
 }
 
-func TestBatchInviteToRoomShortCircuitsOnRBACFailure(t *testing.T) {
-	uc, _, _, _, invitationRepo := newTestFixture()
+// TestBatchInviteToRoomReturnsPartialResultOnMidBatchUnrecognizedError
+// exercises the case where the batch fails partway through, after at least
+// one member was already successfully invited: BatchInviteToRoom must
+// return the accumulated result (containing the earlier success) alongside
+// the error, not discard it as the i==0 ErrForbidden short-circuit does.
+func TestBatchInviteToRoomReturnsPartialResultOnMidBatchUnrecognizedError(t *testing.T) {
+	uc, groupRepo, _, _, _ := newTestFixture()
 	ctx := context.Background()
 
 	g, err := uc.CreateGroup(ctx, "owner-1", "Team", "")
@@ -415,7 +424,44 @@ func TestBatchInviteToRoomShortCircuitsOnRBACFailure(t *testing.T) {
 	if _, err := uc.AddMember(ctx, "owner-1", g.ID, "bob"); err != nil {
 		t.Fatalf("AddMember bob failed: %v", err)
 	}
-	if _, err := uc.AddMember(ctx, "owner-1", g.ID, "carol"); err != nil {
+	// Seed a second group member directly whose username does not resolve
+	// to any registered user, so the second CreateInvitation call fails
+	// with domain.ErrNotFound -- an unrecognized (non-skippable) error --
+	// after the first (bob) has already succeeded.
+	groupRepo.SeedMember(g.ID, "ghost-1", "ghost")
+
+	result, err := uc.BatchInviteToRoom(ctx, "owner-1", "room-1", g.ID, domainroom.RoleMember, nil)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound, got %v (result: %+v)", err, result)
+	}
+	if result == nil {
+		t.Fatalf("expected non-nil accumulated result alongside the error")
+	}
+	if len(result.Invited) != 1 || result.Invited[0].InviteeID == nil || *result.Invited[0].InviteeID != "bob-1" {
+		t.Fatalf("expected bob's invitation preserved in the accumulated result, got %+v", result.Invited)
+	}
+	if len(result.Skipped) != 0 {
+		t.Fatalf("expected no skips, got %+v", result.Skipped)
+	}
+}
+
+func TestBatchInviteToRoomShortCircuitsOnRBACFailure(t *testing.T) {
+	uc, _, _, _, invitationRepo := newTestFixture()
+	ctx := context.Background()
+
+	// The group must be owned by member-1 itself, so getOwnedGroup passes
+	// and BatchInviteToRoom actually reaches CreateInvitation — member-1
+	// only holds domainroom.RoleMember in room-1 (seeded by
+	// newTestFixture), not Admin+, so CreateInvitation's room-RBAC check is
+	// what must short-circuit the batch, not the group-ownership check.
+	g, err := uc.CreateGroup(ctx, "member-1", "Team", "")
+	if err != nil {
+		t.Fatalf("CreateGroup failed: %v", err)
+	}
+	if _, err := uc.AddMember(ctx, "member-1", g.ID, "bob"); err != nil {
+		t.Fatalf("AddMember bob failed: %v", err)
+	}
+	if _, err := uc.AddMember(ctx, "member-1", g.ID, "carol"); err != nil {
 		t.Fatalf("AddMember carol failed: %v", err)
 	}
 

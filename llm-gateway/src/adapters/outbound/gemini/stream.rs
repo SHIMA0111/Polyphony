@@ -13,15 +13,17 @@ use super::request::to_gemini_request;
 
 /// Shape of a single Gemini `streamGenerateContent` SSE event's `data` payload.
 ///
-/// Mirrors `request.rs`'s non-streaming `GeminiResponse`, minus `response_id` (Gemini's
-/// streaming variant does not echo a stable response id on every partial event, hence
-/// the synthetic-`id` fallback documented on [`stream`]).
+/// Mirrors `request.rs`'s non-streaming `GeminiResponse`, including `response_id`
+/// (deserialized from the wire's camelCase `responseId`, same as the non-streaming
+/// struct): when a streaming event carries it, this adapter prefers it over the
+/// synthetic-`id` fallback documented on [`stream`].
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiStreamEvent {
     #[serde(default)]
     candidates: Vec<GeminiStreamCandidate>,
     usage_metadata: Option<GeminiStreamUsageMetadata>,
+    response_id: Option<String>,
     prompt_feedback: Option<GeminiStreamPromptFeedback>,
 }
 
@@ -77,10 +79,12 @@ struct GeminiErrorDetail {
 /// the required `alt=sse` query parameter (without it Gemini returns a JSON array
 /// instead of an SSE stream).
 ///
-/// Since Gemini's streaming response does not carry a stable response identifier on
-/// every partial event, this adapter generates one `id` via `uuid::Uuid::new_v4()` the
-/// first time a chunk is yielded and reuses it for the rest of the stream, mirroring
-/// `from_gemini_response`'s non-streaming fallback for a missing `responseId`.
+/// Each event's `responseId` (Gemini's documented, stable per-response identifier) is
+/// preferred as the yielded chunk's `id` when present. If a streaming response never
+/// carries one, this adapter falls back to generating an `id` via `uuid::Uuid::new_v4()`
+/// the first time a chunk is yielded and reuses it for the rest of the stream,
+/// mirroring `from_gemini_response`'s non-streaming fallback for a missing
+/// `responseId`.
 ///
 /// # Arguments
 /// * `provider` — The `GeminiProvider` holding the HTTP client, base URL, `KeyStore`,
@@ -153,8 +157,9 @@ pub(super) fn stream<'a>(
         let event_stream = response.bytes_stream().eventsource();
 
         let chunks = try_stream! {
-            // Generated lazily on the first yielded chunk and reused for the rest of
-            // the stream, since Gemini's streaming response never echoes a stable id.
+            // Seeded from the first event that carries a `responseId`, and reused for
+            // the rest of the stream. Falls back to a lazily-generated UUID only if no
+            // event ever carries one.
             let mut response_id: Option<String> = None;
 
             for await event in event_stream {
@@ -186,9 +191,15 @@ pub(super) fn stream<'a>(
                     )))?;
                 }
 
-                let id = response_id
-                    .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
-                    .clone();
+                let id = match parsed.response_id.clone() {
+                    Some(rid) => {
+                        response_id = Some(rid.clone());
+                        rid
+                    }
+                    None => response_id
+                        .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
+                        .clone(),
+                };
 
                 let candidate = parsed.candidates.into_iter().next();
 

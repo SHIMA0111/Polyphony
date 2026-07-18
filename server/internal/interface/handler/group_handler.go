@@ -14,6 +14,12 @@ import (
 	invitationusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/invitation"
 )
 
+// maxGroupNameLength is the maximum accepted length for a group's name,
+// matching the groups.name VARCHAR(255) column (server/schema.sql). Names
+// over this length are rejected with HTTP 400 here rather than surfacing as
+// an HTTP 500 from a database-level "value too long for type" error.
+const maxGroupNameLength = 255
+
 // GroupHandler handles HTTP requests for personal group endpoints:
 // creating, reading, listing, updating, and deleting groups the
 // authenticated caller owns, managing each group's membership, and
@@ -41,6 +47,9 @@ func (h *GroupHandler) Create(c echo.Context) error {
 	}
 	if req.Name == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "name is required"})
+	}
+	if len(req.Name) > maxGroupNameLength {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "name must be at most 255 characters"})
 	}
 
 	g, err := h.usecase.CreateGroup(c.Request().Context(), userID, req.Name, req.Description)
@@ -100,6 +109,9 @@ func (h *GroupHandler) Update(c echo.Context) error {
 	}
 	if req.Name == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "name is required"})
+	}
+	if len(req.Name) > maxGroupNameLength {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "name must be at most 255 characters"})
 	}
 
 	g, err := h.usecase.UpdateGroup(c.Request().Context(), userID, groupID, req.Name, req.Description)
@@ -217,6 +229,18 @@ func (h *GroupHandler) BatchInviteByGroup(c echo.Context) error {
 
 	result, err := h.usecase.BatchInviteToRoom(c.Request().Context(), userID, roomID, req.GroupID, role, req.ExpiresInHours)
 	if err != nil {
+		if result != nil {
+			// The batch was aborted partway through by an unexpected
+			// per-member error (not the i==0 ErrForbidden short-circuit,
+			// which returns a nil result and is handled by
+			// handleGroupError below). Render what was accumulated instead
+			// of discarding it behind a bare error response.
+			middleware.GetLogger(c).Error("batch invite aborted partway through", "error", err)
+			resp := toBatchInviteByGroupResponse(result)
+			resp.Failed = true
+			resp.Error = err.Error()
+			return c.JSON(http.StatusInternalServerError, resp)
+		}
 		return handleGroupError(c, err)
 	}
 

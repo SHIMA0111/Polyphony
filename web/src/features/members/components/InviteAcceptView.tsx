@@ -21,10 +21,12 @@ interface InviteAcceptViewProps {
  * link invitation has no meaningful "reject" per Step 21, so navigating
  * away is the only alternative offered for those).
  *
- * Every failure mode this page can hit (404 on the by-code fetch; 403/409/410
- * on accept/reject) renders a short inline status message in place of the
- * action buttons rather than letting the error surface as an unhandled
- * exception.
+ * A 404 on the by-code fetch replaces the whole card body with a status
+ * message. A 403/409/410 on accept/reject instead renders as an inline
+ * banner above the action buttons (not in place of them): both stay
+ * mounted and enabled so the viewer can retry the same action or switch to
+ * the other one, guarded only by `acceptMutation.isPending ||
+ * rejectMutation.isPending` so a transition in flight locks both.
  */
 export function InviteAcceptView({ code }: InviteAcceptViewProps) {
   const router = useRouter()
@@ -78,18 +80,6 @@ export function InviteAcceptView({ code }: InviteAcceptViewProps) {
 
               {rejectMutation.isSuccess ? (
                 <Text color="fg.muted">Invitation rejected.</Text>
-              ) : acceptMutation.isError ? (
-                <Text color="fg.error" role="alert">
-                  {acceptMutation.error instanceof Error
-                    ? acceptMutation.error.message
-                    : "Could not accept this invitation."}
-                </Text>
-              ) : rejectMutation.isError ? (
-                <Text color="fg.error" role="alert">
-                  {rejectMutation.error instanceof Error
-                    ? rejectMutation.error.message
-                    : "Could not reject this invitation."}
-                </Text>
               ) : (
                 <Flex direction="column" align="center" gap={3} w="full">
                   {invitationQuery.data.invitee_id === null && (
@@ -98,12 +88,26 @@ export function InviteAcceptView({ code }: InviteAcceptViewProps) {
                       navigate away instead of joining.
                     </Text>
                   )}
+                  {acceptMutation.isError ? (
+                    <Text color="fg.error" fontSize="sm" role="alert">
+                      {acceptMutation.error instanceof Error
+                        ? acceptMutation.error.message
+                        : "Could not accept this invitation."}
+                    </Text>
+                  ) : rejectMutation.isError ? (
+                    <Text color="fg.error" fontSize="sm" role="alert">
+                      {rejectMutation.error instanceof Error
+                        ? rejectMutation.error.message
+                        : "Could not reject this invitation."}
+                    </Text>
+                  ) : null}
                   <Flex gap={2} w="full">
                     <Button
                       flex={1}
                       colorPalette="blue"
                       gap={2}
                       loading={acceptMutation.isPending}
+                      disabled={acceptMutation.isPending || rejectMutation.isPending}
                       onClick={handleAccept}
                     >
                       <Check size={16} />
@@ -116,6 +120,7 @@ export function InviteAcceptView({ code }: InviteAcceptViewProps) {
                         colorPalette="red"
                         gap={2}
                         loading={rejectMutation.isPending}
+                        disabled={acceptMutation.isPending || rejectMutation.isPending}
                         onClick={handleReject}
                       >
                         <X size={16} />

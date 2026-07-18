@@ -110,6 +110,14 @@ export function MessageInput({
   useEffect(() => {
     if (!selectedModel) return
 
+    // Invalidate any in-flight estimate immediately (rather than only once
+    // the new one resolves) and clear the stale displayed count -- without
+    // this, an older, slower response arriving after this effect re-ran but
+    // before the new debounced request even fires would still be within its
+    // own request id check and could briefly redisplay a stale estimate.
+    estimateRequestIdRef.current++
+    setEstimatedTokens(null)
+
     const timeoutId = setTimeout(() => {
       const requestId = ++estimateRequestIdRef.current
 
@@ -117,9 +125,13 @@ export function MessageInput({
       // that might transiently carry `is_deleted: true` even though the
       // server already omits soft-deleted rows from `GET
       // /rooms/:roomId/messages` (see `message-cache.ts`'s any-page
-      // helpers).
+      // helpers). Also excludes client-only `sending`/`failed` bubbles --
+      // only `completed` messages reflect what the server would actually
+      // include when building AI context.
       const payload = messages
-        .filter((m) => !m.is_deleted && !m.exclude_from_ai)
+        .filter(
+          (m) => !m.is_deleted && !m.exclude_from_ai && m.status === "completed",
+        )
         .map((m) => ({
           role: (m.type === "human" ? "user" : "assistant") as
             | "user"
@@ -186,7 +198,7 @@ export function MessageInput({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-      if (e.metaKey || e.ctrlKey) {
+      if ((e.metaKey || e.ctrlKey) && canInvokeAI) {
         e.preventDefault()
         handleSendWithAI()
       } else if (!e.shiftKey) {
@@ -321,7 +333,8 @@ export function MessageInput({
 
         {/* Hint text */}
         <Text textAlign="center" fontSize="xs" color="fg.muted">
-          Enter to send, Shift+Enter for new line, Ctrl+Enter to send with AI
+          Enter to send, Shift+Enter for new line
+          {canInvokeAI && ", Ctrl+Enter to send with AI"}
         </Text>
 
         {/* Live, debounced token estimate (Step 38) — advisory only, never

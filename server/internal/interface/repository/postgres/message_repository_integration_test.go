@@ -264,6 +264,36 @@ func TestMessageRepository_PrivateVisibilityFiltering(t *testing.T) {
 	if !found {
 		t.Fatal("expected owner ListByRoom to include the private message")
 	}
+
+	// ListByRoomUpTo: same owner/non-owner visibility rule, exercised
+	// directly rather than only indirectly through ListByRoom/GetByID above.
+	// This is the query the AI context builder (SendAIMessage/
+	// RegenerateAIMessage's context-assembly step) actually calls, so it
+	// needs its own direct coverage of the private-visibility filter rather
+	// than relying on ListByRoom's coverage to stand in for it.
+	otherUpTo, err := msgRepo.ListByRoomUpTo(ctx, rm.ID, privateMsg.Sequence, 20, other.ID)
+	if err != nil {
+		t.Fatalf("ListByRoomUpTo (non-owner) failed: %v", err)
+	}
+	for _, m := range otherUpTo {
+		if m.ID == privateMsg.ID {
+			t.Fatal("expected non-owner ListByRoomUpTo to exclude the private message")
+		}
+	}
+
+	ownerUpTo, err := msgRepo.ListByRoomUpTo(ctx, rm.ID, privateMsg.Sequence, 20, rm.OwnerID)
+	if err != nil {
+		t.Fatalf("ListByRoomUpTo (owner) failed: %v", err)
+	}
+	foundUpTo := false
+	for _, m := range ownerUpTo {
+		if m.ID == privateMsg.ID {
+			foundUpTo = true
+		}
+	}
+	if !foundUpTo {
+		t.Fatal("expected owner ListByRoomUpTo to include the private message")
+	}
 }
 
 // TestMessageRepository_PrivateCursorMatchesUnknownCursor proves that

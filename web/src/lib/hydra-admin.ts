@@ -10,6 +10,14 @@ import "server-only"
 const HYDRA_ADMIN_URL = process.env.HYDRA_ADMIN_URL ?? "http://hydra:4445"
 
 /**
+ * Upper bound, in milliseconds, on each request to Hydra's admin API.
+ * Without this, a stalled Hydra instance would hang the OAuth2
+ * login/consent Route Handlers indefinitely instead of failing cleanly.
+ * Mirrors the timeout pattern in `web/src/lib/http-client.ts`.
+ */
+const HYDRA_ADMIN_FETCH_TIMEOUT_MS = 5000
+
+/**
  * Shape of Hydra's `GET /admin/oauth2/auth/requests/login` response,
  * limited to the fields `web/src/app/(auth)/oauth/login/route.ts` reads.
  */
@@ -81,10 +89,14 @@ async function hydraAdminRequest<T>(path: string, init?: RequestInit): Promise<T
       ...init?.headers,
     },
     cache: "no-store",
+    signal: AbortSignal.timeout(HYDRA_ADMIN_FETCH_TIMEOUT_MS),
   })
 
   if (!res.ok) {
-    throw new Error(`Hydra admin API request failed: ${init?.method ?? "GET"} ${path} -> HTTP ${res.status}`)
+    const body = await res.text().catch(() => "<unreadable body>")
+    throw new Error(
+      `Hydra admin API request failed: ${init?.method ?? "GET"} ${path} -> HTTP ${res.status}: ${body}`,
+    )
   }
 
   return (await res.json()) as T

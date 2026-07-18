@@ -36,7 +36,7 @@ export function getUsageHistoryQueryOptions(
   fetcher: Fetcher = apiRequest,
 ) {
   return infiniteQueryOptions({
-    queryKey: ["billing", "transactions"] as const,
+    queryKey: ["billing", "transactions", { limit }] as const,
     queryFn: ({ pageParam }): Promise<TokenTransactionPage> =>
       getUsageHistory({ cursor: pageParam, limit }, fetcher),
     initialPageParam: undefined as string | undefined,

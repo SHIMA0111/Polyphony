@@ -156,7 +156,7 @@ type Config struct {
 	// DefaultAIModel is the deployment-wide fallback model string used by
 	// usecase/message.resolveModel whenever an AI request omits an explicit
 	// model and the target room has no configured
-	// domainroom.Room.AIModel (see PATCH /rooms/:roomId/settings). Read
+	// room.Room.AIModel (see PATCH /rooms/:roomId/settings). Read
 	// from env DEFAULT_AI_MODEL, defaulting to "gpt-5-mini" when unset.
 	DefaultAIModel string
 

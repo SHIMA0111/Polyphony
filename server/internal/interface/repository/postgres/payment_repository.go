@@ -78,6 +78,16 @@ func (r *PaymentRepository) Create(ctx context.Context, payment *billing.Payment
 // CreateAndCredit atomically inserts payment and credits userID's balance.
 // See billing.PaymentRepository.CreateAndCredit.
 func (r *PaymentRepository) CreateAndCredit(ctx context.Context, payment *billing.PaymentRecord, userID string, amount int64, description string) (bool, error) {
+	// Consistency guard: payment and the (userID, amount) credit args must
+	// describe the same event, or the inserted payment_history row would
+	// permanently misrepresent who was credited and by how much. This is a
+	// caller-bug check, not a data-driven condition, so it deliberately
+	// returns a plain error rather than a domain sentinel.
+	if payment.UserID != userID || payment.TokensCredited != amount {
+		return false, fmt.Errorf("payment repository: CreateAndCredit args mismatch: payment.UserID=%q userID=%q payment.TokensCredited=%d amount=%d",
+			payment.UserID, userID, payment.TokensCredited, amount)
+	}
+
 	if payment.PaymentRail == "" {
 		payment.PaymentRail = "stripe"
 	}

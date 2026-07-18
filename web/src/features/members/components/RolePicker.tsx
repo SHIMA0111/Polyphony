@@ -25,27 +25,39 @@ interface RolePickerProps {
  * one of the four non-owner roles, with the current role pre-highlighted
  * via a checkmark and a brief inline error if the mutation rejects (e.g. a
  * `409` when unexpectedly targeting the owner).
+ *
+ * `handleSelect` closes the menu synchronously on selection rather than
+ * waiting for `onSuccess`, and bails out entirely while a change is already
+ * `isPending` (the trigger button is also disabled for the same window) —
+ * without this, a second selection fired before the first PATCH resolves
+ * could have its response land first and get clobbered by the earlier
+ * request's later-arriving response.
  */
 export function RolePicker({ roomId, userId, currentRole }: RolePickerProps) {
   const [open, setOpen] = useState(false)
   const changeRoleMutation = useChangeMemberRole(roomId)
 
   const handleSelect = (role: RoomRole) => {
+    if (changeRoleMutation.isPending) return
     if (role === currentRole) {
       setOpen(false)
       return
     }
-    changeRoleMutation.mutate(
-      { userId, role },
-      { onSuccess: () => setOpen(false) },
-    )
+    setOpen(false)
+    changeRoleMutation.mutate({ userId, role })
   }
 
   return (
     <Box>
       <Menu.Root open={open} onOpenChange={(e) => setOpen(e.open)}>
         <Menu.Trigger asChild>
-          <Button variant="outline" size="xs" gap={1} px={2}>
+          <Button
+            variant="outline"
+            size="xs"
+            gap={1}
+            px={2}
+            disabled={changeRoleMutation.isPending}
+          >
             <RoleBadge role={currentRole} />
             <ChevronDown size={12} />
           </Button>

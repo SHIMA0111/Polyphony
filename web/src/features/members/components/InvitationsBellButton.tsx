@@ -25,8 +25,8 @@ export function InvitationsBellButton() {
       lazyMount
       unmountOnExit
     >
-      <Popover.Trigger asChild>
-        <Box position="relative">
+      <Box position="relative">
+        <Popover.Trigger asChild>
           <Button
             aria-label="Invitations"
             variant="ghost"
@@ -37,28 +37,28 @@ export function InvitationsBellButton() {
           >
             <Mail size={18} />
           </Button>
-          {pendingCount > 0 && (
-            <Badge
-              position="absolute"
-              top={-1}
-              right={-1}
-              size="xs"
-              variant="solid"
-              colorPalette="red"
-              rounded="full"
-              minW={4}
-              h={4}
-              px={1}
-              fontSize="2xs"
-              display="flex"
-              alignItems="center"
-              justifyContent="center"
-            >
-              {pendingCount}
-            </Badge>
-          )}
-        </Box>
-      </Popover.Trigger>
+        </Popover.Trigger>
+        {pendingCount > 0 && (
+          <Badge
+            position="absolute"
+            top={-1}
+            right={-1}
+            size="xs"
+            variant="solid"
+            colorPalette="red"
+            rounded="full"
+            minW={4}
+            h={4}
+            px={1}
+            fontSize="2xs"
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+          >
+            {pendingCount}
+          </Badge>
+        )}
+      </Box>
       <Portal>
         <Popover.Positioner>
           <Popover.Content w="sm" p={2}>

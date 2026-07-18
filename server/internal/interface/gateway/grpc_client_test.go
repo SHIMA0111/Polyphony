@@ -32,12 +32,13 @@ const bufconnSize = 1024 * 1024
 type fakeCompletionServer struct {
 	llmgatewaypb.UnimplementedCompletionServiceServer
 
-	mu           sync.Mutex
-	calls        int
-	failTimes    int
-	failCode     codes.Code
-	resp         *llmgatewaypb.CompletionResponse
-	estimateResp *llmgatewaypb.TokenEstimateResponse
+	mu              sync.Mutex
+	calls           int
+	failTimes       int
+	failCode        codes.Code
+	resp            *llmgatewaypb.CompletionResponse
+	estimateResp    *llmgatewaypb.TokenEstimateResponse
+	lastEstimateReq *llmgatewaypb.TokenEstimateRequest
 }
 
 func (s *fakeCompletionServer) Complete(_ context.Context, _ *llmgatewaypb.CompletionRequest) (*llmgatewaypb.CompletionResponse, error) {
@@ -50,10 +51,14 @@ func (s *fakeCompletionServer) Complete(_ context.Context, _ *llmgatewaypb.Compl
 	return s.resp, nil
 }
 
-// EstimateTokens returns the configured estimateResp, ignoring the
-// failTimes/failCode retry-injection fields Complete uses (no test currently
-// needs EstimateTokens retry coverage).
-func (s *fakeCompletionServer) EstimateTokens(_ context.Context, _ *llmgatewaypb.TokenEstimateRequest) (*llmgatewaypb.TokenEstimateResponse, error) {
+// EstimateTokens records req (for lastEstimateReq assertions) and returns
+// the configured estimateResp, ignoring the failTimes/failCode
+// retry-injection fields Complete uses (no test currently needs
+// EstimateTokens retry coverage).
+func (s *fakeCompletionServer) EstimateTokens(_ context.Context, req *llmgatewaypb.TokenEstimateRequest) (*llmgatewaypb.TokenEstimateResponse, error) {
+	s.mu.Lock()
+	s.lastEstimateReq = req
+	s.mu.Unlock()
 	return s.estimateResp, nil
 }
 
@@ -61,6 +66,15 @@ func (s *fakeCompletionServer) callCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls
+}
+
+// getLastEstimateReq returns the most recent TokenEstimateRequest observed
+// by EstimateTokens, guarded by s.mu since the fake server runs its RPC
+// handlers on a goroutine separate from the test's assertions.
+func (s *fakeCompletionServer) getLastEstimateReq() *llmgatewaypb.TokenEstimateRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastEstimateReq
 }
 
 // fakeModelsServer is a controllable llmgatewaypb.ModelsServiceServer.
@@ -309,7 +323,10 @@ func TestGRPCClientListModelsHappyPath(t *testing.T) {
 
 // TestGRPCClientEstimateTokensHappyPath exercises GRPCClient.EstimateTokens
 // (Step 34's carryover gRPC support, previously an explicit "not supported"
-// stub) against the fake CompletionService server.
+// stub) against the fake CompletionService server. It asserts both the
+// decoded response and the request the client actually sent -- including a
+// multimodal ai.ChatMessage's mapping onto the ChatMessage_Parts/ContentPart
+// oneofs -- via fakeCompletionServer.lastEstimateReq.
 func TestGRPCClientEstimateTokensHappyPath(t *testing.T) {
 	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
 	defer stop()
@@ -320,8 +337,17 @@ func TestGRPCClientEstimateTokensHappyPath(t *testing.T) {
 	}
 
 	req := &ai.TokenEstimateRequest{
-		Model:    "gpt-5.2",
-		Messages: []ai.ChatMessage{{Role: "user", Content: "hello"}},
+		Model: "gpt-5.2",
+		Messages: []ai.ChatMessage{
+			{Role: "user", Content: "hello"},
+			{
+				Role: "user",
+				Parts: []ai.ContentPart{
+					{Type: ai.ContentPartTypeText, Text: "what is this?"},
+					{Type: ai.ContentPartTypeImageURL, ImageURL: "https://example.com/cat.png"},
+				},
+			},
+		},
 	}
 	resp, err := fixture.client.EstimateTokens(context.Background(), req)
 	if err != nil {
@@ -332,6 +358,34 @@ func TestGRPCClientEstimateTokensHappyPath(t *testing.T) {
 	}
 	if resp.EstimatedTokens != 42 {
 		t.Errorf("expected EstimatedTokens 42, got %d", resp.EstimatedTokens)
+	}
+
+	sent := fixture.completion.getLastEstimateReq()
+	if sent == nil {
+		t.Fatal("expected the server to have observed a TokenEstimateRequest")
+	}
+	if sent.GetModel() != "gpt-5.2" {
+		t.Errorf("expected mapped model %q, got %q", "gpt-5.2", sent.GetModel())
+	}
+	if len(sent.GetMessages()) != 2 {
+		t.Fatalf("expected 2 mapped messages, got %d", len(sent.GetMessages()))
+	}
+
+	textMsg := sent.GetMessages()[0]
+	if textMsg.GetText() != "hello" {
+		t.Errorf("expected message[0] to map onto ChatMessage_Text %q, got %+v", "hello", textMsg.GetContent())
+	}
+
+	partsMsg := sent.GetMessages()[1]
+	parts := partsMsg.GetParts().GetParts()
+	if len(parts) != 2 {
+		t.Fatalf("expected message[1] to map onto ChatMessage_Parts with 2 parts, got %+v", partsMsg.GetContent())
+	}
+	if parts[0].GetText() != "what is this?" {
+		t.Errorf("expected parts[0] to map onto ContentPart_Text %q, got %+v", "what is this?", parts[0].GetPart())
+	}
+	if parts[1].GetImageUrl() != "https://example.com/cat.png" {
+		t.Errorf("expected parts[1] to map onto ContentPart_ImageUrl %q, got %+v", "https://example.com/cat.png", parts[1].GetPart())
 	}
 }
 

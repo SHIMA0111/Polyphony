@@ -131,7 +131,10 @@ func (r *GroupRepo) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-// AddMember adds a user to a group.
+// AddMember adds a user to a group. Returns domain.ErrAlreadyMember if
+// (member.GroupID, member.UserID) already exists, mirroring
+// postgres.GroupRepository.AddMember's unique-constraint mapping instead of
+// silently overwriting the existing membership.
 func (r *GroupRepo) AddMember(_ context.Context, member *group.GroupMember) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -140,9 +143,10 @@ func (r *GroupRepo) AddMember(_ context.Context, member *group.GroupMember) erro
 	if r.Members[member.GroupID] == nil {
 		r.Members[member.GroupID] = make(map[string]*group.GroupMember)
 	}
-	if _, exists := r.Members[member.GroupID][member.UserID]; !exists {
-		r.Order[member.GroupID] = append(r.Order[member.GroupID], member.UserID)
+	if _, exists := r.Members[member.GroupID][member.UserID]; exists {
+		return domain.ErrAlreadyMember
 	}
+	r.Order[member.GroupID] = append(r.Order[member.GroupID], member.UserID)
 	r.Members[member.GroupID][member.UserID] = member
 	return nil
 }

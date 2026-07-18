@@ -359,6 +359,48 @@ func TestBillingHandlerStripeWebhookInvalidSignature(t *testing.T) {
 	}
 }
 
+// TestBillingHandlerStripeWebhookBillingNotConfiguredReturns503 asserts that
+// a validly-signed webhook whose dispatch hits a nil-repo guard inside the
+// usecase (domain.ErrBillingNotConfigured) is mapped to HTTP 503, the same
+// as domain.ErrStripeNotConfigured, rather than falling through to the
+// generic 500 branch.
+func TestBillingHandlerStripeWebhookBillingNotConfiguredReturns503(t *testing.T) {
+	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
+		ID:   "evt_sub_no_repo",
+		Type: domainbilling.EventTypeCheckoutSessionCompleted,
+		CheckoutSession: &domainbilling.CheckoutSessionData{
+			SessionID: "cs_sub_1", Mode: domainbilling.CheckoutModeSubscription,
+			UserID: "user-1", PlanCode: "starter", StripeSubscriptionID: "sub_1",
+		},
+	}}
+
+	balanceRepo := &mocks.BalanceRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	paymentRepo := &mocks.PaymentRepo{BalanceRepo: balanceRepo}
+	plans := []domainbilling.Plan{
+		{Code: "starter", StripePriceID: "price_starter", Name: "Starter", Description: "100K tokens/month",
+			PriceCents: 500, Currency: "usd", MonthlyTokenAllocation: 100000},
+	}
+	// subscriptionRepo is deliberately nil: subscription-mode checkout
+	// completion requires it, so dispatch must hit the nil-repo guard.
+	uc := billingusecase.NewBillingUsecase(balanceRepo, roomRepo, nil, paymentRepo, gw,
+		plans, nil, "https://example.com/success", "https://example.com/cancel")
+	h := NewBillingHandler(uc)
+	e := echo.New()
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Stripe-Signature", "t=1,v1=validsig")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	if err := h.HandleStripeWebhook(c); err != nil {
+		t.Fatalf("HandleStripeWebhook error: %v", err)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for ErrBillingNotConfigured, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestBillingHandlerStripeWebhookIdempotentReplayReturns200 asserts that
 // redelivering the same checkout.session.completed event twice returns
 // HTTP 200 both times while crediting the balance exactly once.
