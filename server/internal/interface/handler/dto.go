@@ -125,10 +125,15 @@ type SendMessageRequest struct {
 }
 
 // SendAIMessageRequest is the request body for POST /rooms/:roomId/messages/ai.
-// Content is required. Model is optional and defaults to the server-configured model.
+// Content is required. Model is optional and defaults to the
+// server-configured model. Private is optional and defaults to false; when
+// true, both the resulting human and AI messages are persisted with
+// visibility "private" (see MessageResponse.Visibility) and delivered over
+// WebSocket only to the requester (private AI mode, phases.md Phase 14).
 type SendAIMessageRequest struct {
 	Content string `json:"content"`
 	Model   string `json:"model"`
+	Private bool   `json:"private"`
 }
 
 // RegenerateAIMessageRequest is the request body for
@@ -156,7 +161,10 @@ type UpdateMessageExcludeRequest struct {
 // IsDeleted is true for a soft-deleted message (see DELETE
 // /rooms/:roomId/messages/:messageId); ExcludeFromAI is true when the
 // message has been opted out of AI context assembly (see PATCH
-// /rooms/:roomId/messages/:messageId).
+// /rooms/:roomId/messages/:messageId). Visibility is "public" (the default)
+// or "private"; a "private" message is returned by GET
+// /rooms/:roomId/messages only to its own sender (see
+// SendAIMessageRequest.Private).
 type MessageResponse struct {
 	ID                    string    `json:"id"`
 	RoomID                string    `json:"room_id"`
@@ -168,6 +176,7 @@ type MessageResponse struct {
 	InResponseToMessageID *string   `json:"in_response_to_message_id"`
 	IsDeleted             bool      `json:"is_deleted"`
 	ExcludeFromAI         bool      `json:"exclude_from_ai"`
+	Visibility            string    `json:"visibility"`
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
 }

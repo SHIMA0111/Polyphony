@@ -154,7 +154,7 @@ func (u *AttachmentUsecase) AttachToMessage(ctx context.Context, userID, roomID,
 		return nil, err
 	}
 
-	msg, err := u.msgRepo.GetByID(ctx, messageID)
+	msg, err := u.msgRepo.GetByID(ctx, messageID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +179,7 @@ func (u *AttachmentUsecase) ListAttachments(ctx context.Context, userID, roomID,
 		return nil, err
 	}
 
-	msg, err := u.msgRepo.GetByID(ctx, messageID)
+	msg, err := u.msgRepo.GetByID(ctx, messageID, userID)
 	if err != nil {
 		return nil, err
 	}

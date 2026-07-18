@@ -25,6 +25,30 @@ const (
 	MessageStatusFailed MessageStatus = "failed"
 )
 
+// MessageVisibility represents who is allowed to see a message: every room
+// member (MessageVisibilityPublic, the default) or only the message's
+// SenderID (MessageVisibilityPrivate), which powers "private AI mode"
+// (phases.md Phase 14). A private message is invisible to every user other
+// than its owner through every read path — MessageRepository.ListByRoom,
+// GetByID, ListByRoomUpTo, and ai.ContextBuilder.Build (the latter via the
+// repository-level filtering applied before messages ever reach Build) — and
+// is delivered over WebSocket only to that owner's connections instead of
+// being broadcast to the room (see event.RoomEvent.TargetUserIDs).
+type MessageVisibility string
+
+const (
+	// MessageVisibilityPublic is visible to every member of the room. This
+	// is the default for all messages created before this dimension existed
+	// and for any message not explicitly marked private.
+	MessageVisibilityPublic MessageVisibility = "public"
+
+	// MessageVisibilityPrivate is visible only to the message's SenderID.
+	// It is used by "private AI mode": both the human question and the AI
+	// answer are marked private so neither ever appears to another room
+	// member.
+	MessageVisibilityPrivate MessageVisibility = "private"
+)
+
 // Message represents a single message in a chat room.
 type Message struct {
 	ID       string
@@ -51,8 +75,13 @@ type Message struct {
 	// room message listings. It lets a user keep a message visible to
 	// other humans in the room without it ever being sent to the LLM.
 	ExcludeFromAI bool
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// Visibility controls whether this message is visible to every room
+	// member (MessageVisibilityPublic, the default) or only to SenderID
+	// (MessageVisibilityPrivate). See the MessageVisibility doc comment for
+	// the full contract.
+	Visibility MessageVisibility
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // CursorPage holds a page of messages with cursor-based pagination.

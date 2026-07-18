@@ -52,9 +52,11 @@ CREATE TABLE messages (
     in_response_to_message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
     is_deleted BOOLEAN NOT NULL DEFAULT false,
     exclude_from_ai BOOLEAN NOT NULL DEFAULT false,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'public',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT messages_room_sequence_unique UNIQUE (room_id, sequence)
+    CONSTRAINT messages_room_sequence_unique UNIQUE (room_id, sequence),
+    CONSTRAINT messages_visibility_check CHECK (visibility IN ('public', 'private'))
 );
 
 CREATE INDEX idx_messages_room_sequence ON messages(room_id, sequence DESC);

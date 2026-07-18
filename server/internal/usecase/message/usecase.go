@@ -124,26 +124,31 @@ func (u *MessageUsecase) SendMessage(ctx context.Context, userID, roomID, conten
 		return nil, err
 	}
 
-	return u.createHumanMessage(ctx, userID, roomID, content, seq)
+	return u.createHumanMessage(ctx, userID, roomID, content, seq, domainmessage.MessageVisibilityPublic)
 }
 
 // createHumanMessage builds a human message for the given (already reserved)
 // sequence number, persists it, and publishes EventMessageCreated after the
-// persist succeeds. It is shared by SendMessage (which reserves a single
-// sequence) and SendAIMessage (which reserves a paired range up front) so
-// both paths construct and persist the human message identically.
-func (u *MessageUsecase) createHumanMessage(ctx context.Context, userID, roomID, content string, seq int64) (*domainmessage.Message, error) {
+// persist succeeds. It is shared by SendMessage (which always passes
+// MessageVisibilityPublic and reserves a single sequence) and SendAIMessage
+// (which passes MessageVisibilityPrivate when the caller opted into private
+// AI mode, and reserves a paired range up front) so both paths construct and
+// persist the human message identically apart from visibility. Publishing
+// targets only the sender's connections for a private message and the whole
+// room for a public one (see targetUserIDsForVisibility).
+func (u *MessageUsecase) createHumanMessage(ctx context.Context, userID, roomID, content string, seq int64, visibility domainmessage.MessageVisibility) (*domainmessage.Message, error) {
 	now := time.Now()
 	msg := &domainmessage.Message{
-		ID:        uuid.New().String(),
-		RoomID:    roomID,
-		SenderID:  &userID,
-		Content:   content,
-		Type:      domainmessage.MessageTypeHuman,
-		Status:    domainmessage.MessageStatusCompleted,
-		Sequence:  seq,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:         uuid.New().String(),
+		RoomID:     roomID,
+		SenderID:   &userID,
+		Content:    content,
+		Type:       domainmessage.MessageTypeHuman,
+		Status:     domainmessage.MessageStatusCompleted,
+		Sequence:   seq,
+		Visibility: visibility,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 
 	if err := u.msgRepo.Create(ctx, msg); err != nil {
@@ -151,18 +156,36 @@ func (u *MessageUsecase) createHumanMessage(ctx context.Context, userID, roomID,
 	}
 
 	u.hub.Publish(ctx, event.RoomEvent{
-		Type:       event.EventMessageCreated,
-		RoomID:     roomID,
-		Message:    msg,
-		OccurredAt: now,
+		Type:          event.EventMessageCreated,
+		RoomID:        roomID,
+		Message:       msg,
+		TargetUserIDs: targetUserIDsForVisibility(msg),
+		OccurredAt:    now,
 	})
 
 	return msg, nil
 }
 
+// targetUserIDsForVisibility returns the WebSocket delivery target for msg:
+// nil for a public message, meaning "broadcast to every subscriber of the
+// room" (event.RoomEvent.TargetUserIDs's documented zero-value behavior); or
+// a single-element slice containing msg.SenderID for a private message, so
+// it is delivered only to its owner's connections and never reaches any
+// other room member. It relies on the invariant that every private message
+// — human or AI — has SenderID set to the requesting user's ID (see the
+// SenderID deviation comment in SendAIMessage for why this holds for AI
+// messages too, which otherwise always have a nil SenderID).
+func targetUserIDsForVisibility(msg *domainmessage.Message) []string {
+	if msg.Visibility != domainmessage.MessageVisibilityPrivate || msg.SenderID == nil {
+		return nil
+	}
+	return []string{*msg.SenderID}
+}
+
 // ListMessages returns paginated messages for a room. Any valid member
 // (including reader) may list messages; no domainroom.Action check beyond
-// membership is applied.
+// membership is applied. Another user's private messages are excluded from
+// the page (see MessageRepository.ListByRoom).
 func (u *MessageUsecase) ListMessages(ctx context.Context, userID, roomID, cursor string, limit int) (*domainmessage.CursorPage, error) {
 	if _, err := u.getMember(ctx, roomID, userID); err != nil {
 		return nil, err
@@ -172,7 +195,7 @@ func (u *MessageUsecase) ListMessages(ctx context.Context, userID, roomID, curso
 		limit = 20
 	}
 
-	return u.msgRepo.ListByRoom(ctx, roomID, cursor, limit)
+	return u.msgRepo.ListByRoom(ctx, roomID, cursor, limit, userID)
 }
 
 // SendAIMessage sends a human message and gets an AI response.
@@ -192,7 +215,15 @@ func (u *MessageUsecase) ListMessages(ctx context.Context, userID, roomID, curso
 //
 // The caller must be allowed domainroom.ActionInvokeAI (member or above; a
 // reader or guest may not invoke AI).
-func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, content, model string) (*SendAIResult, error) {
+//
+// When private is true (private AI mode, phases.md Phase 14), both the
+// human message and the AI response are persisted with
+// Visibility = MessageVisibilityPrivate: neither is ever returned by
+// ListByRoom/GetByID/ListByRoomUpTo to any user other than userID, neither
+// is included in AI context assembled for another user's request, and both
+// are delivered over WebSocket only to userID's own connections instead of
+// being broadcast to the room (see targetUserIDsForVisibility).
+func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, content, model string, private bool) (*SendAIResult, error) {
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
 		return nil, err
@@ -210,6 +241,11 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	}
 	model = resolveModel(model, rm, u.defaultAIModel)
 
+	visibility := domainmessage.MessageVisibilityPublic
+	if private {
+		visibility = domainmessage.MessageVisibilityPrivate
+	}
+
 	// Reserve both sequence numbers atomically as one range before creating
 	// either row, so nothing else can be interleaved between the human
 	// message and its AI response.
@@ -219,13 +255,14 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	}
 	humanSeq, aiSeq := firstSeq, firstSeq+1
 
-	humanMsg, err := u.createHumanMessage(ctx, userID, roomID, content, humanSeq)
+	humanMsg, err := u.createHumanMessage(ctx, userID, roomID, content, humanSeq, visibility)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch context messages
-	contextPage, err := u.msgRepo.ListByRoom(ctx, roomID, "", defaultContextMessages)
+	// Fetch context messages. Passing userID as requestingUserID excludes
+	// any other user's private messages from the context this AI call sees.
+	contextPage, err := u.msgRepo.ListByRoom(ctx, roomID, "", defaultContextMessages, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -253,9 +290,19 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		SenderID:              nil,
 		Type:                  domainmessage.MessageTypeAI,
 		Sequence:              aiSeq,
+		Visibility:            visibility,
 		InResponseToMessageID: &humanMsg.ID,
 		CreatedAt:             aiNow,
 		UpdatedAt:             aiNow,
+	}
+	if private {
+		// Deviation from the usual "AI messages have a nil SenderID"
+		// convention: a private AI message records userID as its SenderID
+		// so the single `visibility = 'public' OR sender_id = $requestingUserID`
+		// filter (MessageRepository.GetByID/ListByRoom/ListByRoomUpTo) works
+		// uniformly for both the human and AI rows of a private exchange,
+		// without introducing a second "owner" column just for AI messages.
+		aiMsg.SenderID = &userID
 	}
 
 	if llmErr != nil {
@@ -266,10 +313,11 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 			return nil, err
 		}
 		u.hub.Publish(ctx, event.RoomEvent{
-			Type:       event.EventMessageCreated,
-			RoomID:     roomID,
-			Message:    aiMsg,
-			OccurredAt: aiNow,
+			Type:          event.EventMessageCreated,
+			RoomID:        roomID,
+			Message:       aiMsg,
+			TargetUserIDs: targetUserIDsForVisibility(aiMsg),
+			OccurredAt:    aiNow,
 		})
 		return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg}, nil
 	}
@@ -281,10 +329,11 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		return nil, err
 	}
 	u.hub.Publish(ctx, event.RoomEvent{
-		Type:       event.EventMessageCreated,
-		RoomID:     roomID,
-		Message:    aiMsg,
-		OccurredAt: aiNow,
+		Type:          event.EventMessageCreated,
+		RoomID:        roomID,
+		Message:       aiMsg,
+		TargetUserIDs: targetUserIDsForVisibility(aiMsg),
+		OccurredAt:    aiNow,
 	})
 
 	// Fire-and-forget: the AI message is already durably persisted, so a
@@ -305,6 +354,15 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 //
 // The caller must be allowed domainroom.ActionInvokeAI (member or above; a
 // reader or guest may not invoke AI).
+//
+// The target human message is fetched with userID as requestingUserID, so a
+// private exchange belonging to another user is invisible to this lookup;
+// since room membership has already been verified above, a resulting
+// domain.ErrNotFound (which is indistinguishable from a genuinely missing
+// message — see MessageRepository.GetByID) is surfaced as domain.ErrForbidden
+// rather than domain.ErrNotFound, because the only way a member can fail to
+// see an otherwise-existing message is that it is private and belongs to
+// someone else.
 func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID, messageID, model string) (*domainmessage.Message, error) {
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
@@ -323,9 +381,13 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	}
 	model = resolveModel(model, rm, u.defaultAIModel)
 
-	// Verify target message exists and belongs to the room
-	targetMsg, err := u.msgRepo.GetByID(ctx, messageID)
+	// Verify target message exists, is visible to userID, and belongs to
+	// the room.
+	targetMsg, err := u.msgRepo.GetByID(ctx, messageID, userID)
 	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, domain.ErrForbidden
+		}
 		return nil, err
 	}
 	if targetMsg.RoomID != roomID {
@@ -344,8 +406,9 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 		return nil, domain.ErrNotFound
 	}
 
-	// Fetch context up to the target message (inclusive)
-	contextMsgs, err := u.msgRepo.ListByRoomUpTo(ctx, roomID, targetMsg.Sequence, defaultContextMessages)
+	// Fetch context up to the target message (inclusive), excluding any
+	// other user's private messages from what this regeneration call sees.
+	contextMsgs, err := u.msgRepo.ListByRoomUpTo(ctx, roomID, targetMsg.Sequence, defaultContextMessages, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -385,10 +448,11 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	}
 
 	u.hub.Publish(ctx, event.RoomEvent{
-		Type:       event.EventMessageUpdated,
-		RoomID:     roomID,
-		Message:    nextMsg,
-		OccurredAt: now,
+		Type:          event.EventMessageUpdated,
+		RoomID:        roomID,
+		Message:       nextMsg,
+		TargetUserIDs: targetUserIDsForVisibility(nextMsg),
+		OccurredAt:    now,
 	})
 
 	return nextMsg, nil
@@ -413,7 +477,7 @@ func (u *MessageUsecase) DeleteMessage(ctx context.Context, userID, roomID, mess
 		return err
 	}
 
-	msg, err := u.msgRepo.GetByID(ctx, messageID)
+	msg, err := u.msgRepo.GetByID(ctx, messageID, userID)
 	if err != nil {
 		return err
 	}
@@ -449,7 +513,7 @@ func (u *MessageUsecase) SetExcludeFromAI(ctx context.Context, userID, roomID, m
 		return nil, domain.ErrForbidden
 	}
 
-	msg, err := u.msgRepo.GetByID(ctx, messageID)
+	msg, err := u.msgRepo.GetByID(ctx, messageID, userID)
 	if err != nil {
 		return nil, err
 	}
