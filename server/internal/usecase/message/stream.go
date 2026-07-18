@@ -230,7 +230,15 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 
 		failedNow := time.Now()
 		if updateErr := u.msgRepo.UpdateAIResponse(finalizeCtx, aiMsg.ID, "", domainmessage.MessageStatusFailed, failedNow); updateErr != nil {
-			return nil, updateErr
+			// Both messages are already durable and the creation event has
+			// been published; surfacing this as a request failure would
+			// invite a client retry that duplicates the human turn. Log the
+			// stuck-at-streaming placeholder and honor the dispatch-failure
+			// contract by returning the committed IDs with their current
+			// durable status.
+			slog.Error("failed to finalize AI placeholder after stream dispatch failure",
+				"error", updateErr, "room_id", roomID, "message_id", aiMsg.ID)
+			return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg, UsedContextSummary: summaryUsed}, nil
 		}
 		aiMsg.Status = domainmessage.MessageStatusFailed
 		aiMsg.UpdatedAt = failedNow

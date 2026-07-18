@@ -2,6 +2,7 @@ package mocks
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -22,9 +23,10 @@ type ForkJobRepo struct {
 	// alongside marking a Job completed, modeling
 	// postgres.RoomForkRepository.CompleteAndUnarchive's single-transaction
 	// behavior against a real rooms table for tests that observe the
-	// destination room's IsArchived flag after a fork job completes. Nil is
-	// a valid zero value for tests that never look at the room side of that
-	// transition.
+	// destination room's IsArchived flag after a fork job completes.
+	// CompleteAndUnarchive requires it and fails when unset; nil remains a
+	// valid zero value only for tests that never drive a fork to
+	// completion.
 	Rooms *RoomRepo
 }
 
@@ -162,16 +164,23 @@ func (f *ForkJobRepo) CompleteAndUnarchive(ctx context.Context, id, newRoomID st
 		return domain.ErrNotFound
 	}
 
+	// Rooms is mandatory for this method: the real implementation updates
+	// rooms.is_archived and room_fork_jobs in one transaction, so a mock
+	// that "completed" the job without touching any room would silently
+	// break that contract for the test using it. Failing before mutating
+	// surfaces the misconfiguration instead.
+	if f.Rooms == nil {
+		return errors.New("mocks.ForkJobRepo: Rooms must be wired before calling CompleteAndUnarchive")
+	}
+
 	prevUpdatedAt := job.UpdatedAt
 	job.Status = roomfork.StatusCompleted
 	job.UpdatedAt = time.Now()
 
-	if f.Rooms != nil {
-		if err := f.Rooms.SetArchived(ctx, newRoomID, false); err != nil {
-			job.Status = roomfork.StatusRunning
-			job.UpdatedAt = prevUpdatedAt
-			return err
-		}
+	if err := f.Rooms.SetArchived(ctx, newRoomID, false); err != nil {
+		job.Status = roomfork.StatusRunning
+		job.UpdatedAt = prevUpdatedAt
+		return err
 	}
 	return nil
 }

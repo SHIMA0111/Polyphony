@@ -2305,6 +2305,44 @@ func TestSendAIMessageStreamSynchronousDispatchFailure(t *testing.T) {
 // EventMessageUpdated even when the request ctx is already cancelled by the
 // time the failure is handled -- proving that write also runs on an
 // independent context, not the (already-Done) request ctx directly.
+// failingUpdateAIResponseRepo wraps mocks.MessageRepo to make every
+// UpdateAIResponse call fail, for exercising the dispatch-failure branch
+// where even the terminal placeholder update cannot be persisted.
+type failingUpdateAIResponseRepo struct {
+	*mocks.MessageRepo
+}
+
+func (r *failingUpdateAIResponseRepo) UpdateAIResponse(ctx context.Context, id string, content string, status domainmessage.MessageStatus, updatedAt time.Time) error {
+	return fmt.Errorf("update unavailable")
+}
+
+// TestSendAIMessageStreamDispatchFailureWithFailedFinalizeStillReturnsResult
+// asserts the dispatch-failure contract when the terminal placeholder
+// update itself fails: both messages are already durable and the creation
+// event was published, so the call must NOT surface a request error (which
+// would invite a duplicate-creating client retry) — it returns the
+// committed IDs with their current durable (still streaming) status.
+func TestSendAIMessageStreamDispatchFailureWithFailedFinalizeStillReturnsResult(t *testing.T) {
+	msgRepo := &failingUpdateAIResponseRepo{MessageRepo: &mocks.MessageRepo{}}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	gw := &mocks.LLMGateway{StreamErr: fmt.Errorf("bad model")}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+
+	result, err := uc.SendAIMessageStream(context.Background(), "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("expected no Go error when the terminal update fails after dispatch failure, got %v", err)
+	}
+	if result == nil || result.HumanMessage == nil || result.AIMessage == nil {
+		t.Fatalf("expected both committed messages in the result, got %+v", result)
+	}
+	if result.AIMessage.Status != domainmessage.MessageStatusStreaming {
+		t.Fatalf("expected the AI message to report its current durable (streaming) status, got %s", result.AIMessage.Status)
+	}
+}
+
 func TestSendAIMessageStreamSynchronousDispatchFailureDespiteCancelledRequestCtx(t *testing.T) {
 	msgRepo := &ctxDoneAwareMessageRepo{MessageRepo: &mocks.MessageRepo{}}
 	roomRepo := &mocks.RoomRepo{}

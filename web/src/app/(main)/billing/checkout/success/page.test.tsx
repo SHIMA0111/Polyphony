@@ -35,7 +35,7 @@ describe("BillingCheckoutSuccessPage", () => {
     render(<BillingCheckoutSuccessPage />)
 
     await waitFor(() =>
-      expect(screen.getByText("Payment received")).toBeInTheDocument(),
+      expect(screen.getByText("Checkout finished")).toBeInTheDocument(),
     )
     expect(screen.getByRole("link", { name: "Go to billing" })).toHaveAttribute(
       "href",
@@ -49,7 +49,7 @@ describe("BillingCheckoutSuccessPage", () => {
     render(<BillingCheckoutSuccessPage />)
 
     await waitFor(() =>
-      expect(screen.getByText("Payment received")).toBeInTheDocument(),
+      expect(screen.getByText("Checkout finished")).toBeInTheDocument(),
     )
   })
 

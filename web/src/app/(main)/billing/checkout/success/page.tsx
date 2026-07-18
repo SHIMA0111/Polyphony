@@ -136,7 +136,7 @@ function NeutralSuccess({ sessionId }: { sessionId: string | null }) {
       <Box color="green.fg">
         <CheckCircle2 size={48} />
       </Box>
-      <Heading size="lg">Payment received</Heading>
+      <Heading size="lg">Checkout finished</Heading>
       <Text color="fg.muted">Your purchase is being processed.</Text>
       <Flex gap={3} mt={2}>
         <Button asChild colorPalette="blue">
