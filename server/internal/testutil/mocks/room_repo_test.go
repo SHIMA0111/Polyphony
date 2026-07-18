@@ -79,3 +79,65 @@ func TestRoomRepoUpdateMemberRoleRoomNotFound(t *testing.T) {
 		t.Fatalf("expected domain.ErrNotFound, got %v", err)
 	}
 }
+
+// TestRoomRepoRemoveMemberOwnerProtected is a unit test for the
+// owner-protection recheck RoomRepo.RemoveMember added to mirror
+// postgres.RoomRepository.RemoveMember's `SELECT owner_id ... FOR UPDATE`
+// guard: attempting to remove the current owner's own membership must
+// return room.ErrOwnerRoleProtected, and must leave the membership intact.
+func TestRoomRepoRemoveMemberOwnerProtected(t *testing.T) {
+	repo := &RoomRepo{}
+	ctx := context.Background()
+
+	rm := &room.Room{ID: "room-1", OwnerID: "owner-1"}
+	if err := repo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	err := repo.RemoveMember(ctx, "room-1", "owner-1")
+	if !errors.Is(err, room.ErrOwnerRoleProtected) {
+		t.Fatalf("expected room.ErrOwnerRoleProtected, got %v", err)
+	}
+
+	if _, err := repo.GetMember(ctx, "room-1", "owner-1"); err != nil {
+		t.Fatalf("expected the owner's membership to remain after a rejected removal, GetMember failed: %v", err)
+	}
+}
+
+// TestRoomRepoRemoveMemberNonOwnerSucceeds verifies that RemoveMember's new
+// owner recheck does not affect the ordinary case: a non-owner member is
+// still removed successfully.
+func TestRoomRepoRemoveMemberNonOwnerSucceeds(t *testing.T) {
+	repo := &RoomRepo{}
+	ctx := context.Background()
+
+	rm := &room.Room{ID: "room-1", OwnerID: "owner-1"}
+	if err := repo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if err := repo.AddMember(ctx, &room.RoomMember{ID: "m-1", RoomID: "room-1", UserID: "member-1", Role: room.RoleMember}); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+
+	if err := repo.RemoveMember(ctx, "room-1", "member-1"); err != nil {
+		t.Fatalf("RemoveMember failed: %v", err)
+	}
+
+	if _, err := repo.GetMember(ctx, "room-1", "member-1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound after removal, got %v", err)
+	}
+}
+
+// TestRoomRepoRemoveMemberRoomNotFound verifies RemoveMember returns
+// domain.ErrNotFound when the room itself does not exist, mirroring
+// postgres.RoomRepository.RemoveMember's `SELECT owner_id FROM rooms ...`
+// finding no row.
+func TestRoomRepoRemoveMemberRoomNotFound(t *testing.T) {
+	repo := &RoomRepo{}
+	ctx := context.Background()
+
+	err := repo.RemoveMember(ctx, "nonexistent-room", "member-1")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound, got %v", err)
+	}
+}

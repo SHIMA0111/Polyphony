@@ -7,7 +7,7 @@ interface MessageGroupProps {
   messages: Message[]
   onRegenerate: (messageId: string) => void
   isRegenerating: string | null
-  onRetry: (messageId: string, content: string) => void
+  onRetry: (messageId: string, content: string) => Promise<void>
 }
 
 /**

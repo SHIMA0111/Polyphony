@@ -35,13 +35,17 @@ interface MessageListProps {
   onRegenerate: (messageId: string) => void
   isRegenerating: string | null
   /** Re-sends a failed human message's original content. */
-  onRetry: (messageId: string, content: string) => void
+  onRetry: (messageId: string, content: string) => Promise<void>
   /** Whether an older page of history is available via `fetchNextPage`. */
   hasNextPage: boolean
   /** Whether the next (older) page is currently being fetched. */
   isFetchingNextPage: boolean
-  /** Fetches the next older page of message history. */
-  fetchNextPage: () => void
+  /**
+   * Fetches the next older page of message history. May return a Promise —
+   * see `useLoadOlderOnScroll`'s `fetchNextPage` option docstring for why
+   * this hook forwards it instead of discarding it.
+   */
+  fetchNextPage: () => unknown
   /** Number of currently loaded pages, used to anchor scroll position across a load. */
   pageCount: number
 }

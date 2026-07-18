@@ -19,7 +19,7 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 // --- Anthropic-specific DTOs ---
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct AnthropicRequest {
     model: String,
     max_tokens: u32,
@@ -30,7 +30,7 @@ struct AnthropicRequest {
     temperature: Option<f32>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct AnthropicMessage {
     role: String,
     content: String,
@@ -105,7 +105,21 @@ fn role_to_anthropic_str(role: &Role) -> &'static str {
 /// top-level `system` field, matching Anthropic's Messages API shape. `max_tokens`
 /// is defaulted to [`DEFAULT_MAX_TOKENS`] when the domain request does not specify
 /// one, since Anthropic requires it on every request.
-fn to_anthropic_request(req: &CompletionRequest) -> AnthropicRequest {
+///
+/// # Arguments
+/// * `req` — Provider-agnostic completion request to convert.
+///
+/// # Returns
+/// The equivalent `AnthropicRequest` body, ready to be serialized and sent to
+/// `POST /v1/messages`.
+///
+/// # Errors
+/// Returns `DomainError::InvalidRequest` if `req.messages` contains no
+/// non-`Role::System` message: Anthropic's Messages API requires a non-empty
+/// `messages` array, and a request built from only system messages would
+/// otherwise be sent with `messages: []`, surfacing as an opaque remote HTTP
+/// 400 instead of a clear domain error.
+fn to_anthropic_request(req: &CompletionRequest) -> Result<AnthropicRequest, DomainError> {
     let mut system_parts = Vec::new();
     let mut messages = Vec::new();
 
@@ -120,19 +134,25 @@ fn to_anthropic_request(req: &CompletionRequest) -> AnthropicRequest {
         }
     }
 
+    if messages.is_empty() {
+        return Err(DomainError::InvalidRequest(
+            "messages must contain at least one non-system message".to_string(),
+        ));
+    }
+
     let system = if system_parts.is_empty() {
         None
     } else {
         Some(system_parts.join("\n\n"))
     };
 
-    AnthropicRequest {
+    Ok(AnthropicRequest {
         model: req.model.clone(),
         max_tokens: req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
         messages,
         system,
         temperature: req.temperature,
-    }
+    })
 }
 
 /// Converts an `AnthropicResponse` into the shared domain `CompletionResponse`.
@@ -190,20 +210,23 @@ fn from_anthropic_response(resp: AnthropicResponse) -> CompletionResponse {
 /// * `req` — Completion request to send.
 ///
 /// # Errors
-/// Returns `DomainError::KeyNotFound` if the API key cannot be resolved via
-/// `KeyStore`, `DomainError::Timeout` on a connection/request timeout,
-/// `DomainError::RateLimited` on an HTTP 429 response (with `Retry-After` parsed if
-/// present), and `DomainError::ProviderError` (with the original error preserved via
-/// `#[source]` where available) for any other transport or non-2xx response, or a
-/// `200 OK` response whose body does not deserialize into the expected shape.
+/// Returns `DomainError::InvalidRequest` if `req.messages` contains no non-system
+/// message (see `to_anthropic_request`), `DomainError::KeyNotFound` if the API key
+/// cannot be resolved via `KeyStore`, `DomainError::Timeout` on a connection/request
+/// timeout, `DomainError::RateLimited` on an HTTP 429 response (with `Retry-After`
+/// parsed if present), and `DomainError::ProviderError` (with the original error
+/// preserved via `#[source]` where available) for any other transport or non-2xx
+/// response, or a `200 OK` response whose body does not deserialize into the
+/// expected shape.
 pub(super) fn complete<'a>(
     provider: &'a AnthropicProvider,
     req: &CompletionRequest,
 ) -> BoxFuture<'a, Result<CompletionResponse, DomainError>> {
-    let anthropic_req = to_anthropic_request(req);
     let url = format!("{}/v1/messages", provider.base_url);
+    let anthropic_req_result = to_anthropic_request(req);
 
     Box::pin(async move {
+        let anthropic_req = anthropic_req_result?;
         let api_key = provider
             .key_store
             .get_key(AnthropicProvider::PROVIDER_NAME)?;
@@ -279,7 +302,7 @@ mod tests {
             max_tokens: Some(1000),
         };
 
-        let anthropic_req = to_anthropic_request(&req);
+        let anthropic_req = to_anthropic_request(&req).expect("request has non-system messages");
         assert_eq!(anthropic_req.model, "claude-opus-4-6");
         assert_eq!(anthropic_req.system, Some("You are helpful.".to_string()));
         assert_eq!(anthropic_req.messages.len(), 1);
@@ -310,7 +333,7 @@ mod tests {
             max_tokens: None,
         };
 
-        let anthropic_req = to_anthropic_request(&req);
+        let anthropic_req = to_anthropic_request(&req).expect("request has non-system messages");
         assert_eq!(
             anthropic_req.system,
             Some("Be concise.\n\nBe polite.".to_string())
@@ -330,9 +353,39 @@ mod tests {
             max_tokens: None,
         };
 
-        let anthropic_req = to_anthropic_request(&req);
+        let anthropic_req = to_anthropic_request(&req).expect("request has non-system messages");
         assert_eq!(anthropic_req.max_tokens, DEFAULT_MAX_TOKENS);
         assert!(anthropic_req.system.is_none());
+    }
+
+    #[test]
+    fn test_to_anthropic_request_system_only_is_invalid_request() {
+        // A request built from only Role::System messages would otherwise produce
+        // an empty `messages` array, which Anthropic's Messages API rejects with
+        // an opaque remote HTTP 400. to_anthropic_request must reject this
+        // locally with a clear DomainError::InvalidRequest instead.
+        let req = CompletionRequest {
+            model: "claude-opus-4-6".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::System,
+                content: "You are helpful.".to_string().into(),
+            }],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let err = to_anthropic_request(&req)
+            .expect_err("a system-only request should be rejected as invalid");
+
+        match err {
+            DomainError::InvalidRequest(message) => {
+                assert!(
+                    message.contains("non-system"),
+                    "expected the error to mention the missing non-system message, got: {message}"
+                );
+            }
+            other => panic!("expected DomainError::InvalidRequest, got {other:?}"),
+        }
     }
 
     #[test]

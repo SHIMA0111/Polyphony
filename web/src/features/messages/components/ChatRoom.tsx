@@ -46,9 +46,7 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
         onRetry={handleRetry}
         hasNextPage={hasNextPage}
         isFetchingNextPage={isFetchingNextPage}
-        fetchNextPage={() => {
-          void fetchNextPage()
-        }}
+        fetchNextPage={fetchNextPage}
         pageCount={pageCount}
       />
 

@@ -75,9 +75,15 @@ fn models_list() -> &'static Vec<ModelInfo> {
 /// HTTP client timeouts, retry policy) is injected explicitly via `Config` at
 /// construction time — this adapter never reads `std::env` directly.
 pub struct AnthropicProvider {
+    /// HTTP client used to send requests to the Anthropic Messages API.
     client: Client,
+    /// Base URL for the Anthropic Messages API (e.g. `https://api.anthropic.com`).
     base_url: String,
+    /// Key store used to resolve the API key lazily, per request (see the struct-level
+    /// docs above).
     key_store: Arc<dyn KeyStore>,
+    /// Retry policy applied to transient failures (429/5xx, including Anthropic's `529
+    /// overloaded_error`) via `send_with_retry`.
     retry_policy: RetryPolicy,
 }
 
@@ -91,6 +97,10 @@ impl AnthropicProvider {
     ///   eagerly here), so gateway startup never depends on the key being present.
     /// * `http` — Shared HTTP client tuning (connect/request timeouts, retry policy).
     /// * `provider` — Anthropic-specific configuration (base URL).
+    ///
+    /// # Returns
+    /// A ready-to-use `AnthropicProvider` wrapping a configured `reqwest::Client` and
+    /// the supplied `key_store`/`base_url`/retry policy.
     ///
     /// # Errors
     /// Returns `DomainError::ProviderError` if the underlying `reqwest::Client` fails

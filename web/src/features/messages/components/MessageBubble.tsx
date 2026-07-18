@@ -12,8 +12,14 @@ interface MessageBubbleProps {
   onRegenerate: (messageId: string) => void
   /** Whether this specific message is the one currently being regenerated. */
   isRegenerating: boolean
-  /** Re-sends a failed human message's original content. */
-  onRetry: (messageId: string, content: string) => void
+  /**
+   * Re-sends a failed human message's original content. Returns a Promise
+   * (rather than `void`) so callers that want to observe/await the retry
+   * can — `handleRetry`'s own implementation never rejects (it catches
+   * internally, mirroring `handleRegenerate`), so the `void` below is only
+   * discarding a resolved value, not swallowing an error.
+   */
+  onRetry: (messageId: string, content: string) => Promise<void>
 }
 
 // Both formatters below are pinned to `timeZone: "UTC"` rather than the
@@ -139,6 +145,7 @@ export function MessageBubble({
             onClick={() => onRegenerate(message.id)}
             loading={isRegenerating}
             loadingText="Regenerating"
+            disabled={isSending}
           >
             <RefreshCw size={12} />
             {isFailed ? "Retry" : "Regenerate"}
@@ -152,7 +159,9 @@ export function MessageBubble({
             h={7}
             px={2}
             fontSize="xs"
-            onClick={() => onRetry(message.id, message.content)}
+            onClick={() => {
+              void onRetry(message.id, message.content)
+            }}
           >
             <RefreshCw size={12} />
             Retry

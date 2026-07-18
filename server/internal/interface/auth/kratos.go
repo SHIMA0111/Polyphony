@@ -256,27 +256,35 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 // (identityID, with the given email/username traits), creating or relinking
 // it as needed:
 //
-//   - If a local user already exists matching email (falling back to
-//     username) and has no kratos_identity_id yet, it is linked to
-//     identityID via SetKratosIdentityID and returned. This is the "re-login
-//     of a pre-Kratos local user" path: a users row created by
-//     SimpleJWTService before AUTH_MODE switched to "kratos", or one
-//     created directly via the Kratos Admin API (bypassing Register)
-//     without being linked yet. Without this lookup, this path would
-//     instead fall through to Create below, which — for a genuinely
-//     pre-existing email/username — fails on the unique constraint (or,
-//     absent that constraint, would create a duplicate local account for
-//     the same person).
-//   - A local user matching email/username but already linked to a
-//     *different* Kratos identity is treated as no match (falls through to
-//     Create), since relinking it here would silently reassign someone
-//     else's account.
+//   - If a local user already exists matching email EXACTLY and has no
+//     kratos_identity_id yet, it is linked to identityID via
+//     SetKratosIdentityID and returned. This is the "re-login of a
+//     pre-Kratos local user" path: a users row created by SimpleJWTService
+//     before AUTH_MODE switched to "kratos", or one created directly via
+//     the Kratos Admin API (bypassing Register) without being linked yet.
+//     Without this lookup, this path would instead fall through to Create
+//     below, which — for a genuinely pre-existing email — fails on the
+//     unique constraint (or, absent that constraint, would create a
+//     duplicate local account for the same person).
+//   - Matching is deliberately email-only, never username. A username
+//     match with a different email must NOT be treated as the same person:
+//     an attacker who registers a Kratos identity whose username trait
+//     happens to collide with a victim's local username (but uses their
+//     own, different email) must not have the victim's unlinked local
+//     account silently linked to the attacker's identity — that would be
+//     an account takeover. Such a collision instead falls through to
+//     Create, which fails on the username unique constraint and surfaces
+//     domain.ErrUsernameAlreadyExists to the caller.
+//   - A local user matching email but already linked to a *different*
+//     Kratos identity is treated as no match (falls through to Create),
+//     since relinking it here would silently reassign someone else's
+//     account.
 //   - Otherwise, a brand new local user row is created, with a
 //     kratos-managed placeholder password hash, linked to identityID.
 //
-// Used by Register (a Kratos-side registration for an email/username that
-// already has a local-only, unlinked user record), Login's self-heal path
-// (a Kratos identity with no local link yet), and ValidateToken's self-heal
+// Used by Register (a Kratos-side registration for an email that already
+// has a local-only, unlinked user record), Login's self-heal path (a
+// Kratos identity with no local link yet), and ValidateToken's self-heal
 // path (see its GoDoc) — the single shared implementation all three rely on
 // so none of them can silently diverge from the others.
 //
@@ -291,11 +299,12 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 // within ensureLocalUserLinkRetries short retries) also called
 // SetKratosIdentityID, so the loser's retry should find the same linked row
 // and both callers converge on the same single user. If every retry still
-// reports domain.ErrNotFound (a genuine, non-race conflict -- e.g. the
+// reports domain.ErrNotFound (a genuine, non-race conflict — e.g. the
 // email/username collides with an unrelated, already-linked-to-someone-else
-// account), the original Create error is returned unchanged.
+// account, or a genuine username-only collision per the bullet above), the
+// original Create error is returned unchanged.
 func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, email, username string) (*user.User, error) {
-	existing, err := s.lookupUnlinkedLocalUser(ctx, email, username)
+	existing, err := s.lookupUnlinkedLocalUser(ctx, email)
 	if err != nil {
 		return nil, err
 	}
@@ -348,27 +357,26 @@ func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, ema
 	return u, nil
 }
 
-// lookupUnlinkedLocalUser looks up an existing local user matching email,
-// falling back to username, that has no kratos_identity_id yet. Returns
-// (nil, nil) — not an error — if neither matches, or if the only match
-// already has a (necessarily different, since the caller already checked
+// lookupUnlinkedLocalUser looks up an existing local user matching email
+// EXACTLY that has no kratos_identity_id yet. Returns (nil, nil) — not an
+// error — if no such row exists, or if the only email match already has a
+// (necessarily different, since the caller already checked
 // GetByKratosIdentityID) Kratos identity linked.
-func (s *KratosAuthService) lookupUnlinkedLocalUser(ctx context.Context, email, username string) (*user.User, error) {
+//
+// Deliberately does not fall back to a username match: a local user whose
+// username merely collides with the incoming identity's username trait,
+// but whose email differs, is NOT the same person and must not be relinked
+// here. Doing so would let an attacker take over a victim's account by
+// registering a Kratos identity with the victim's username and the
+// attacker's own email — see ensureLocalUser's GoDoc for the full threat
+// model. A username-only collision instead falls through to
+// ensureLocalUser's Create call, which fails on the username unique
+// constraint and surfaces domain.ErrUsernameAlreadyExists.
+func (s *KratosAuthService) lookupUnlinkedLocalUser(ctx context.Context, email string) (*user.User, error) {
 	byEmail, err := s.userRepo.GetByEmail(ctx, email)
 	if err == nil {
 		if byEmail.KratosIdentityID == nil {
 			return byEmail, nil
-		}
-		return nil, nil
-	}
-	if !errors.Is(err, domain.ErrNotFound) {
-		return nil, err
-	}
-
-	byUsername, err := s.userRepo.GetByUsername(ctx, username)
-	if err == nil {
-		if byUsername.KratosIdentityID == nil {
-			return byUsername, nil
 		}
 		return nil, nil
 	}

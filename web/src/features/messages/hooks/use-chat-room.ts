@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo } from "react"
+import { useCallback, useMemo, useRef } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useMessages } from "@/features/messages/hooks/use-messages"
@@ -60,7 +60,22 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
   const modelsQuery = useModels()
 
   const sendMessageMutation = useSendMessage(roomId)
-  const sendAIMessageMutation = useSendAIMessage(roomId)
+
+  // Tracks the send intent of each *currently failed* message that
+  // originated from an AI send, keyed by the failed human echo's id (the
+  // same id `MessageBubble` passes back to `handleRetry` below): populated
+  // by `useSendAIMessage`'s `onSendFailed` callback whenever an AI send
+  // fails, and consulted (then cleared) by `handleRetry` to decide whether
+  // a retry must re-invoke the AI mutation with the original model instead
+  // of silently falling back to a plain resend. A plain `useRef` (not
+  // state) is enough: nothing needs to re-render when this map changes, it
+  // only needs to be read/written imperatively from `handleRetry`.
+  const retryIntentRef = useRef(new Map<string, { model?: string }>())
+  const sendAIMessageMutation = useSendAIMessage(roomId, {
+    onSendFailed: (humanMessageId, model) => {
+      retryIntentRef.current.set(humanMessageId, { model })
+    },
+  })
   const regenerateMutation = useRegenerateAIMessage(roomId)
 
   const room = roomQuery.data
@@ -120,17 +135,38 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
 
   const handleRetry = useCallback(
     async (messageId: string, content: string) => {
-      // Drop the stale failed optimistic entry first so `useSendMessage`'s
-      // own `onMutate` (which appends a *new* optimistic entry with a fresh
-      // id) doesn't leave both the old failed bubble and the new "sending"
+      // A failed message that originated from an AI send has an entry here
+      // (see `retryIntentRef`'s docstring above); anything else (a plain
+      // send's failure) has none, and falls back to a plain resend below —
+      // its original intent already *was* plain, so there is nothing to
+      // recover.
+      const intent = retryIntentRef.current.get(messageId)
+      retryIntentRef.current.delete(messageId)
+
+      // Drop the stale failed optimistic entry first so the mutation's own
+      // `onMutate` (which appends a *new* optimistic entry with a fresh id)
+      // doesn't leave both the old failed bubble and the new "sending"
       // bubble on screen at once.
       queryClient.setQueryData<MessagesInfiniteData>(
         ["rooms", roomId, "messages"],
         (old) => removeFromNewestPage(old, messageId),
       )
-      await sendMessageMutation.mutateAsync(content)
+
+      try {
+        if (intent) {
+          await sendAIMessageMutation.mutateAsync({ content, model: intent.model })
+        } else {
+          await sendMessageMutation.mutateAsync(content)
+        }
+      } catch {
+        // The mutation's own `onError` already reflects the failure (a new
+        // `status: "failed"` entry, plus a toast) and — for the AI path —
+        // re-populates `retryIntentRef` for the newly-failed message id via
+        // `onSendFailed`; there is nothing further to do here, mirroring
+        // `handleRegenerate`'s identical catch-and-ignore above.
+      }
     },
-    [queryClient, roomId, sendMessageMutation],
+    [queryClient, roomId, sendMessageMutation, sendAIMessageMutation],
   )
 
   const isRegenerating = regenerateMutation.isPending

@@ -60,16 +60,29 @@ func (r *BalanceRepo) GetOrCreateBalance(_ context.Context, userID string) (*bil
 }
 
 // DebitAndRecord decrements userID's balance by amount and records a
-// TransactionTypeConsumption row. Returns domain.ErrNotFound if userID has
-// no existing balance row.
+// TransactionTypeConsumption row. Returns billing.ErrInvalidAmount if
+// amount <= 0 (checked before any mutation, mirroring
+// postgres.BillingRepository), or domain.ErrNotFound if userID has no
+// existing balance row.
 func (r *BalanceRepo) DebitAndRecord(_ context.Context, userID, roomID, messageID string, amount int64, description string) (*billing.TokenTransaction, error) {
+	if amount <= 0 {
+		return nil, billing.ErrInvalidAmount
+	}
 	return r.mutate(userID, &roomID, billing.TransactionTypeConsumption, -amount, description)
 }
 
 // CreditAndRecord increments userID's balance by amount and records a row
-// of the given txType. Returns domain.ErrNotFound if userID has no existing
-// balance row.
+// of the given txType. Returns billing.ErrInvalidAmount if amount <= 0 or
+// txType is not TransactionTypeCharge/TransactionTypeAdjustment (checked
+// before any mutation, mirroring postgres.BillingRepository), or
+// domain.ErrNotFound if userID has no existing balance row.
 func (r *BalanceRepo) CreditAndRecord(_ context.Context, userID string, txType billing.TransactionType, amount int64, description string) (*billing.TokenTransaction, error) {
+	if amount <= 0 {
+		return nil, billing.ErrInvalidAmount
+	}
+	if txType != billing.TransactionTypeCharge && txType != billing.TransactionTypeAdjustment {
+		return nil, billing.ErrInvalidAmount
+	}
 	return r.mutate(userID, nil, txType, amount, description)
 }
 

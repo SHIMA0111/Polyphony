@@ -13,7 +13,9 @@ CREATE TABLE "room_invitations" (
   CONSTRAINT "room_invitations_invite_code_unique" UNIQUE ("invite_code"),
   CONSTRAINT "room_invitations_invitee_id_fkey" FOREIGN KEY ("invitee_id") REFERENCES "users" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
   CONSTRAINT "room_invitations_inviter_id_fkey" FOREIGN KEY ("inviter_id") REFERENCES "users" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT,
-  CONSTRAINT "room_invitations_room_id_fkey" FOREIGN KEY ("room_id") REFERENCES "rooms" ("id") ON UPDATE NO ACTION ON DELETE CASCADE
+  CONSTRAINT "room_invitations_room_id_fkey" FOREIGN KEY ("room_id") REFERENCES "rooms" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT "room_invitations_role_check" CHECK ((role)::text = ANY ((ARRAY['reader'::character varying, 'guest'::character varying, 'member'::character varying, 'admin'::character varying, 'master'::character varying])::text[])),
+  CONSTRAINT "room_invitations_status_check" CHECK ((status)::text = ANY ((ARRAY['pending'::character varying, 'accepted'::character varying, 'rejected'::character varying, 'revoked'::character varying])::text[]))
 );
 -- Create index "idx_room_invitations_invitee_id" to table: "room_invitations"
 CREATE INDEX "idx_room_invitations_invitee_id" ON "room_invitations" ("invitee_id") WHERE (invitee_id IS NOT NULL);

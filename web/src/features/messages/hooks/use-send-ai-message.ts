@@ -23,6 +23,17 @@ interface SendAIMessageContext {
   aiOptimisticId: string
 }
 
+export interface UseSendAIMessageOptions {
+  /**
+   * Invoked from `onError` with the failed human echo's id and the model
+   * that was requested, so a caller (see `useChatRoom`'s `handleRetry`) can
+   * remember that this particular failed message's retry should re-invoke
+   * the AI mutation with the same model, rather than silently falling back
+   * to a plain (non-AI) resend and losing the user's original intent.
+   */
+  onSendFailed?: (humanMessageId: string, model?: string) => void
+}
+
 /**
  * Sends a message with an AI response, optimistically appending both a
  * `status: "sending"` human echo and a `status: "sending"` AI placeholder
@@ -43,9 +54,16 @@ interface SendAIMessageContext {
  * echo back to `status: "failed"` for `MessageBubble`'s retry affordance and
  * drops the AI placeholder outright — it never represented anything real to
  * retry, and the existing AI regenerate/retry control only makes sense
- * against a real, persisted human message id.
+ * against a real, persisted human message id. It also invokes
+ * `options.onSendFailed` (see {@link UseSendAIMessageOptions}) with the
+ * failed human echo's id and the requested model, so a caller can route a
+ * later retry of that specific message back through this same AI mutation
+ * instead of a plain resend.
+ *
+ * @param roomId - The room to send into.
+ * @param options - See {@link UseSendAIMessageOptions}.
  */
-export function useSendAIMessage(roomId: string) {
+export function useSendAIMessage(roomId: string, options?: UseSendAIMessageOptions) {
   const queryClient = useQueryClient()
   const queryKey = ["rooms", roomId, "messages"] as const
 
@@ -108,13 +126,15 @@ export function useSendAIMessage(roomId: string) {
         )
       })
     },
-    onError: (error, _vars, context) => {
+    onError: (error, vars, context) => {
       if (!context) return
 
       queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) => {
         const withoutPlaceholder = removeFromNewestPage(old, context.aiOptimisticId)
         return markStatusInNewestPage(withoutPlaceholder, context.humanOptimisticId, "failed")
       })
+
+      options?.onSendFailed?.(context.humanOptimisticId, vars.model)
 
       toaster.create({
         type: "error",

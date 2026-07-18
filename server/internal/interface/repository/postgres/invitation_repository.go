@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
@@ -209,19 +210,20 @@ func (r *InvitationRepository) exists(ctx context.Context, id string) (bool, err
 
 // AcceptTx implements invitation.InvitationRepository.AcceptTx (see its
 // GoDoc for the atomicity guarantee and error contract). It opens a single
-// database transaction and validates the invitation's pending status
-// atomically inside it, in both modes, before ever inserting into
-// room_members: when transitionStatus is true (a username-targeted
-// invitation), it runs UpdateStatus's CAS UPDATE within the tx and only
-// proceeds if that transition succeeds; when transitionStatus is false (a
-// reusable link invitation, which never changes status), it instead locks
-// the invitation row with `SELECT ... FOR UPDATE` and rejects the accept if
-// its status is no longer StatusPending -- closing a TOCTOU window where a
-// revoke or expiry landing after the usecase's own pre-check read, but
-// before this call, would otherwise still admit the member. Either way,
-// member is only inserted once that check passes, before committing -- so
-// the status transition (or status re-check) and the membership insert
-// either both take effect or neither does.
+// database transaction and validates both the invitation's pending status
+// AND its expiry atomically inside it, in both modes, before ever inserting
+// into room_members: when transitionStatus is true (a username-targeted
+// invitation), it runs a CAS UPDATE — like UpdateStatus's, but additionally
+// gated on `expires_at > NOW()` — within the tx and only proceeds if that
+// transition succeeds; when transitionStatus is false (a reusable link
+// invitation, which never changes status), it instead locks the invitation
+// row with `SELECT ... FOR UPDATE` and rejects the accept if its status is
+// no longer StatusPending or its expiry has passed. Either way, this closes
+// a TOCTOU window where a revoke or expiry landing after the usecase's own
+// pre-check read, but before this call, would otherwise still admit the
+// member; member is only inserted once the check passes, before
+// committing, so the status transition (or status/expiry re-check) and the
+// membership insert either both take effect or neither does.
 func (r *InvitationRepository) AcceptTx(ctx context.Context, invitationID string, expectedStatus invitation.Status, transitionStatus bool, member *domainroom.RoomMember) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -231,21 +233,18 @@ func (r *InvitationRepository) AcceptTx(ctx context.Context, invitationID string
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if transitionStatus {
-		existsCheck := func(ctx context.Context, id string) (bool, error) {
-			var exists bool
-			err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM room_invitations WHERE id = $1)`, id).Scan(&exists)
-			return exists, err
-		}
-		if err := updateStatusCAS(ctx, tx, existsCheck, invitationID, invitation.StatusAccepted, expectedStatus); err != nil {
+		if err := acceptTransitionCAS(ctx, tx, invitationID, expectedStatus); err != nil {
 			return err
 		}
 	} else {
 		// Reusable link invitations never run the CAS above, so lock and
-		// re-check the row's status here instead: without this, a revoke
-		// or expiry sweep landing after the usecase's own pre-check read
-		// but before this call would still let the accept through.
+		// re-check the row's status/expiry here instead: without this, a
+		// revoke or expiry sweep landing after the usecase's own pre-check
+		// read but before this call would still let the accept through.
 		var statusStr string
-		err := tx.QueryRow(ctx, `SELECT status FROM room_invitations WHERE id = $1 FOR UPDATE`, invitationID).Scan(&statusStr)
+		var expiresAt time.Time
+		err := tx.QueryRow(ctx, `SELECT status, expires_at FROM room_invitations WHERE id = $1 FOR UPDATE`, invitationID).
+			Scan(&statusStr, &expiresAt)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.ErrNotFound
@@ -254,6 +253,9 @@ func (r *InvitationRepository) AcceptTx(ctx context.Context, invitationID string
 		}
 		if invitation.Status(statusStr) != invitation.StatusPending {
 			return domain.ErrInvitationNotPending
+		}
+		if time.Now().After(expiresAt) {
+			return domain.ErrInvitationExpired
 		}
 	}
 
@@ -265,6 +267,54 @@ func (r *InvitationRepository) AcceptTx(ctx context.Context, invitationID string
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
+}
+
+// acceptTransitionCAS performs AcceptTx's transitionStatus==true CAS: it
+// transitions invitationID from expectedStatus to StatusAccepted, but only
+// if the invitation is not yet expired, atomically at the row level
+// (`WHERE id = ... AND status = ... AND expires_at >
+// NOW())`). It deliberately does not reuse updateStatusCAS (which backs the
+// general-purpose UpdateStatus, used by e.g. RevokeInvitation): revoking or
+// rejecting an already-expired invitation must still succeed, so the expiry
+// gate belongs only here, not in the shared CAS every status transition
+// goes through.
+//
+// On zero rows affected, it distinguishes three causes with a follow-up
+// read under the same transaction (so the result stays consistent with the
+// failed UPDATE): domain.ErrNotFound if the invitation no longer exists,
+// domain.ErrInvitationExpired if its status still equals expectedStatus but
+// its expires_at has passed (the reason the gated UPDATE could not have
+// matched), or domain.ErrInvitationNotPending for any other status
+// mismatch (a genuine transition conflict, e.g. a concurrent
+// accept/reject/revoke already changed it).
+func acceptTransitionCAS(ctx context.Context, tx pgx.Tx, invitationID string, expectedStatus invitation.Status) error {
+	tag, err := tx.Exec(ctx,
+		`UPDATE room_invitations SET status = $1 WHERE id = $2 AND status = $3 AND expires_at > NOW()`,
+		string(invitation.StatusAccepted), invitationID, string(expectedStatus),
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+
+	var statusStr string
+	var expired bool
+	// Compare against the DB clock (NOW()), matching the gating UPDATE above,
+	// so classification cannot disagree with the update under clock skew.
+	err = tx.QueryRow(ctx, `SELECT status, expires_at <= NOW() FROM room_invitations WHERE id = $1`, invitationID).
+		Scan(&statusStr, &expired)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	if invitation.Status(statusStr) == expectedStatus && expired {
+		return domain.ErrInvitationExpired
+	}
+	return domain.ErrInvitationNotPending
 }
 
 // invitationRow is the minimal interface shared by pgx.Row and pgx.Rows,

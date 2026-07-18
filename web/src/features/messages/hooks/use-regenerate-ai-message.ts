@@ -24,6 +24,13 @@ export interface RegenerateAIMessageInput {
  * being regenerated (`aiMessageId`) — the same two-id distinction the
  * pre-migration component logic already made when it walked `messages` to
  * find the human message preceding the clicked AI message.
+ *
+ * `onMutate` cancels any in-flight refetch of `["rooms", roomId,
+ * "messages"]`, mirroring `useSendMessage`/`useSendAIMessage`'s sibling
+ * hooks: without it, a background refetch that was already in flight when
+ * regenerate was triggered could resolve *after* `onSuccess`'s
+ * `setQueryData` call above and clobber the just-regenerated message with
+ * the stale (pre-regeneration) data that refetch fetched.
  */
 export function useRegenerateAIMessage(roomId: string) {
   const queryClient = useQueryClient()
@@ -32,6 +39,9 @@ export function useRegenerateAIMessage(roomId: string) {
   return useMutation({
     mutationFn: ({ humanMessageId, model }: RegenerateAIMessageInput) =>
       regenerateAIMessage(roomId, humanMessageId, model),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey })
+    },
     onSuccess: (updated, variables) => {
       // Unlike optimistic sends (always in `pages[0]`), the AI message being
       // regenerated can live in any already-loaded page once the reader has

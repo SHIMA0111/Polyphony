@@ -112,7 +112,16 @@ export interface UseLoadOlderOnScrollOptions {
   containerRef: React.RefObject<HTMLDivElement | null>
   hasNextPage: boolean
   isFetchingNextPage: boolean
-  fetchNextPage: () => void
+  /**
+   * Fetches the next older page of message history. May return a Promise
+   * (as react-query's `fetchNextPage` does) — if it does, this hook awaits
+   * it to clear its internal in-flight guard (see
+   * `captureAnchorAndFetch`'s docstring) as soon as the fetch settles,
+   * rather than relying solely on the `pageCount` effect, so a fetch that
+   * fails (rejects) without ever landing a new page doesn't leave the guard
+   * stuck and silently block every subsequent scroll-triggered load.
+   */
+  fetchNextPage: () => unknown
   /**
    * Number of currently loaded pages. A change signals that a new (older)
    * page's messages have actually landed in the DOM, which is when the
@@ -172,6 +181,21 @@ export function useLoadOlderOnScroll({
 }: UseLoadOlderOnScrollOptions): UseLoadOlderOnScrollResult {
   const anchorRef = useRef<ScrollAnchor | null>(null)
 
+  // Synchronous in-flight guard, checked/set *before* fetchNextPage() is
+  // ever called. `isFetchingNextPage` alone is not enough to prevent a
+  // double-fire: it is React state that only updates on the next render, so
+  // two `captureAnchorAndFetch` calls in the same tick (e.g. two `scroll`
+  // events firing back-to-back, or a `scroll` event racing
+  // MessageList's "container doesn't fill" effect's `triggerLoadOlder`
+  // call) would both still observe the stale `isFetchingNextPage === false`
+  // and both call `fetchNextPage()`. This ref is updated synchronously, so
+  // the second call in the same tick sees it set and bails out. It is
+  // cleared either when `fetchNextPage()`'s returned Promise settles (see
+  // the `fetchNextPage` field's docstring) or, as a backstop, whenever
+  // `pageCount` changes (the layout effect below) -- whichever happens
+  // first.
+  const isFetchingRef = useRef(false)
+
   // A plain useCallback over the current props: its identity changes
   // whenever hasNextPage/isFetchingNextPage/fetchNextPage do, which is fine
   // for both call sites (the scroll listener effect below and MessageList's
@@ -181,7 +205,7 @@ export function useLoadOlderOnScroll({
   // anyway).
   const captureAnchorAndFetch = useCallback(() => {
     const el = containerRef.current
-    if (!el || !hasNextPage || isFetchingNextPage) return
+    if (!el || !hasNextPage || isFetchingNextPage || isFetchingRef.current) return
 
     const topElement = findTopmostVisibleMessageElement(el)
     anchorRef.current = {
@@ -192,7 +216,13 @@ export function useLoadOlderOnScroll({
       fallbackScrollTop: el.scrollTop,
       fallbackScrollHeight: el.scrollHeight,
     }
-    fetchNextPage()
+    isFetchingRef.current = true
+    const result = fetchNextPage()
+    if (result instanceof Promise) {
+      void result.finally(() => {
+        isFetchingRef.current = false
+      })
+    }
   }, [containerRef, hasNextPage, isFetchingNextPage, fetchNextPage])
 
   useEffect(() => {
@@ -211,6 +241,12 @@ export function useLoadOlderOnScroll({
   }, [containerRef, hasNextPage, isFetchingNextPage, captureAnchorAndFetch])
 
   useLayoutEffect(() => {
+    // Backstop clear for the in-flight guard: a new page landing is
+    // conclusive proof the fetch this hook triggered has settled, even if
+    // the Promise-based `.finally` above hasn't run yet (e.g. a caller
+    // whose `fetchNextPage` doesn't return a Promise at all).
+    isFetchingRef.current = false
+
     const el = containerRef.current
     const anchor = anchorRef.current
     if (!el || !anchor) return

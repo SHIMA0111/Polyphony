@@ -372,6 +372,82 @@ func TestKratosLoginRelinksPreexistingUnlinkedUser(t *testing.T) {
 	}
 }
 
+// TestKratosEnsureLocalUserUsernameCollisionDoesNotLink is the regression
+// test for the account-takeover fix in lookupUnlinkedLocalUser: an existing
+// unlinked local user whose username matches the incoming identity's
+// username trait, but whose email is DIFFERENT, must not be relinked to
+// that identity. Relinking on a username-only match would let an attacker
+// register a Kratos identity carrying a victim's username (with the
+// attacker's own, different email) and have ValidateToken's/Login's self-heal
+// silently hand them the victim's local account. The collision must instead
+// surface as domain.ErrUsernameAlreadyExists from the Create attempt, and
+// the pre-existing user must remain unlinked.
+func TestKratosEnsureLocalUserUsernameCollisionDoesNotLink(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	userRepo := &mocks.UserRepo{}
+	victim := newSeedUser("victim@example.com", "shared-username")
+	if err := userRepo.Create(context.Background(), victim); err != nil {
+		t.Fatalf("seed victim user: %v", err)
+	}
+
+	svc := newTestKratosService(f, userRepo)
+
+	attackerIdentityID := uuid.New().String()
+	_, err := svc.ensureLocalUser(context.Background(), attackerIdentityID, "attacker@example.com", "shared-username")
+	if !errors.Is(err, domain.ErrUsernameAlreadyExists) {
+		t.Fatalf("expected domain.ErrUsernameAlreadyExists, got %v", err)
+	}
+
+	got, getErr := userRepo.GetByID(context.Background(), victim.ID)
+	if getErr != nil {
+		t.Fatalf("get victim user: %v", getErr)
+	}
+	if got.KratosIdentityID != nil {
+		t.Fatalf("expected victim user to remain unlinked, got linked to %q", *got.KratosIdentityID)
+	}
+	if got, err := userRepo.GetByKratosIdentityID(context.Background(), attackerIdentityID); err == nil {
+		t.Fatalf("expected attacker identity to remain unlinked, but resolved to user %+v", got)
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("unexpected error resolving attacker identity: %v", err)
+	}
+}
+
+// TestKratosEnsureLocalUserEmailMatchStillLinks proves that an exact email
+// match still relinks an existing unlinked local user, even when the
+// incoming identity's username trait differs from the stored user's
+// username -- email remains the sole basis for the self-heal relink.
+func TestKratosEnsureLocalUserEmailMatchStillLinks(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	userRepo := &mocks.UserRepo{}
+	preexisting := newSeedUser("g@example.com", "guser")
+	if err := userRepo.Create(context.Background(), preexisting); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	svc := newTestKratosService(f, userRepo)
+
+	identityID := uuid.New().String()
+	linked, err := svc.ensureLocalUser(context.Background(), identityID, "g@example.com", "different-username")
+	if err != nil {
+		t.Fatalf("ensureLocalUser failed: %v", err)
+	}
+	if linked.ID != preexisting.ID {
+		t.Fatalf("expected relink to the preexisting user %q, got %q", preexisting.ID, linked.ID)
+	}
+
+	got, err := userRepo.GetByID(context.Background(), preexisting.ID)
+	if err != nil {
+		t.Fatalf("get preexisting user: %v", err)
+	}
+	if got.KratosIdentityID == nil || *got.KratosIdentityID != identityID {
+		t.Fatalf("expected preexisting user to be linked to identity %q, got %+v", identityID, got.KratosIdentityID)
+	}
+}
+
 // TestKratosLoginInvalidCredentials proves that a 400 response from the
 // login flow maps to domain.ErrInvalidCredentials.
 func TestKratosLoginInvalidCredentials(t *testing.T) {

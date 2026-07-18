@@ -61,7 +61,12 @@ func (m *MessageRepo) GetByID(_ context.Context, id string) (*message.Message, e
 }
 
 // ListByRoom returns messages in a room, ignoring the cursor (this fake does
-// not implement true cursor-based pagination), truncated to limit entries.
+// not implement true cursor-based pagination), ordered sequence-descending
+// (newest first, mirroring postgres.MessageRepository.ListByRoom's `ORDER BY
+// sequence DESC`) before being truncated to limit entries -- the map-backed
+// m.Messages iterates in random order, so without this sort, truncation
+// could silently drop an arbitrary subset of matching messages instead of
+// the oldest ones, and the returned order itself would be nondeterministic.
 // Soft-deleted messages (IsDeleted == true) are excluded, mirroring the
 // postgres.MessageRepository behavior.
 func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int) (*message.CursorPage, error) {
@@ -74,6 +79,9 @@ func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int)
 			msgs = append(msgs, msg)
 		}
 	}
+	sort.Slice(msgs, func(i, j int) bool {
+		return msgs[i].Sequence > msgs[j].Sequence
+	})
 	if len(msgs) > limit {
 		msgs = msgs[:limit]
 	}
@@ -81,8 +89,11 @@ func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int)
 }
 
 // ListByRoomUpTo returns up to limit messages in a room with sequence
-// <= maxSequence. Soft-deleted messages (IsDeleted == true) are excluded,
-// mirroring the postgres.MessageRepository behavior.
+// <= maxSequence, ordered sequence-descending (newest first, mirroring
+// postgres.MessageRepository.ListByRoomUpTo -- see ListByRoom's doc comment
+// for why this ordering matters before truncation). Soft-deleted messages
+// (IsDeleted == true) are excluded, mirroring the postgres.MessageRepository
+// behavior.
 func (m *MessageRepo) ListByRoomUpTo(_ context.Context, roomID string, maxSequence int64, limit int) ([]*message.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -93,6 +104,9 @@ func (m *MessageRepo) ListByRoomUpTo(_ context.Context, roomID string, maxSequen
 			msgs = append(msgs, msg)
 		}
 	}
+	sort.Slice(msgs, func(i, j int) bool {
+		return msgs[i].Sequence > msgs[j].Sequence
+	})
 	if len(msgs) > limit {
 		msgs = msgs[:limit]
 	}

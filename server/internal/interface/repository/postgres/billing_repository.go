@@ -47,17 +47,45 @@ func (r *BillingRepository) GetOrCreateBalance(ctx context.Context, userID strin
 // DebitAndRecord atomically decrements userID's balance by amount (applied
 // as a debit) and inserts a matching TransactionTypeConsumption row, both in
 // a single database transaction. See billing.BalanceRepository.DebitAndRecord
-// for the negative-balance/ErrNotFound contract.
+// for the negative-balance/ErrInvalidAmount/ErrNotFound contract.
 func (r *BillingRepository) DebitAndRecord(ctx context.Context, userID, roomID, messageID string, amount int64, description string) (*billing.TokenTransaction, error) {
+	if err := validateDebitAmount(amount); err != nil {
+		return nil, err
+	}
 	return r.mutateAndRecord(ctx, userID, &roomID, &messageID, billing.TransactionTypeConsumption, -amount, description)
 }
 
 // CreditAndRecord atomically increments userID's balance by amount and
 // inserts a matching row of the given txType, both in a single database
 // transaction. See billing.BalanceRepository.CreditAndRecord for the
-// ErrNotFound contract.
+// ErrInvalidAmount/ErrNotFound contract.
 func (r *BillingRepository) CreditAndRecord(ctx context.Context, userID string, txType billing.TransactionType, amount int64, description string) (*billing.TokenTransaction, error) {
+	if err := validateCreditParams(txType, amount); err != nil {
+		return nil, err
+	}
 	return r.mutateAndRecord(ctx, userID, nil, nil, txType, amount, description)
+}
+
+// validateDebitAmount rejects a non-positive amount for DebitAndRecord with
+// billing.ErrInvalidAmount, before any database mutation is attempted.
+func validateDebitAmount(amount int64) error {
+	if amount <= 0 {
+		return billing.ErrInvalidAmount
+	}
+	return nil
+}
+
+// validateCreditParams rejects a non-positive amount, or a txType other
+// than TransactionTypeCharge/TransactionTypeAdjustment, for CreditAndRecord
+// with billing.ErrInvalidAmount, before any database mutation is attempted.
+func validateCreditParams(txType billing.TransactionType, amount int64) error {
+	if amount <= 0 {
+		return billing.ErrInvalidAmount
+	}
+	if txType != billing.TransactionTypeCharge && txType != billing.TransactionTypeAdjustment {
+		return billing.ErrInvalidAmount
+	}
+	return nil
 }
 
 // mutateAndRecord applies signedAmount (positive to credit, negative to

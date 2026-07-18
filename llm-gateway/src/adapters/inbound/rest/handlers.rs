@@ -93,6 +93,18 @@ pub async fn complete(
 /// Unlike `complete`, this call is infallible once the DTO is converted: it never
 /// dispatches to a provider, so there is no `ModelNotFound` path; the only error is a
 /// `400` from an unrecognized role string during DTO conversion.
+///
+/// # Arguments
+/// * `service` — Shared `CompletionUseCase` extracted from `AppState`, used to run
+///   `estimate_tokens` on the converted domain request.
+/// * `dto` — JSON request body, deserialized into a `TokenEstimateRequestDto`.
+///
+/// # Returns
+/// `200` with a `TokenEstimateResponseDto` on success.
+///
+/// # Errors
+/// Returns `AppError` (via `?` on `dto.into_domain()`), which maps to `400` when the
+/// DTO carries an unrecognized role string. See `AppError::into_response`.
 pub async fn estimate_tokens(
     State(service): State<AppState>,
     Json(dto): Json<TokenEstimateRequestDto>,

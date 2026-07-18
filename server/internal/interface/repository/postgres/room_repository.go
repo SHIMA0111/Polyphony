@@ -246,9 +246,49 @@ func (r *RoomRepository) ListMembers(ctx context.Context, roomID string) ([]*roo
 	return members, rows.Err()
 }
 
-// RemoveMember removes a user from a room. It returns domain.ErrNotFound if the membership does not exist.
+// RemoveMember implements room.RoomRepository.RemoveMember (see its GoDoc
+// for the owner-protection and TransferOwnership-serialization contract).
+// It runs the owner recheck and the room_members DELETE inside a single
+// transaction, following the same r.pool.Begin / defer tx.Rollback /
+// tx.Commit / row-lock pattern as UpdateMemberRole:
+//
+//  1. `SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE` takes a row
+//     lock on rooms' roomID row -- the same row TransferOwnership's and
+//     UpdateMemberRole's owner checks lock, so a concurrent ownership
+//     transfer and a remove-member call on the same room block each other
+//     rather than interleaving. Returns domain.ErrNotFound if the room does
+//     not exist.
+//  2. If the (possibly just-updated, if this call waited out a concurrent
+//     TransferOwnership) owner_id equals userID, returns
+//     room.ErrOwnerRoleProtected without deleting anything -- a room's
+//     owner must transfer ownership (RoomUsecase.TransferOwnership) before
+//     they can be removed, exactly as they must before they can leave
+//     (RoomUsecase.LeaveRoom) or have their role changed directly
+//     (UpdateMemberRole).
+//  3. Otherwise runs the existing room_members DELETE and returns
+//     domain.ErrNotFound if it affects zero rows (the membership does not
+//     exist).
 func (r *RoomRepository) RemoveMember(ctx context.Context, roomID, userID string) error {
-	tag, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var ownerID string
+	err = tx.QueryRow(ctx, `SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE`, roomID).Scan(&ownerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	if ownerID == userID {
+		return room.ErrOwnerRoleProtected
+	}
+
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM room_members WHERE room_id = $1 AND user_id = $2`,
 		roomID, userID,
 	)
@@ -258,7 +298,8 @@ func (r *RoomRepository) RemoveMember(ctx context.Context, roomID, userID string
 	if tag.RowsAffected() == 0 {
 		return domain.ErrNotFound
 	}
-	return nil
+
+	return tx.Commit(ctx)
 }
 
 // UpdateMemberRole implements room.RoomRepository.UpdateMemberRole (see its

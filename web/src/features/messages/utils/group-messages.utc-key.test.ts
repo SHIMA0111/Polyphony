@@ -8,11 +8,25 @@
 // minutes both fall on the *same* local calendar day, so a local-time key would fail
 // to split them into separate day groups even though they render UTC-dated labels
 // from different days.
+//
+// The original `TZ` is captured before this override so it can be restored in
+// `afterAll` below: without restoring it, this override would leak into every
+// other test file that shares the same Vitest worker process and runs after
+// this one, silently changing their runtime timezone too.
+const ORIGINAL_TZ = process.env.TZ
 process.env.TZ = "Pacific/Kiritimati" // UTC+14, IANA's largest positive offset
 
-import { describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it } from "vitest"
 import type { Message } from "@/features/messages/types"
 import { groupMessagesForDisplay } from "./group-messages"
+
+afterAll(() => {
+  if (ORIGINAL_TZ === undefined) {
+    delete process.env.TZ
+  } else {
+    process.env.TZ = ORIGINAL_TZ
+  }
+})
 
 function makeMessage(overrides: Partial<Message> & Pick<Message, "id">): Message {
   return {

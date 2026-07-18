@@ -23,6 +23,10 @@ func setupInvitationTest() (*echo.Echo, *InvitationHandler, *mocks.RoomRepo, *mo
 	roomRepo := &mocks.RoomRepo{}
 	userRepo := &mocks.UserRepo{}
 	invitationRepo := &mocks.InvitationRepo{}
+	// Wire AcceptTx's member-insertion callback to roomRepo so Accept
+	// handler tests exercise a real membership insert, not a silent no-op —
+	// see InvitationRepo.AddMember's doc comment.
+	invitationRepo.AddMember = roomRepo.AddMember
 
 	roomRepo.SeedMember("room-1", "admin-1", "admin")
 	roomRepo.SeedMember("room-1", "member-1", "member")

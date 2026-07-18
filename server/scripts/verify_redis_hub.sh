@@ -149,21 +149,51 @@ echo "==> Opening a WebSocket to replica 1 (${BASE1}) and waiting for the room e
 ) >"$WS_WAIT_LOG" 2>&1 &
 WS_PID=$!
 
-# Give the WebSocket client time to dial, upgrade, and subscribe on the hub
-# before we publish — RedisHub's Subscribe issues a Redis SUBSCRIBE command
-# that needs a moment to take effect, especially over the Docker network.
-sleep 3
+# The WebSocket client needs to dial, upgrade, and subscribe on the hub
+# before it can observe anything published — RedisHub's Subscribe issues a
+# Redis SUBSCRIBE command that needs a moment to take effect, especially
+# over the Docker network. Rather than guess a single fixed delay (which
+# would either be flaky under load if too short, or waste time on every run
+# if padded generously), send the message, then poll: if the WebSocket
+# client (still running) hasn't received it yet, re-send the same message
+# and check again, bounded by PUBLISH_RETRY_BUDGET_S seconds — comfortably
+# inside verifywshub's own -timeout 20s above, so a "wait" below afterward
+# always has enough of that budget left to observe a late-subscribing
+# client's eventual receipt. Re-sending is safe to grep for afterward since
+# every attempt carries the same $MESSAGE_CONTENT.
+PUBLISH_RETRY_BUDGET_S=15
+publish_deadline=$(( $(date +%s) + PUBLISH_RETRY_BUDGET_S ))
 
-echo "==> Sending a message via HTTP against replica 2 (${BASE2})"
-SEND_BODY="$(curl -sS -X POST "${BASE2}/rooms/${ROOM_ID}/messages" \
-  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -d "{\"content\":\"${MESSAGE_CONTENT}\"}")"
-if [[ "$(jq -r '.id // empty' <<<"$SEND_BODY")" == "" ]]; then
-  echo "verify_redis_hub: send message via replica 2 failed: ${SEND_BODY}" >&2
-  kill "$WS_PID" 2>/dev/null || true
-  exit 1
-fi
+echo "==> Sending the message via HTTP against replica 2 (${BASE2}), retrying until replica 1's WebSocket client receives it or the retry budget elapses"
+while true; do
+  SEND_BODY="$(curl -sS -X POST "${BASE2}/rooms/${ROOM_ID}/messages" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"content\":\"${MESSAGE_CONTENT}\"}")"
+  if [[ "$(jq -r '.id // empty' <<<"$SEND_BODY")" == "" ]]; then
+    echo "verify_redis_hub: send message via replica 2 failed: ${SEND_BODY}" >&2
+    kill "$WS_PID" 2>/dev/null || true
+    exit 1
+  fi
+
+  # Give the just-published event a moment to propagate through Redis
+  # Pub/Sub and reach the WebSocket client before deciding whether to retry.
+  sleep 1
+
+  if ! kill -0 "$WS_PID" 2>/dev/null; then
+    # verifywshub already exited -- either it received a frame (success) or
+    # its own -timeout fired (failure); either way there's nothing left to
+    # publish for. The `wait` below reports which one happened.
+    break
+  fi
+
+  if [[ $(date +%s) -ge $publish_deadline ]]; then
+    echo "==> Publish retry budget exhausted; leaving the last send in place and waiting out the WebSocket client's own timeout"
+    break
+  fi
+
+  echo "==> Replica 1's WebSocket client hasn't received the event yet; re-sending the message"
+done
 
 echo "==> Waiting for the WebSocket client (connected to replica 1) to observe the event"
 if ! wait "$WS_PID"; then

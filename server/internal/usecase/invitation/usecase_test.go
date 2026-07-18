@@ -246,6 +246,15 @@ func TestAcceptInvitationNotPendingAfterRemoval(t *testing.T) {
 		t.Fatalf("AcceptInvitation failed: %v", err)
 	}
 
+	// RoomRepo.RemoveMember now checks room ownership (owner-protection: see
+	// mocks.RoomRepo.RemoveMember's doc comment), which requires a Rooms
+	// entry to exist -- newTestFixture only seeds "room-1" via SeedMember
+	// (deliberately no Rooms entry, see SeedMember's doc comment), so a bare
+	// SeedRoom call here (bob-1 is not its owner either way) is enough to
+	// let the ownership check proceed to the actual membership removal
+	// below.
+	roomRepo.SeedRoom("room-1", nil)
+
 	// Remove the membership out-of-band so a repeat accept attempt reaches
 	// the invitation-status check instead of short-circuiting on
 	// ErrAlreadyMember, exercising the "second accept/reject on a
@@ -391,6 +400,9 @@ func TestConcurrentAcceptAndRejectNoMixedFinalState(t *testing.T) {
 		t.Fatalf("GetByID failed: %v", err)
 	}
 	_, memberErr := roomRepo.GetMember(ctx, "room-1", "bob-1")
+	if memberErr != nil && !errors.Is(memberErr, domain.ErrNotFound) {
+		t.Fatalf("GetMember failed: %v", memberErr)
+	}
 	isMember := memberErr == nil
 
 	// The invariant under test: the final invitation status and whether bob

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/invitation"
@@ -182,17 +183,18 @@ func (r *InvitationRepo) updateStatusLocked(id string, newStatus, expectedStatus
 }
 
 // AcceptTx approximates postgres.InvitationRepository.AcceptTx's atomicity
-// for tests: it holds r.mu across the pending-status check -- a CAS via
-// updateStatusLocked when transitionStatus is true, or a plain read-and-
-// compare against StatusPending when transitionStatus is false, mirroring
-// the real transaction's `SELECT ... FOR UPDATE` -- and the AddMember
-// callback, so a concurrent UpdateStatus call for the same invitation ID is
-// serialized against this one exactly as a real DB transaction's row lock
-// would serialize it. If AddMember fails after a successful status CAS,
-// the status is rolled back to what it was immediately before the CAS,
-// mirroring the real transaction's rollback on a failed room_members
-// insert, rather than leaving the invitation stuck StatusAccepted with no
-// corresponding member row. See the AddMember field's doc comment.
+// for tests: it holds r.mu across the pending-status/expiry check -- a CAS
+// via acceptTransitionCASLocked when transitionStatus is true, or a plain
+// read-and-compare against StatusPending/expires_at when transitionStatus
+// is false, mirroring the real transaction's `SELECT ... FOR UPDATE` -- and
+// the AddMember callback, so a concurrent UpdateStatus call for the same
+// invitation ID is serialized against this one exactly as a real DB
+// transaction's row lock would serialize it. If AddMember fails after a
+// successful status CAS, the status is rolled back to what it was
+// immediately before the CAS, mirroring the real transaction's rollback on
+// a failed room_members insert, rather than leaving the invitation stuck
+// StatusAccepted with no corresponding member row. See the AddMember
+// field's doc comment.
 func (r *InvitationRepo) AcceptTx(ctx context.Context, invitationID string, expectedStatus invitation.Status, transitionStatus bool, member *domainroom.RoomMember) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -202,7 +204,7 @@ func (r *InvitationRepo) AcceptTx(ctx context.Context, invitationID string, expe
 		if inv, ok := r.Invitations[invitationID]; ok {
 			priorStatus = inv.Status
 		}
-		if err := r.updateStatusLocked(invitationID, invitation.StatusAccepted, expectedStatus); err != nil {
+		if err := r.acceptTransitionCASLocked(invitationID, expectedStatus); err != nil {
 			return err
 		}
 		if r.AddMember == nil {
@@ -216,7 +218,7 @@ func (r *InvitationRepo) AcceptTx(ctx context.Context, invitationID string, expe
 	}
 
 	// Reusable link invitations never run the CAS above, so check the
-	// invitation's current status here instead -- mirroring
+	// invitation's current status and expiry here instead -- mirroring
 	// postgres.InvitationRepository.AcceptTx's `SELECT ... FOR UPDATE`
 	// re-check -- rather than admitting the member regardless of status.
 	inv, ok := r.Invitations[invitationID]
@@ -226,10 +228,36 @@ func (r *InvitationRepo) AcceptTx(ctx context.Context, invitationID string, expe
 	if inv.Status != invitation.StatusPending {
 		return domain.ErrInvitationNotPending
 	}
+	if time.Now().After(inv.ExpiresAt) {
+		return domain.ErrInvitationExpired
+	}
 	if r.AddMember == nil {
 		return nil
 	}
 	return r.AddMember(ctx, member)
+}
+
+// acceptTransitionCASLocked is AcceptTx's transitionStatus==true CAS body,
+// callable while r.mu is already held (see AcceptTx's doc comment). It
+// mirrors postgres.acceptTransitionCAS: it transitions id from
+// expectedStatus to StatusAccepted only if the invitation is not yet
+// expired. Unlike updateStatusLocked (shared with the general-purpose
+// UpdateStatus, used by e.g. RevokeInvitation), it is not reused there:
+// revoking or rejecting an already-expired invitation must still succeed,
+// so the expiry gate belongs only here.
+func (r *InvitationRepo) acceptTransitionCASLocked(id string, expectedStatus invitation.Status) error {
+	inv, ok := r.Invitations[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if inv.Status != expectedStatus {
+		return domain.ErrInvitationNotPending
+	}
+	if time.Now().After(inv.ExpiresAt) {
+		return domain.ErrInvitationExpired
+	}
+	inv.Status = invitation.StatusAccepted
+	return nil
 }
 
 // sortInvitationsByCreatedAtDesc sorts invitations in place by CreatedAt

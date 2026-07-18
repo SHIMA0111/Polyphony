@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest"
+import { renderHook } from "@testing-library/react"
+import { createRef } from "react"
+import { describe, expect, it, vi } from "vitest"
 import {
   computeElementAnchorScrollTop,
   computeScrollAnchorAdjustment,
+  useLoadOlderOnScroll,
 } from "./use-load-older-on-scroll"
 
 describe("computeScrollAnchorAdjustment", () => {
@@ -38,5 +41,73 @@ describe("computeElementAnchorScrollTop", () => {
     // growth elsewhere in the container (e.g. a new message arriving below
     // the visible area during the same fetch).
     expect(computeElementAnchorScrollTop(0, 100, 500)).toBe(400)
+  })
+})
+
+describe("useLoadOlderOnScroll's synchronous in-flight guard", () => {
+  // Regression test: captureAnchorAndFetch (exposed as triggerLoadOlder)
+  // must not double-fire fetchNextPage when called twice back-to-back in
+  // the same tick, even though isFetchingNextPage — a React prop — hasn't
+  // had a chance to flip to true yet between the two calls. Without the
+  // synchronous useRef guard, both calls would observe the same stale
+  // isFetchingNextPage === false and both call fetchNextPage().
+  it("calls fetchNextPage only once across two synchronous triggerLoadOlder calls", () => {
+    const containerRef = createRef<HTMLDivElement>()
+    ;(containerRef as { current: HTMLDivElement }).current = document.createElement("div")
+
+    let resolveFetch: (() => void) | undefined
+    const fetchNextPage = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFetch = resolve
+        }),
+    )
+
+    const { result } = renderHook(() =>
+      useLoadOlderOnScroll({
+        containerRef,
+        hasNextPage: true,
+        isFetchingNextPage: false,
+        fetchNextPage,
+        pageCount: 1,
+      }),
+    )
+
+    result.current.triggerLoadOlder()
+    result.current.triggerLoadOlder()
+
+    expect(fetchNextPage).toHaveBeenCalledTimes(1)
+
+    // Resolving the in-flight fetch clears the guard, so a subsequent
+    // trigger is allowed through again -- proving the guard isn't stuck
+    // permanently once the fetch settles.
+    resolveFetch?.()
+  })
+
+  it("allows a new fetch once the previous one's promise settles", async () => {
+    const containerRef = createRef<HTMLDivElement>()
+    ;(containerRef as { current: HTMLDivElement }).current = document.createElement("div")
+
+    const fetchNextPage = vi.fn(() => Promise.resolve())
+
+    const { result } = renderHook(() =>
+      useLoadOlderOnScroll({
+        containerRef,
+        hasNextPage: true,
+        isFetchingNextPage: false,
+        fetchNextPage,
+        pageCount: 1,
+      }),
+    )
+
+    result.current.triggerLoadOlder()
+    expect(fetchNextPage).toHaveBeenCalledTimes(1)
+
+    // Let the resolved promise's .finally microtask run.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    result.current.triggerLoadOlder()
+    expect(fetchNextPage).toHaveBeenCalledTimes(2)
   })
 })

@@ -1,6 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react"
 import { delay, http, HttpResponse } from "msw"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import { fixtureAiMessageResponse } from "@/features/messages/api/handlers"
@@ -82,5 +82,29 @@ describe("useSendAIMessage", () => {
     expect(data?.pages[0]?.messages[0]?.type).toBe("human")
     expect(data?.pages[0]?.messages[0]?.status).toBe("failed")
     expect(data?.pages[0]?.messages[0]?.content).toBe("Hello, AI!")
+  })
+
+  it("invokes options.onSendFailed with the failed human echo's id and the requested model", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+        return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+      }),
+    )
+
+    const onSendFailed = vi.fn()
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useSendAIMessage("room-1", { onSendFailed }), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    await expect(
+      result.current.mutateAsync({ content: "Hello, AI!", model: "gpt-5" }),
+    ).rejects.toThrow()
+
+    const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
+    const failedHumanId = data?.pages[0]?.messages[0]?.id
+
+    expect(onSendFailed).toHaveBeenCalledTimes(1)
+    expect(onSendFailed).toHaveBeenCalledWith(failedHumanId, "gpt-5")
   })
 })

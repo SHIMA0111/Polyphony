@@ -212,6 +212,20 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 			return nil, fmt.Errorf("parse REDIS_URL: %w", err)
 		}
 		redisClient = redis.NewClient(opts)
+
+		// Verify connectivity eagerly, mirroring database.NewPool's Ping check,
+		// so a misconfigured/unreachable Redis fails container construction
+		// immediately instead of lazily on the first message hub operation
+		// (e.g. the first WebSocket Publish/Subscribe call from a real user).
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		pingErr := redisClient.Ping(pingCtx).Err()
+		cancel()
+		if pingErr != nil {
+			_ = redisClient.Close()
+			pool.Close()
+			return nil, fmt.Errorf("ping redis: %w", pingErr)
+		}
+
 		messageHub = infraevent.NewRedisHub(redisClient)
 	default:
 		messageHub = event.NewInProcessHub()

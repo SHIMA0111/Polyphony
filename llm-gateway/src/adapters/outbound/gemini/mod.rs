@@ -67,9 +67,15 @@ fn models_list() -> &'static Vec<ModelInfo> {
 /// HTTP client timeouts, retry policy) is injected explicitly via `Config` at
 /// construction time — this adapter never reads `std::env` directly.
 pub struct GeminiProvider {
+    /// HTTP client used to send requests to the Google Generative Language API.
     client: Client,
+    /// Base URL for the Google Generative Language API (e.g.
+    /// `https://generativelanguage.googleapis.com`).
     base_url: String,
+    /// Key store used to resolve the API key lazily, per request (see the struct-level
+    /// docs above).
     key_store: Arc<dyn KeyStore>,
+    /// Retry policy applied to transient failures (429/5xx) via `send_with_retry`.
     retry_policy: RetryPolicy,
 }
 
@@ -83,6 +89,12 @@ impl GeminiProvider {
     ///   eagerly here), so gateway startup never depends on the key being present.
     /// * `http` — Shared HTTP client tuning (connect/request timeouts, retry policy).
     /// * `provider` — Gemini-specific configuration (base URL).
+    ///
+    /// # Returns
+    /// `Ok(Self)` once the underlying `reqwest::Client` has been built with `http`'s
+    /// connect/request timeouts. API key resolution is deferred (see above), so a
+    /// successful return here says nothing about whether the key is actually valid
+    /// or even present yet.
     ///
     /// # Errors
     /// Returns `DomainError::ProviderError` if the underlying `reqwest::Client` fails

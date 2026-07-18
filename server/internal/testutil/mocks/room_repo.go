@@ -294,11 +294,25 @@ func (r *RoomRepo) ListMembers(_ context.Context, roomID string) ([]*room.RoomMe
 	return result, nil
 }
 
-// RemoveMember removes a user from a room. Returns domain.ErrNotFound if
-// the room has no members recorded or the membership does not exist.
+// RemoveMember removes a membership, mirroring
+// postgres.RoomRepository.RemoveMember's owner-protection contract: it
+// returns room.ErrOwnerRoleProtected if userID is roomID's current owner,
+// checked (and, together with the rest of this method, executed) while
+// holding r.mu -- the same atomicity a real DB transaction's row lock on
+// rooms provides against a concurrent TransferOwnership call, see
+// TransferOwnership's GoDoc. Returns domain.ErrNotFound if the room or the
+// membership does not exist.
 func (r *RoomRepo) RemoveMember(_ context.Context, roomID, userID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	rm, ok := r.Rooms[roomID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if rm.OwnerID == userID {
+		return room.ErrOwnerRoleProtected
+	}
 
 	members, ok := r.Members[roomID]
 	if !ok {

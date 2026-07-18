@@ -3,6 +3,15 @@ import { NextResponse, type NextRequest } from "next/server"
 /** Base URL of the Kratos public API, read server-side only (never inlined into the client bundle). */
 const KRATOS_PUBLIC_URL = process.env.KRATOS_PUBLIC_URL ?? "http://localhost:4433"
 
+/**
+ * Upper bound, in milliseconds, on how long this proxy waits for Kratos to
+ * respond before aborting the upstream request and returning a `504` to the
+ * caller. Configurable via `KRATOS_PROXY_TIMEOUT_MS` for environments where
+ * Kratos is known to be slower (e.g. a cold-started dev stack); defaults to
+ * 30 seconds.
+ */
+const KRATOS_PROXY_TIMEOUT_MS = Number(process.env.KRATOS_PROXY_TIMEOUT_MS) || 30_000
+
 /** Route handlers must not be statically optimized: every request carries a distinct session cookie. */
 export const dynamic = "force-dynamic"
 
@@ -35,9 +44,20 @@ interface RouteContext {
  * `Transfer-Encoding` are intentionally dropped since the body was already
  * read and decoded here (mirrors `app/api/proxy/[...path]/route.ts`).
  *
+ * The upstream `fetch` is bounded by an `AbortController` timeout
+ * (`KRATOS_PROXY_TIMEOUT_MS`, default 30s): a Kratos instance that hangs
+ * (rather than erroring immediately) would otherwise leave the caller's
+ * request pending indefinitely. An abort is reported as a `504` JSON body;
+ * any other network-level rejection (e.g. Kratos unreachable, DNS failure)
+ * is reported as a `502` JSON body, so a caller always gets a timely,
+ * well-formed response instead of an unhandled exception bubbling out of
+ * the route handler.
+ *
  * @param request - The incoming Next.js request.
  * @param context - Route context carrying the (Next 16 async) dynamic `path` segments.
- * @returns A `NextResponse` mirroring the upstream status, body, and `Set-Cookie` headers.
+ * @returns A `NextResponse` mirroring the upstream status, body, and
+ *   `Set-Cookie` headers; or a `504`/`502` JSON error response if the
+ *   upstream `fetch` timed out or otherwise failed.
  */
 async function proxy(
   request: NextRequest,
@@ -60,11 +80,31 @@ async function proxy(
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD"
 
-  const upstreamRes = await fetch(upstreamUrl, {
-    method: request.method,
-    headers,
-    body: hasBody ? await request.arrayBuffer() : undefined,
-  })
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), KRATOS_PROXY_TIMEOUT_MS)
+
+  let upstreamRes: Response
+  try {
+    upstreamRes = await fetch(upstreamUrl, {
+      method: request.method,
+      headers,
+      body: hasBody ? await request.arrayBuffer() : undefined,
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      return NextResponse.json(
+        { error: "Kratos request timed out" },
+        { status: 504 },
+      )
+    }
+    return NextResponse.json(
+      { error: "Failed to reach Kratos" },
+      { status: 502 },
+    )
+  } finally {
+    clearTimeout(timeoutId)
+  }
 
   const responseBody = await upstreamRes.arrayBuffer()
   const responseHeaders = new Headers()

@@ -57,7 +57,18 @@ type RoomRepository interface {
 	// ListMembers returns all members of a room.
 	ListMembers(ctx context.Context, roomID string) ([]*RoomMember, error)
 
-	// RemoveMember removes a user from a room.
+	// RemoveMember removes a user from a room. It returns domain.ErrNotFound
+	// if the membership (roomID, userID) does not exist, and
+	// ErrOwnerRoleProtected if userID is the room's current owner (the
+	// owner must transfer ownership via TransferOwnership before they can
+	// be removed, never a plain removal).
+	//
+	// The owner recheck happens inside the same database transaction as the
+	// room_members DELETE, under the same row lock (`SELECT ... FOR UPDATE`)
+	// on rooms that UpdateMemberRole and TransferOwnership take — see
+	// UpdateMemberRole's GoDoc for why this serializes a concurrent
+	// TransferOwnership against this call instead of letting a stale
+	// usecase-layer pre-check race it.
 	RemoveMember(ctx context.Context, roomID, userID string) error
 
 	// UpdateMemberRole updates a single membership's role. It returns

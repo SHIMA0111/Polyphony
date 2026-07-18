@@ -11,7 +11,7 @@ use super::GeminiProvider;
 
 // --- Gemini-specific DTOs ---
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiRequest {
     contents: Vec<GeminiContent>,
@@ -26,19 +26,19 @@ struct GeminiRequest {
 /// `role` is `None`/omitted when this `GeminiContent` represents the top-level
 /// `systemInstruction` (Gemini's `systemInstruction` object has no `role` field), and
 /// `Some("user"|"model"|"function")` for entries in `contents`.
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct GeminiContent {
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
     parts: Vec<GeminiPart>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct GeminiPart {
     text: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiGenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -158,7 +158,21 @@ fn gemini_role_to_role(s: &str) -> Role {
 /// All `Role::System` messages are joined (with `"\n"`) into a single top-level
 /// `system_instruction`, since Gemini does not accept a `"system"` role inside
 /// `contents`; all other messages become `contents` entries in original order.
-fn to_gemini_request(req: &CompletionRequest) -> GeminiRequest {
+///
+/// # Arguments
+/// * `req` — Provider-agnostic completion request to convert.
+///
+/// # Returns
+/// The equivalent `GeminiRequest` body, ready to be serialized and sent to
+/// `generateContent`.
+///
+/// # Errors
+/// Returns `DomainError::InvalidRequest` if `req.messages` contains no
+/// non-`Role::System` message: Gemini's `generateContent` requires a non-empty
+/// `contents` array, and a request built from only system messages would
+/// otherwise be sent with `contents: []`, surfacing as an opaque remote HTTP
+/// 400 instead of a clear domain error.
+fn to_gemini_request(req: &CompletionRequest) -> Result<GeminiRequest, DomainError> {
     let mut system_texts = Vec::new();
     let mut contents = Vec::new();
 
@@ -172,6 +186,12 @@ fn to_gemini_request(req: &CompletionRequest) -> GeminiRequest {
                 }],
             }),
         }
+    }
+
+    if contents.is_empty() {
+        return Err(DomainError::InvalidRequest(
+            "messages must contain at least one non-system message".to_string(),
+        ));
     }
 
     let system_instruction = if system_texts.is_empty() {
@@ -194,11 +214,11 @@ fn to_gemini_request(req: &CompletionRequest) -> GeminiRequest {
         })
     };
 
-    GeminiRequest {
+    Ok(GeminiRequest {
         contents,
         system_instruction,
         generation_config,
-    }
+    })
 }
 
 /// Converts a Gemini `generateContent` response into a provider-agnostic
@@ -301,24 +321,26 @@ fn from_gemini_response(
 /// * `req` — Completion request to send.
 ///
 /// # Errors
-/// Returns `DomainError::KeyNotFound` if the API key cannot be resolved via
-/// `KeyStore`, `DomainError::Timeout` on a connection/request timeout,
-/// `DomainError::RateLimited` on an HTTP 429 response (with `Retry-After` parsed if
-/// present), and `DomainError::ProviderError` (with the original error preserved via
-/// `#[source]` where available) for any other transport or non-2xx response, or an
-/// empty/safety-blocked `candidates` list.
+/// Returns `DomainError::InvalidRequest` if `req.messages` contains no non-system
+/// message (see `to_gemini_request`), `DomainError::KeyNotFound` if the API key
+/// cannot be resolved via `KeyStore`, `DomainError::Timeout` on a
+/// connection/request timeout, `DomainError::RateLimited` on an HTTP 429 response
+/// (with `Retry-After` parsed if present), and `DomainError::ProviderError` (with
+/// the original error preserved via `#[source]` where available) for any other
+/// transport or non-2xx response, or an empty/safety-blocked `candidates` list.
 pub(super) fn complete<'a>(
     provider: &'a GeminiProvider,
     req: &CompletionRequest,
 ) -> BoxFuture<'a, Result<CompletionResponse, DomainError>> {
-    let gemini_req = to_gemini_request(req);
     let model = req.model.clone();
     let url = format!(
         "{}/v1beta/models/{model}:generateContent",
         provider.base_url
     );
+    let gemini_req_result = to_gemini_request(req);
 
     Box::pin(async move {
+        let gemini_req = gemini_req_result?;
         let api_key = provider.key_store.get_key(GeminiProvider::PROVIDER_NAME)?;
 
         let send_request = || {
@@ -403,7 +425,7 @@ mod tests {
             max_tokens: Some(256),
         };
 
-        let gemini_req = to_gemini_request(&req);
+        let gemini_req = to_gemini_request(&req).expect("request has non-system messages");
 
         let system_instruction = gemini_req
             .system_instruction
@@ -446,9 +468,39 @@ mod tests {
             max_tokens: None,
         };
 
-        let gemini_req = to_gemini_request(&req);
+        let gemini_req = to_gemini_request(&req).expect("request has a non-system message");
         assert!(gemini_req.system_instruction.is_none());
         assert!(gemini_req.generation_config.is_none());
+    }
+
+    #[test]
+    fn test_to_gemini_request_system_only_is_invalid_request() {
+        // A request built from only Role::System messages would otherwise produce
+        // an empty `contents` array, which Gemini's generateContent API rejects
+        // with an opaque remote HTTP 400. to_gemini_request must reject this
+        // locally with a clear DomainError::InvalidRequest instead.
+        let req = CompletionRequest {
+            model: "gemini-3-pro".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::System,
+                content: "You are helpful.".to_string().into(),
+            }],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let err = to_gemini_request(&req)
+            .expect_err("a system-only request should be rejected as invalid");
+
+        match err {
+            DomainError::InvalidRequest(message) => {
+                assert!(
+                    message.contains("non-system"),
+                    "expected the error to mention the missing non-system message, got: {message}"
+                );
+            }
+            other => panic!("expected DomainError::InvalidRequest, got {other:?}"),
+        }
     }
 
     #[test]
