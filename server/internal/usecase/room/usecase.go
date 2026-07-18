@@ -223,9 +223,9 @@ func (u *RoomUsecase) LeaveRoom(ctx context.Context, callerID, roomID, targetUse
 // from the current one. Rejecting newRole == domainroom.RoleMaster is
 // already validated at the handler layer (HTTP 400 before this method is
 // ever called via HTTP); this method re-checks it as defense in depth for
-// any other caller, per this codebase's pattern (see e.g. Step 25's review
-// fix). It returns domain.ErrNotFound if targetUserID is not a member of
-// roomID.
+// any other caller, per this codebase's pattern of never trusting the
+// handler layer alone for an invariant the usecase can enforce directly.
+// It returns domain.ErrNotFound if targetUserID is not a member of roomID.
 //
 // Unlike LeaveRoom, this never calls hub.Revoke: a role change (even a
 // demotion, e.g. to domainroom.RoleReader) never removes room membership

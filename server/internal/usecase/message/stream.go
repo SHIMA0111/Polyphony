@@ -382,12 +382,12 @@ func (u *MessageUsecase) consumeAIStream(
 }
 
 // completeAIMessageFallback is SendAIMessageStream's fallback completion
-// path (M2 post-review fix), used only when the LLM Gateway's Stream call
-// fails synchronously with domain.ErrStreamingUnsupported. Rather than
-// surfacing that as a hard failure -- which used to silently break every
-// streaming send whenever LLM_GATEWAY_TRANSPORT=grpc was configured, since
-// gateway.GRPCClient never implements Stream -- this transparently completes
-// the request through the unary ai.LLMGateway.Complete call instead,
+// path, used only when the LLM Gateway's Stream call fails synchronously
+// with domain.ErrStreamingUnsupported -- which is always the case under
+// LLM_GATEWAY_TRANSPORT=grpc, since gateway.GRPCClient never implements
+// Stream. Rather than surfacing that as a hard failure and breaking every
+// streaming send on that transport, this transparently completes the
+// request through the unary ai.LLMGateway.Complete call instead,
 // preserving the streaming endpoint's 202+placeholder contract (the caller
 // already received a Status = MessageStatusStreaming placeholder) while
 // never publishing an EventTokenChunk, since there is no incremental data to

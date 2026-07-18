@@ -254,28 +254,14 @@ func (r *MessageRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// CountByRoom returns the total number of messages in roomID, ignoring
-// soft-delete/visibility (a structural count, not a visibility-filtered
-// read) — see message.MessageRepository.CountByRoom.
-func (r *MessageRepository) CountByRoom(ctx context.Context, roomID string) (int64, error) {
-	var count int64
-	err := r.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM messages WHERE room_id = $1`, roomID,
-	).Scan(&count)
-	if err != nil {
-		return 0, err
-	}
-	return count, nil
-}
-
 // CountAndMaxSequence returns, in a single query, the total number of
 // messages in roomID (including soft-deleted and private ones — a
-// structural count, like CountByRoom) and the highest sequence value
-// currently assigned in roomID (0 if the room has no messages) — see
-// message.MessageRepository.CountAndMaxSequence. Computing both in one
-// query, rather than as two separate round trips, is what makes the
-// returned (total, maxSeq) pair a consistent snapshot: no message insert
-// can land between the count and the max being read.
+// structural count, not a visibility-filtered read) and the highest
+// sequence value currently assigned in roomID (0 if the room has no
+// messages) — see message.MessageRepository.CountAndMaxSequence. Computing
+// both in one query, rather than as two separate round trips, is what makes
+// the returned (total, maxSeq) pair a consistent snapshot: no message
+// insert can land between the count and the max being read.
 func (r *MessageRepository) CountAndMaxSequence(ctx context.Context, roomID string) (int64, int64, error) {
 	var total, maxSeq int64
 	err := r.pool.QueryRow(ctx,
@@ -290,9 +276,9 @@ func (r *MessageRepository) CountAndMaxSequence(ctx context.Context, roomID stri
 // ListByRoomAfter returns up to limit messages in roomID with
 // afterSequence < sequence <= maxSequence, ordered ascending by sequence
 // (oldest first) — see message.MessageRepository.ListByRoomAfter. Like
-// CountByRoom, it ignores soft-delete/visibility/exclude-from-ai flags: a
-// room fork copies the room's entire, unfiltered history up to the frozen
-// maxSequence boundary its caller passes.
+// CountAndMaxSequence, it ignores soft-delete/visibility/exclude-from-ai
+// flags: a room fork copies the room's entire, unfiltered history up to
+// the frozen maxSequence boundary its caller passes.
 func (r *MessageRepository) ListByRoomAfter(ctx context.Context, roomID string, afterSequence int64, maxSequence int64, limit int) ([]*message.Message, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence > $2 AND sequence <= $3

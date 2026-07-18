@@ -236,10 +236,10 @@ func (r *RoomRepository) AddMember(ctx context.Context, member *room.RoomMember)
 // GetMember retrieves a specific room membership by room ID and user ID. It
 // returns domain.ErrNotFound if the membership does not exist. It JOINs
 // against the users table to populate the returned RoomMember.Username,
-// exactly as ListMembers does (Step 42's review fix: RoomUsecase.ChangeMemberRole
-// returns GetMember's result directly, and a caller-facing MemberResponse
-// with an empty username was a visible regression relative to every other
-// member-listing endpoint).
+// exactly as ListMembers does: RoomUsecase.ChangeMemberRole returns
+// GetMember's result directly, so an unpopulated username here would leak
+// into the caller-facing MemberResponse as an empty string, unlike every
+// other member-listing endpoint.
 func (r *RoomRepository) GetMember(ctx context.Context, roomID, userID string) (*room.RoomMember, error) {
 	var m room.RoomMember
 	var roleStr string

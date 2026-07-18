@@ -342,3 +342,106 @@ func TestAttachmentRepository_ListByMessageID(t *testing.T) {
 		t.Fatalf("expected order [first, second], got [%s, %s]", list[0].ID, list[1].ID)
 	}
 }
+
+// TestAttachmentRepository_ListByMessageIDs proves that ListByMessageIDs
+// groups attachments by message ID in a single query, preserves
+// ListByMessageID's per-message creation-time ordering within each group,
+// and simply omits any message ID that has no attachments (rather than
+// mapping it to an empty or nil slice).
+func TestAttachmentRepository_ListByMessageIDs(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	attachmentRepo := NewAttachmentRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "attach-list-many-owner")
+	msgA := seedMessage(ctx, t, msgRepo, rm.ID, rm.OwnerID)
+	msgB := seedMessage(ctx, t, msgRepo, rm.ID, rm.OwnerID)
+	msgC := seedMessage(ctx, t, msgRepo, rm.ID, rm.OwnerID)
+
+	// msgA gets two attachments with distinct, explicit timestamps so the
+	// ordering assertion below never depends on wall-clock resolution.
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	aFirst := &domainattachment.Attachment{
+		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
+		S3Key:     "attachments/" + rm.ID + "/a-first",
+		MimeType:  "image/png",
+		SizeBytes: 1,
+		CreatedAt: base,
+	}
+	if err := attachmentRepo.Create(ctx, aFirst); err != nil {
+		t.Fatalf("Create aFirst failed: %v", err)
+	}
+	if _, err := attachmentRepo.AttachToMessage(ctx, aFirst.ID, msgA.ID, rm.ID); err != nil {
+		t.Fatalf("AttachToMessage aFirst failed: %v", err)
+	}
+
+	aSecond := &domainattachment.Attachment{
+		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
+		S3Key:     "attachments/" + rm.ID + "/a-second",
+		MimeType:  "image/png",
+		SizeBytes: 1,
+		CreatedAt: base.Add(time.Millisecond),
+	}
+	if err := attachmentRepo.Create(ctx, aSecond); err != nil {
+		t.Fatalf("Create aSecond failed: %v", err)
+	}
+	if _, err := attachmentRepo.AttachToMessage(ctx, aSecond.ID, msgA.ID, rm.ID); err != nil {
+		t.Fatalf("AttachToMessage aSecond failed: %v", err)
+	}
+
+	// msgB gets a single attachment.
+	bOnly := &domainattachment.Attachment{
+		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
+		S3Key:     "attachments/" + rm.ID + "/b-only",
+		MimeType:  "image/jpeg",
+		SizeBytes: 1,
+		CreatedAt: time.Now(),
+	}
+	if err := attachmentRepo.Create(ctx, bOnly); err != nil {
+		t.Fatalf("Create bOnly failed: %v", err)
+	}
+	if _, err := attachmentRepo.AttachToMessage(ctx, bOnly.ID, msgB.ID, rm.ID); err != nil {
+		t.Fatalf("AttachToMessage bOnly failed: %v", err)
+	}
+
+	// msgC gets no attachments at all — it must be absent from the result.
+
+	grouped, err := attachmentRepo.ListByMessageIDs(ctx, []string{msgA.ID, msgB.ID, msgC.ID})
+	if err != nil {
+		t.Fatalf("ListByMessageIDs failed: %v", err)
+	}
+
+	if len(grouped) != 2 {
+		t.Fatalf("expected exactly 2 message IDs in the result, got %d: %+v", len(grouped), grouped)
+	}
+
+	aGroup, ok := grouped[msgA.ID]
+	if !ok {
+		t.Fatalf("expected msgA (%s) to be present in the result", msgA.ID)
+	}
+	if len(aGroup) != 2 {
+		t.Fatalf("expected 2 attachments for msgA, got %d", len(aGroup))
+	}
+	if aGroup[0].ID != aFirst.ID || aGroup[1].ID != aSecond.ID {
+		t.Fatalf("expected msgA order [aFirst, aSecond], got [%s, %s]", aGroup[0].ID, aGroup[1].ID)
+	}
+
+	bGroup, ok := grouped[msgB.ID]
+	if !ok {
+		t.Fatalf("expected msgB (%s) to be present in the result", msgB.ID)
+	}
+	if len(bGroup) != 1 || bGroup[0].ID != bOnly.ID {
+		t.Fatalf("expected msgB group to contain only bOnly, got %+v", bGroup)
+	}
+
+	if _, ok := grouped[msgC.ID]; ok {
+		t.Fatalf("expected msgC (%s) with no attachments to be absent from the result, got %+v", msgC.ID, grouped[msgC.ID])
+	}
+}

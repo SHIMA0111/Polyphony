@@ -64,32 +64,20 @@ type MessageRepository interface {
 	// ErrNotFound if the room has no sequence counter row.
 	ReserveSequenceRange(ctx context.Context, roomID string, count int64) (int64, error)
 
-	// CountByRoom returns the total number of messages (including
-	// soft-deleted and private ones — this is a structural count, not a
-	// visibility-filtered read) in roomID. It drives
-	// room_fork_jobs.total_messages, letting a room-fork job report overall
-	// progress before it copies a single message.
-	//
-	// A room-fork job (usecase/room.RoomUsecase.runForkJob) uses
-	// CountAndMaxSequence instead of this method: it needs both the total
-	// count and the highest sequence value at the same instant, and reading
-	// them as two separate queries (this method, then a second query for
-	// MAX(sequence)) would let a message sent between the two reads produce
-	// an inconsistent (total, maxSequence) pair.
-	CountByRoom(ctx context.Context, roomID string) (int64, error)
-
 	// CountAndMaxSequence returns, atomically (as a single query), the total
 	// number of messages in roomID (including soft-deleted and private
-	// ones, exactly like CountByRoom) and the highest sequence value
-	// currently assigned in roomID (0 if the room has no messages). A room
-	// fork (usecase/room.RoomUsecase.runForkJob) calls this once, up front,
-	// to freeze a consistent (total, maxSequence) snapshot before its copy
-	// loop starts: passing the frozen maxSequence into every subsequent
-	// ListByRoomAfter call excludes any message sent mid-copy, which is what
-	// keeps TotalMessages an accurate prediction of what the loop will
-	// actually copy and guarantees the loop is bounded and always
-	// terminates, even under continuous concurrent writes to the source
-	// room.
+	// ones — this is a structural count, not a visibility-filtered read)
+	// and the highest sequence value currently assigned in roomID (0 if the
+	// room has no messages). A room fork (usecase/room.RoomUsecase.runForkJob)
+	// calls this once, up front, to freeze a consistent (total, maxSequence)
+	// snapshot before its copy loop starts: passing the frozen maxSequence
+	// into every subsequent ListByRoomAfter call excludes any message sent
+	// mid-copy, which is what keeps TotalMessages an accurate prediction of
+	// what the loop will actually copy and guarantees the loop is bounded
+	// and always terminates, even under continuous concurrent writes to the
+	// source room. Reading the count and the max as a single query (rather
+	// than two separate round trips) is what makes the pair consistent: no
+	// message insert can land between them.
 	CountAndMaxSequence(ctx context.Context, roomID string) (total int64, maxSeq int64, err error)
 
 	// ListByRoomAfter returns up to limit messages in roomID with

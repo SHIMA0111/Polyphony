@@ -194,11 +194,11 @@ func TestRoomHandlerGetForkJobStatus(t *testing.T) {
 		}
 	})
 
-	// 404 mismatched roomId (Step's REST-contract-hygiene fix): a caller who
-	// is a genuine member of new-room (so the usecase itself authorizes the
-	// request) but names an unrelated room in the URL's :roomId segment must
-	// still get 404, not 200 — the usecase has no way to see what roomId the
-	// URL claimed, so this check lives entirely in the handler.
+	// A caller who is a genuine member of new-room (so the usecase itself
+	// authorizes the request) but names an unrelated room in the URL's
+	// :roomId segment must still get 404, not 200 — the usecase has no way
+	// to see what roomId the URL claimed, so this check lives entirely in
+	// the handler.
 	t.Run("404 mismatched roomId", func(t *testing.T) {
 		e, h, _, jobID := setup()
 

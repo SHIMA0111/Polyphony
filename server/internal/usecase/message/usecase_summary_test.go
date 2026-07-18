@@ -143,10 +143,10 @@ func TestAssembleAIContextSummarizesOnOverflowAndCaches(t *testing.T) {
 //  2. A subsequent call that legitimately sees new older-public history
 //     (a message aging out of the recent tail because new messages were
 //     sent) computes a different, larger boundary sequence and correctly
-//     forces a fresh summarization -- this is the behavior item 13's fix
-//     restores; the pre-fix (oldest-sequence) boundary would have kept
-//     hitting the stale cache here and silently dropped the newly bucketed
-//     message from the AI's context.
+//     forces a fresh summarization; an oldest-sequence boundary instead of
+//     the newest-sequence one would have kept hitting the stale cache here
+//     and silently dropped the newly bucketed message from the AI's
+//     context.
 func TestAssembleAIContextCacheHitOnMatchingBoundary(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -376,13 +376,12 @@ type messageResult struct {
 }
 
 // TestAssembleAIContextSkipsStaleUpsertOnConcurrentInvalidation proves the
-// revision-fencing mechanism (item 18, see
-// ai.ContextSummaryRepository's "Revision fencing" doc comment): a
-// DeleteByRoom landing while summarization is in flight -- simulated here
-// via CompleteFunc, which runs after summaryOrCompute has already captured
-// the pre-delete revision via GetRevision but before it calls Upsert --
-// makes the subsequent Upsert a no-op instead of resurrecting a summary
-// that predates the invalidation.
+// revision-fencing mechanism (see ai.ContextSummaryRepository's "Revision
+// fencing" doc comment): a DeleteByRoom landing while summarization is in
+// flight -- simulated here via CompleteFunc, which runs after
+// summaryOrCompute has already captured the pre-delete revision via
+// GetRevision but before it calls Upsert -- makes the subsequent Upsert a
+// no-op instead of resurrecting a summary that predates the invalidation.
 func TestAssembleAIContextSkipsStaleUpsertOnConcurrentInvalidation(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}

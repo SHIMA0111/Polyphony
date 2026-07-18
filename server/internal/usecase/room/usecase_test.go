@@ -502,9 +502,9 @@ func TestRepoUpdateMemberRoleRejectsCurrentOwnerAfterConcurrentTransferOwnership
 // TestChangeMemberRoleRejectsGrantingMaster asserts ChangeMemberRole rejects
 // newRole == domainroom.RoleMaster as defense in depth, even though the
 // handler layer already rejects it with HTTP 400 before ever calling the
-// usecase (Step 25's review fix): granting master to a non-owner member
-// through this endpoint would leave the room with two masters instead of
-// going through TransferOwnership.
+// usecase: granting master to a non-owner member through this endpoint
+// would leave the room with two masters instead of going through
+// TransferOwnership.
 func TestChangeMemberRoleRejectsGrantingMaster(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
@@ -559,11 +559,11 @@ func TestTransferOwnershipSucceeds(t *testing.T) {
 	}
 }
 
-// TestTransferOwnershipRejectsStaleOwner (Step 27's review fix) exercises
-// mocks.RoomRepo.TransferOwnership's compare-and-swap directly at the
-// repository level: a second call passing the original (now-stale)
-// oldOwnerID after a first transfer already succeeded must be rejected with
-// domain.ErrNotFound, mirroring postgres.RoomRepository.TransferOwnership's
+// TestTransferOwnershipRejectsStaleOwner exercises mocks.RoomRepo's
+// TransferOwnership compare-and-swap directly at the repository level: a
+// second call passing the original (now-stale) oldOwnerID after a first
+// transfer already succeeded must be rejected with domain.ErrNotFound,
+// mirroring postgres.RoomRepository.TransferOwnership's
 // `WHERE id = ... AND owner_id = ...` guard.
 func TestTransferOwnershipRejectsStaleOwner(t *testing.T) {
 	repo := &mocks.RoomRepo{}

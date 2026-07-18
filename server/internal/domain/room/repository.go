@@ -142,11 +142,11 @@ type RoomRepository interface {
 // error.
 //
 // Shared by usecase/message.MessageUsecase, usecase/room.RoomUsecase, and
-// usecase/invitation.InvitationUsecase (L6 post-review dedup finding): each
-// used to define its own identical getMember method wrapping exactly this
-// translation. They now each keep a thin same-named getMember method that
-// just forwards here, preserving each usecase's existing call sites and
-// doc-comment cross-references.
+// usecase/invitation.InvitationUsecase, each of which used to define its
+// own identical getMember method wrapping exactly this translation. They
+// now each keep a thin same-named getMember method that just forwards
+// here, preserving each usecase's existing call sites and doc-comment
+// cross-references.
 func GetMemberOrForbidden(ctx context.Context, repo RoomRepository, roomID, userID string) (*RoomMember, error) {
 	member, err := repo.GetMember(ctx, roomID, userID)
 	if err != nil {

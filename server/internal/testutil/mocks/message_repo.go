@@ -224,21 +224,6 @@ func (m *MessageRepo) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-// CountByRoom returns the total number of messages in roomID, ignoring
-// soft-delete/visibility.
-func (m *MessageRepo) CountByRoom(_ context.Context, roomID string) (int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	var count int64
-	for _, msg := range m.Messages {
-		if msg.RoomID == roomID {
-			count++
-		}
-	}
-	return count, nil
-}
-
 // CountAndMaxSequence returns the total number of messages in roomID and
 // the highest sequence value currently assigned (0 if none), both read
 // under the same mutex hold — mirroring postgres.MessageRepository's

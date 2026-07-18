@@ -121,10 +121,10 @@ type Config struct {
 	// gateway.LLMClient, or "grpc" for gateway.GRPCClient (env
 	// LLM_GATEWAY_TRANSPORT). This is the Phase 8 swap point noted in
 	// CLAUDE.md's Interface Swap Points table. Load returns an error for any
-	// other non-empty value, matching AuthMode/MessageHubDriver's posture
-	// (post-review fix: this used to silently fall back to "rest" with only
-	// a logged warning, masking a config typo instead of failing fast at
-	// startup). Note that "grpc" does not support streaming sends at all
+	// other non-empty value, matching AuthMode/MessageHubDriver's posture:
+	// silently falling back to "rest" with only a logged warning would mask
+	// a config typo instead of failing fast at startup. Note that "grpc"
+	// does not support streaming sends at all
 	// (see gateway.GRPCClient.Stream) -- SendAIMessageStream transparently
 	// falls back to the unary Complete call in that case rather than
 	// treating it as a config error.

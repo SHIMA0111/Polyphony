@@ -211,8 +211,8 @@ func (r *errGetMemberRoomRepo) GetMember(ctx context.Context, roomID, userID str
 	return r.RoomRepo.GetMember(ctx, roomID, userID)
 }
 
-// TestGetForkJobStatusPropagatesNonNotFoundError (Step's review fix) proves
-// that GetForkJobStatus never folds a genuine (non-domain.ErrNotFound)
+// TestGetForkJobStatusPropagatesNonNotFoundError proves that
+// GetForkJobStatus never folds a genuine (non-domain.ErrNotFound)
 // GetMember failure into domain.ErrForbidden: a source-room GetMember call
 // that fails with an arbitrary repository error must propagate that exact
 // error to the caller, rather than being treated the same as "not a

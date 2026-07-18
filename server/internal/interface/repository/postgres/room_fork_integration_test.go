@@ -128,9 +128,9 @@ func TestRoomForkIntegration_MultiBatchEndToEnd(t *testing.T) {
 		t.Fatalf("expected total/copied messages %d/%d, got %d/%d", totalMessages, totalMessages, final.TotalMessages, final.CopiedMessages)
 	}
 
-	newCount, err := msgRepo.CountByRoom(ctx, newRoom.ID)
+	newCount, _, err := msgRepo.CountAndMaxSequence(ctx, newRoom.ID)
 	if err != nil {
-		t.Fatalf("CountByRoom (new room) failed: %v", err)
+		t.Fatalf("CountAndMaxSequence (new room) failed: %v", err)
 	}
 	if newCount != totalMessages {
 		t.Fatalf("expected %d messages in the new room, got %d", totalMessages, newCount)

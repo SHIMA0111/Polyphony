@@ -296,71 +296,6 @@ func TestMessageRepository_PrivateVisibilityFiltering(t *testing.T) {
 	}
 }
 
-// TestMessageRepository_CountByRoom proves CountByRoom returns the total
-// number of messages in a room, ignoring soft-delete/visibility.
-func TestMessageRepository_CountByRoom(t *testing.T) {
-	ctx := context.Background()
-	pool := testutilpg.New(ctx, t)
-
-	userRepo := NewUserRepository(pool)
-	roomRepo := NewRoomRepository(pool)
-	msgRepo := NewMessageRepository(pool)
-
-	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "count-by-room-owner")
-
-	count, err := msgRepo.CountByRoom(ctx, rm.ID)
-	if err != nil {
-		t.Fatalf("CountByRoom (empty room) failed: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("expected 0 messages in a fresh room, got %d", count)
-	}
-
-	now := time.Now()
-	for i := int64(1); i <= 3; i++ {
-		msg := &domainmessage.Message{
-			ID:         uuid.New().String(),
-			RoomID:     rm.ID,
-			SenderID:   &rm.OwnerID,
-			Content:    "msg",
-			Type:       domainmessage.MessageTypeHuman,
-			Status:     domainmessage.MessageStatusCompleted,
-			Sequence:   i,
-			Visibility: domainmessage.MessageVisibilityPublic,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		if err := msgRepo.Create(ctx, msg); err != nil {
-			t.Fatalf("create message %d: %v", i, err)
-		}
-	}
-
-	count, err = msgRepo.CountByRoom(ctx, rm.ID)
-	if err != nil {
-		t.Fatalf("CountByRoom failed: %v", err)
-	}
-	if count != 3 {
-		t.Fatalf("expected 3 messages, got %d", count)
-	}
-
-	// Soft-deleting one message must not change the count (CountByRoom is a
-	// structural count, unlike ListByRoom/ListByRoomUpTo).
-	var firstID string
-	if err := pool.QueryRow(ctx, `SELECT id FROM messages WHERE room_id = $1 AND sequence = 1`, rm.ID).Scan(&firstID); err != nil {
-		t.Fatalf("query first message id: %v", err)
-	}
-	if err := msgRepo.Delete(ctx, firstID); err != nil {
-		t.Fatalf("Delete failed: %v", err)
-	}
-	count, err = msgRepo.CountByRoom(ctx, rm.ID)
-	if err != nil {
-		t.Fatalf("CountByRoom after delete failed: %v", err)
-	}
-	if count != 3 {
-		t.Fatalf("expected CountByRoom to still be 3 after a soft-delete, got %d", count)
-	}
-}
-
 // TestMessageRepository_ListByRoomAfter proves ListByRoomAfter returns
 // messages strictly after afterSequence, in ascending order, respecting
 // limit — the oldest-first counterpart to ListByRoomUpTo.
@@ -458,9 +393,9 @@ func TestMessageRepository_ListByRoomAfter(t *testing.T) {
 
 // TestMessageRepository_CountAndMaxSequence proves CountAndMaxSequence
 // returns the total message count and the highest sequence value in a
-// single atomic read, ignoring soft-delete/visibility (mirroring
-// CountByRoom's structural-count semantics), and reports (0, 0) for a
-// room with no messages.
+// single atomic read, ignoring soft-delete/visibility (a structural read,
+// not a visibility-filtered one), and reports (0, 0) for a room with no
+// messages.
 func TestMessageRepository_CountAndMaxSequence(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -558,9 +493,9 @@ func TestMessageRepository_CreateBatch(t *testing.T) {
 		t.Fatalf("CreateBatch failed: %v", err)
 	}
 
-	count, err := msgRepo.CountByRoom(ctx, rm.ID)
+	count, _, err := msgRepo.CountAndMaxSequence(ctx, rm.ID)
 	if err != nil {
-		t.Fatalf("CountByRoom failed: %v", err)
+		t.Fatalf("CountAndMaxSequence failed: %v", err)
 	}
 	if count != 4 {
 		t.Fatalf("expected 4 messages after CreateBatch, got %d", count)
@@ -585,9 +520,9 @@ func TestMessageRepository_CreateBatch(t *testing.T) {
 		t.Fatal("expected CreateBatch to fail on a duplicate (room_id, sequence), got nil")
 	}
 
-	count, err = msgRepo.CountByRoom(ctx, rm.ID)
+	count, _, err = msgRepo.CountAndMaxSequence(ctx, rm.ID)
 	if err != nil {
-		t.Fatalf("CountByRoom after failed batch failed: %v", err)
+		t.Fatalf("CountAndMaxSequence after failed batch failed: %v", err)
 	}
 	if count != 4 {
 		t.Fatalf("expected CreateBatch's failure to roll back entirely (still 4 messages), got %d", count)

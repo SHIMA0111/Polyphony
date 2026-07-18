@@ -452,10 +452,10 @@ func TestLoadLLMGatewayGRPCOverrides(t *testing.T) {
 	}
 }
 
-// TestLoadLLMGatewayTransportInvalidReturnsError is the M2 post-review
-// regression test: an unrecognized LLM_GATEWAY_TRANSPORT used to silently
-// fall back to "rest" with only a logged warning; it must now fail Load
-// hard, matching AUTH_MODE/MESSAGE_HUB_DRIVER's posture (see
+// TestLoadLLMGatewayTransportInvalidReturnsError asserts that an
+// unrecognized LLM_GATEWAY_TRANSPORT value fails Load hard rather than
+// silently falling back to "rest" with only a logged warning, matching
+// AUTH_MODE/MESSAGE_HUB_DRIVER's posture (see
 // TestLoadAuthModeInvalidReturnsError/TestLoadMessageHubDriverInvalidReturnsError).
 func TestLoadLLMGatewayTransportInvalidReturnsError(t *testing.T) {
 	withRequiredEnv(t)
@@ -573,12 +573,13 @@ func TestLoadRateLimitInvalidFallsBackToDefault(t *testing.T) {
 	}
 }
 
-// TestLoadRateLimitZeroFallsBackToDefault is the review fix for a zero
-// rate-limit value parsing successfully via strconv.Atoi (it is a valid
-// integer, just not a valid per-minute limit) and then silently disabling
-// the limiter — treat zero the same as a parse failure: warn and keep the
-// default. Mirrors LLM_GATEWAY_GRPC_MAX_RETRIES's negative-value handling
-// (see TestLoadLLMGatewayGRPCMaxRetriesNegativeFallsBackToDefault).
+// TestLoadRateLimitZeroFallsBackToDefault asserts that a zero rate-limit
+// value -- which parses successfully via strconv.Atoi (it is a valid
+// integer, just not a valid per-minute limit) -- does not silently disable
+// the limiter: Load treats zero the same as a parse failure, warning and
+// keeping the default. Mirrors LLM_GATEWAY_GRPC_MAX_RETRIES's
+// negative-value handling (see
+// TestLoadLLMGatewayGRPCMaxRetriesNegativeFallsBackToDefault).
 func TestLoadRateLimitZeroFallsBackToDefault(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "0")

@@ -638,9 +638,9 @@ func TestMessageHandlerUpdateExclude(t *testing.T) {
 		}
 	})
 
-	// Post-review fix (Step 15/41): an omitted exclude_from_ai field must
-	// not be silently treated as `false` (which would un-exclude a message
-	// the caller never asked to un-exclude) -- it must be rejected with 400.
+	// An omitted exclude_from_ai field must not be silently treated as
+	// `false` (which would un-exclude a message the caller never asked to
+	// un-exclude) -- it must be rejected with 400.
 	t.Run("400 missing exclude_from_ai field", func(t *testing.T) {
 		e, h := setupMessageTest(true)
 

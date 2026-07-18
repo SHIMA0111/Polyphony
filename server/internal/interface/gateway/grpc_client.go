@@ -215,12 +215,12 @@ func (c *GRPCClient) EstimateTokens(ctx context.Context, req *ai.TokenEstimateRe
 // "synchronous dispatch failure" shape Complete/ListModels/EstimateTokens use
 // on failure -- rather than panicking.
 //
-// Post-review fix (M2): this used to silently break every streaming send
-// when LLM_GATEWAY_TRANSPORT=grpc, since a synchronous Stream failure would
-// otherwise just mark the placeholder failed. Callers should check
-// errors.Is(err, domain.ErrStreamingUnsupported) specifically and fall back
-// to the unary Complete call instead of failing outright --
-// usecase/message.MessageUsecase.SendAIMessageStream does exactly that.
+// Callers should check errors.Is(err, domain.ErrStreamingUnsupported)
+// specifically and fall back to the unary Complete call instead of failing
+// outright -- usecase/message.MessageUsecase.SendAIMessageStream does
+// exactly that. Without that check, a synchronous Stream failure under
+// LLM_GATEWAY_TRANSPORT=grpc would otherwise just mark the placeholder
+// failed, silently breaking every streaming send on this transport.
 func (c *GRPCClient) Stream(_ context.Context, _ *ai.CompletionRequest) (<-chan ai.StreamResult, error) {
 	return nil, fmt.Errorf("%w: %w: streaming not supported over grpc transport", domain.ErrLLMGateway, domain.ErrStreamingUnsupported)
 }

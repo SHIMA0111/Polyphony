@@ -367,13 +367,14 @@ func TestInvitationRepositoryAcceptTxConcurrentAcceptReject(t *testing.T) {
 }
 
 // TestInvitationRepositoryAcceptTxRejectsRevokedLinkInvitation verifies the
-// transitionStatus=false path's TOCTOU fix: if a reusable link invitation
-// is revoked (or otherwise moved out of StatusPending) before AcceptTx
-// runs, AcceptTx must lock and re-check the row's status inside its own
-// transaction and refuse the accept, rather than trusting a caller's
-// now-stale pre-check read. Before this fix, AcceptTx(transitionStatus=
-// false) ran no status validation at all and would have inserted the room
-// member regardless of a concurrent revoke or expiry.
+// transitionStatus=false path guards against the TOCTOU window where a
+// reusable link invitation is revoked (or otherwise moved out of
+// StatusPending) after a caller's pre-check read but before AcceptTx runs:
+// AcceptTx must lock and re-check the row's status inside its own
+// transaction and refuse the accept, rather than trusting that now-stale
+// pre-check read. Without this re-check, AcceptTx(transitionStatus=false)
+// would run no status validation at all and would insert the room member
+// regardless of a concurrent revoke or expiry.
 func TestInvitationRepositoryAcceptTxRejectsRevokedLinkInvitation(t *testing.T) {
 	ctx := context.Background()
 	repo, roomRepo, inviter, invitee, rm := newInvitationTestFixture(ctx, t)

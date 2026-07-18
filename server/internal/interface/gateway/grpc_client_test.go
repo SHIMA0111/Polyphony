@@ -513,7 +513,6 @@ func TestGRPCClientCheckHealthNotServing(t *testing.T) {
 // (REST-only, per Step 51). It uses a bare zero-value GRPCClient since
 // Stream never touches the underlying connection.
 //
-// The domain.ErrStreamingUnsupported check is the M2 post-review addition:
 // usecase/message.MessageUsecase.SendAIMessageStream relies on exactly this
 // wrapping to detect "this transport can't stream" and fall back to the
 // unary Complete call instead of failing the send outright.

@@ -1134,9 +1134,9 @@ func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 }
 
 // TestDeleteMessagePropagatesSummaryInvalidationFailure proves that
-// DeleteMessage now surfaces a summaryRepo.DeleteByRoom failure to the
-// caller (item 18) instead of only logging it, even though the underlying
-// soft delete has already durably succeeded by that point.
+// DeleteMessage surfaces a summaryRepo.DeleteByRoom failure to the caller
+// instead of only logging it, even though the underlying soft delete has
+// already durably succeeded by that point.
 func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -1269,8 +1269,8 @@ func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
 }
 
 // TestSetExcludeFromAIPropagatesSummaryInvalidationFailure proves that
-// SetExcludeFromAI now surfaces a summaryRepo.DeleteByRoom failure to the
-// caller (item 18) instead of only logging it, even though
+// SetExcludeFromAI surfaces a summaryRepo.DeleteByRoom failure to the
+// caller instead of only logging it, even though
 // msgRepo.UpdateExcludeFromAI has already durably succeeded by that point.
 func TestSetExcludeFromAIPropagatesSummaryInvalidationFailure(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
@@ -2101,13 +2101,13 @@ func TestSendAIMessageStreamSynchronousDispatchFailure(t *testing.T) {
 	}
 }
 
-// TestSendAIMessageStreamFallsBackToCompleteOnUnsupportedTransport is the M2
-// post-review regression test: when llmGateway.Stream fails synchronously
-// with domain.ErrStreamingUnsupported (exactly what
-// gateway.GRPCClient.Stream returns when LLM_GATEWAY_TRANSPORT=grpc), the
-// send must still succeed via a background fallback to the unary Complete
-// call rather than being marked failed outright -- before this fix, any
-// streaming send over the gRPC transport was silently broken.
+// TestSendAIMessageStreamFallsBackToCompleteOnUnsupportedTransport asserts
+// that when llmGateway.Stream fails synchronously with
+// domain.ErrStreamingUnsupported (exactly what gateway.GRPCClient.Stream
+// returns when LLM_GATEWAY_TRANSPORT=grpc), the send must still succeed via
+// a background fallback to the unary Complete call rather than being
+// marked failed outright -- without that fallback, any streaming send over
+// the gRPC transport would be silently broken.
 func TestSendAIMessageStreamFallsBackToCompleteOnUnsupportedTransport(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -2181,10 +2181,10 @@ loop:
 	}
 }
 
-// TestSendAIMessageStreamSynchronousDispatchFailureUsedContextSummary is the
-// H1 post-review regression test for stream.go's synchronous-dispatch-failure
-// path: even though the gateway's Stream call fails before any chunk is ever
-// published, assembleAIContext still ran (and summarized) beforehand, so the
+// TestSendAIMessageStreamSynchronousDispatchFailureUsedContextSummary
+// exercises stream.go's synchronous-dispatch-failure path: even though the
+// gateway's Stream call fails before any chunk is ever published,
+// assembleAIContext still ran (and summarized) beforehand, so the
 // EventMessageUpdated publishing the immediate "failed" status must still
 // carry UsedContextSummary=true -- parity with the non-streaming SendAIMessage
 // failure path, which already reports it correctly.
@@ -2240,7 +2240,8 @@ func TestSendAIMessageStreamSynchronousDispatchFailureUsedContextSummary(t *test
 // TestSendAIMessageStreamSummaryUsedFalse asserts that, for an under-budget
 // context that never triggers summarization, every published EventTokenChunk's
 // SummaryUsed field is false, and so is the terminating EventMessageUpdated's
-// UsedContextSummary (parity check for the H1 post-review fix below).
+// UsedContextSummary (parity check for TestSendAIMessageStreamSummaryUsedTrue
+// below).
 func TestSendAIMessageStreamSummaryUsedFalse(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -2274,14 +2275,13 @@ func TestSendAIMessageStreamSummaryUsedFalse(t *testing.T) {
 	}
 }
 
-// TestSendAIMessageStreamSummaryUsedTrue is the H1 post-review regression
-// test: it forces assembleAIContext to summarize (mirroring
-// TestAssembleAIContextSummarizesOnOverflowAndCaches's overflow setup, but
-// exercised through the streaming endpoint) and asserts that the
-// terminating EventMessageUpdated's UsedContextSummary is true, matching
-// the token_chunk events' own SummaryUsed flag -- before this fix,
-// consumeAIStream's final publish omitted UsedContextSummary entirely, which
-// silently cleared the "Summarized history" badge the token_chunk frames had
+// TestSendAIMessageStreamSummaryUsedTrue forces assembleAIContext to
+// summarize (mirroring TestAssembleAIContextSummarizesOnOverflowAndCaches's
+// overflow setup, but exercised through the streaming endpoint) and asserts
+// that the terminating EventMessageUpdated's UsedContextSummary is true,
+// matching the token_chunk events' own SummaryUsed flag: if
+// consumeAIStream's final publish omitted UsedContextSummary, it would
+// silently clear the "Summarized history" badge the token_chunk frames had
 // already shown once the stream finalized.
 func TestSendAIMessageStreamSummaryUsedTrue(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}

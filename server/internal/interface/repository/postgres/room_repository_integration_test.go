@@ -208,10 +208,10 @@ func TestUpdateMemberRolePersists(t *testing.T) {
 	if got.Role != domainroom.RoleAdmin {
 		t.Fatalf("expected role admin, got %s", got.Role)
 	}
-	// Step 42's review fix: GetMember must JOIN against users and populate
-	// Username, exactly as ListMembers does, so a caller returning
-	// GetMember's result directly (e.g. RoomUsecase.ChangeMemberRole) never
-	// leaks an empty username to the API response.
+	// GetMember must JOIN against users and populate Username, exactly as
+	// ListMembers does, so a caller returning GetMember's result directly
+	// (e.g. RoomUsecase.ChangeMemberRole) never leaks an empty username to
+	// the API response.
 	if got.Username != member.Username {
 		t.Fatalf("expected GetMember to populate Username %q, got %q", member.Username, got.Username)
 	}
@@ -618,14 +618,14 @@ func TestTransferOwnershipAtomic(t *testing.T) {
 	}
 }
 
-// TestTransferOwnershipRejectsStaleOwner (Step 27's review fix) proves that
-// TransferOwnership's rooms.owner_id update is a genuine compare-and-swap:
-// calling it a second time with an oldOwnerID that is no longer the room's
-// current owner (because a first, successful transfer already moved
-// ownership elsewhere) must fail with domain.ErrNotFound rather than
-// silently overwriting owner_id again — the exact race two concurrent
-// TransferOwnership calls, each reading a stale owner via their own
-// pre-transaction GetByID, could otherwise hit.
+// TestTransferOwnershipRejectsStaleOwner proves that TransferOwnership's
+// rooms.owner_id update is a genuine compare-and-swap: calling it a second
+// time with an oldOwnerID that is no longer the room's current owner
+// (because a first, successful transfer already moved ownership elsewhere)
+// must fail with domain.ErrNotFound rather than silently overwriting
+// owner_id again — the exact race two concurrent TransferOwnership calls,
+// each reading a stale owner via their own pre-transaction GetByID, could
+// otherwise hit.
 func TestTransferOwnershipRejectsStaleOwner(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
