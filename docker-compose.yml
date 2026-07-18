@@ -457,6 +457,16 @@ services:
       # Kratos+dex pair while implementing this step.
       SELFSERVICE_DEFAULT_BROWSER_RETURN_URL: http://localhost:3001/
       SELFSERVICE_ALLOWED_RETURN_URLS: '["http://localhost:3001/"]'
+      # Wave-5 review (round 2): Kratos defaults
+      # selfservice.methods.password.config.haveibeenpwned_enabled to true,
+      # which makes every E2E registration depend on a live call to the
+      # external HIBP API. That is both non-hermetic (breaks the e2e stack
+      # offline) and a source of real flakes — a transient/false-positive
+      # HIBP hit (or a static spec password genuinely entering the public
+      # breach corpus over time) fails registration nondeterministically.
+      # Disabled only for this e2e instance; the dev `kratos` service above
+      # keeps the default (real) behavior.
+      SELFSERVICE_METHODS_PASSWORD_CONFIG_HAVEIBEENPWNED_ENABLED: "false"
     command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
     volumes:
       - ./ory/kratos:/etc/config/kratos:ro
