@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-redis/redis_rate/v10"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -65,14 +66,29 @@ type Container struct {
 	// Logger is the base structured logger used to build request-scoped loggers.
 	Logger *slog.Logger
 
-	// RedisClient is the shared Redis client used when Config.MessageHubDriver
-	// is "redis". It is nil when the inprocess driver is selected. It is kept
-	// on the Container (rather than only captured in a closure) so later
-	// steps (e.g. Step 33's rate limiting and Kratos session cache) can reuse
-	// the same client instead of opening a second connection pool. Callers
-	// are responsible for closing it (typically via a deferred
-	// RedisClient.Close() in main, guarded by a nil check).
+	// RedisClient is the shared Redis client, constructed whenever
+	// Config.RedisURL is non-empty regardless of which MessageHubDriver is
+	// selected — Step 33's rate limiter and Kratos whoami cache both need a
+	// client even when MessageHubDriver is "inprocess" (e.g. AUTH_MODE=kratos
+	// with no Redis-backed MessageHub). It is nil only when RedisURL is
+	// unset entirely (e.g. local `go run ./cmd/api` with neither Redis nor
+	// Kratos configured), in which case RateLimiter is also nil and the
+	// AUTH_MODE=kratos branch below skips wrapping AuthService in
+	// CachedAuthService — both fail open to "no rate limiting"/"no caching"
+	// rather than panicking on a nil client. It is kept on the Container
+	// (rather than only captured in a closure) so later steps can reuse the
+	// same client instead of opening a second connection pool. Callers are
+	// responsible for closing it (typically via a deferred RedisClient.Close()
+	// in main, guarded by a nil check).
 	RedisClient *redis.Client
+	// RateLimiter is the shared Redis-backed GCRA token-bucket limiter (Step
+	// 33) built on RedisClient, used by middleware.RateLimit for the
+	// /auth/register, /auth/login, and AI-invoke routes. It is nil whenever
+	// RedisClient is nil (see RedisClient's GoDoc); routes_auth.go/
+	// routes_message.go must not dereference a nil RateLimiter, but
+	// middleware.RateLimit itself never runs at all in that case since the
+	// route registrars only attach it when this field is non-nil.
+	RateLimiter *redis_rate.Limiter
 
 	// Repositories
 	UserRepo domainuser.UserRepository
@@ -151,6 +167,39 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	invitationRepo := postgres.NewInvitationRepository(pool)
 	billingRepo := postgres.NewBillingRepository(pool)
 
+	// RedisClient/RateLimiter: constructed whenever Config.RedisURL is
+	// non-empty, independent of MessageHubDriver (see Container.RedisClient's
+	// GoDoc for why Step 33's rate limiter and Kratos whoami cache need a
+	// client even when MessageHubDriver is "inprocess"). MessageHubDriver's
+	// own "redis" branch below reuses this exact client rather than opening a
+	// second connection pool.
+	var redisClient *redis.Client
+	var rateLimiter *redis_rate.Limiter
+	if cfg.RedisURL != "" {
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("parse REDIS_URL: %w", err)
+		}
+		redisClient = redis.NewClient(opts)
+
+		// Verify connectivity eagerly, mirroring database.NewPool's Ping check,
+		// so a misconfigured/unreachable Redis fails container construction
+		// immediately instead of lazily on the first message hub/rate
+		// limiter/Kratos-cache operation (e.g. the first WebSocket
+		// Publish/Subscribe call from a real user).
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		pingErr := redisClient.Ping(pingCtx).Err()
+		cancel()
+		if pingErr != nil {
+			_ = redisClient.Close()
+			pool.Close()
+			return nil, fmt.Errorf("ping redis: %w", pingErr)
+		}
+
+		rateLimiter = redis_rate.NewLimiter(redisClient)
+	}
+
 	// Services / Gateways
 	//
 	// AuthService is the Phase 9 swap point (see CLAUDE.md's Interface Swap
@@ -160,8 +209,18 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	var authService domainauth.AuthService
 	switch cfg.AuthMode {
 	case "kratos":
-		authService = ifauth.NewKratosAuthService(userRepo, cfg.KratosPublicURL, cfg.KratosAdminURL, cfg.KratosCookieName,
+		kratosService := ifauth.NewKratosAuthService(userRepo, cfg.KratosPublicURL, cfg.KratosAdminURL, cfg.KratosCookieName,
 			&http.Client{Timeout: 10 * time.Second})
+		if redisClient != nil {
+			// Step 33: cache ValidateToken (Kratos's real /sessions/whoami
+			// round trip) behind a short-TTL Redis cache. Skipped when no
+			// Redis client is configured at all, in which case AuthService
+			// falls open to always calling Kratos directly (no caching,
+			// same behavior as before this step).
+			authService = ifauth.NewCachedAuthService(kratosService, redisClient, cfg.WhoamiCacheTTL)
+		} else {
+			authService = kratosService
+		}
 	default:
 		authService = ifauth.NewSimpleJWTService(userRepo, cfg.JWTSecret)
 	}
@@ -203,29 +262,12 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	// delivery. Both satisfy event.MessageHub, so nothing downstream (MsgUC,
 	// the WebSocket handler) needs to change based on this branch.
 	var messageHub event.MessageHub
-	var redisClient *redis.Client
 	switch cfg.MessageHubDriver {
 	case "redis":
-		opts, err := redis.ParseURL(cfg.RedisURL)
-		if err != nil {
-			pool.Close()
-			return nil, fmt.Errorf("parse REDIS_URL: %w", err)
-		}
-		redisClient = redis.NewClient(opts)
-
-		// Verify connectivity eagerly, mirroring database.NewPool's Ping check,
-		// so a misconfigured/unreachable Redis fails container construction
-		// immediately instead of lazily on the first message hub operation
-		// (e.g. the first WebSocket Publish/Subscribe call from a real user).
-		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		pingErr := redisClient.Ping(pingCtx).Err()
-		cancel()
-		if pingErr != nil {
-			_ = redisClient.Close()
-			pool.Close()
-			return nil, fmt.Errorf("ping redis: %w", pingErr)
-		}
-
+		// redisClient is guaranteed non-nil (and already Ping-verified) here:
+		// config.Load requires REDIS_URL whenever MESSAGE_HUB_DRIVER=redis, so
+		// the RedisClient/RateLimiter construction above already built and
+		// health-checked it from the same cfg.RedisURL.
 		messageHub = infraevent.NewRedisHub(redisClient)
 	default:
 		messageHub = event.NewInProcessHub()
@@ -262,6 +304,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		Pool:        pool,
 		Logger:      slog.Default(),
 		RedisClient: redisClient,
+		RateLimiter: rateLimiter,
 
 		UserRepo:       userRepo,
 		RoomRepo:       roomRepo,

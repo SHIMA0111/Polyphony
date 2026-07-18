@@ -485,3 +485,72 @@ func TestLoadLLMGatewayGRPCBaseBackoffInvalidFallsBackToDefault(t *testing.T) {
 		t.Errorf("expected fallback to default LLMGatewayGRPCBaseBackoff 100ms, got %v", cfg.LLMGatewayGRPCBaseBackoff)
 	}
 }
+
+func TestLoadRateLimitAndWhoamiCacheDefaults(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.RateLimitLoginPerMinute != 10 {
+		t.Errorf("expected default RateLimitLoginPerMinute 10, got %d", cfg.RateLimitLoginPerMinute)
+	}
+	if cfg.RateLimitAIInvokePerMinute != 20 {
+		t.Errorf("expected default RateLimitAIInvokePerMinute 20, got %d", cfg.RateLimitAIInvokePerMinute)
+	}
+	if cfg.WhoamiCacheTTL != 30*time.Second {
+		t.Errorf("expected default WhoamiCacheTTL 30s, got %v", cfg.WhoamiCacheTTL)
+	}
+}
+
+func TestLoadRateLimitAndWhoamiCacheOverrides(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "5")
+	t.Setenv("RATE_LIMIT_AI_INVOKE_PER_MINUTE", "50")
+	t.Setenv("WHOAMI_CACHE_TTL", "1m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.RateLimitLoginPerMinute != 5 {
+		t.Errorf("expected overridden RateLimitLoginPerMinute 5, got %d", cfg.RateLimitLoginPerMinute)
+	}
+	if cfg.RateLimitAIInvokePerMinute != 50 {
+		t.Errorf("expected overridden RateLimitAIInvokePerMinute 50, got %d", cfg.RateLimitAIInvokePerMinute)
+	}
+	if cfg.WhoamiCacheTTL != time.Minute {
+		t.Errorf("expected overridden WhoamiCacheTTL 1m, got %v", cfg.WhoamiCacheTTL)
+	}
+}
+
+func TestLoadRateLimitInvalidFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "not-a-number")
+	t.Setenv("RATE_LIMIT_AI_INVOKE_PER_MINUTE", "also-not-a-number")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on invalid rate-limit values, got: %v", err)
+	}
+	if cfg.RateLimitLoginPerMinute != 10 {
+		t.Errorf("expected fallback to default RateLimitLoginPerMinute 10, got %d", cfg.RateLimitLoginPerMinute)
+	}
+	if cfg.RateLimitAIInvokePerMinute != 20 {
+		t.Errorf("expected fallback to default RateLimitAIInvokePerMinute 20, got %d", cfg.RateLimitAIInvokePerMinute)
+	}
+}
+
+func TestLoadWhoamiCacheTTLInvalidFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("WHOAMI_CACHE_TTL", "not-a-duration")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on an invalid WHOAMI_CACHE_TTL, got: %v", err)
+	}
+	if cfg.WhoamiCacheTTL != 30*time.Second {
+		t.Errorf("expected fallback to default WhoamiCacheTTL 30s, got %v", cfg.WhoamiCacheTTL)
+	}
+}

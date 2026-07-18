@@ -34,6 +34,9 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       MESSAGE_HUB_DRIVER: ${MESSAGE_HUB_DRIVER:-redis}
       DEFAULT_AI_MODEL: ${DEFAULT_AI_MODEL:-gpt-5-mini}
+      RATE_LIMIT_LOGIN_PER_MINUTE: ${RATE_LIMIT_LOGIN_PER_MINUTE:-10}
+      RATE_LIMIT_AI_INVOKE_PER_MINUTE: ${RATE_LIMIT_AI_INVOKE_PER_MINUTE:-20}
+      WHOAMI_CACHE_TTL: ${WHOAMI_CACHE_TTL:-30s}
     ports:
       - "8080:8080"
     healthcheck:
@@ -242,6 +245,14 @@ services:
       KRATOS_PUBLIC_URL: http://kratos-e2e:4433
       KRATOS_ADMIN_URL: http://kratos-e2e:4434
       KRATOS_COOKIE_NAME: ory_kratos_session
+      REDIS_URL: redis://redis-e2e:6379/0
+      # Much higher/looser than the dev-stack defaults above, and a short
+      # WHOAMI_CACHE_TTL rather than a long one, so Playwright specs never
+      # trip a 429 and logout/revocation specs are not slowed down waiting
+      # out a long cache window (Step 33).
+      RATE_LIMIT_LOGIN_PER_MINUTE: ${RATE_LIMIT_LOGIN_PER_MINUTE_E2E:-1000}
+      RATE_LIMIT_AI_INVOKE_PER_MINUTE: ${RATE_LIMIT_AI_INVOKE_PER_MINUTE_E2E:-1000}
+      WHOAMI_CACHE_TTL: ${WHOAMI_CACHE_TTL_E2E:-1s}
     ports:
       - "8090:8080"
     healthcheck:
@@ -257,6 +268,8 @@ services:
       llm-gateway-e2e:
         condition: service_healthy
       kratos-e2e:
+        condition: service_healthy
+      redis-e2e:
         condition: service_healthy
 
   db-e2e:
@@ -393,6 +406,15 @@ services:
     depends_on:
       db-e2e:
         condition: service_healthy
+
+  redis-e2e:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["test"]
 
   web-e2e:
     build:
