@@ -111,3 +111,44 @@ type TokenEstimateResponse struct {
 	Model           string
 	EstimatedTokens int
 }
+
+// Usage holds token accounting for a single completion, shared by the
+// streaming (StreamChunk) and non-streaming (CompletionResponse) response
+// shapes.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
+// StreamChunk represents a single incremental item from an LLMGateway.Stream
+// response, mirroring the LLM Gateway's CompletionChunk SSE payload (Step
+// 43's `POST /completions/stream`).
+//
+// Delta is the incremental text carried by this chunk; it may be empty on a
+// chunk that only carries FinishReason and/or Usage (e.g. the final chunk of
+// a stream). Usage is non-nil only on the final chunk of a successful
+// stream -- every other chunk (including ones with a non-empty
+// FinishReason) leaves it nil.
+type StreamChunk struct {
+	ID           string
+	Model        string
+	Delta        string
+	FinishReason string
+	Usage        *Usage
+}
+
+// StreamResult is a single item delivered on the channel returned by
+// LLMGateway.Stream. Exactly one of Chunk or Err is set per item: a
+// Chunk-carrying item represents one incremental delta (or the final
+// summary chunk), while an Err-carrying item represents a mid-stream
+// failure.
+//
+// A channel of StreamResult is closed after either the stream completes
+// naturally (no further item is sent after the last Chunk) or after exactly
+// one Err-carrying item is sent -- never both, and never more than one
+// Err-carrying item.
+type StreamResult struct {
+	Chunk *StreamChunk
+	Err   error
+}

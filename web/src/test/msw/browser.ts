@@ -4,6 +4,7 @@ import { roomsHandlers } from "@/features/rooms/api/handlers"
 import { messagesHandlers } from "@/features/messages/api/handlers"
 import { membersHandlers } from "@/features/members/api/handlers"
 import { billingHandlers } from "@/features/billing/api/handlers"
+import { groupsHandlers } from "@/features/groups/api/handlers"
 
 /**
  * Browser MSW worker sharing the same handlers as the Node `server` used by
@@ -17,4 +18,5 @@ export const worker = setupWorker(
   ...messagesHandlers,
   ...membersHandlers,
   ...billingHandlers,
+  ...groupsHandlers,
 )

@@ -657,7 +657,7 @@ func TestLoadStripeDefaults(t *testing.T) {
 	if len(cfg.StripePlans) != 0 || len(cfg.StripeTokenPackages) != 0 {
 		t.Errorf("expected no plans/packages by default, got %v / %v", cfg.StripePlans, cfg.StripeTokenPackages)
 	}
-	wantSuccess := "http://localhost:3000/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}"
+	wantSuccess := "http://localhost:3000/billing/checkout/success"
 	if cfg.StripeCheckoutSuccessURL != wantSuccess {
 		t.Errorf("expected default success url %q, got %q", wantSuccess, cfg.StripeCheckoutSuccessURL)
 	}

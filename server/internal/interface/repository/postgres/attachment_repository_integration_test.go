@@ -343,3 +343,124 @@ func TestAttachmentRepository_ListByMessageID(t *testing.T) {
 		t.Fatalf("expected order [first, second], got [%s, %s]", list[0].ID, list[1].ID)
 	}
 }
+
+// TestAttachmentRepository_ListByMessageIDs proves that ListByMessageIDs
+// returns, in a single call, every attachment linked to any of several given
+// messages -- grouped by message ID, each group ordered by creation time
+// ascending (matching ListByMessageID's per-message order) -- and that a
+// message ID with no attachments (and one never passed in at all) is simply
+// absent from the returned map rather than present with an empty slice.
+func TestAttachmentRepository_ListByMessageIDs(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	attachmentRepo := NewAttachmentRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "attach-batch-owner")
+	msgA := seedMessage(ctx, t, msgRepo, rm.ID, rm.OwnerID)
+	msgB := seedMessage(ctx, t, msgRepo, rm.ID, rm.OwnerID)
+	msgEmpty := seedMessage(ctx, t, msgRepo, rm.ID, rm.OwnerID)
+	msgNotRequested := seedMessage(ctx, t, msgRepo, rm.ID, rm.OwnerID)
+
+	// Two attachments linked to msgA, created in order. Explicit, distinct
+	// timestamps (rather than back-to-back time.Now() calls) so the
+	// per-message ordering assertion below never depends on wall-clock
+	// resolution.
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	aFirst := &domainattachment.Attachment{
+		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
+		S3Key:     "attachments/" + rm.ID + "/a-first",
+		MimeType:  "image/png",
+		SizeBytes: 1,
+		CreatedAt: base,
+	}
+	if err := attachmentRepo.Create(ctx, aFirst); err != nil {
+		t.Fatalf("Create aFirst failed: %v", err)
+	}
+	if _, err := attachmentRepo.AttachToMessage(ctx, aFirst.ID, msgA.ID, rm.ID); err != nil {
+		t.Fatalf("AttachToMessage aFirst failed: %v", err)
+	}
+
+	aSecond := &domainattachment.Attachment{
+		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
+		S3Key:     "attachments/" + rm.ID + "/a-second",
+		MimeType:  "image/png",
+		SizeBytes: 1,
+		CreatedAt: base.Add(time.Millisecond),
+	}
+	if err := attachmentRepo.Create(ctx, aSecond); err != nil {
+		t.Fatalf("Create aSecond failed: %v", err)
+	}
+	if _, err := attachmentRepo.AttachToMessage(ctx, aSecond.ID, msgA.ID, rm.ID); err != nil {
+		t.Fatalf("AttachToMessage aSecond failed: %v", err)
+	}
+
+	// One attachment linked to msgB.
+	bOnly := &domainattachment.Attachment{
+		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
+		S3Key:     "attachments/" + rm.ID + "/b-only",
+		MimeType:  "image/png",
+		SizeBytes: 1,
+		CreatedAt: time.Now(),
+	}
+	if err := attachmentRepo.Create(ctx, bOnly); err != nil {
+		t.Fatalf("Create bOnly failed: %v", err)
+	}
+	if _, err := attachmentRepo.AttachToMessage(ctx, bOnly.ID, msgB.ID, rm.ID); err != nil {
+		t.Fatalf("AttachToMessage bOnly failed: %v", err)
+	}
+
+	// Attachment linked to a message that is deliberately not passed to
+	// ListByMessageIDs below: it must not leak into any returned group.
+	notRequestedAttachment := &domainattachment.Attachment{
+		ID:        uuid.New().String(),
+		RoomID:    rm.ID,
+		S3Key:     "attachments/" + rm.ID + "/not-requested",
+		MimeType:  "image/png",
+		SizeBytes: 1,
+		CreatedAt: time.Now(),
+	}
+	if err := attachmentRepo.Create(ctx, notRequestedAttachment); err != nil {
+		t.Fatalf("Create notRequestedAttachment failed: %v", err)
+	}
+	if _, err := attachmentRepo.AttachToMessage(ctx, notRequestedAttachment.ID, msgNotRequested.ID, rm.ID); err != nil {
+		t.Fatalf("AttachToMessage notRequestedAttachment failed: %v", err)
+	}
+
+	result, err := attachmentRepo.ListByMessageIDs(ctx, []string{msgA.ID, msgB.ID, msgEmpty.ID})
+	if err != nil {
+		t.Fatalf("ListByMessageIDs failed: %v", err)
+	}
+
+	aList, ok := result[msgA.ID]
+	if !ok {
+		t.Fatalf("expected msgA to be present in the result map")
+	}
+	if len(aList) != 2 || aList[0].ID != aFirst.ID || aList[1].ID != aSecond.ID {
+		t.Fatalf("expected msgA's attachments in order [aFirst, aSecond], got %+v", aList)
+	}
+
+	bList, ok := result[msgB.ID]
+	if !ok {
+		t.Fatalf("expected msgB to be present in the result map")
+	}
+	if len(bList) != 1 || bList[0].ID != bOnly.ID {
+		t.Fatalf("expected msgB's attachments to be [bOnly], got %+v", bList)
+	}
+
+	if _, ok := result[msgEmpty.ID]; ok {
+		t.Fatalf("expected msgEmpty (no attachments) to be absent from the result map, got %+v", result[msgEmpty.ID])
+	}
+	if _, ok := result[msgNotRequested.ID]; ok {
+		t.Fatalf("expected msgNotRequested (not passed to ListByMessageIDs) to be absent from the result map, got %+v", result[msgNotRequested.ID])
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected exactly 2 keys in the result map (msgA, msgB), got %d: %+v", len(result), result)
+	}
+}

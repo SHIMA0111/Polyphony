@@ -36,6 +36,7 @@ const humanMessage: Message = {
   in_response_to_message_id: null,
   is_deleted: false,
   exclude_from_ai: false,
+  used_context_summary: false,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 }
@@ -45,6 +46,7 @@ const excludedMessage: Message = {
   id: "message-2",
   content: "Excluded message",
   exclude_from_ai: true,
+  used_context_summary: false,
 }
 
 const deletedMessage: Message = {
@@ -72,6 +74,7 @@ describe("MessageInput token meter", () => {
 
     render(
       <MessageInput
+        roomId="room-1"
         {...noopHandlers}
         models={models}
         messages={[humanMessage]}
@@ -104,6 +107,7 @@ describe("MessageInput token meter", () => {
 
     render(
       <MessageInput
+        roomId="room-1"
         {...noopHandlers}
         models={models}
         messages={[humanMessage, excludedMessage, deletedMessage]}
@@ -128,7 +132,12 @@ describe("MessageInput token meter", () => {
 describe("MessageInput aiError", () => {
   it("renders no inline error by default", () => {
     render(
-      <MessageInput onSend={vi.fn()} onSendWithAI={vi.fn()} models={models} />,
+      <MessageInput
+        roomId="room-1"
+        onSend={vi.fn()}
+        onSendWithAI={vi.fn()}
+        models={models}
+      />,
     )
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
@@ -137,6 +146,7 @@ describe("MessageInput aiError", () => {
   it("renders the inline error with a link to /billing/usage when aiError is set", () => {
     render(
       <MessageInput
+        roomId="room-1"
         onSend={vi.fn()}
         onSendWithAI={vi.fn()}
         models={models}
@@ -156,6 +166,7 @@ describe("MessageInput aiError", () => {
     const user = userEvent.setup()
     render(
       <MessageInput
+        roomId="room-1"
         onSend={vi.fn()}
         onSendWithAI={vi.fn()}
         models={models}

@@ -41,7 +41,7 @@ services:
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       STRIPE_PLANS_JSON: ${STRIPE_PLANS_JSON:-}
       STRIPE_TOKEN_PACKAGES_JSON: ${STRIPE_TOKEN_PACKAGES_JSON:-}
-      STRIPE_CHECKOUT_SUCCESS_URL: ${STRIPE_CHECKOUT_SUCCESS_URL:-http://localhost:3000/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}}
+      STRIPE_CHECKOUT_SUCCESS_URL: ${STRIPE_CHECKOUT_SUCCESS_URL:-http://localhost:3000/billing/checkout/success}
       STRIPE_CHECKOUT_CANCEL_URL: ${STRIPE_CHECKOUT_CANCEL_URL:-http://localhost:3000/billing/checkout/cancel}
     ports:
       - "8080:8080"
@@ -97,8 +97,11 @@ services:
       DSN: ${HYDRA_DSN:-postgres://hydra:hydra@hydra-db:5432/hydra?sslmode=disable}
       SECRETS_SYSTEM: ${HYDRA_SYSTEM_SECRET:-change-me-32-byte-system-secret!}
       URLS_SELF_ISSUER: ${HYDRA_PUBLIC_URL:-http://localhost:4444}/
-      URLS_LOGIN: ${HYDRA_LOGIN_UI_URL:-http://localhost:3000/oauth/login}
-      URLS_CONSENT: ${HYDRA_CONSENT_UI_URL:-http://localhost:3000/oauth/consent}
+      # 127.0.0.1, not localhost: avoids IPv6 localhost shadowing when
+      # something else on the host is already listening on [::1]:3000 (see
+      # ory/README.md's "IPv6 localhost shadowing" note).
+      URLS_LOGIN: ${HYDRA_LOGIN_UI_URL:-http://127.0.0.1:3000/oauth/login}
+      URLS_CONSENT: ${HYDRA_CONSENT_UI_URL:-http://127.0.0.1:3000/oauth/consent}
     command: serve all -c /etc/config/hydra/hydra.yml --dev
     volumes:
       - ./ory/hydra:/etc/config/hydra:ro
@@ -342,6 +345,22 @@ services:
       KRATOS_ADMIN_URL: http://kratos-e2e:4434
       KRATOS_COOKIE_NAME: ory_kratos_session
       REDIS_URL: redis://redis-e2e:6379/0
+      # Presigned URLs are handed back to the browser, which runs on the
+      # host (Playwright's `baseURL` is `http://localhost:3001`), not inside
+      # the compose network, so they must resolve against a host-published
+      # MinIO port. This is *not* the dev stack's `minio` service/port
+      # 9000 (that service is untagged and never started by
+      # `test:e2e:up`'s explicit service list, and reusing it would leave
+      # this stack dependent on whatever else happens to hold port 9000 on
+      # the host) -- it is this stack's own dedicated, profiled
+      # `minio-e2e` service, published on host port 9002 (see
+      # `minio-e2e`/`minio-init-e2e` below).
+      S3_ENDPOINT: ${S3_ENDPOINT_E2E:-http://localhost:9002}
+      S3_REGION: ${S3_REGION_E2E:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET_E2E:-polyphony-attachments}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY_E2E:-polyphony}
+      S3_SECRET_KEY: ${S3_SECRET_KEY_E2E:-polyphony-minio}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE_E2E:-true}
       # Much higher/looser than the dev-stack defaults above, and a short
       # WHOAMI_CACHE_TTL rather than a long one, so Playwright specs never
       # trip a 429 and logout/revocation specs are not slowed down waiting
@@ -367,6 +386,8 @@ services:
         condition: service_healthy
       redis-e2e:
         condition: service_healthy
+      minio-init-e2e:
+        condition: service_completed_successfully
 
   db-e2e:
     image: postgres:17-alpine
@@ -573,6 +594,45 @@ services:
       db-e2e:
         condition: service_healthy
 
+  # A dedicated e2e-only MinIO, distinct from the dev `minio` service above:
+  # this stack must be self-contained -- `test:e2e:up`'s explicit service
+  # list intentionally omits the untagged dev `minio`/`minio-init` services
+  # (see that task's own comment), so without its own MinIO here,
+  # `attachments.spec.ts`'s presigned-upload PUT would silently depend on
+  # whatever process happens to hold host port 9000. Published on a
+  # dedicated host port (9002) rather than 9000 so this stack can run fully
+  # alongside a running dev stack, same reasoning as `dex-e2e`/`kratos-e2e`
+  # above.
+  minio-e2e:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_E2E:-polyphony}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY_E2E:-polyphony-minio}
+    ports:
+      - "9002:9000"
+    volumes:
+      - miniodata-e2e:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    profiles: ["test"]
+
+  minio-init-e2e:
+    image: minio/mc
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio-e2e:9000 ${S3_ACCESS_KEY_E2E:-polyphony} ${S3_SECRET_KEY_E2E:-polyphony-minio} &&
+      mc mb -p local/${S3_BUCKET_E2E:-polyphony-attachments}
+      "
+    profiles: ["test"]
+    depends_on:
+      minio-e2e:
+        condition: service_healthy
+
   redis-e2e:
     image: redis:7-alpine
     healthcheck:
@@ -605,3 +665,4 @@ volumes:
   kratos_pgdata:
   kratos_pgdata-e2e:
   miniodata:
+  miniodata-e2e:

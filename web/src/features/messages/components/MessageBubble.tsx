@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import {
+  Badge,
   Box,
   Button,
   Dialog,
@@ -20,6 +21,7 @@ import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useDeleteMessage } from "@/features/messages/hooks/use-delete-message"
 import { useUpdateMessageExclude } from "@/features/messages/hooks/use-update-message-exclude"
 import { MarkdownContent } from "./MarkdownContent"
+import { MessageAttachments } from "./MessageAttachments"
 import { ThinkingBubble } from "./ThinkingBubble"
 
 interface MessageBubbleProps {
@@ -209,6 +211,10 @@ export function MessageBubble({
             {message.content || "(No response)"}
           </Text>
         )}
+
+        {message.type === "human" && !isSending && (
+          <MessageAttachments message={message} />
+        )}
       </Box>
 
       <Flex align="center" gap={2}>
@@ -232,6 +238,14 @@ export function MessageBubble({
             <Flex align="center" color="fg.muted" tabIndex={0}>
               <EyeOff size={12} aria-label="Excluded from AI context" />
             </Flex>
+          </Tooltip>
+        )}
+
+        {message.type === "ai" && message.used_context_summary && (
+          <Tooltip content="Older messages were summarized to fit the model's context window">
+            <Badge size="xs" variant="subtle" colorPalette="purple" tabIndex={0}>
+              Summarized history
+            </Badge>
           </Tooltip>
         )}
 

@@ -70,7 +70,11 @@ type UpdateRoomSettingsRequest struct {
 // when the room has no per-room AI default configured (see
 // UpdateRoomSettingsRequest / PATCH /rooms/:roomId/settings), in which case
 // AI requests fall through to the deployment-wide default
-// (Config.DefaultAIModel).
+// (Config.DefaultAIModel). ForkedFromRoomID is nil unless this room was
+// created via POST /rooms/:roomId/fork, in which case it names the source
+// room. IsArchived is true from the moment a fork of this room is created
+// until its background copy job (see ForkJobResponse) completes; while
+// true, POST .../messages and .../messages/ai on this room return HTTP 409.
 type RoomResponse struct {
 	ID                string     `json:"id"`
 	Name              string     `json:"name"`
@@ -80,6 +84,8 @@ type RoomResponse struct {
 	AIContextCutoffAt *time.Time `json:"ai_context_cutoff_at"`
 	AIProvider        *string    `json:"ai_provider"`
 	AIModel           *string    `json:"ai_model"`
+	ForkedFromRoomID  *string    `json:"forked_from_room_id"`
+	IsArchived        bool       `json:"is_archived"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
@@ -115,6 +121,33 @@ type ChangeMemberRoleRequest struct {
 // member of the room.
 type TransferOwnershipRequest struct {
 	NewOwnerID string `json:"new_owner_id"`
+}
+
+// ForkJobResponse is the JSON representation of a room fork job's progress
+// (see roomusecase.RoomUsecase.ForkRoom/GetForkJobStatus). Status is one of
+// "pending", "running", "completed", or "failed" (the plain string value of
+// roomfork.Status). TotalMessages is 0 while Status == "pending".
+// ErrorMessage is non-nil only when Status == "failed".
+type ForkJobResponse struct {
+	ID             string    `json:"id"`
+	SourceRoomID   string    `json:"source_room_id"`
+	NewRoomID      string    `json:"new_room_id"`
+	Status         string    `json:"status"`
+	TotalMessages  int64     `json:"total_messages"`
+	CopiedMessages int64     `json:"copied_messages"`
+	ErrorMessage   *string   `json:"error_message"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// RoomForkResponse is the response body for POST /rooms/:roomId/fork: the
+// newly created (archived) room paired with the room-fork Job tracking the
+// background copy into it. Poll GET /rooms/:roomId/fork-jobs/:jobId with
+// Job.ID until Status == "completed", at which point NewRoom.IsArchived (as
+// last observed here) has flipped to false server-side.
+type RoomForkResponse struct {
+	Job     ForkJobResponse `json:"job"`
+	NewRoom RoomResponse    `json:"new_room"`
 }
 
 // --- Message DTOs ---
@@ -165,6 +198,16 @@ type UpdateMessageExcludeRequest struct {
 // or "private"; a "private" message is returned by GET
 // /rooms/:roomId/messages only to its own sender (see
 // SendAIMessageRequest.Private).
+//
+// UsedContextSummary reports whether the AI response's context included a
+// summary of older room history in place of the raw messages it replaces
+// (see usecase/message.MessageUsecase.assembleAIContext, Step 50). It is a
+// one-time, request-scoped signal describing how a message was *generated*,
+// not a persisted property of the message row: it defaults to false and is
+// only ever set to true by the SendAI/RegenerateAI handlers, on the AI
+// message they just produced. List/Send/historical reads (and a
+// regenerated/refetched view of the same message later) always report
+// false.
 type MessageResponse struct {
 	ID                    string    `json:"id"`
 	RoomID                string    `json:"room_id"`
@@ -179,6 +222,7 @@ type MessageResponse struct {
 	Visibility            string    `json:"visibility"`
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
+	UsedContextSummary    bool      `json:"used_context_summary"`
 }
 
 // SendAIMessageResponse is the response body for POST /rooms/:roomId/messages/ai.
@@ -523,26 +567,37 @@ type BillingPortalResponse struct {
 // POST /billing/subscription/cancel. Field names match Step 53's web
 // contract exactly. CanceledAt is nil until the subscription has actually
 // ended (see billing.Subscription's CancelAtPeriodEnd/CanceledAt doc).
+// StripeCheckoutSessionID lets the web checkout success page confirm this
+// specific subscription is the one its own Checkout redirect produced (see
+// billing.Subscription.StripeCheckoutSessionID's doc comment), the same way
+// PaymentRecordResponse.StripeReferenceID confirms a token-purchase
+// payment.
 type SubscriptionResponse struct {
-	Status                 string     `json:"status"`
-	PlanCode               string     `json:"plan_code"`
-	MonthlyTokenAllocation int64      `json:"monthly_token_allocation"`
-	CurrentPeriodStart     time.Time  `json:"current_period_start"`
-	CurrentPeriodEnd       time.Time  `json:"current_period_end"`
-	CancelAtPeriodEnd      bool       `json:"cancel_at_period_end"`
-	CanceledAt             *time.Time `json:"canceled_at"`
+	Status                  string     `json:"status"`
+	PlanCode                string     `json:"plan_code"`
+	MonthlyTokenAllocation  int64      `json:"monthly_token_allocation"`
+	CurrentPeriodStart      time.Time  `json:"current_period_start"`
+	CurrentPeriodEnd        time.Time  `json:"current_period_end"`
+	CancelAtPeriodEnd       bool       `json:"cancel_at_period_end"`
+	CanceledAt              *time.Time `json:"canceled_at"`
+	StripeCheckoutSessionID string     `json:"stripe_checkout_session_id"`
 }
 
 // PaymentRecordResponse is the JSON response representation of a single
-// payment_history row.
+// payment_history row. StripeReferenceID is the Stripe Checkout Session ID
+// for a token_purchase row (see PaymentRecord.StripeReferenceID) — the web
+// checkout success page matches it against the "session_id" query parameter
+// Stripe's redirect carries to confirm which specific purchase completed,
+// rather than inferring completion from a balance delta.
 type PaymentRecordResponse struct {
-	ID             string    `json:"id"`
-	Kind           string    `json:"kind"`
-	AmountCents    int64     `json:"amount_cents"`
-	Currency       string    `json:"currency"`
-	TokensCredited int64     `json:"tokens_credited"`
-	Status         string    `json:"status"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID                string    `json:"id"`
+	Kind              string    `json:"kind"`
+	AmountCents       int64     `json:"amount_cents"`
+	Currency          string    `json:"currency"`
+	TokensCredited    int64     `json:"tokens_credited"`
+	Status            string    `json:"status"`
+	StripeReferenceID string    `json:"stripe_reference_id"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // PaymentHistoryResponse is the response body for a paginated list of

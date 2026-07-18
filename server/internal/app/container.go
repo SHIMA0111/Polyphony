@@ -110,6 +110,10 @@ type Container struct {
 	// checkout/webhook credit-recording methods (ListPaymentHistory,
 	// HandleWebhookEvent).
 	PaymentRepo domainbilling.PaymentRepository
+	// ContextSummaryRepository caches and invalidates per-room AI context
+	// summaries (Step 50, phases.md Phase 18); see
+	// usecase/message.MessageUsecase.assembleAIContext.
+	ContextSummaryRepository ai.ContextSummaryRepository
 
 	// Services / Gateways
 	AuthService domainauth.AuthService
@@ -190,6 +194,8 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	groupRepo := postgres.NewGroupRepository(pool)
 	subscriptionRepo := postgres.NewSubscriptionRepository(pool)
 	paymentRepo := postgres.NewPaymentRepository(pool)
+	forkJobRepo := postgres.NewRoomForkRepository(pool)
+	contextSummaryRepo := postgres.NewContextSummaryRepository(pool)
 
 	// RedisClient/RateLimiter: constructed whenever Config.RedisURL is
 	// non-empty, independent of MessageHubDriver (see Container.RedisClient's
@@ -339,12 +345,12 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
-	roomUC := roomusecase.NewRoomUsecase(roomRepo)
+	roomUC := roomusecase.NewRoomUsecase(roomRepo, msgRepo, forkJobRepo)
 	billingUC := billingusecase.NewBillingUsecase(
 		billingRepo, roomRepo, subscriptionRepo, paymentRepo, stripeGateway,
 		stripePlans, stripeTokenPackages, cfg.StripeCheckoutSuccessURL, cfg.StripeCheckoutCancelURL,
 	)
-	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub, billingUC, attachmentRepo, objectStorage, cfg.DefaultAIModel)
+	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub, billingUC, attachmentRepo, objectStorage, contextSummaryRepo, cfg.DefaultAIModel)
 	userUC := userusecase.NewUserUsecase(userRepo)
 	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
 	modelUC := modelusecase.NewModelUsecase(llmGateway)
@@ -381,6 +387,8 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		GroupRepo:        groupRepo,
 		SubscriptionRepo: subscriptionRepo,
 		PaymentRepo:      paymentRepo,
+
+		ContextSummaryRepository: contextSummaryRepo,
 
 		AuthService:   authService,
 		LLMGateway:    llmGateway,

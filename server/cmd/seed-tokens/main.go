@@ -87,6 +87,15 @@ func run(email string, amount int64, description string) error {
 		return fmt.Errorf("look up user %q: %w", email, err)
 	}
 
+	// Lazily create the balance row first: CreditAndRecord requires an
+	// existing token_balances row (billing.BalanceRepository's ErrNotFound
+	// contract), but a freshly-registered user only gets one on their first
+	// balance-touching API call — a fresh e2e/dev user topped up right after
+	// registration would otherwise fail with "not found".
+	if _, err := billingRepo.GetOrCreateBalance(ctx, user.ID); err != nil {
+		return fmt.Errorf("ensure balance row for user %q: %w", email, err)
+	}
+
 	txn, err := billingRepo.CreditAndRecord(ctx, user.ID, billing.TransactionTypeCharge, amount, description)
 	if err != nil {
 		return fmt.Errorf("credit balance for user %q: %w", email, err)

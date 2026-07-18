@@ -22,6 +22,8 @@ CREATE TABLE rooms (
     ai_context_cutoff_at TIMESTAMPTZ,
     ai_provider VARCHAR(50) NULL,
     ai_model VARCHAR(100) NULL,
+    forked_from_room_id UUID NULL REFERENCES rooms(id) ON DELETE SET NULL,
+    is_archived BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -146,6 +148,7 @@ CREATE TABLE subscriptions (
     current_period_end TIMESTAMPTZ NOT NULL,
     cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
     canceled_at TIMESTAMPTZ,
+    stripe_checkout_session_id VARCHAR(255) NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT subscriptions_stripe_subscription_id_unique UNIQUE (stripe_subscription_id)
@@ -170,3 +173,48 @@ CREATE TABLE payment_history (
 );
 
 CREATE INDEX idx_payment_history_user_id ON payment_history(user_id, created_at DESC);
+
+CREATE TABLE room_fork_jobs (
+    id UUID PRIMARY KEY,
+    source_room_id UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    new_room_id UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    total_messages BIGINT NOT NULL DEFAULT 0,
+    copied_messages BIGINT NOT NULL DEFAULT 0,
+    error_message TEXT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_room_fork_jobs_new_room ON room_fork_jobs(new_room_id);
+
+-- Step 50: cached context summaries. One row per room -- the room's most
+-- recently computed summary of its older public-visibility message history,
+-- reused by MessageUsecase.assembleAIContext across AI calls that see the
+-- same (room, model, covered_up_to_sequence) triple, and invalidated
+-- (deleted) whenever a message in the room is deleted or its exclude_from_ai
+-- flag changes.
+CREATE TABLE message_context_summaries (
+    room_id UUID PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+    model VARCHAR(100) NOT NULL,
+    covered_up_to_sequence BIGINT NOT NULL,
+    summary_text TEXT NOT NULL,
+    token_count INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Per-room monotonic fencing counter for message_context_summaries, guarding
+-- against a summarization that is still in flight (a slow LLM Complete call)
+-- when a concurrent DeleteByRoom invalidates the cache: DeleteByRoom
+-- increments this row (creating it at revision 1 the first time) in the same
+-- statement as its DELETE, and the in-flight summarization's later Upsert is
+-- conditioned on the revision it captured before starting still matching
+-- this row's current value, so a moved revision makes the stale Upsert a
+-- no-op instead of resurrecting a summary that predates the delete/exclude
+-- event that bumped it. A room with no row here has never had a
+-- DeleteByRoom call (implicit revision 0).
+CREATE TABLE context_summary_revisions (
+    room_id UUID PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+    revision BIGINT NOT NULL DEFAULT 0
+);

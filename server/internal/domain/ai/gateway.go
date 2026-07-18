@@ -17,4 +17,22 @@ type LLMGateway interface {
 	// an exact tokenizer count). Returns ErrLLMGateway-wrapped errors on
 	// communication or decode failures, matching Complete/ListModels.
 	EstimateTokens(ctx context.Context, req *TokenEstimateRequest) (*TokenEstimateResponse, error)
+
+	// Stream sends a streaming completion request and returns a channel of
+	// incremental StreamResult items.
+	//
+	// The returned error is non-nil only for a *synchronous* dispatch
+	// failure -- the same failure modes Complete can return (bad model,
+	// connection refused, a non-2xx initial response) -- in which case the
+	// returned channel is nil and must not be read from.
+	//
+	// On a nil error, the caller owns draining the returned channel until it
+	// is closed by the implementation (see StreamResult's doc comment for
+	// the exact termination contract). Stream itself does not bound how long
+	// the stream may run; the caller's ctx is what bounds it -- callers that
+	// need a stream to outlive a request-scoped context (e.g. so that other
+	// subscribers keep receiving delivery after the originating HTTP request
+	// has returned) must pass in a context they control independently of the
+	// request.
+	Stream(ctx context.Context, req *CompletionRequest) (<-chan StreamResult, error)
 }

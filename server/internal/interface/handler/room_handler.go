@@ -277,6 +277,8 @@ func toRoomResponse(rwr *domainroom.RoomWithRole) RoomResponse {
 		AIContextCutoffAt: rm.AIContextCutoffAt,
 		AIProvider:        rm.AIProvider,
 		AIModel:           rm.AIModel,
+		ForkedFromRoomID:  rm.ForkedFromRoomID,
+		IsArchived:        rm.IsArchived,
 		CreatedAt:         rm.CreatedAt,
 		UpdatedAt:         rm.UpdatedAt,
 	}

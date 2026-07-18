@@ -23,6 +23,7 @@ func registerMessageRoutes(g *echo.Group, c *Container) {
 	g.POST("/rooms/:roomId/messages", c.MessageHandler.Send)
 	g.GET("/rooms/:roomId/messages", c.MessageHandler.List)
 	g.POST("/rooms/:roomId/messages/ai", c.MessageHandler.SendAI, aiInvokeRateLimit)
+	g.POST("/rooms/:roomId/messages/ai/stream", c.MessageHandler.StreamAI, aiInvokeRateLimit)
 	g.POST("/rooms/:roomId/messages/:messageId/regenerate", c.MessageHandler.RegenerateAI, aiInvokeRateLimit)
 	g.DELETE("/rooms/:roomId/messages/:messageId", c.MessageHandler.Delete)
 	g.PATCH("/rooms/:roomId/messages/:messageId", c.MessageHandler.UpdateExclude)

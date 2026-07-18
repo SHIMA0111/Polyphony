@@ -65,6 +65,42 @@ func TestInProcessHubSubscriberReceivesEvent(t *testing.T) {
 	}
 }
 
+// TestInProcessHubDeliversTokenChunkEvents asserts an EventTokenChunk event
+// (a non-nil Chunk, nil Message -- Step 51's AI streaming payload shape) is
+// delivered/filtered identically to the existing message_created/
+// message_updated event types: InProcessHub itself is agnostic to
+// RoomEvent's payload shape and needs no special-casing.
+func TestInProcessHubDeliversTokenChunkEvents(t *testing.T) {
+	hub := NewInProcessHub()
+	ctx := context.Background()
+
+	ch, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	want := RoomEvent{
+		Type:   EventTokenChunk,
+		RoomID: "room-1",
+		Chunk: &StreamChunkEvent{
+			MessageID:   "ai-msg-1",
+			Delta:       "Hel",
+			SummaryUsed: true,
+		},
+		OccurredAt: time.Now(),
+	}
+	hub.Publish(ctx, want)
+
+	got := waitForEvent(t, ch)
+	if got.Type != EventTokenChunk {
+		t.Fatalf("expected type %q, got %q", EventTokenChunk, got.Type)
+	}
+	if got.Message != nil {
+		t.Fatalf("expected nil Message on a token_chunk event, got %+v", got.Message)
+	}
+	if got.Chunk == nil || got.Chunk.MessageID != "ai-msg-1" || got.Chunk.Delta != "Hel" || !got.Chunk.SummaryUsed {
+		t.Fatalf("unexpected Chunk payload: %+v", got.Chunk)
+	}
+}
+
 func TestInProcessHubTargetUserIDsFiltersDelivery(t *testing.T) {
 	hub := NewInProcessHub()
 	ctx := context.Background()

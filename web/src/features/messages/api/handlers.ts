@@ -1,10 +1,13 @@
 import { http, HttpResponse } from "msw"
 import type {
   AIMessageResponse,
+  AttachmentResponse,
+  AttachmentWithUrl,
   Message,
   MessagePage,
   ModelListResponse,
   TokenEstimateResponse,
+  UploadTicket,
 } from "../types"
 
 /**
@@ -28,6 +31,7 @@ export const fixtureHumanMessage: Message = {
   in_response_to_message_id: null,
   is_deleted: false,
   exclude_from_ai: false,
+  used_context_summary: false,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 }
@@ -43,6 +47,7 @@ export const fixtureAiMessage: Message = {
   in_response_to_message_id: "message-1",
   is_deleted: false,
   exclude_from_ai: false,
+  used_context_summary: false,
   created_at: "2026-01-01T00:00:01Z",
   updated_at: "2026-01-01T00:00:01Z",
 }
@@ -62,6 +67,32 @@ export const fixtureMessagePage: MessagePage = {
 export const fixtureAiMessageResponse: AIMessageResponse = {
   user_message: fixtureHumanMessage,
   ai_message: fixtureAiMessage,
+}
+
+export const fixtureUploadTicket: UploadTicket = {
+  attachment_id: "attachment-1",
+  s3_key: "rooms/room-1/attachment-1.png",
+  // Same-origin, relative path -- deliberately not a real MinIO/S3 URL, so
+  // `use-attachment-staging.test.ts`'s `uploadAttachment` XHR PUT can be
+  // exercised against the `fixtureUploadPutHandler` below without any real
+  // storage backend. MSW intercepts a same-origin PUT the same way it
+  // intercepts every other request.
+  upload_url: "/test-fixtures/attachment-upload",
+  expires_at: "2026-01-01T01:00:00Z",
+}
+
+export const fixtureAttachmentResponse: AttachmentResponse = {
+  id: "attachment-1",
+  message_id: "message-1",
+  s3_key: "rooms/room-1/attachment-1.png",
+  mime_type: "image/png",
+  size_bytes: 1024,
+  created_at: "2026-01-01T00:00:00Z",
+}
+
+export const fixtureAttachmentWithUrl: AttachmentWithUrl = {
+  ...fixtureAttachmentResponse,
+  view_url: "https://minio.example.test/rooms/room-1/attachment-1.png",
 }
 
 export const fixtureModelListResponse: ModelListResponse = {
@@ -158,5 +189,37 @@ export const messagesHandlers = [
 
   http.post("/api/proxy/tokens/estimate", () => {
     return HttpResponse.json<TokenEstimateResponse>(fixtureTokenEstimateResponse)
+  }),
+
+  http.post("/api/proxy/rooms/:roomId/attachments/upload-url", () => {
+    return HttpResponse.json<UploadTicket>(fixtureUploadTicket, { status: 201 })
+  }),
+
+  http.post(
+    "/api/proxy/rooms/:roomId/messages/:messageId/attachments",
+    ({ params }) => {
+      return HttpResponse.json<AttachmentResponse>({
+        ...fixtureAttachmentResponse,
+        message_id: String(params.messageId),
+      })
+    },
+  ),
+
+  // Empty by default -- most messages have no attachments, and
+  // `MessageAttachments` is expected to render nothing for an empty list.
+  // Tests exercising thumbnails/the lightbox override this via
+  // `server.use(...)` with `fixtureAttachmentWithUrl`.
+  http.get(
+    "/api/proxy/rooms/:roomId/messages/:messageId/attachments",
+    () => {
+      return HttpResponse.json<{ attachments: AttachmentWithUrl[] }>({
+        attachments: [],
+      })
+    },
+  ),
+
+  // See `fixtureUploadTicket.upload_url`'s docstring.
+  http.put("/test-fixtures/attachment-upload", () => {
+    return new HttpResponse(null, { status: 200 })
   }),
 ]

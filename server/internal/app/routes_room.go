@@ -23,4 +23,8 @@ func registerRoomRoutes(g *echo.Group, c *Container) {
 	g.PATCH("/rooms/:roomId/owner", c.RoomHandler.TransferOwnership)
 	g.PATCH("/rooms/:roomId/ai-context-cutoff", c.RoomHandler.UpdateAIContextCutoff)
 	g.PATCH("/rooms/:roomId/settings", c.RoomHandler.UpdateSettings)
+
+	g.POST("/rooms/:roomId/fork", c.RoomHandler.Fork,
+		middleware.RequireRole(c.RoomRepo, domainroom.ActionManageRoom))
+	g.GET("/rooms/:roomId/fork-jobs/:jobId", c.RoomHandler.GetForkJobStatus)
 }

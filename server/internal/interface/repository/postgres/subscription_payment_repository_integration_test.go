@@ -21,18 +21,19 @@ func seedSubscription(ctx context.Context, t *testing.T, subRepo *SubscriptionRe
 
 	now := time.Now().UTC().Truncate(time.Second)
 	sub := &billing.Subscription{
-		ID:                     uuid.New().String(),
-		UserID:                 userID,
-		StripeCustomerID:       "cus_" + stripeSubscriptionID,
-		StripeSubscriptionID:   stripeSubscriptionID,
-		StripePriceID:          "price_test",
-		PlanCode:               "starter",
-		Status:                 "active",
-		MonthlyTokenAllocation: monthlyTokenAllocation,
-		CurrentPeriodStart:     now,
-		CurrentPeriodEnd:       now.AddDate(0, 1, 0),
-		CreatedAt:              now,
-		UpdatedAt:              now,
+		ID:                      uuid.New().String(),
+		UserID:                  userID,
+		StripeCustomerID:        "cus_" + stripeSubscriptionID,
+		StripeSubscriptionID:    stripeSubscriptionID,
+		StripePriceID:           "price_test",
+		PlanCode:                "starter",
+		Status:                  "active",
+		MonthlyTokenAllocation:  monthlyTokenAllocation,
+		CurrentPeriodStart:      now,
+		CurrentPeriodEnd:        now.AddDate(0, 1, 0),
+		StripeCheckoutSessionID: "cs_" + stripeSubscriptionID,
+		CreatedAt:               now,
+		UpdatedAt:               now,
 	}
 	if err := subRepo.Create(ctx, sub); err != nil {
 		t.Fatalf("seed subscription: %v", err)
@@ -60,6 +61,9 @@ func TestSubscriptionRepositoryCreateAndGetByUserID(t *testing.T) {
 	}
 	if got.MonthlyTokenAllocation != 100000 {
 		t.Fatalf("expected monthly_token_allocation 100000, got %d", got.MonthlyTokenAllocation)
+	}
+	if got.StripeCheckoutSessionID != "cs_sub_create_1" {
+		t.Fatalf("expected stripe_checkout_session_id %q, got %q", "cs_sub_create_1", got.StripeCheckoutSessionID)
 	}
 	if got.CancelAtPeriodEnd {
 		t.Fatalf("expected cancel_at_period_end false by default, got true")
@@ -125,6 +129,7 @@ func TestSubscriptionRepositoryUpdate(t *testing.T) {
 	sub.CancelAtPeriodEnd = true
 	canceledAt := time.Now().UTC().Truncate(time.Second)
 	sub.CanceledAt = &canceledAt
+	sub.StripeCheckoutSessionID = "cs_updated"
 
 	if err := subRepo.Update(ctx, sub); err != nil {
 		t.Fatalf("Update failed: %v", err)
@@ -139,6 +144,9 @@ func TestSubscriptionRepositoryUpdate(t *testing.T) {
 	}
 	if got.CanceledAt == nil || !got.CanceledAt.Equal(canceledAt) {
 		t.Fatalf("expected canceled_at %v, got %v", canceledAt, got.CanceledAt)
+	}
+	if got.StripeCheckoutSessionID != "cs_updated" {
+		t.Fatalf("expected stripe_checkout_session_id updated to %q, got %q", "cs_updated", got.StripeCheckoutSessionID)
 	}
 }
 

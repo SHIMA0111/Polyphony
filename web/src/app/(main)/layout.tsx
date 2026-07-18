@@ -1,8 +1,9 @@
 "use client"
 
-import { useParams } from "next/navigation"
+import Link from "next/link"
+import { useParams, usePathname } from "next/navigation"
 import { Avatar, Box, Button, Flex, Heading, Menu, Portal } from "@chakra-ui/react"
-import { LogOut, Pen } from "lucide-react"
+import { LogOut, Pen, Users } from "lucide-react"
 import { useLogout } from "@/features/auth/hooks/use-logout"
 import { RoomRail } from "@/features/rooms/components/RoomRail"
 import { InvitationsBellButton } from "@/features/members/components/InvitationsBellButton"
@@ -13,9 +14,9 @@ import { BalanceBadge } from "@/features/billing/components/BalanceBadge"
  * (`/rooms` and `/rooms/[roomId]`).
  *
  * Renders a top bar (logo mark, "Polyphony" heading, the `BalanceBadge`
- * token-balance widget, and the avatar `Menu.Root` with Logout — moved
- * here from `RoomList` so it mounts once instead of once per page) above
- * a two-region body: the
+ * token-balance widget, and the avatar `Menu.Root` with Groups/Logout —
+ * moved here from `RoomList` so it mounts once instead of once per page)
+ * above a two-region body: the
  * always-mounted `RoomRail` room-list rail and a content pane wrapping
  * `children` (`RoomList` at `/rooms`, `ChatRoom` at `/rooms/[roomId]`).
  * Navigating between `(main)` routes only swaps `children` via Next.js
@@ -23,10 +24,14 @@ import { BalanceBadge } from "@/features/billing/components/BalanceBadge"
  * `useRooms()` query never remount or refetch.
  *
  * Below the `md` breakpoint the rail and the content pane collapse into a
- * single visible region driven purely by whether a `roomId` route param is
+ * single visible region. For room routes (`/rooms`, `/rooms/[roomId]`) which
+ * region is chosen is driven purely by whether a `roomId` route param is
  * present (read via `useParams()`, which reflects whichever `(main)` page is
  * rendered beneath this layout) — the same component tree renders both
- * breakpoints, there is no separate mobile-only branch.
+ * breakpoints, there is no separate mobile-only branch. Every other `(main)`
+ * route (`/groups`, `/billing/*`, `/invite/*`, ...) has no rail to collapse
+ * into, so those always render `children` at the base breakpoint and hide
+ * `RoomRail` there instead.
  */
 export default function MainLayout({
   children,
@@ -34,7 +39,14 @@ export default function MainLayout({
   children: React.ReactNode
 }) {
   const params = useParams<{ roomId?: string }>()
+  const pathname = usePathname()
+  const isRoomRoute = pathname === "/rooms" || pathname.startsWith("/rooms/")
   const hasActiveRoom = typeof params.roomId === "string"
+  // At base breakpoint: room routes toggle between the rail and the content
+  // pane depending on whether a room is active; every other route has no
+  // rail to show, so it always renders the content pane.
+  const showRailAtBase = isRoomRoute && !hasActiveRoom
+  const showContentAtBase = !isRoomRoute || hasActiveRoom
   const logoutMutation = useLogout()
 
   return (
@@ -91,6 +103,13 @@ export default function MainLayout({
               <Portal>
                 <Menu.Positioner>
                   <Menu.Content w="56">
+                    <Menu.Item value="groups" gap={2} asChild>
+                      <Link href="/groups">
+                        <Users size={16} />
+                        Groups
+                      </Link>
+                    </Menu.Item>
+                    <Menu.Separator />
                     <Menu.Item
                       value="logout"
                       color="fg.error"
@@ -109,16 +128,17 @@ export default function MainLayout({
       </Box>
 
       {/* Rail + content pane row: collapses to a single visible region
-          below `md`, driven by `hasActiveRoom`. */}
+          below `md`. Room routes toggle on `hasActiveRoom`; every other
+          route always shows the content pane and hides the rail. */}
       <Flex flex={1} minH={0}>
         <RoomRail
-          display={{ base: hasActiveRoom ? "none" : "flex", md: "flex" }}
+          display={{ base: showRailAtBase ? "flex" : "none", md: "flex" }}
         />
         <Box
           flex={1}
           minW={0}
           overflowY="auto"
-          display={{ base: hasActiveRoom ? "flex" : "none", md: "flex" }}
+          display={{ base: showContentAtBase ? "flex" : "none", md: "flex" }}
         >
           {children}
         </Box>

@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -21,8 +22,9 @@ func TestSendMessage(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	msg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -41,7 +43,7 @@ func TestSendMessageNotMember(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -57,7 +59,7 @@ func TestSendMessageReaderForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleReader))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -72,8 +74,9 @@ func TestSendMessageGuestAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	msg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -92,7 +95,7 @@ func TestSendAIMessageGuestForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
@@ -109,10 +112,10 @@ func TestRegenerateAIMessageGuestForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
-	_, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", "nonexistent-message-id", "test-model")
+	_, _, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", "nonexistent-message-id", "test-model")
 	if err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden for guest regenerating an AI message, got %v", err)
 	}
@@ -125,7 +128,7 @@ func TestListMessagesReaderAllowed(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleReader))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	if _, err := uc.ListMessages(ctx, "user-1", "room-1", "", 20); err != nil {
@@ -137,8 +140,9 @@ func TestListMessages(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, _ = uc.SendMessage(ctx, "user-1", "room-1", "msg1")
@@ -159,7 +163,7 @@ func TestSendAIMessage(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
@@ -204,7 +208,7 @@ func TestSendAIMessageHonorsRoomConfiguredModel(t *testing.T) {
 			return &ai.CompletionResponse{Content: "AI response", Model: req.Model, PromptTokens: 1, OutputTokens: 1}, nil
 		},
 	}
-	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "global-default-model")
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "global-default-model")
 	ctx := context.Background()
 
 	// Request omits model entirely.
@@ -223,7 +227,7 @@ func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	failingGateway := &mocks.LLMGateway{ShouldErr: true}
-	uc := NewMessageUsecase(msgRepo, roomRepo, failingGateway, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, failingGateway, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// SendAIMessage with failing LLM — returns result with failed AI placeholder
@@ -237,7 +241,7 @@ func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 
 	// Switch to working LLM and regenerate
 	failingGateway.ShouldErr = false
-	aiMsg, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
+	aiMsg, _, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
 	if err != nil {
 		t.Fatalf("RegenerateAIMessage failed: %v", err)
 	}
@@ -258,7 +262,7 @@ func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// Send human message + AI response via SendAIMessage
@@ -270,7 +274,7 @@ func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 	msgCountBefore := len(msgRepo.Messages)
 
 	// Regenerate — should overwrite the existing AI message, not create a new one
-	regenerated, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
+	regenerated, _, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
 	if err != nil {
 		t.Fatalf("RegenerateAIMessage failed: %v", err)
 	}
@@ -298,7 +302,7 @@ func TestRegenerateAIMessageHonorsRoomConfiguredModel(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "global-default-model")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "global-default-model")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
@@ -317,9 +321,9 @@ func TestRegenerateAIMessageHonorsRoomConfiguredModel(t *testing.T) {
 			return &ai.CompletionResponse{Content: "regenerated", Model: req.Model, PromptTokens: 1, OutputTokens: 1}, nil
 		},
 	}
-	uc2 := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "global-default-model")
+	uc2 := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "global-default-model")
 
-	if _, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, ""); err != nil {
+	if _, _, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, ""); err != nil {
 		t.Fatalf("RegenerateAIMessage failed: %v", err)
 	}
 	if usedModel != "room-configured-model" {
@@ -333,7 +337,7 @@ func TestRegenerateAIMessageNotHuman(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// Send a human message and get AI response
@@ -343,7 +347,7 @@ func TestRegenerateAIMessageNotHuman(t *testing.T) {
 	}
 
 	// Try to regenerate from the AI message (should fail)
-	_, err = uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.AIMessage.ID, "test-model")
+	_, _, err = uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.AIMessage.ID, "test-model")
 	if err != domain.ErrInvalidMessageType {
 		t.Fatalf("expected ErrInvalidMessageType, got %v", err)
 	}
@@ -362,10 +366,10 @@ func TestRegenerateAIMessageNotFound(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
-	_, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", "nonexistent", "test-model")
+	_, _, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", "nonexistent", "test-model")
 	if err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
@@ -379,7 +383,7 @@ func TestRegenerateAIMessageWrongRoom(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 	roomRepo.SeedRoom("room-2", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// Send message in room-1
@@ -389,7 +393,7 @@ func TestRegenerateAIMessageWrongRoom(t *testing.T) {
 	}
 
 	// Try to regenerate in room-2 (should fail)
-	_, err = uc.RegenerateAIMessage(ctx, "user-1", "room-2", humanMsg.ID, "test-model")
+	_, _, err = uc.RegenerateAIMessage(ctx, "user-1", "room-2", humanMsg.ID, "test-model")
 	if err != domain.ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -399,8 +403,9 @@ func TestRegenerateAIMessageNotMember(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	humanMsg, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
@@ -409,7 +414,7 @@ func TestRegenerateAIMessageNotMember(t *testing.T) {
 	}
 
 	// user-2 is not a member
-	_, err = uc.RegenerateAIMessage(ctx, "user-2", "room-1", humanMsg.ID, "test-model")
+	_, _, err = uc.RegenerateAIMessage(ctx, "user-2", "room-1", humanMsg.ID, "test-model")
 	if err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
@@ -422,7 +427,7 @@ func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	gw := &mocks.LLMGateway{ShouldErr: true}
-	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// First call fails — creates human + failed AI placeholder
@@ -466,7 +471,7 @@ func TestSendAIMessageLLMError(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model", false)
@@ -499,7 +504,7 @@ func TestSendAIMessageSequenceAdjacencyAndResponseLinkage(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
@@ -555,7 +560,7 @@ func TestSendAIMessageContextExcludesSoftDeletedMessage(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	var captured []ai.ChatMessage
-	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	toDelete, err := uc.SendMessage(ctx, "user-1", "room-1", "secret message")
@@ -589,7 +594,7 @@ func TestSendAIMessageContextExcludesExcludeFromAIMessage(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	var captured []ai.ChatMessage
-	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	toExclude, err := uc.SendMessage(ctx, "user-1", "room-1", "private aside")
@@ -638,7 +643,7 @@ func TestSendAIMessageContextExcludesPreCutoffMessages(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	var captured []ai.ChatMessage
-	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	oldMsg, err := uc.SendMessage(ctx, "user-1", "room-1", "ancient history")
@@ -677,7 +682,7 @@ func TestSendAIMessageAttachmentEnrichmentNoAttachments(t *testing.T) {
 	objStorage := &mocks.ObjectStorage{}
 
 	var captured []ai.ChatMessage
-	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, attachmentRepo, objStorage, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, attachmentRepo, objStorage, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	if _, err := uc.SendMessage(ctx, "user-1", "room-1", "plain text message"); err != nil {
@@ -714,7 +719,7 @@ func TestSendAIMessageAttachmentEnrichmentSingleImage(t *testing.T) {
 	objStorage := &mocks.ObjectStorage{}
 
 	var captured []ai.ChatMessage
-	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, attachmentRepo, objStorage, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, attachmentRepo, objStorage, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "check this out")
@@ -773,7 +778,7 @@ func TestSendAIMessageAttachmentEnrichmentMultipleImages(t *testing.T) {
 	objStorage := &mocks.ObjectStorage{}
 
 	var captured []ai.ChatMessage
-	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, attachmentRepo, objStorage, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, attachmentRepo, objStorage, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "two photos")
@@ -831,8 +836,9 @@ func TestDeleteMessageSenderCanDeleteOwnMessage(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -850,8 +856,9 @@ func TestDeleteMessageNonSenderNonAdminForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-1", "user-2", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -869,8 +876,9 @@ func TestDeleteMessageAdminCanDeleteAnotherMembersMessage(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-1", "user-2", string(domainroom.RoleAdmin))
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -888,8 +896,9 @@ func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedMember("room-2", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -902,14 +911,52 @@ func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 	}
 }
 
+// TestDeleteMessagePropagatesSummaryInvalidationFailure proves that
+// DeleteMessage surfaces a msgRepo.DeleteAndInvalidateSummary failure to the
+// caller instead of only logging it, and that -- per that method's
+// all-or-nothing transaction contract -- the message has NOT been deleted
+// when that happens: nothing is mutated when the combined call fails,
+// rather than the soft delete having already gone through un-invalidated.
+func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
+	invalidationErr := errors.New("boom: summary invalidation failed")
+	msgRepo := &mocks.MessageRepo{DeleteAndInvalidateSummaryErr: invalidationErr}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if err := uc.DeleteMessage(ctx, "user-1", "room-1", sent.ID); !errors.Is(err, invalidationErr) {
+		t.Fatalf("expected DeleteMessage to propagate the summary invalidation error, got %v", err)
+	}
+
+	// Nothing must have been mutated: the combined call is all-or-nothing,
+	// so a failure means DeleteMessage returned without the soft delete
+	// having taken effect.
+	notDeleted, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID after DeleteMessage: %v", err)
+	}
+	if notDeleted.IsDeleted {
+		t.Fatal("expected the message to remain NOT deleted when the combined delete-and-invalidate call fails")
+	}
+}
+
 // --- SetExcludeFromAI ---
 
 func TestSetExcludeFromAIMemberAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -930,8 +977,9 @@ func TestSetExcludeFromAIAdminAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleAdmin))
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -948,8 +996,9 @@ func TestSetExcludeFromAIMasterAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleMaster))
+	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
@@ -967,7 +1016,7 @@ func TestSetExcludeFromAIGuestForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleGuest))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// Directly seed a message so a guest (who cannot SendMessage-then-target
@@ -987,7 +1036,7 @@ func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", string(domainroom.RoleReader))
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	msgRepo.Messages = map[string]*domainmessage.Message{
@@ -996,6 +1045,44 @@ func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
 
 	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", "msg-1", true); err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden for reader, got %v", err)
+	}
+}
+
+// TestSetExcludeFromAIPropagatesSummaryInvalidationFailure proves that
+// SetExcludeFromAI surfaces a
+// msgRepo.UpdateExcludeFromAIAndInvalidateSummary failure to the caller, and
+// that -- per that method's all-or-nothing transaction contract -- the flag
+// has NOT been toggled when that happens: nothing is mutated when the
+// combined call fails, rather than the toggle having already gone through
+// un-invalidated.
+func TestSetExcludeFromAIPropagatesSummaryInvalidationFailure(t *testing.T) {
+	invalidationErr := errors.New("boom: summary invalidation failed")
+	msgRepo := &mocks.MessageRepo{UpdateExcludeFromAIAndInvalidateSummaryErr: invalidationErr}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", sent.ID, true); !errors.Is(err, invalidationErr) {
+		t.Fatalf("expected SetExcludeFromAI to propagate the summary invalidation error, got %v", err)
+	}
+
+	// Nothing must have been mutated: the combined call is all-or-nothing,
+	// so a failure means SetExcludeFromAI returned without the toggle
+	// having taken effect.
+	notUpdated, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID after SetExcludeFromAI: %v", err)
+	}
+	if notUpdated.ExcludeFromAI {
+		t.Fatal("expected ExcludeFromAI to remain false when the combined update-and-invalidate call fails")
 	}
 }
 
@@ -1011,7 +1098,7 @@ func TestSendAIMessageInsufficientBalance(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 
 	guard := &mocks.BillingGuard{CheckBalanceErr: domain.ErrInsufficientBalance}
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model", false)
@@ -1033,7 +1120,7 @@ func TestSendAIMessageRecordsUsage(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	guard := &mocks.BillingGuard{}
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model", false)
@@ -1066,7 +1153,7 @@ func TestSendAIMessageRecordUsageErrorSwallowed(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	guard := &mocks.BillingGuard{RecordUsageErr: fmt.Errorf("db unavailable")}
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model", false)
@@ -1087,7 +1174,7 @@ func TestRegenerateAIMessageInsufficientBalance(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model", false)
@@ -1096,9 +1183,9 @@ func TestRegenerateAIMessageInsufficientBalance(t *testing.T) {
 	}
 
 	guard := &mocks.BillingGuard{CheckBalanceErr: domain.ErrInsufficientBalance}
-	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 
-	_, err = uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
+	_, _, err = uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
 	if err != domain.ErrInsufficientBalance {
 		t.Fatalf("expected ErrInsufficientBalance, got %v", err)
 	}
@@ -1114,7 +1201,7 @@ func TestRegenerateAIMessageRecordsUsage(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	setupGuard := &mocks.BillingGuard{}
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), setupGuard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), setupGuard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model", false)
@@ -1123,9 +1210,9 @@ func TestRegenerateAIMessageRecordsUsage(t *testing.T) {
 	}
 
 	guard := &mocks.BillingGuard{}
-	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 
-	regenerated, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "regen-model")
+	regenerated, _, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "regen-model")
 	if err != nil {
 		t.Fatalf("RegenerateAIMessage failed: %v", err)
 	}
@@ -1152,7 +1239,7 @@ func TestRegenerateAIMessageRecordUsageErrorSwallowed(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	setupGuard := &mocks.BillingGuard{}
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), setupGuard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), setupGuard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model", false)
@@ -1161,9 +1248,9 @@ func TestRegenerateAIMessageRecordUsageErrorSwallowed(t *testing.T) {
 	}
 
 	guard := &mocks.BillingGuard{RecordUsageErr: fmt.Errorf("db unavailable")}
-	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc2 := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 
-	regenerated, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
+	regenerated, _, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
 	if err != nil {
 		t.Fatalf("expected RecordUsage error to be swallowed, got error: %v", err)
 	}
@@ -1186,7 +1273,7 @@ func TestSendAIMessagePrivateSetsVisibilityAndAISenderID(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "secret question", "test-model", true)
@@ -1215,7 +1302,7 @@ func TestSendAIMessagePublicDefaultsVisibility(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
@@ -1244,7 +1331,7 @@ func TestListMessagesExcludesOtherUsersPrivateExchange(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-2", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "secret question", "test-model", true)
@@ -1293,7 +1380,7 @@ func TestRegenerateAIMessageNonOwnerPrivateForbidden(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-2", "member")
 	roomRepo.SeedRoom("room-1", nil)
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "secret question", "test-model", true)
@@ -1301,13 +1388,13 @@ func TestRegenerateAIMessageNonOwnerPrivateForbidden(t *testing.T) {
 		t.Fatalf("SendAIMessage failed: %v", err)
 	}
 
-	_, err = uc.RegenerateAIMessage(ctx, "user-2", "room-1", result.HumanMessage.ID, "test-model")
+	_, _, err = uc.RegenerateAIMessage(ctx, "user-2", "room-1", result.HumanMessage.ID, "test-model")
 	if err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden for non-owner regenerating a private exchange, got %v", err)
 	}
 
 	// The owner can still regenerate their own private exchange.
-	if _, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model"); err != nil {
+	if _, _, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model"); err != nil {
 		t.Fatalf("expected owner to regenerate their own private exchange, got error: %v", err)
 	}
 }
@@ -1324,7 +1411,7 @@ func TestSendAIMessageContextExcludesOtherUsersPrivateMessage(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	var captured []ai.ChatMessage
-	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, captureCompletionMessages(&captured), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	if _, err := uc.SendAIMessage(ctx, "user-1", "room-1", "user-1's secret", "test-model", true); err != nil {
@@ -1363,7 +1450,7 @@ func TestSendAIMessagePrivateWSDeliveryTargetsOnlySender(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	hub := event.NewInProcessHub()
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
@@ -1391,17 +1478,6 @@ func TestSendAIMessagePrivateWSDeliveryTargetsOnlySender(t *testing.T) {
 	}
 }
 
-// --- Failed AI placeholder on post-human-persist errors (Step 21 review fix) ---
-
-// TestSendAIMessageEnrichmentFailureSavesFailedPlaceholder asserts that when
-// SendAIMessage fails after the human message is already durably persisted
-// -- here, via an attachment-enrichment failure (objStorage.PresignView
-// erroring) -- it still creates a status=failed AI placeholder linked to
-// that human message, exactly as the LLM-call-failure path does, before
-// returning the underlying error. Without this, a client that retries after
-// the error would resubmit the same content via SendAIMessage and duplicate
-// the human message, because nothing would record that this human message
-// is already (unsuccessfully) answered; with the placeholder saved, the
 // client's existing RegenerateAIMessage retry path applies instead.
 //
 // enrichWithAttachments is exercised here (rather than the ListByRoom
@@ -1417,7 +1493,7 @@ func TestSendAIMessageEnrichmentFailureSavesFailedPlaceholder(t *testing.T) {
 	attachmentRepo := &mocks.AttachmentRepo{}
 	objStorage := &mocks.ObjectStorage{}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, attachmentRepo, objStorage, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, attachmentRepo, objStorage, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	// Seed an earlier message carrying an image attachment, so that a later
@@ -1499,7 +1575,7 @@ func TestSendAIMessageEnrichmentFailureSavesFailedPlaceholder(t *testing.T) {
 	// The retry path this placeholder exists for: RegenerateAIMessage on the
 	// new human message must now succeed once the underlying failure clears.
 	objStorage.ShouldErr = false
-	regenerated, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", newHuman.ID, "test-model")
+	regenerated, _, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", newHuman.ID, "test-model")
 	if err != nil {
 		t.Fatalf("expected RegenerateAIMessage to recover the failed placeholder, got error: %v", err)
 	}
@@ -1541,7 +1617,7 @@ func TestSendAIMessageCompletedCreateFailureSavesFailedPlaceholder(t *testing.T)
 		return nil
 	}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "Hello", "test-model", false)
@@ -1581,7 +1657,7 @@ func TestSendAIMessageCompletedCreateFailureSavesFailedPlaceholder(t *testing.T)
 	}
 }
 
-// --- Ownerless private message publish suppression (Step 22 review fix) ---
+// --- Ownerless private message publish suppression ---
 
 // TestPublishMessageEventSuppressesOwnerlessPrivateMessage asserts that
 // publishMessageEvent does not call hub.Publish for a private message whose
@@ -1596,7 +1672,7 @@ func TestPublishMessageEventSuppressesOwnerlessPrivateMessage(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	hub := event.NewInProcessHub()
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
@@ -1616,7 +1692,7 @@ func TestPublishMessageEventSuppressesOwnerlessPrivateMessage(t *testing.T) {
 	// goes through publishMessageEvent, so exercising it directly is the
 	// most targeted way to assert the suppression itself, independent of
 	// how an ownerless private message could arise upstream.
-	uc.publishMessageEvent(ctx, event.EventMessageCreated, "room-1", orphaned, time.Now())
+	uc.publishMessageEvent(ctx, event.EventMessageCreated, "room-1", orphaned, time.Now(), false)
 
 	select {
 	case evt := <-sub:
@@ -1638,7 +1714,7 @@ func TestSendAIMessagePublishesNormallyForOwnedPrivateMessage(t *testing.T) {
 	roomRepo.SeedRoom("room-1", nil)
 
 	hub := event.NewInProcessHub()
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
@@ -1655,5 +1731,954 @@ func TestSendAIMessagePublishesNormallyForOwnedPrivateMessage(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for the owned private message's event")
+	}
+}
+
+// --- Archived room guard (Step 32: room fork) ---
+
+// noCallLLMGateway returns a *mocks.LLMGateway whose CompleteFunc/StreamFunc
+// both call t.Error if ever invoked -- used by the archived-room guard tests
+// below to prove the rejection happens before any LLM Gateway call, not just
+// before a successful one.
+func noCallLLMGateway(t *testing.T) *mocks.LLMGateway {
+	t.Helper()
+	return &mocks.LLMGateway{
+		CompleteFunc: func(_ context.Context, _ *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+			t.Error("Complete must not be called for a rejected archived-room request")
+			return nil, errors.New("unexpected Complete call")
+		},
+		StreamFunc: func(_ context.Context, _ *ai.CompletionRequest) (<-chan ai.StreamResult, error) {
+			t.Error("Stream must not be called for a rejected archived-room request")
+			return nil, errors.New("unexpected Stream call")
+		},
+	}
+}
+
+// TestSendMessageArchivedRoom asserts that SendMessage rejects a new post
+// into an archived room with domain.ErrArchivedRoom, before reserving any
+// sequence number or calling the LLM Gateway.
+func TestSendMessageArchivedRoom(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.Rooms["room-1"] = &domainroom.Room{ID: "room-1", IsArchived: true}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, noCallLLMGateway(t), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
+	if err != domain.ErrArchivedRoom {
+		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+	if seq := msgRepo.Seqs["room-1"]; seq != 0 {
+		t.Fatalf("expected no sequence number to have been reserved, got next-sequence counter %d", seq)
+	}
+}
+
+// TestSendAIMessageArchivedRoom asserts that SendAIMessage rejects a new
+// post into an archived room with domain.ErrArchivedRoom, before reserving
+// any sequence number or invoking the LLM Gateway.
+func TestSendAIMessageArchivedRoom(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.Rooms["room-1"] = &domainroom.Room{ID: "room-1", IsArchived: true}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, noCallLLMGateway(t), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	_, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
+	if err != domain.ErrArchivedRoom {
+		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+	if seq := msgRepo.Seqs["room-1"]; seq != 0 {
+		t.Fatalf("expected no sequence number to have been reserved, got next-sequence counter %d", seq)
+	}
+}
+
+// TestSendAIMessageStreamArchivedRoom asserts that SendAIMessageStream
+// rejects a new post into an archived room with domain.ErrArchivedRoom,
+// before reserving any sequence number or invoking the LLM Gateway's
+// streaming endpoint, mirroring SendMessage/SendAIMessage's matching guard.
+func TestSendAIMessageStreamArchivedRoom(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.Rooms["room-1"] = &domainroom.Room{ID: "room-1", IsArchived: true}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, noCallLLMGateway(t), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	_, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if err != domain.ErrArchivedRoom {
+		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+	if seq := msgRepo.Seqs["room-1"]; seq != 0 {
+		t.Fatalf("expected no sequence number to have been reserved, got next-sequence counter %d", seq)
+	}
+}
+
+// TestRegenerateAIMessageRejectsArchivedRoom asserts that RegenerateAIMessage
+// rejects a regeneration request against an archived room with
+// domain.ErrArchivedRoom, mirroring Send/SendAIMessage/SendAIMessageStream's
+// identical guard. The human/AI pair is created before the room is marked
+// archived, since SendAIMessage itself would already reject a new send into
+// an archived room.
+func TestRegenerateAIMessageRejectsArchivedRoom(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
+	if err != nil {
+		t.Fatalf("seed SendAIMessage failed: %v", err)
+	}
+	seqBefore := msgRepo.Seqs["room-1"]
+
+	roomRepo.Rooms["room-1"].IsArchived = true
+
+	// Swap in a gateway that fails the test if RegenerateAIMessage's
+	// rejection somehow still reaches the LLM Gateway.
+	uc.llmGateway = noCallLLMGateway(t)
+
+	_, _, err = uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
+	if err != domain.ErrArchivedRoom {
+		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+	if seq := msgRepo.Seqs["room-1"]; seq != seqBefore {
+		t.Fatalf("expected next-sequence counter to remain %d after a rejected regenerate, got %d", seqBefore, seq)
+	}
+}
+
+// --- SendAIMessageStream tests (Step 51) ---
+
+// collectUntilMessageUpdated drains sub, collecting every EventTokenChunk
+// event addressed to aiMessageID, until an EventMessageUpdated event for
+// that same message ID arrives, which it returns alongside the collected
+// chunks. It fails the test if that takes longer than 3 seconds.
+func collectUntilMessageUpdated(t *testing.T, sub <-chan event.RoomEvent, aiMessageID string) ([]event.RoomEvent, event.RoomEvent) {
+	t.Helper()
+	var chunks []event.RoomEvent
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			switch {
+			case evt.Type == event.EventTokenChunk && evt.Chunk != nil && evt.Chunk.MessageID == aiMessageID:
+				chunks = append(chunks, evt)
+			case evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == aiMessageID:
+				return chunks, evt
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for stream completion event")
+			return nil, event.RoomEvent{}
+		}
+	}
+}
+
+// waitForCondition polls cond every 5ms until it returns true, failing the
+// test if that takes longer than 2 seconds. Used to synchronize on
+// fire-and-forget background work (e.g. BillingGuard.RecordUsage) that has
+// no event of its own to wait on.
+func waitForCondition(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for condition")
+}
+
+// TestSendAIMessageStreamSuccess asserts the happy path: the returned
+// AIMessage is immediately "streaming" with empty content, exactly one
+// EventTokenChunk is published per chunk with a non-empty Delta (carrying
+// the right MessageID), and a final EventMessageUpdated carries
+// Status == "completed" with Content equal to the concatenation of every
+// chunk's Delta.
+func TestSendAIMessageStreamSuccess(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{
+			{ID: "c1", Model: "test-model", Delta: "Go"},
+			{ID: "c1", Model: "test-model", Delta: " is a language"},
+			{ID: "c1", Model: "test-model", FinishReason: "stop", Usage: &ai.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}},
+		},
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+	if result.AIMessage.Status != domainmessage.MessageStatusStreaming {
+		t.Fatalf("expected streaming status immediately, got %s", result.AIMessage.Status)
+	}
+	if result.AIMessage.Content != "" {
+		t.Fatalf("expected empty content immediately, got %q", result.AIMessage.Content)
+	}
+
+	chunks, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 token chunk events (non-empty deltas only), got %d: %+v", len(chunks), chunks)
+	}
+	if chunks[0].Chunk.Delta != "Go" || chunks[1].Chunk.Delta != " is a language" {
+		t.Fatalf("unexpected chunk deltas: %q, %q", chunks[0].Chunk.Delta, chunks[1].Chunk.Delta)
+	}
+	for _, c := range chunks {
+		if c.Chunk.MessageID != result.AIMessage.ID {
+			t.Fatalf("expected chunk MessageID %s, got %s", result.AIMessage.ID, c.Chunk.MessageID)
+		}
+	}
+
+	if final.Message.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected completed status, got %s", final.Message.Status)
+	}
+	if final.Message.Content != "Go is a language" {
+		t.Fatalf("expected concatenated content %q, got %q", "Go is a language", final.Message.Content)
+	}
+
+	// The persisted repo state should match what the events showed.
+	persisted, err := msgRepo.GetByID(ctx, result.AIMessage.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if persisted.Content != "Go is a language" || persisted.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected persisted message to match final event, got %+v", persisted)
+	}
+}
+
+// TestSendAIMessageStreamMidStreamFailureRetryable asserts that a mid-stream
+// provider failure publishes token-chunk events for the chunks seen before
+// the failure, then one EventMessageUpdated with Status == "failed" and
+// Content equal to the partial concatenation, and that the resulting
+// placeholder can be retried via RegenerateAIMessage exactly like a
+// non-streaming failure.
+func TestSendAIMessageStreamMidStreamFailureRetryable(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{
+			{ID: "c1", Model: "test-model", Delta: "partial "},
+		},
+		StreamMidErr: fmt.Errorf("provider exploded"),
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+
+	chunks, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if len(chunks) != 1 || chunks[0].Chunk.Delta != "partial " {
+		t.Fatalf("expected 1 token chunk before failure, got %+v", chunks)
+	}
+	if final.Message.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected failed status, got %s", final.Message.Status)
+	}
+	if final.Message.Content != "partial " {
+		t.Fatalf("expected partial content persisted, got %q", final.Message.Content)
+	}
+
+	// Retry via RegenerateAIMessage, switching to a working gateway.
+	gw2 := &mocks.LLMGateway{
+		CompletionResponse: &ai.CompletionResponse{Content: "recovered", Model: "test-model", PromptTokens: 3, OutputTokens: 2},
+	}
+	uc2 := NewMessageUsecase(msgRepo, roomRepo, gw2, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	regenerated, _, err := uc2.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
+	if err != nil {
+		t.Fatalf("RegenerateAIMessage after stream failure failed: %v", err)
+	}
+	if regenerated.Content != "recovered" || regenerated.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected successful regenerate, got %+v", regenerated)
+	}
+	if regenerated.ID != result.AIMessage.ID {
+		t.Fatal("expected regenerate to update the existing streamed placeholder, not create a new one")
+	}
+}
+
+// TestSendAIMessageStreamSynchronousDispatchFailure asserts that when
+// llmGateway.Stream itself fails synchronously (bad model, connection
+// refused, etc.), SendAIMessageStream returns no Go error, the returned
+// AIMessage.Status is immediately "failed", and no EventTokenChunk is ever
+// published.
+func TestSendAIMessageStreamSynchronousDispatchFailure(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{StreamErr: fmt.Errorf("bad model")}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("expected no Go error on a synchronous dispatch failure, got %v", err)
+	}
+	if result.AIMessage.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected failed status immediately, got %s", result.AIMessage.Status)
+	}
+
+	// Drain whatever events were already published (human/AI created, AI
+	// updated-to-failed) and assert no EventTokenChunk ever appears.
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventTokenChunk {
+				t.Fatal("expected no EventTokenChunk for a synchronous dispatch failure")
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// TestSendAIMessageStreamFallsBackToCompleteOnUnsupportedTransport is a
+// forward-ported regression test (originally added alongside the
+// domain.ErrStreamingUnsupported mechanism in gateway.GRPCClient.Stream):
+// when llmGateway.Stream fails synchronously with
+// domain.ErrStreamingUnsupported (exactly what gateway.GRPCClient.Stream
+// returns when LLM_GATEWAY_TRANSPORT=grpc), the send must still succeed via
+// a background fallback to the unary Complete call rather than being marked
+// failed outright -- without this fallback, any streaming send over the
+// gRPC transport is silently broken.
+func TestSendAIMessageStreamFallsBackToCompleteOnUnsupportedTransport(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{
+		StreamErr:          fmt.Errorf("%w: streaming not supported over grpc transport", domain.ErrStreamingUnsupported),
+		CompletionResponse: &ai.CompletionResponse{Content: "fallback answer", Model: "test-model", PromptTokens: 7, OutputTokens: 3},
+	}
+	billing := &mocks.BillingGuard{}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, billing, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("expected no Go error on a fallback dispatch, got %v", err)
+	}
+	// The caller-visible contract is unchanged from the real-streaming happy
+	// path: an immediate "streaming" placeholder, not "failed".
+	if result.AIMessage.Status != domainmessage.MessageStatusStreaming {
+		t.Fatalf("expected streaming status immediately (fallback is transparent to the caller), got %s", result.AIMessage.Status)
+	}
+
+	var final event.RoomEvent
+	deadline := time.After(3 * time.Second)
+loop:
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventTokenChunk {
+				t.Fatal("expected no EventTokenChunk for the unary Complete fallback")
+			}
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == result.AIMessage.ID {
+				final = evt
+				break loop
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the fallback's EventMessageUpdated")
+		}
+	}
+	if final.Message.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected completed status, got %s", final.Message.Status)
+	}
+	if final.Message.Content != "fallback answer" {
+		t.Fatalf("expected fallback completion content, got %q", final.Message.Content)
+	}
+
+	persistedMsg, err := msgRepo.GetByID(ctx, result.AIMessage.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if persistedMsg.Content != "fallback answer" || persistedMsg.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected persisted message to match the fallback completion, got %+v", persistedMsg)
+	}
+
+	// RecordUsage is fire-and-forget, called just after the completion event
+	// is published; poll LastRecordUsageCall (which locks internally, unlike
+	// reading RecordUsageCalls directly) rather than racing on it.
+	waitForCondition(t, func() bool {
+		_, ok := billing.LastRecordUsageCall()
+		return ok
+	})
+	call, _ := billing.LastRecordUsageCall()
+	if call.PromptTokens != 7 || call.OutputTokens != 3 {
+		t.Fatalf("expected RecordUsage called with the Complete response's token counts, got %+v", call)
+	}
+}
+
+// cancelSensitiveMessageRepo wraps *mocks.MessageRepo, making
+// UpdateAIResponse return ctx.Err() immediately if ctx is already Done() --
+// unlike the embedded mock's own UpdateAIResponse (like every other
+// in-memory fake method here), which discards its context parameter
+// entirely and always succeeds regardless of cancellation. This gives
+// TestSendAIMessageStreamDispatchFailureFinalizesDespitePreCancelledRequestCtx
+// something to observe: a real postgres.MessageRepository call made against
+// an already-cancelled context fails immediately (pgx checks ctx before
+// issuing the query), a behavior the plain mock otherwise never simulates.
+type cancelSensitiveMessageRepo struct {
+	*mocks.MessageRepo
+}
+
+func (r *cancelSensitiveMessageRepo) UpdateAIResponse(ctx context.Context, id string, content string, status domainmessage.MessageStatus, updatedAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.MessageRepo.UpdateAIResponse(ctx, id, content, status, updatedAt)
+}
+
+// TestSendAIMessageStreamDispatchFailureFinalizesDespitePreCancelledRequestCtx
+// is a regression test proving the synchronous LLM Gateway dispatch-failure
+// branch derives its own detached finalizeCtx (context.WithoutCancel(ctx)
+// plus a fresh streamFinalizeTimeout deadline) for its terminal
+// UpdateAIResponse/publish calls, rather than using SendAIMessageStream's
+// own request-scoped ctx directly. ctx is pre-cancelled before the call, as
+// Echo would already have done by the time this cleanup work runs if it
+// raced the HTTP handler's own return; msgRepo is wrapped (see
+// cancelSensitiveMessageRepo) so UpdateAIResponse actually fails fast on an
+// already-cancelled context, since the plain mock otherwise ignores
+// cancellation entirely. Before the fix, this pre-cancelled ctx reached
+// UpdateAIResponse directly, UpdateAIResponse failed, and the placeholder
+// was left stuck at Status = MessageStatusStreaming forever (with
+// SendAIMessageStream itself returning a bare context.Canceled error);
+// after the fix, the placeholder still finalizes to
+// Status = MessageStatusFailed.
+func TestSendAIMessageStreamDispatchFailureFinalizesDespitePreCancelledRequestCtx(t *testing.T) {
+	msgRepo := &cancelSensitiveMessageRepo{MessageRepo: &mocks.MessageRepo{}}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	gw := &mocks.LLMGateway{StreamErr: fmt.Errorf("bad model")}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Pre-cancelled, as if the HTTP request had already completed.
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("expected no Go error on a synchronous dispatch failure despite the pre-cancelled request ctx, got %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected a non-nil result")
+	}
+	if result.AIMessage.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected the placeholder to finalize as failed despite the pre-cancelled request ctx, got %s", result.AIMessage.Status)
+	}
+
+	stored, err := msgRepo.GetByID(context.Background(), result.AIMessage.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if stored.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected the persisted placeholder status to be failed, got %s", stored.Status)
+	}
+}
+
+// failingUpdateAIResponseRepo wraps mocks.MessageRepo to make every
+// UpdateAIResponse call fail, for exercising the dispatch-failure branch
+// where even the terminal placeholder update cannot be persisted.
+type failingUpdateAIResponseRepo struct {
+	*mocks.MessageRepo
+}
+
+func (r *failingUpdateAIResponseRepo) UpdateAIResponse(ctx context.Context, id string, content string, status domainmessage.MessageStatus, updatedAt time.Time) error {
+	return fmt.Errorf("update unavailable")
+}
+
+// TestSendAIMessageStreamDispatchFailureWithFailedFinalizeStillReturnsResult
+// asserts the dispatch-failure contract when the terminal placeholder
+// update itself fails: both messages are already durable and the creation
+// event was published, so the call must NOT surface a request error (which
+// would invite a duplicate-creating client retry) — it returns the
+// committed IDs with their current durable (still streaming) status.
+func TestSendAIMessageStreamDispatchFailureWithFailedFinalizeStillReturnsResult(t *testing.T) {
+	msgRepo := &failingUpdateAIResponseRepo{MessageRepo: &mocks.MessageRepo{}}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	gw := &mocks.LLMGateway{StreamErr: fmt.Errorf("bad model")}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+
+	result, err := uc.SendAIMessageStream(context.Background(), "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("expected no Go error when the terminal update fails after dispatch failure, got %v", err)
+	}
+	if result == nil || result.HumanMessage == nil || result.AIMessage == nil {
+		t.Fatalf("expected both committed messages in the result, got %+v", result)
+	}
+	if result.AIMessage.Status != domainmessage.MessageStatusStreaming {
+		t.Fatalf("expected the AI message to report its current durable (streaming) status, got %s", result.AIMessage.Status)
+	}
+}
+
+// TestSendAIMessageStreamSummaryUsedFalse asserts that, in this step's
+// standalone state (before Step 50's assembleAIContext lands), every
+// published EventTokenChunk's SummaryUsed field is false.
+func TestSendAIMessageStreamSummaryUsedFalse(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{{ID: "c1", Model: "test-model", Delta: "hi"}},
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+
+	chunks, _ := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if len(chunks) != 1 {
+		t.Fatalf("expected exactly 1 chunk, got %d", len(chunks))
+	}
+	if chunks[0].Chunk.SummaryUsed {
+		t.Fatal("expected SummaryUsed=false in this step's standalone state")
+	}
+}
+
+// --- SendAIMessageStream billing guard tests (Step 42 parity) ---
+
+// TestSendAIMessageStreamInsufficientBalance asserts that SendAIMessageStream
+// returns domain.ErrInsufficientBalance immediately when the billing guard
+// rejects, and that no messages are created (the guard runs before any
+// message is persisted).
+func TestSendAIMessageStreamInsufficientBalance(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+
+	guard := &mocks.BillingGuard{CheckBalanceErr: domain.ErrInsufficientBalance}
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	_, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != domain.ErrInsufficientBalance {
+		t.Fatalf("expected ErrInsufficientBalance, got %v", err)
+	}
+	if len(msgRepo.Messages) != 0 {
+		t.Fatalf("expected zero messages created, got %d", len(msgRepo.Messages))
+	}
+}
+
+// TestSendAIMessageStreamRecordsUsage asserts that on a successful stream
+// with a Usage-bearing final chunk, RecordUsage is called exactly once with
+// the AI message's ID, the resolved model, and the final chunk's token
+// counts.
+func TestSendAIMessageStreamRecordsUsage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	guard := &mocks.BillingGuard{}
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{
+			{ID: "c1", Model: "test-model", Delta: "hi"},
+			{ID: "c1", Model: "test-model", FinishReason: "stop", Usage: &ai.Usage{PromptTokens: 4, CompletionTokens: 6, TotalTokens: 10}},
+		},
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+	collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+
+	// RecordUsage is fire-and-forget, called just after the completion
+	// event is published; poll LastRecordUsageCall (which locks internally,
+	// unlike reading RecordUsageCalls directly) rather than racing on it.
+	waitForCondition(t, func() bool {
+		_, ok := guard.LastRecordUsageCall()
+		return ok
+	})
+
+	call, _ := guard.LastRecordUsageCall()
+	if call.AIMessageID != result.AIMessage.ID {
+		t.Fatalf("expected RecordUsage aiMessageID %s, got %s", result.AIMessage.ID, call.AIMessageID)
+	}
+	if call.Model != "test-model" {
+		t.Fatalf("expected RecordUsage model test-model, got %s", call.Model)
+	}
+	if call.PromptTokens != 4 || call.OutputTokens != 6 {
+		t.Fatalf("expected RecordUsage tokens 4/6, got %d/%d", call.PromptTokens, call.OutputTokens)
+	}
+}
+
+// TestSendAIMessageStreamRecordUsageErrorSwallowed asserts that a
+// RecordUsage error does not affect the persisted/broadcast result of a
+// successful stream — usage recording is fire-and-forget.
+func TestSendAIMessageStreamRecordUsageErrorSwallowed(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	guard := &mocks.BillingGuard{RecordUsageErr: fmt.Errorf("db unavailable")}
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{
+			{ID: "c1", Model: "test-model", Delta: "hi"},
+			{ID: "c1", Model: "test-model", FinishReason: "stop", Usage: &ai.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}},
+		},
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+
+	_, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if final.Message.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected completed status despite RecordUsage error, got %s", final.Message.Status)
+	}
+}
+
+// TestSendAIMessageStreamNoUsageChunkSkipsRecordUsage asserts that a stream
+// which ends without ever delivering a Usage-bearing chunk never calls
+// RecordUsage.
+func TestSendAIMessageStreamNoUsageChunkSkipsRecordUsage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	guard := &mocks.BillingGuard{}
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{{ID: "c1", Model: "test-model", Delta: "hi", FinishReason: "stop"}}, // no Usage
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+	_, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if final.Message.Status != domainmessage.MessageStatusCompleted {
+		t.Fatalf("expected completed status, got %s", final.Message.Status)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := guard.LastRecordUsageCall(); ok {
+		t.Fatal("expected RecordUsage never called when the stream ends with no usage-bearing chunk")
+	}
+}
+
+// TestSendAIMessageStreamMidStreamFailureNeverRecordsUsage asserts that a
+// mid-stream failure never calls RecordUsage, even when chunks were
+// delivered before the failure.
+func TestSendAIMessageStreamMidStreamFailureNeverRecordsUsage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	guard := &mocks.BillingGuard{}
+	gw := &mocks.LLMGateway{
+		StreamChunks: []*ai.StreamChunk{{ID: "c1", Model: "test-model", Delta: "partial"}},
+		StreamMidErr: fmt.Errorf("boom"),
+	}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, guard, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("SendAIMessageStream failed: %v", err)
+	}
+	_, final := collectUntilMessageUpdated(t, sub, result.AIMessage.ID)
+	if final.Message.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected failed status, got %s", final.Message.Status)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if _, ok := guard.LastRecordUsageCall(); ok {
+		t.Fatal("expected RecordUsage never called on a mid-stream failure")
+	}
+}
+
+// TestSendAIMessageStreamListByRoomFailureFinalizesPlaceholder asserts that
+// when the post-placeholder ListByRoom context-fetch call fails,
+// SendAIMessageStream (a) returns the original error, (b) finalizes the
+// streaming placeholder to Status = MessageStatusFailed instead of leaving
+// it stuck at "streaming" forever, and (c) publishes a matching
+// EventMessageUpdated -- regression test for that placeholder previously
+// being abandoned on this error path.
+// TestSendAIMessageStreamPlaceholderCreateFailureSavesFailedPlaceholder
+// asserts that when msgRepo.Create for the initial streaming AI placeholder
+// itself fails, SendAIMessageStream still saves a status=failed AI
+// placeholder linked to the human message (via saveFailedAIPlaceholderOnError)
+// before returning the original error -- mirroring
+// TestSendAIMessageCompletedCreateFailureSavesFailedPlaceholder's identical
+// fix for SendAIMessage's completed-AI-message Create failure -- instead of
+// leaving the human message with no AI row at all, which would give
+// RegenerateAIMessage's GetNextInRoom-based retry path nothing to act on.
+func TestSendAIMessageStreamPlaceholderCreateFailureSavesFailedPlaceholder(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	createErr := fmt.Errorf("simulated create failure")
+	var createCalls int
+	msgRepo.CreateFunc = func(_ context.Context, msg *domainmessage.Message) error {
+		createCalls++
+		// The 1st Create call persists the human message and the 3rd
+		// persists the failed AI placeholder saved on this test's error
+		// path; only the 2nd -- the initial streaming placeholder
+		// SendAIMessageStream builds before ever calling the LLM Gateway --
+		// is made to fail.
+		if createCalls == 2 {
+			return createErr
+		}
+		msgRepo.Messages[msg.ID] = msg
+		return nil
+	}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != createErr {
+		t.Fatalf("expected SendAIMessageStream to return the original create error, got %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected a nil result on error, got %+v", result)
+	}
+	if createCalls != 3 {
+		t.Fatalf("expected 3 msgRepo.Create calls (human, failed streaming placeholder, failed placeholder), got %d", createCalls)
+	}
+
+	var humanMsg, aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		switch m.Type {
+		case domainmessage.MessageTypeHuman:
+			humanMsg = m
+		case domainmessage.MessageTypeAI:
+			aiMsg = m
+		}
+	}
+	if humanMsg == nil {
+		t.Fatal("expected the human message to have been persisted despite the AI placeholder Create failure")
+	}
+	if aiMsg == nil {
+		t.Fatal("expected a failed AI placeholder to have been persisted")
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected the AI placeholder status to be failed, got %s", aiMsg.Status)
+	}
+	if aiMsg.Content != "" {
+		t.Fatalf("expected empty content on the failed AI placeholder, got %q", aiMsg.Content)
+	}
+	if aiMsg.InResponseToMessageID == nil || *aiMsg.InResponseToMessageID != humanMsg.ID {
+		t.Fatalf("expected the failed AI placeholder to link back to the human message %s, got %v", humanMsg.ID, aiMsg.InResponseToMessageID)
+	}
+}
+
+func TestSendAIMessageStreamListByRoomFailureFinalizesPlaceholder(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	listErr := fmt.Errorf("boom: database unavailable")
+	msgRepo.ListByRoomErr = listErr
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err == nil {
+		t.Fatal("expected SendAIMessageStream to return the ListByRoom error")
+	}
+	if !errors.Is(err, listErr) {
+		t.Fatalf("expected the original ListByRoom error, got %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected a nil result on error, got %+v", result)
+	}
+
+	// Find the streaming placeholder that was created and published before
+	// the ListByRoom call failed.
+	var aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		if m.Type == domainmessage.MessageTypeAI {
+			aiMsg = m
+		}
+	}
+	if aiMsg == nil {
+		t.Fatal("expected an AI placeholder message to have been created before the failure")
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected the placeholder to be finalized as failed, got %s", aiMsg.Status)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == aiMsg.ID {
+				if evt.Message.Status != domainmessage.MessageStatusFailed {
+					t.Fatalf("expected published status failed, got %s", evt.Message.Status)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for EventMessageUpdated after ListByRoom failure")
+		}
+	}
+}
+
+// TestSendAIMessageStreamContextAssemblyFailureFinalizesPlaceholder asserts
+// that when assembleAIContext's attachment-enrichment step fails (forced via
+// a PresignView error on an attachment linked to a message already in the
+// fetched context), SendAIMessageStream (a) returns the original error,
+// (b) finalizes the streaming placeholder to Status = MessageStatusFailed,
+// and (c) publishes a matching EventMessageUpdated -- mirroring
+// TestSendAIMessageStreamListByRoomFailureFinalizesPlaceholder for the later
+// of the two pre-dispatch failure points.
+func TestSendAIMessageStreamContextAssemblyFailureFinalizesPlaceholder(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	attachmentRepo := &mocks.AttachmentRepo{}
+	objStorage := &mocks.ObjectStorage{}
+
+	hub := event.NewInProcessHub()
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, attachmentRepo, objStorage, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	// Seed an earlier message carrying an image attachment, so the streaming
+	// call's context-assembly enrichment step has something to fail on.
+	attachmentBearing, err := uc.SendMessage(ctx, "user-1", "room-1", "check this out")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+	if err := attachmentRepo.Create(ctx, &domainattachment.Attachment{
+		ID:        "att-1",
+		RoomID:    "room-1",
+		S3Key:     "attachments/room-1/att-1",
+		MimeType:  "image/png",
+		SizeBytes: 1024,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+	if _, err := attachmentRepo.AttachToMessage(ctx, "att-1", attachmentBearing.ID, "room-1"); err != nil {
+		t.Fatalf("AttachToMessage failed: %v", err)
+	}
+
+	// Force PresignView to fail for the enrichment step triggered by the
+	// SendAIMessageStream call under test.
+	objStorage.ShouldErr = true
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is it?", "test-model")
+	if err == nil {
+		t.Fatal("expected SendAIMessageStream to return the context-assembly error")
+	}
+	if result != nil {
+		t.Fatalf("expected a nil result on error, got %+v", result)
+	}
+
+	var aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		if m.Type == domainmessage.MessageTypeAI {
+			aiMsg = m
+		}
+	}
+	if aiMsg == nil {
+		t.Fatal("expected an AI placeholder message to have been created before the failure")
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected the placeholder to be finalized as failed, got %s", aiMsg.Status)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == aiMsg.ID {
+				if evt.Message.Status != domainmessage.MessageStatusFailed {
+					t.Fatalf("expected published status failed, got %s", evt.Message.Status)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for EventMessageUpdated after context-assembly failure")
+		}
 	}
 }

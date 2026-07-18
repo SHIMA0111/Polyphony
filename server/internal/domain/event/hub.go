@@ -31,11 +31,42 @@ const (
 	// response updated in place by RegenerateAIMessage) was persisted in a
 	// room.
 	EventMessageUpdated EventType = "message_updated"
+
+	// EventTokenChunk indicates an incremental delta of an in-progress AI
+	// streaming response (MessageUsecase.SendAIMessageStream). Unlike
+	// EventMessageCreated/EventMessageUpdated, this event type is not tied
+	// to a persisted write: it is published once per chunk received from
+	// the LLM Gateway's stream, well before the final persisted state is
+	// known.
+	EventTokenChunk EventType = "token_chunk"
 )
 
+// StreamChunkEvent carries an incremental AI streaming delta for an
+// EventTokenChunk RoomEvent.
+type StreamChunkEvent struct {
+	// MessageID is the ID of the AI placeholder message this delta belongs
+	// to. The placeholder is already persisted (with
+	// message.MessageStatusStreaming) before streaming starts, so
+	// subscribers can correlate every delta to the message they are
+	// rendering.
+	MessageID string
+
+	// Delta is the incremental text produced by this chunk.
+	Delta string
+
+	// SummaryUsed reports whether the AI context sent to the LLM for this
+	// stream folded older room history into a cached summary rather than
+	// sending it verbatim (see the context-assembly step's usedSummary
+	// return value). It is the same value on every chunk of a given stream.
+	SummaryUsed bool
+}
+
 // RoomEvent describes a single piece of room activity to broadcast to
-// subscribers. Message holds the full domain message (not a re-serialized
-// DTO); domain/event importing domain/message is a domain-to-domain
+// subscribers. Message and Chunk are mutually exclusive payload fields,
+// keyed by Type: Message holds the full domain message (not a re-serialized
+// DTO) for EventMessageCreated/EventMessageUpdated, and is nil otherwise;
+// Chunk holds an incremental streaming delta for EventTokenChunk, and is nil
+// otherwise. domain/event importing domain/message is a domain-to-domain
 // dependency and does not violate the Clean Architecture dependency rule,
 // which only forbids inner layers importing outer ones.
 type RoomEvent struct {
@@ -45,8 +76,15 @@ type RoomEvent struct {
 	// RoomID is the room the event occurred in.
 	RoomID string
 
-	// Message is the message that was created or updated.
+	// Message is the message that was created or updated. Set only for
+	// EventMessageCreated/EventMessageUpdated; see the RoomEvent doc comment
+	// for the Message/Chunk mutual-exclusivity contract.
 	Message *message.Message
+
+	// Chunk is the incremental streaming delta this event carries. Set only
+	// for EventTokenChunk; see the RoomEvent doc comment for the
+	// Message/Chunk mutual-exclusivity contract.
+	Chunk *StreamChunkEvent
 
 	// TargetUserIDs restricts delivery to the given user IDs. A nil or
 	// empty slice means "all subscribers of the room" — the common case for
@@ -55,6 +93,17 @@ type RoomEvent struct {
 
 	// OccurredAt is when the event occurred.
 	OccurredAt time.Time
+
+	// UsedContextSummary reports whether Message (when it is a
+	// newly-produced AI message) was generated from a context that included
+	// a cached/freshly-computed summary of older room history in place of
+	// the raw messages it replaces (see
+	// usecase/message.MessageUsecase.assembleAIContext, Step 50). It is
+	// always false for a human message or any event that is not the direct
+	// result of an AI invocation -- like Message, it is a one-time,
+	// request-scoped signal describing how this particular AI response was
+	// generated, not a persisted message property.
+	UsedContextSummary bool
 }
 
 // MessageHub is the port through which MessageUsecase publishes room

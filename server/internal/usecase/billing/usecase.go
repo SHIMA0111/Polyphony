@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,36 @@ import (
 	domainbilling "github.com/SHIMA0111/multi-user-ai/server/internal/domain/billing"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 )
+
+// stripeCheckoutSessionIDPlaceholder is Stripe's own Checkout template
+// placeholder: Stripe substitutes it with the real Checkout Session ID when
+// redirecting the customer back to the success URL. Passed through
+// verbatim, never resolved locally.
+const stripeCheckoutSessionIDPlaceholder = "{CHECKOUT_SESSION_ID}"
+
+// withCheckoutSessionIDParam appends a `session_id` query parameter carrying
+// Stripe's checkout-session-ID placeholder to successURL, so the web success
+// page (billing/checkout/success/page.tsx) can read `session_id` from the
+// redirect and correlate it with a payment_history row's
+// stripe_reference_id (see PaymentRecord.StripeReferenceID) once the
+// corresponding webhook lands. Joins with "&" if successURL already has a
+// query string, "?" otherwise, so an operator-configured success URL that
+// carries its own query parameters (e.g. a UTM tag) is not clobbered. Any
+// URL fragment (the "#..." suffix) is set aside before the param is appended
+// and reattached afterward, so the fragment stays last as required by URL
+// syntax instead of being incorrectly turned into part of the query string.
+func withCheckoutSessionIDParam(successURL string) string {
+	base := successURL
+	fragment := ""
+	if i := strings.Index(successURL, "#"); i != -1 {
+		base, fragment = successURL[:i], successURL[i:]
+	}
+	separator := "?"
+	if strings.Contains(base, "?") {
+		separator = "&"
+	}
+	return base + separator + "session_id=" + stripeCheckoutSessionIDPlaceholder + fragment
+}
 
 // defaultTransactionLimit is applied to ListTransactions when the caller
 // passes a non-positive limit, mirroring MessageHandler.List's clamp.
@@ -198,7 +229,7 @@ func (u *BillingUsecase) CreateSubscriptionCheckoutSession(ctx context.Context, 
 		UserID:     userID,
 		PlanCode:   plan.Code,
 		PriceID:    plan.StripePriceID,
-		SuccessURL: u.checkoutSuccessURL,
+		SuccessURL: withCheckoutSessionIDParam(u.checkoutSuccessURL),
 		CancelURL:  u.checkoutCancelURL,
 	})
 }
@@ -219,7 +250,7 @@ func (u *BillingUsecase) CreateTokenPurchaseCheckoutSession(ctx context.Context,
 		UserID:      userID,
 		PackageCode: pkg.Code,
 		PriceID:     pkg.StripePriceID,
-		SuccessURL:  u.checkoutSuccessURL,
+		SuccessURL:  withCheckoutSessionIDParam(u.checkoutSuccessURL),
 		CancelURL:   u.checkoutCancelURL,
 	})
 }
@@ -425,8 +456,13 @@ func (u *BillingUsecase) handleCheckoutSessionCompleted(ctx context.Context, eve
 }
 
 // upsertSubscriptionFromCheckout creates or updates the local Subscription
-// row for a completed subscription-mode Checkout Session. No token credit
-// happens here — see handleCheckoutSessionCompleted's doc comment.
+// row for a completed subscription-mode Checkout Session, stamping it with
+// session.SessionID (Subscription.StripeCheckoutSessionID) either way, so
+// the web checkout success page can confirm that THIS checkout — not some
+// other, still-pending one for the same user — is what produced the row it
+// observes (see Subscription.StripeCheckoutSessionID's doc comment). No
+// token credit happens here — see handleCheckoutSessionCompleted's doc
+// comment.
 func (u *BillingUsecase) upsertSubscriptionFromCheckout(ctx context.Context, session *domainbilling.CheckoutSessionData) error {
 	if session.StripeSubscriptionID == "" || session.UserID == "" {
 		slog.Warn("checkout.session.completed subscription mode missing subscription/user id, ignoring",
@@ -448,18 +484,19 @@ func (u *BillingUsecase) upsertSubscriptionFromCheckout(ctx context.Context, ses
 			return err
 		}
 		sub := &domainbilling.Subscription{
-			ID:                     uuid.New().String(),
-			UserID:                 session.UserID,
-			StripeCustomerID:       session.StripeCustomerID,
-			StripeSubscriptionID:   session.StripeSubscriptionID,
-			StripePriceID:          plan.StripePriceID,
-			PlanCode:               plan.Code,
-			Status:                 "active",
-			MonthlyTokenAllocation: plan.MonthlyTokenAllocation,
-			CurrentPeriodStart:     now,
-			CurrentPeriodEnd:       now,
-			CreatedAt:              now,
-			UpdatedAt:              now,
+			ID:                      uuid.New().String(),
+			UserID:                  session.UserID,
+			StripeCustomerID:        session.StripeCustomerID,
+			StripeSubscriptionID:    session.StripeSubscriptionID,
+			StripePriceID:           plan.StripePriceID,
+			PlanCode:                plan.Code,
+			Status:                  "active",
+			MonthlyTokenAllocation:  plan.MonthlyTokenAllocation,
+			CurrentPeriodStart:      now,
+			CurrentPeriodEnd:        now,
+			StripeCheckoutSessionID: session.SessionID,
+			CreatedAt:               now,
+			UpdatedAt:               now,
 		}
 		return u.subscriptionRepo.Create(ctx, sub)
 	}
@@ -468,6 +505,7 @@ func (u *BillingUsecase) upsertSubscriptionFromCheckout(ctx context.Context, ses
 	existing.StripePriceID = plan.StripePriceID
 	existing.PlanCode = plan.Code
 	existing.MonthlyTokenAllocation = plan.MonthlyTokenAllocation
+	existing.StripeCheckoutSessionID = session.SessionID
 	return u.subscriptionRepo.Update(ctx, existing)
 }
 

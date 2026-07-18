@@ -19,19 +19,26 @@ interface ChatRoomHeaderProps {
    * only needs the display name.
    */
   room: Room | undefined
+  /** Invoked when the "more" button is clicked, to open `RoomSettingsDrawer` (Step 36). */
+  onOpenSettings: () => void
 }
 
 /**
  * The chat room page header: back-to-rooms button, truncated room name, the
- * member avatar stack, and the "more" action button. Extracted verbatim out
- * of `ChatRoom.tsx`'s header `Flex` — no new menu behavior is added here
- * beyond `MemberAvatarStack` (Step 37).
+ * member avatar stack, and the "more" action button (opens
+ * `RoomSettingsDrawer` via `onOpenSettings`, Step 36). Extracted verbatim
+ * out of `ChatRoom.tsx`'s header `Flex`.
  *
  * The back button is hidden on desktop widths (`md` and up), where the room
  * rail provides room navigation, and only shown on mobile widths where the
  * rail is collapsed.
  */
-export function ChatRoomHeader({ roomName, connectionStatus, room }: ChatRoomHeaderProps) {
+export function ChatRoomHeader({
+  roomName,
+  connectionStatus,
+  room,
+  onOpenSettings,
+}: ChatRoomHeaderProps) {
   return (
     <Flex
       as="header"
@@ -63,7 +70,13 @@ export function ChatRoomHeader({ roomName, connectionStatus, room }: ChatRoomHea
       </Box>
       {room && <MemberAvatarStack room={room} />}
       {connectionStatus}
-      <Button variant="ghost" size="sm" p={0} aria-label="Room settings">
+      <Button
+        variant="ghost"
+        size="sm"
+        p={0}
+        aria-label="Room settings"
+        onClick={onOpenSettings}
+      >
         <MoreVertical size={20} />
       </Button>
     </Flex>

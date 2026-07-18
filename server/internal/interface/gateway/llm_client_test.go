@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
@@ -383,5 +384,308 @@ func TestLLMClientCompleteResponseContentPartsArrayConcatenatesText(t *testing.T
 	}
 	if resp.Content != "it's a cat" {
 		t.Fatalf("expected decoded content to concatenate text parts and skip image parts, got %q", resp.Content)
+	}
+}
+
+// drainStream collects every ai.StreamResult from ch until it closes,
+// failing the test if that takes longer than 2 seconds (guards against a
+// hung goroutine leaving the test to time out at the suite level instead).
+func drainStream(t *testing.T, ch <-chan ai.StreamResult) []ai.StreamResult {
+	t.Helper()
+	var results []ai.StreamResult
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case res, ok := <-ch:
+			if !ok {
+				return results
+			}
+			results = append(results, res)
+		case <-timeout:
+			t.Fatal("timed out draining stream channel")
+			return results
+		}
+	}
+}
+
+// TestLLMClient_StreamSuccess exercises the happy path: several chunk
+// frames with incrementing deltas, a final chunk frame carrying
+// finish_reason/usage, then the [DONE] sentinel.
+func TestLLMClient_StreamSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/completions/stream" {
+			t.Errorf("expected path /completions/stream, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		frames := []string{
+			`{"id":"c1","model":"gpt-5.2","delta":"Hel"}`,
+			`{"id":"c1","model":"gpt-5.2","delta":"lo"}`,
+			`{"id":"c1","model":"gpt-5.2","delta":"","finish_reason":"stop","usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`,
+		}
+		for _, f := range frames {
+			_, _ = w.Write([]byte("data: " + f + "\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+	if ch == nil {
+		t.Fatal("expected non-nil channel")
+	}
+
+	results := drainStream(t, ch)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 stream results, got %d: %+v", len(results), results)
+	}
+	for i, res := range results {
+		if res.Err != nil {
+			t.Fatalf("result[%d]: unexpected error %v", i, res.Err)
+		}
+		if res.Chunk == nil {
+			t.Fatalf("result[%d]: expected non-nil chunk", i)
+		}
+	}
+	if results[0].Chunk.Delta != "Hel" || results[1].Chunk.Delta != "lo" {
+		t.Fatalf("unexpected deltas: %q, %q", results[0].Chunk.Delta, results[1].Chunk.Delta)
+	}
+	last := results[2].Chunk
+	if last.FinishReason != "stop" {
+		t.Fatalf("expected finish_reason stop, got %q", last.FinishReason)
+	}
+	if last.Usage == nil || last.Usage.PromptTokens != 5 || last.Usage.CompletionTokens != 2 || last.Usage.TotalTokens != 7 {
+		t.Fatalf("unexpected usage: %+v", last.Usage)
+	}
+}
+
+// TestLLMClient_StreamMidStreamError asserts a mid-stream `event: error`
+// frame (after some chunk frames) yields the preceding chunks followed by
+// exactly one Err-carrying StreamResult wrapping domain.ErrLLMGateway, then
+// the channel closes.
+func TestLLMClient_StreamMidStreamError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		_, _ = w.Write([]byte(`data: {"id":"c1","model":"gpt-5.2","delta":"partial"}` + "\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("event: error\ndata: provider exploded\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+
+	results := drainStream(t, ch)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 stream results (1 chunk + 1 error), got %d: %+v", len(results), results)
+	}
+	if results[0].Err != nil || results[0].Chunk == nil || results[0].Chunk.Delta != "partial" {
+		t.Fatalf("unexpected first result: %+v", results[0])
+	}
+	if results[1].Chunk != nil {
+		t.Fatalf("expected second result to carry no chunk, got %+v", results[1].Chunk)
+	}
+	if results[1].Err == nil || !domain.IsLLMGatewayError(results[1].Err) {
+		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", results[1].Err)
+	}
+}
+
+// TestLLMClient_StreamErrorEventFrameEndsExactlyAtEOF is a regression test
+// for a double-error bug: when an `event: error` frame's final "data:" line
+// is not followed by a trailing blank line before the connection closes
+// (the frame's terminal read returns its data alongside io.EOF, rather than
+// a separate later read returning io.EOF against an already-empty frame),
+// readSSEStream's EOF branch used to ignore flush()'s return value and always
+// fall through to its own "stream ended before [DONE] sentinel" check --
+// sending a second, spurious error after the one flush() had already sent
+// for the `event: error` frame itself. Exactly one Err-carrying StreamResult
+// must be sent.
+func TestLLMClient_StreamErrorEventFrameEndsExactlyAtEOF(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		// Deliberately no trailing "\n\n" frame terminator: the handler
+		// returns (closing the connection) immediately after the data
+		// line, so the reader's read of this line itself returns io.EOF
+		// rather than a clean line read followed by a separate EOF read.
+		_, _ = w.Write([]byte("event: error\ndata: provider exploded"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+
+	results := drainStream(t, ch)
+	if len(results) != 1 {
+		t.Fatalf("expected exactly 1 stream result (no spurious second error), got %d: %+v", len(results), results)
+	}
+	if results[0].Chunk != nil {
+		t.Fatalf("expected the single result to carry no chunk, got %+v", results[0].Chunk)
+	}
+	if results[0].Err == nil || !domain.IsLLMGatewayError(results[0].Err) {
+		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", results[0].Err)
+	}
+}
+
+// TestLLMClient_StreamNonOKStatusSynchronousError asserts a non-2xx status
+// with no SSE body at all yields a non-nil synchronous error and a nil
+// channel, with no goroutine started (verified implicitly by the test
+// completing promptly rather than hanging).
+func TestLLMClient_StreamNonOKStatusSynchronousError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"unknown model"}`))
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{
+		Model:    "bogus-model",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected non-nil error for non-2xx response")
+	}
+	if !domain.IsLLMGatewayError(err) {
+		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", err)
+	}
+	if ch != nil {
+		t.Fatal("expected nil channel on synchronous dispatch error")
+	}
+}
+
+// TestLLMClient_StreamSplitFrameAcrossWrites asserts a single SSE frame
+// split across two chunked HTTP writes (flushed mid-frame) is correctly
+// re-buffered into one chunk, with no truncation or duplication.
+func TestLLMClient_StreamSplitFrameAcrossWrites(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		// Split a single frame's "data:" line across two writes, flushing in
+		// between, then complete the frame with the trailing blank line and
+		// the [DONE] sentinel.
+		_, _ = w.Write([]byte(`data: {"id":"c1","mod`))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte(`el":"gpt-5.2","delta":"split-safe"}` + "\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+
+	results := drainStream(t, ch)
+	if len(results) != 1 {
+		t.Fatalf("expected exactly 1 stream result, got %d: %+v", len(results), results)
+	}
+	if results[0].Err != nil {
+		t.Fatalf("unexpected error: %v", results[0].Err)
+	}
+	if results[0].Chunk == nil || results[0].Chunk.Delta != "split-safe" {
+		t.Fatalf("expected delta %q, got %+v", "split-safe", results[0].Chunk)
+	}
+}
+
+// TestLLMClient_StreamEOFBeforeDoneSentinel asserts that a connection which
+// closes after delivering one legitimate chunk frame but before the
+// [DONE] sentinel yields that chunk followed by an Err-carrying StreamResult
+// wrapping domain.ErrLLMGateway -- regression test for a truncated stream
+// (dropped connection, gateway crash mid-response) previously being
+// indistinguishable from a clean end and completing silently with only its
+// partial content.
+func TestLLMClient_StreamEOFBeforeDoneSentinel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		_, _ = w.Write([]byte(`data: {"id":"c1","model":"gpt-5.2","delta":"partial"}` + "\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// No [DONE] sentinel: the handler returns here, closing the
+		// connection as if the gateway crashed or the connection dropped
+		// mid-stream.
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+
+	results := drainStream(t, ch)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 stream results (1 chunk + 1 truncation error), got %d: %+v", len(results), results)
+	}
+	if results[0].Err != nil || results[0].Chunk == nil || results[0].Chunk.Delta != "partial" {
+		t.Fatalf("unexpected first result: %+v", results[0])
+	}
+	if results[1].Chunk != nil {
+		t.Fatalf("expected second result to carry no chunk, got %+v", results[1].Chunk)
+	}
+	if results[1].Err == nil || !domain.IsLLMGatewayError(results[1].Err) {
+		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", results[1].Err)
 	}
 }

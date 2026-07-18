@@ -1,9 +1,11 @@
 "use client"
 
+import { useState } from "react"
 import { Flex, Spinner, Text } from "@chakra-ui/react"
 import { useChatRoom } from "@/features/messages/hooks/use-chat-room"
 import { useRoomSocket } from "@/features/messages/hooks/use-room-socket"
 import { canInvokeAI, canSendMessage } from "@/features/members/lib/roles"
+import { RoomSettingsDrawer } from "@/features/rooms/components/RoomSettingsDrawer"
 import { ChatRoomHeader } from "./ChatRoomHeader"
 import { ConnectionStatus } from "./ConnectionStatus"
 import { MessageList } from "./MessageList"
@@ -31,6 +33,7 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
     aiError,
   } = useChatRoom(roomId)
   const connectionStatus = useRoomSocket(roomId)
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
 
   if (isLoading) {
     return (
@@ -48,7 +51,16 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
         roomName={room?.name}
         connectionStatus={<ConnectionStatus status={connectionStatus} />}
         room={room}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
+      {room && (
+        <RoomSettingsDrawer
+          open={isSettingsOpen}
+          onOpenChange={setIsSettingsOpen}
+          room={room}
+          role={room.role}
+        />
+      )}
 
       <MessageList
         messages={messages}
@@ -63,6 +75,7 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
 
       {canSendMessage(viewerRole) ? (
         <MessageInput
+          roomId={roomId}
           onSend={handleSend}
           onSendWithAI={handleSendWithAI}
           models={models}

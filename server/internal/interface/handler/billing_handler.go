@@ -310,24 +310,26 @@ func (h *BillingHandler) HandleStripeWebhook(c echo.Context) error {
 
 func toSubscriptionResponse(sub *domainbilling.Subscription) SubscriptionResponse {
 	return SubscriptionResponse{
-		Status:                 sub.Status,
-		PlanCode:               sub.PlanCode,
-		MonthlyTokenAllocation: sub.MonthlyTokenAllocation,
-		CurrentPeriodStart:     sub.CurrentPeriodStart,
-		CurrentPeriodEnd:       sub.CurrentPeriodEnd,
-		CancelAtPeriodEnd:      sub.CancelAtPeriodEnd,
-		CanceledAt:             sub.CanceledAt,
+		Status:                  sub.Status,
+		PlanCode:                sub.PlanCode,
+		MonthlyTokenAllocation:  sub.MonthlyTokenAllocation,
+		CurrentPeriodStart:      sub.CurrentPeriodStart,
+		CurrentPeriodEnd:        sub.CurrentPeriodEnd,
+		CancelAtPeriodEnd:       sub.CancelAtPeriodEnd,
+		CanceledAt:              sub.CanceledAt,
+		StripeCheckoutSessionID: sub.StripeCheckoutSessionID,
 	}
 }
 
 func toPaymentRecordResponse(p *domainbilling.PaymentRecord) PaymentRecordResponse {
 	return PaymentRecordResponse{
-		ID:             p.ID,
-		Kind:           string(p.Kind),
-		AmountCents:    p.AmountCents,
-		Currency:       p.Currency,
-		TokensCredited: p.TokensCredited,
-		Status:         p.Status,
-		CreatedAt:      p.CreatedAt,
+		ID:                p.ID,
+		Kind:              string(p.Kind),
+		AmountCents:       p.AmountCents,
+		Currency:          p.Currency,
+		TokensCredited:    p.TokensCredited,
+		Status:            p.Status,
+		StripeReferenceID: p.StripeReferenceID,
+		CreatedAt:         p.CreatedAt,
 	}
 }

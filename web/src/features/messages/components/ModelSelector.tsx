@@ -41,8 +41,12 @@ function formatPrice(price: number): string {
  * Builds the secondary metadata line shown under a model's name, e.g.
  * `"272K ctx · $1.25 / $10.00 per 1M"`. Omitted entirely when neither the
  * context window nor pricing is known (both are `0`).
+ *
+ * Exported so other model pickers (e.g.
+ * `features/rooms/components/RoomSettingsDrawer.tsx`'s AI-default select)
+ * can reuse the same formatting instead of re-deriving it.
  */
-function formatModelMeta(model: ModelInfo): string | null {
+export function formatModelMeta(model: ModelInfo): string | null {
   const parts: string[] = []
   if (model.context_window > 0) {
     parts.push(`${formatContextWindow(model.context_window)} ctx`)
