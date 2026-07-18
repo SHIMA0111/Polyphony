@@ -93,7 +93,8 @@ func (c *GRPCClient) Close() error {
 
 // Complete sends a chat completion request to the LLM Gateway over gRPC and
 // returns the response. It returns a domain.ErrLLMGateway-wrapped error if
-// the request fails.
+// the request fails, and domain.ErrInvalidMaxTokens if req.MaxTokens is
+// negative or exceeds math.MaxUint32 (the proto field is a uint32).
 //
 // Unlike ListModels and EstimateTokens, Complete deliberately does NOT use
 // callWithRetry. Complete is not idempotent from the caller's perspective:
