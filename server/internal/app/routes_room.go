@@ -22,4 +22,5 @@ func registerRoomRoutes(g *echo.Group, c *Container) {
 		middleware.RequireRole(c.RoomRepo, domainroom.ActionManageMembers))
 	g.PATCH("/rooms/:roomId/owner", c.RoomHandler.TransferOwnership)
 	g.PATCH("/rooms/:roomId/ai-context-cutoff", c.RoomHandler.UpdateAIContextCutoff)
+	g.PATCH("/rooms/:roomId/settings", c.RoomHandler.UpdateSettings)
 }

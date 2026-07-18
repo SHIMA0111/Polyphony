@@ -21,7 +21,6 @@ import (
 )
 
 const defaultContextMessages = 50
-const defaultModel = "gpt-5-mini"
 
 // SendAIResult holds both the human and AI messages from a SendAIMessage call.
 // When AIMessage.Status is "failed", the LLM call failed but both messages were persisted.
@@ -44,6 +43,11 @@ type MessageUsecase struct {
 	hub            event.MessageHub
 	contextBuilder ai.ContextBuilder
 	billing        BillingGuard
+	// defaultAIModel is the deployment-wide fallback model string, sourced
+	// from Config.DefaultAIModel by the caller of NewMessageUsecase. It is
+	// the lowest-precedence tier consulted by resolveModel, used only when
+	// both the request and the room's configured Room.AIModel are empty.
+	defaultAIModel string
 }
 
 // NewMessageUsecase creates a new MessageUsecase. hub receives a
@@ -57,12 +61,18 @@ type MessageUsecase struct {
 // requests once the room owner's token balance is exhausted, and to record
 // usage after a successful completion; pass a *billingusecase.BillingUsecase
 // (see usecase/billing), which satisfies BillingGuard structurally.
+// defaultAIModel is the deployment-wide fallback model string consulted by
+// resolveModel (see model_resolution.go) whenever an AI request omits an
+// explicit model and the target room has no configured
+// domainroom.Room.AIModel; pass cfg.DefaultAIModel from
+// internal/infrastructure/config.Config.
 func NewMessageUsecase(
 	msgRepo domainmessage.MessageRepository,
 	roomRepo room.RoomRepository,
 	llmGateway ai.LLMGateway,
 	hub event.MessageHub,
 	billing BillingGuard,
+	defaultAIModel string,
 ) *MessageUsecase {
 	return &MessageUsecase{
 		msgRepo:        msgRepo,
@@ -71,6 +81,7 @@ func NewMessageUsecase(
 		hub:            hub,
 		contextBuilder: ai.NewDefaultContextBuilder(),
 		billing:        billing,
+		defaultAIModel: defaultAIModel,
 	}
 }
 
@@ -163,10 +174,6 @@ func (u *MessageUsecase) ListMessages(ctx context.Context, userID, roomID, curso
 // The caller must be allowed domainroom.ActionInvokeAI (member or above; a
 // reader or guest may not invoke AI).
 func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, content, model string) (*SendAIResult, error) {
-	if model == "" {
-		model = defaultModel
-	}
-
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
 		return nil, err
@@ -182,6 +189,7 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	if err != nil {
 		return nil, err
 	}
+	model = resolveModel(model, rm, u.defaultAIModel)
 
 	// Reserve both sequence numbers atomically as one range before creating
 	// either row, so nothing else can be interleaved between the human
@@ -273,10 +281,6 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 // The caller must be allowed domainroom.ActionInvokeAI (member or above; a
 // reader or guest may not invoke AI).
 func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID, messageID, model string) (*domainmessage.Message, error) {
-	if model == "" {
-		model = defaultModel
-	}
-
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
 		return nil, err
@@ -292,6 +296,7 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	if err != nil {
 		return nil, err
 	}
+	model = resolveModel(model, rm, u.defaultAIModel)
 
 	// Verify target message exists and belongs to the room
 	targetMsg, err := u.msgRepo.GetByID(ctx, messageID)

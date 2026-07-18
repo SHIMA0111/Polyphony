@@ -657,3 +657,107 @@ func TestRemoveMemberSerializedAgainstTransferOwnership(t *testing.T) {
 		t.Fatalf("expected exactly one of the two consistent outcomes, got transferErr=%v removeErr=%v", transferErr, removeErr)
 	}
 }
+
+// TestRoomRepositoryAIProviderModelRoundTrip proves that AIProvider/AIModel
+// (Step 24: per-room AI provider/model settings) round-trip through GetByID
+// and UpdateAISettings (the narrow setter that replaced the old full-row
+// Update for this field group): a freshly created room has both as nil
+// (NULL), and after UpdateAISettings sets them to non-nil values, GetByID,
+// ListByUserID, and ListByUserIDWithRole all observe the same values.
+func TestRoomRepositoryAIProviderModelRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "ai-settings-owner")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "AI Settings Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Freshly created room: both columns are NULL.
+	fetched, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if fetched.AIProvider != nil || fetched.AIModel != nil {
+		t.Fatalf("expected nil ai_provider/ai_model on a freshly created room, got %v / %v",
+			fetched.AIProvider, fetched.AIModel)
+	}
+
+	provider := "anthropic"
+	model := "claude-opus-4"
+	if err := roomRepo.UpdateAISettings(ctx, rm.ID, &provider, &model, time.Now()); err != nil {
+		t.Fatalf("UpdateAISettings failed: %v", err)
+	}
+
+	afterUpdate, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID after update failed: %v", err)
+	}
+	if afterUpdate.AIProvider == nil || *afterUpdate.AIProvider != provider {
+		t.Fatalf("expected ai_provider %q, got %v", provider, afterUpdate.AIProvider)
+	}
+	if afterUpdate.AIModel == nil || *afterUpdate.AIModel != model {
+		t.Fatalf("expected ai_model %q, got %v", model, afterUpdate.AIModel)
+	}
+
+	listed, err := roomRepo.ListByUserID(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("ListByUserID failed: %v", err)
+	}
+	if !roomListContainsAISettings(listed, rm.ID, provider, model) {
+		t.Fatalf("expected ListByUserID to include ai_provider/ai_model for room %s", rm.ID)
+	}
+
+	listedWithRole, err := roomRepo.ListByUserIDWithRole(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("ListByUserIDWithRole failed: %v", err)
+	}
+	found := false
+	for _, rwr := range listedWithRole {
+		if rwr.Room.ID != rm.ID {
+			continue
+		}
+		found = true
+		if rwr.Room.AIProvider == nil || *rwr.Room.AIProvider != provider {
+			t.Fatalf("expected ai_provider %q in ListByUserIDWithRole, got %v", provider, rwr.Room.AIProvider)
+		}
+		if rwr.Room.AIModel == nil || *rwr.Room.AIModel != model {
+			t.Fatalf("expected ai_model %q in ListByUserIDWithRole, got %v", model, rwr.Room.AIModel)
+		}
+	}
+	if !found {
+		t.Fatalf("expected ListByUserIDWithRole to include room %s", rm.ID)
+	}
+
+	// Clearing back to nil round-trips as well.
+	if err := roomRepo.UpdateAISettings(ctx, rm.ID, nil, nil, time.Now()); err != nil {
+		t.Fatalf("UpdateAISettings (clear) failed: %v", err)
+	}
+	cleared, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID after clear failed: %v", err)
+	}
+	if cleared.AIProvider != nil || cleared.AIModel != nil {
+		t.Fatalf("expected nil ai_provider/ai_model after clearing, got %v / %v", cleared.AIProvider, cleared.AIModel)
+	}
+}
+
+// roomListContainsAISettings reports whether rooms contains roomID with the
+// expected AIProvider/AIModel values.
+func roomListContainsAISettings(rooms []*domainroom.Room, roomID, provider, model string) bool {
+	for _, rm := range rooms {
+		if rm.ID != roomID {
+			continue
+		}
+		return rm.AIProvider != nil && *rm.AIProvider == provider && rm.AIModel != nil && *rm.AIModel == model
+	}
+	return false
+}

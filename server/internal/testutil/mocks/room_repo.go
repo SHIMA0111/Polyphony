@@ -231,6 +231,24 @@ func (r *RoomRepo) UpdateAIContextCutoff(_ context.Context, roomID string, cutof
 	return nil
 }
 
+// UpdateAISettings updates only a room's AIProvider, AIModel, and UpdatedAt
+// fields, mirroring postgres.RoomRepository.UpdateAISettings's
+// partial-update shape (Name/Description/AIContextCutoffAt are left
+// untouched). Returns domain.ErrNotFound if the room does not exist.
+func (r *RoomRepo) UpdateAISettings(_ context.Context, roomID string, aiProvider, aiModel *string, updatedAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rm, ok := r.Rooms[roomID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	rm.AIProvider = aiProvider
+	rm.AIModel = aiModel
+	rm.UpdatedAt = updatedAt
+	return nil
+}
+
 // Delete removes a room by ID. Returns domain.ErrNotFound if the room does
 // not exist.
 func (r *RoomRepo) Delete(_ context.Context, id string) error {
