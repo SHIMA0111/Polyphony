@@ -74,8 +74,16 @@ test("balance badge, usage history, and the 402 insufficient-balance guard", asy
   // A fresh user's balance is 0, so `CheckBalance` rejects this first AI
   // send with 402 — `MessageInput` renders the distinct inline error
   // instead of silently discarding the rejection.
-  await expect(page.getByRole("alert")).toHaveText(/Insufficient token balance/)
-  await expect(page.getByRole("link", { name: "Usage" })).toBeVisible()
+  // `.filter({ hasText: ... })` disambiguates from Next.js's own
+  // `role="alert"` route announcer (`#__next-route-announcer__`), which
+  // otherwise trips Playwright's strict mode — same pattern as the
+  // wave-4 smoke.spec.ts fix.
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Insufficient token balance" }),
+  ).toHaveText(/Insufficient token balance/)
+  // `exact: true` disambiguates from the BalanceBadge's own
+  // "View token usage history" link, which also matches a fuzzy "Usage".
+  await expect(page.getByRole("link", { name: "Usage", exact: true })).toBeVisible()
 
   // The plain (non-AI) send path is unaffected by the guard: it still
   // works normally afterward.

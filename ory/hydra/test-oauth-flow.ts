@@ -140,7 +140,10 @@ async function registerThrowawayUser(jar: CookieJar): Promise<string> {
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const email = `oauth-flow-test-${unique}@example.com`
   const username = `oauth_flow_test_${unique}`
-  const password = `Oauth-Flow-Test-Pw-${unique}`
+  // Deliberately unrelated to the email/username: Kratos's password policy
+  // rejects passwords "too similar to the identifier" (error 4000031), so the
+  // password must not embed the same `oauth-flow-test-${unique}` stem.
+  const password = `Zx9!vQ${Math.random().toString(36).slice(2, 12)}#${Date.now() % 100000}`
 
   console.log(`[1/5] Registering throwaway Kratos user ${email} ...`)
 

@@ -46,7 +46,11 @@ async function registerUser(page: Page, prefix: string): Promise<RegisteredUser>
  */
 async function inviteByUsername(page: Page, invitee: string, role: string) {
   await page.getByRole("button", { name: "Room members" }).click()
-  await expect(page.getByRole("heading", { name: "Members" })).toBeVisible()
+  // `exact: true`: the room under test is named "Members Spec Room <ts>",
+  // whose own page heading would otherwise also fuzzy-match "Members" and
+  // trip strict mode whenever the drawer's aria-inert treatment of the
+  // background hasn't kicked in yet.
+  await expect(page.getByRole("heading", { name: "Members", exact: true })).toBeVisible()
 
   await page.getByRole("button", { name: "Invite" }).click()
   await page.getByPlaceholder("exact username").fill(invitee)
@@ -97,7 +101,10 @@ test.describe("Members, invitations, and roles", () => {
 
     // (e) Alice changes Bob's role to `admin` via the role picker.
     await alicePage.getByRole("button", { name: "Room members" }).click()
-    await expect(alicePage.getByRole("heading", { name: "Members" })).toBeVisible()
+    // `exact: true` — see inviteByUsername's comment on the same locator.
+    await expect(
+      alicePage.getByRole("heading", { name: "Members", exact: true }),
+    ).toBeVisible()
     const bobRow = alicePage
       .locator('[data-testid^="member-row-"]')
       .filter({ hasText: bob.username })
@@ -113,6 +120,16 @@ test.describe("Members, invitations, and roles", () => {
     await expect(
       alicePage.getByRole("button", { name: "Transfer ownership" }),
     ).toHaveCount(0)
+
+    // Reset the member drawer left open by steps (e)/(f) — inviteByUsername
+    // below starts from a closed drawer and re-opens it itself. A reload is
+    // used deliberately: after the nested TransferOwnershipDialog confirms,
+    // both Escape and a click on the drawer's own close trigger fail to
+    // dispatch (the click hangs in hit-testing — an overlay/pointer-events
+    // remnant of the nested dialog; flagged in the wave-5 review findings),
+    // so closing the drawer via UI is not reliably possible here.
+    await alicePage.reload()
+    await expect(alicePage.getByRole("dialog", { name: "Members" })).toHaveCount(0)
 
     // (g) Alice (now admin) invites Carol with role `reader`; Carol sees no message input.
     const carolContext = await browser.newContext()
