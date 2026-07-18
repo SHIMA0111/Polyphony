@@ -636,6 +636,29 @@ func TestMessageHandlerUpdateExclude(t *testing.T) {
 			t.Fatalf("expected 400, got %d", rec.Code)
 		}
 	})
+
+	// Post-review fix (Step 15/41): an omitted exclude_from_ai field must
+	// not be silently treated as `false` (which would un-exclude a message
+	// the caller never asked to un-exclude) -- it must be rejected with 400.
+	t.Run("400 missing exclude_from_ai field", func(t *testing.T) {
+		e, h := setupMessageTest(true)
+
+		req := httptest.NewRequest(http.MethodPatch, "/rooms/room-1/messages/msg-1",
+			strings.NewReader(`{}`))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId", "messageId")
+		c.SetParamValues("room-1", "msg-1")
+		c.Set("user_id", "user-1")
+
+		if err := h.UpdateExclude(c); err != nil {
+			t.Fatalf("UpdateExclude error: %v", err)
+		}
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", rec.Code)
+		}
+	})
 }
 
 // TestSendAIHandlerInsufficientBalance402 asserts that SendAI returns HTTP

@@ -131,14 +131,50 @@ func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string
 	return result, rows.Err()
 }
 
-// Update updates the name, description, ai_context_cutoff_at, ai_provider,
-// ai_model, is_archived, and updated_at fields of a room. It never touches
-// forked_from_room_id, which is write-once at Create time. It returns
-// domain.ErrNotFound if the room does not exist.
-func (r *RoomRepository) Update(ctx context.Context, rm *room.Room) error {
+// UpdateDetails implements room.RoomRepository.UpdateDetails: a narrow
+// UPDATE touching only name, description, and updated_at. See its GoDoc for
+// why this is kept separate from UpdateAIContextCutoff/UpdateAISettings
+// rather than a single full-row Update.
+func (r *RoomRepository) UpdateDetails(ctx context.Context, roomID, name, description string) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE rooms SET name = $1, description = $2, ai_context_cutoff_at = $3, ai_provider = $4, ai_model = $5, is_archived = $6, updated_at = $7 WHERE id = $8`,
-		rm.Name, rm.Description, rm.AIContextCutoffAt, rm.AIProvider, rm.AIModel, rm.IsArchived, rm.UpdatedAt, rm.ID,
+		`UPDATE rooms SET name = $1, description = $2, updated_at = NOW() WHERE id = $3`,
+		name, description, roomID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// UpdateAIContextCutoff implements room.RoomRepository.UpdateAIContextCutoff:
+// a narrow UPDATE touching only ai_context_cutoff_at and updated_at. See
+// UpdateDetails's GoDoc for why this is kept separate from a full-row
+// update.
+func (r *RoomRepository) UpdateAIContextCutoff(ctx context.Context, roomID string, cutoff *time.Time) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE rooms SET ai_context_cutoff_at = $1, updated_at = NOW() WHERE id = $2`,
+		cutoff, roomID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// UpdateAISettings implements room.RoomRepository.UpdateAISettings: a
+// narrow UPDATE touching only ai_provider, ai_model, and updated_at. See
+// UpdateDetails's GoDoc for why this is kept separate from a full-row
+// update.
+func (r *RoomRepository) UpdateAISettings(ctx context.Context, roomID string, aiProvider, aiModel *string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE rooms SET ai_provider = $1, ai_model = $2, updated_at = NOW() WHERE id = $3`,
+		aiProvider, aiModel, roomID,
 	)
 	if err != nil {
 		return err
@@ -189,14 +225,23 @@ func (r *RoomRepository) AddMember(ctx context.Context, member *room.RoomMember)
 	return err
 }
 
-// GetMember retrieves a specific room membership by room ID and user ID. It returns domain.ErrNotFound if the membership does not exist.
+// GetMember retrieves a specific room membership by room ID and user ID. It
+// returns domain.ErrNotFound if the membership does not exist. It JOINs
+// against the users table to populate the returned RoomMember.Username,
+// exactly as ListMembers does (Step 42's review fix: RoomUsecase.ChangeMemberRole
+// returns GetMember's result directly, and a caller-facing MemberResponse
+// with an empty username was a visible regression relative to every other
+// member-listing endpoint).
 func (r *RoomRepository) GetMember(ctx context.Context, roomID, userID string) (*room.RoomMember, error) {
 	var m room.RoomMember
 	var roleStr string
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, room_id, user_id, role, joined_at FROM room_members WHERE room_id = $1 AND user_id = $2`,
+		`SELECT rm.id, rm.room_id, rm.user_id, rm.role, rm.joined_at, u.username
+		 FROM room_members rm
+		 JOIN users u ON u.id = rm.user_id
+		 WHERE rm.room_id = $1 AND rm.user_id = $2`,
 		roomID, userID,
-	).Scan(&m.ID, &m.RoomID, &m.UserID, &roleStr, &m.JoinedAt)
+	).Scan(&m.ID, &m.RoomID, &m.UserID, &roleStr, &m.JoinedAt, &m.Username)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
@@ -273,11 +318,20 @@ func (r *RoomRepository) UpdateMemberRole(ctx context.Context, roomID, userID st
 // the new owner's room_members.role to master, and sets the previous
 // owner's (oldOwnerID) room_members.role to admin, all within a single
 // transaction, following the same r.pool.Begin / defer tx.Rollback /
-// tx.Commit pattern as Create. It returns domain.ErrNotFound — rolling back
-// all writes made so far in the transaction — if the rooms update, the new
-// owner's membership update, or the previous owner's membership update
-// affects zero rows (i.e. the room does not exist, or either user is not
-// already a room member).
+// tx.Commit pattern as Create. The rooms.owner_id update is a
+// compare-and-swap (`WHERE id = $2 AND owner_id = $3`), not a blind write:
+// without the `AND owner_id = oldOwnerID` guard, two concurrent
+// TransferOwnership calls for the same room (racing on a stale oldOwnerID
+// read from two different callers' pre-transaction GetByID) could both
+// pass, with the second silently overwriting the first's newOwnerID and
+// then demoting ITS newOwnerID back to admin — leaving the room with the
+// wrong owner and, on the resulting role-update mismatch, potentially zero
+// masters. It returns domain.ErrNotFound — rolling back all writes made so
+// far in the transaction — if the rooms CAS update finds oldOwnerID is no
+// longer the current owner (i.e. the room does not exist, or a concurrent
+// transfer already moved ownership away from oldOwnerID), or if the new
+// owner's membership update or the previous owner's membership update
+// affects zero rows (i.e. either user is not already a room member).
 func (r *RoomRepository) TransferOwnership(ctx context.Context, roomID, oldOwnerID, newOwnerID string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -286,7 +340,10 @@ func (r *RoomRepository) TransferOwnership(ctx context.Context, roomID, oldOwner
 	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	tag, err := tx.Exec(ctx, `UPDATE rooms SET owner_id = $1 WHERE id = $2`, newOwnerID, roomID)
+	tag, err := tx.Exec(ctx,
+		`UPDATE rooms SET owner_id = $1 WHERE id = $2 AND owner_id = $3`,
+		newOwnerID, roomID, oldOwnerID,
+	)
 	if err != nil {
 		return err
 	}

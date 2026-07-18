@@ -18,6 +18,9 @@
 # Then resolve each replica's assigned host port with:
 #   docker compose port --index=1 api 8080
 #   docker compose port --index=2 api 8080
+#
+# The `!override` merge tag requires Docker Compose v2.24.0 or later; on
+# older Compose versions this file fails to parse.
 services:
   api:
     ports: !override

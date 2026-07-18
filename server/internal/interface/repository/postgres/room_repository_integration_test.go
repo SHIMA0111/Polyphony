@@ -207,6 +207,13 @@ func TestUpdateMemberRolePersists(t *testing.T) {
 	if got.Role != domainroom.RoleAdmin {
 		t.Fatalf("expected role admin, got %s", got.Role)
 	}
+	// Step 42's review fix: GetMember must JOIN against users and populate
+	// Username, exactly as ListMembers does, so a caller returning
+	// GetMember's result directly (e.g. RoomUsecase.ChangeMemberRole) never
+	// leaks an empty username to the API response.
+	if got.Username != member.Username {
+		t.Fatalf("expected GetMember to populate Username %q, got %q", member.Username, got.Username)
+	}
 }
 
 // TestUpdateMemberRoleNotFound proves that RoomRepository.UpdateMemberRole
@@ -291,6 +298,71 @@ func TestTransferOwnershipAtomic(t *testing.T) {
 	}
 }
 
+// TestTransferOwnershipRejectsStaleOwner (Step 27's review fix) proves that
+// TransferOwnership's rooms.owner_id update is a genuine compare-and-swap:
+// calling it a second time with an oldOwnerID that is no longer the room's
+// current owner (because a first, successful transfer already moved
+// ownership elsewhere) must fail with domain.ErrNotFound rather than
+// silently overwriting owner_id again — the exact race two concurrent
+// TransferOwnership calls, each reading a stale owner via their own
+// pre-transaction GetByID, could otherwise hit.
+func TestTransferOwnershipRejectsStaleOwner(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	original := createTestUser(ctx, t, userRepo, "stale-cas-original")
+	first := createTestUser(ctx, t, userRepo, "stale-cas-first")
+	second := createTestUser(ctx, t, userRepo, "stale-cas-second")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "Stale Owner CAS Room", OwnerID: original.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	for _, u := range []*domainuser.User{first, second} {
+		if err := roomRepo.AddMember(ctx, &domainroom.RoomMember{
+			ID: uuid.New().String(), RoomID: rm.ID, UserID: u.ID, Role: domainroom.RoleMember, JoinedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("AddMember(%s) failed: %v", u.Username, err)
+		}
+	}
+
+	// This transfer succeeds: original really is the current owner.
+	if err := roomRepo.TransferOwnership(ctx, rm.ID, original.ID, first.ID); err != nil {
+		t.Fatalf("first TransferOwnership failed: %v", err)
+	}
+
+	// Simulates the loser of a concurrent transfer race: it still believes
+	// original is the current owner (a stale read from before the first
+	// transfer committed), so its CAS must fail.
+	err := roomRepo.TransferOwnership(ctx, rm.ID, original.ID, second.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound for a stale-owner CAS, got %v", err)
+	}
+
+	// The first (successful) transfer's effects must be untouched by the
+	// second (rejected) attempt.
+	got, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.OwnerID != first.ID {
+		t.Fatalf("expected owner_id to remain %s after the rejected stale CAS, got %s", first.ID, got.OwnerID)
+	}
+	secondMember, err := roomRepo.GetMember(ctx, rm.ID, second.ID)
+	if err != nil {
+		t.Fatalf("GetMember(second) failed: %v", err)
+	}
+	if secondMember.Role != domainroom.RoleMember {
+		t.Fatalf("expected second's role to remain member (untouched), got %s", secondMember.Role)
+	}
+}
+
 // TestTransferOwnershipRollbackOnMissingNewOwner proves that
 // RoomRepository.TransferOwnership rolls back cleanly (no partial writes)
 // when the new-owner membership row does not exist: rooms.owner_id and the
@@ -339,9 +411,10 @@ func TestTransferOwnershipRollbackOnMissingNewOwner(t *testing.T) {
 
 // TestRoomRepositoryAIProviderModelRoundTrip proves that AIProvider/AIModel
 // (Step 24: per-room AI provider/model settings) round-trip through
-// GetByID and Update: a freshly created room has both as nil (NULL), and
-// after Update sets them to non-nil values, GetByID, ListByUserID, and
-// ListByUserIDWithRole all observe the same values.
+// GetByID and UpdateAISettings (Step 26's narrow replacement for the old
+// full-row Update): a freshly created room has both as nil (NULL), and
+// after UpdateAISettings sets them to non-nil values, GetByID, ListByUserID,
+// and ListByUserIDWithRole all observe the same values.
 func TestRoomRepositoryAIProviderModelRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -371,10 +444,8 @@ func TestRoomRepositoryAIProviderModelRoundTrip(t *testing.T) {
 
 	provider := "anthropic"
 	model := "claude-opus-4"
-	fetched.AIProvider = &provider
-	fetched.AIModel = &model
-	if err := roomRepo.Update(ctx, fetched); err != nil {
-		t.Fatalf("Update failed: %v", err)
+	if err := roomRepo.UpdateAISettings(ctx, rm.ID, &provider, &model); err != nil {
+		t.Fatalf("UpdateAISettings failed: %v", err)
 	}
 
 	afterUpdate, err := roomRepo.GetByID(ctx, rm.ID)
@@ -418,10 +489,8 @@ func TestRoomRepositoryAIProviderModelRoundTrip(t *testing.T) {
 	}
 
 	// Clearing back to nil round-trips as well.
-	afterUpdate.AIProvider = nil
-	afterUpdate.AIModel = nil
-	if err := roomRepo.Update(ctx, afterUpdate); err != nil {
-		t.Fatalf("Update (clear) failed: %v", err)
+	if err := roomRepo.UpdateAISettings(ctx, rm.ID, nil, nil); err != nil {
+		t.Fatalf("UpdateAISettings (clear) failed: %v", err)
 	}
 	cleared, err := roomRepo.GetByID(ctx, rm.ID)
 	if err != nil {
@@ -569,18 +638,77 @@ func TestRoomRepositoryForkedFromRoomIDRoundTrip(t *testing.T) {
 		t.Fatal("expected is_archived true")
 	}
 
-	// Update never touches forked_from_room_id, even if the in-memory
+	// UpdateDetails never touches forked_from_room_id (it only ever issues
+	// an UPDATE against name/description/updated_at), even if the in-memory
 	// struct's field were (incorrectly) cleared before calling it.
 	got.Name = "Renamed Fork"
 	got.ForkedFromRoomID = nil
-	if err := roomRepo.Update(ctx, got); err != nil {
-		t.Fatalf("Update failed: %v", err)
+	if err := roomRepo.UpdateDetails(ctx, fork.ID, got.Name, got.Description); err != nil {
+		t.Fatalf("UpdateDetails failed: %v", err)
 	}
 	afterUpdate, err := roomRepo.GetByID(ctx, fork.ID)
 	if err != nil {
 		t.Fatalf("GetByID after update failed: %v", err)
 	}
 	if afterUpdate.ForkedFromRoomID == nil || *afterUpdate.ForkedFromRoomID != source.ID {
-		t.Fatalf("expected forked_from_room_id to remain %s after Update, got %v", source.ID, afterUpdate.ForkedFromRoomID)
+		t.Fatalf("expected forked_from_room_id to remain %s after UpdateDetails, got %v", source.ID, afterUpdate.ForkedFromRoomID)
+	}
+	if afterUpdate.Name != "Renamed Fork" {
+		t.Fatalf("expected name to be updated to %q, got %q", "Renamed Fork", afterUpdate.Name)
+	}
+}
+
+// TestRoomRepositoryUpdateDetailsAIContextCutoffAndAISettingsDoNotClobber
+// (Step 26's regression test) proves the three narrow setters that replaced
+// the old full-row Update are each scoped to their own columns: calling
+// UpdateAIContextCutoff after UpdateDetails must not revert the name/
+// description UpdateDetails just set, and calling UpdateAISettings after
+// both must not revert either of the earlier writes -- closing the lost-
+// update race the old Update(ctx, *Room) shape risked between
+// RoomUsecase.UpdateRoom / UpdateAIContextCutoff / UpdateSettings.
+func TestRoomRepositoryUpdateDetailsAIContextCutoffAndAISettingsDoNotClobber(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "narrow-update-owner")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "Original Name", Description: "original desc",
+		OwnerID: owner.ID, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	if err := roomRepo.UpdateDetails(ctx, rm.ID, "New Name", "new desc"); err != nil {
+		t.Fatalf("UpdateDetails failed: %v", err)
+	}
+
+	cutoff := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	if err := roomRepo.UpdateAIContextCutoff(ctx, rm.ID, &cutoff); err != nil {
+		t.Fatalf("UpdateAIContextCutoff failed: %v", err)
+	}
+
+	provider := "openai"
+	model := "gpt-5.2"
+	if err := roomRepo.UpdateAISettings(ctx, rm.ID, &provider, &model); err != nil {
+		t.Fatalf("UpdateAISettings failed: %v", err)
+	}
+
+	got, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.Name != "New Name" || got.Description != "new desc" {
+		t.Fatalf("expected UpdateDetails's write to survive, got name=%q description=%q", got.Name, got.Description)
+	}
+	if got.AIContextCutoffAt == nil || !got.AIContextCutoffAt.Equal(cutoff) {
+		t.Fatalf("expected UpdateAIContextCutoff's write to survive, got %v", got.AIContextCutoffAt)
+	}
+	if got.AIProvider == nil || *got.AIProvider != provider || got.AIModel == nil || *got.AIModel != model {
+		t.Fatalf("expected UpdateAISettings's write to survive, got provider=%v model=%v", got.AIProvider, got.AIModel)
 	}
 }

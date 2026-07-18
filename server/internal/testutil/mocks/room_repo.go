@@ -138,16 +138,53 @@ func (r *RoomRepo) ListByUserIDWithRole(_ context.Context, userID string) ([]*ro
 	return result, nil
 }
 
-// Update updates room fields. Returns domain.ErrNotFound if the room does
-// not exist.
-func (r *RoomRepo) Update(_ context.Context, rm *room.Room) error {
+// UpdateDetails updates a room's Name and Description, mirroring
+// postgres.RoomRepository.UpdateDetails's narrow-column-set contract.
+// Returns domain.ErrNotFound if the room does not exist.
+func (r *RoomRepo) UpdateDetails(_ context.Context, roomID, name, description string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, ok := r.Rooms[rm.ID]; !ok {
+	rm, ok := r.Rooms[roomID]
+	if !ok {
 		return domain.ErrNotFound
 	}
-	r.Rooms[rm.ID] = rm
+	rm.Name = name
+	rm.Description = description
+	rm.UpdatedAt = time.Now()
+	return nil
+}
+
+// UpdateAIContextCutoff updates a room's AIContextCutoffAt, mirroring
+// postgres.RoomRepository.UpdateAIContextCutoff's narrow-column-set
+// contract. Returns domain.ErrNotFound if the room does not exist.
+func (r *RoomRepo) UpdateAIContextCutoff(_ context.Context, roomID string, cutoff *time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rm, ok := r.Rooms[roomID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	rm.AIContextCutoffAt = cutoff
+	rm.UpdatedAt = time.Now()
+	return nil
+}
+
+// UpdateAISettings updates a room's AIProvider and AIModel, mirroring
+// postgres.RoomRepository.UpdateAISettings's narrow-column-set contract.
+// Returns domain.ErrNotFound if the room does not exist.
+func (r *RoomRepo) UpdateAISettings(_ context.Context, roomID string, aiProvider, aiModel *string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rm, ok := r.Rooms[roomID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	rm.AIProvider = aiProvider
+	rm.AIModel = aiModel
+	rm.UpdatedAt = time.Now()
 	return nil
 }
 
@@ -266,6 +303,14 @@ func (r *RoomRepo) TransferOwnership(_ context.Context, roomID, oldOwnerID, newO
 
 	rm, ok := r.Rooms[roomID]
 	if !ok {
+		return domain.ErrNotFound
+	}
+	// Compare-and-swap on the current owner, mirroring
+	// postgres.RoomRepository.TransferOwnership's `WHERE id = ... AND
+	// owner_id = ...` guard: a stale oldOwnerID (a concurrent transfer
+	// already moved ownership away from it) must be rejected rather than
+	// silently overwritten.
+	if rm.OwnerID != oldOwnerID {
 		return domain.ErrNotFound
 	}
 	members, ok := r.Members[roomID]

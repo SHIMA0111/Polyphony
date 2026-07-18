@@ -3,6 +3,7 @@ package invitation
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,11 @@ func newTestFixture() (*InvitationUsecase, *mocks.RoomRepo, *mocks.UserRepo, *mo
 	roomRepo := &mocks.RoomRepo{}
 	userRepo := &mocks.UserRepo{}
 	invitationRepo := &mocks.InvitationRepo{}
+	// Wire AcceptTx's member-insertion callback to the same roomRepo the
+	// usecase uses, so accepting an invitation actually creates the
+	// room_members-equivalent row in roomRepo — see InvitationRepo.AddMember's
+	// doc comment.
+	invitationRepo.AddMember = roomRepo.AddMember
 
 	roomRepo.SeedMember("room-1", "admin-1", "admin")
 	roomRepo.SeedMember("room-1", "member-1", "member")
@@ -298,6 +304,74 @@ func TestRejectInvitation(t *testing.T) {
 	err = uc.RejectInvitation(ctx, "bob-1", inv.ID)
 	if !errors.Is(err, domain.ErrInvitationNotPending) {
 		t.Fatalf("expected ErrInvitationNotPending on repeat reject, got %v", err)
+	}
+}
+
+// TestConcurrentAcceptAndRejectNeverMixState races AcceptInvitation against
+// RejectInvitation for the same username-targeted invitation and asserts
+// the final state is never mixed: either the invitation ends up
+// StatusAccepted with bob-1 now a room member, or StatusRejected with bob-1
+// never added — never both a rejected status AND a member row, and never
+// neither outcome. This exercises the atomicity Step 23 added
+// (invitationRepo.AcceptTx pairing with Step 22's UpdateStatus CAS); before
+// that fix, AcceptInvitation's re-check + AddMember + status update ran as
+// separate, non-atomic calls, and RejectInvitation's UpdateStatus had no
+// CAS at all, so this race could leave bob-1 added to the room while the
+// invitation itself read back as rejected.
+func TestConcurrentAcceptAndRejectNeverMixState(t *testing.T) {
+	uc, roomRepo, _, invitationRepo := newTestFixture()
+	ctx := context.Background()
+	username := "bob"
+
+	inv, err := uc.CreateInvitation(ctx, "admin-1", "room-1", &username, domainroom.RoleMember, nil)
+	if err != nil {
+		t.Fatalf("CreateInvitation failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var acceptErr, rejectErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, acceptErr = uc.AcceptInvitation(ctx, "bob-1", inv.ID)
+	}()
+	go func() {
+		defer wg.Done()
+		rejectErr = uc.RejectInvitation(ctx, "bob-1", inv.ID)
+	}()
+	wg.Wait()
+
+	got, err := invitationRepo.GetByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+
+	_, memberErr := roomRepo.GetMember(ctx, "room-1", "bob-1")
+	isMember := memberErr == nil
+
+	switch got.Status {
+	case domaininvitation.StatusAccepted:
+		if acceptErr != nil {
+			t.Fatalf("status is accepted but AcceptInvitation returned an error: %v", acceptErr)
+		}
+		if rejectErr == nil {
+			t.Fatal("status is accepted but RejectInvitation did not report a conflict")
+		}
+		if !isMember {
+			t.Fatal("status is accepted but bob-1 was never added as a room member")
+		}
+	case domaininvitation.StatusRejected:
+		if rejectErr != nil {
+			t.Fatalf("status is rejected but RejectInvitation returned an error: %v", rejectErr)
+		}
+		if acceptErr == nil {
+			t.Fatal("status is rejected but AcceptInvitation did not report a conflict")
+		}
+		if isMember {
+			t.Fatal("status is rejected but bob-1 was added as a room member anyway")
+		}
+	default:
+		t.Fatalf("expected a definitive final status (accepted or rejected), got %q", got.Status)
 	}
 }
 

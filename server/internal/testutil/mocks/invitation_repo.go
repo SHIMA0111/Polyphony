@@ -7,6 +7,7 @@ import (
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/invitation"
+	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 )
 
 // InvitationRepo is an in-memory, map-backed fake implementing
@@ -17,6 +18,20 @@ import (
 type InvitationRepo struct {
 	mu          sync.Mutex
 	Invitations map[string]*invitation.Invitation // keyed by ID
+
+	// AddMember, when set, is invoked by AcceptTx (after a successful status
+	// CAS, or immediately for a link invitation) to actually add the room
+	// member. Tests wire this to the same *mocks.RoomRepo instance the
+	// usecase under test uses, so InvitationRepo.AcceptTx and
+	// mocks.RoomRepo.AddMember together approximate the Postgres
+	// implementation's single-transaction atomicity: AcceptTx holds r.mu for
+	// its entire duration (status CAS + this callback), so a concurrent
+	// UpdateStatus call (e.g. from RejectInvitation) blocks until AcceptTx
+	// finishes and then re-evaluates its own CAS against the now-updated
+	// status — the same serialization a real DB row lock would provide. If
+	// nil, AcceptTx performs only the status transition, matching prior
+	// behavior for tests that don't care about membership.
+	AddMember func(ctx context.Context, member *domainroom.RoomMember) error
 }
 
 func (r *InvitationRepo) ensureInit() {
@@ -123,17 +138,51 @@ func (r *InvitationRepo) ListPendingByInviteeID(_ context.Context, inviteeID str
 	return result, nil
 }
 
-// UpdateStatus updates the status of the invitation identified by id.
-// Returns domain.ErrNotFound if the invitation does not exist.
-func (r *InvitationRepo) UpdateStatus(_ context.Context, id string, status invitation.Status) error {
+// UpdateStatus transitions the invitation identified by id to status, but
+// only if its current status is still expectedStatus (compare-and-swap),
+// mirroring postgres.InvitationRepository.UpdateStatus. Returns
+// domain.ErrNotFound if the invitation does not exist, and
+// domain.ErrInvitationNotPending if it exists but is not in expectedStatus.
+func (r *InvitationRepo) UpdateStatus(_ context.Context, id string, status, expectedStatus invitation.Status) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.updateStatusLocked(id, status, expectedStatus)
+}
 
+// updateStatusLocked is UpdateStatus's body, callable by AcceptTx while it
+// already holds r.mu (see AcceptTx's doc comment on why it holds the lock
+// across both the status CAS and the AddMember callback).
+func (r *InvitationRepo) updateStatusLocked(id string, status, expectedStatus invitation.Status) error {
 	inv, ok := r.Invitations[id]
 	if !ok {
 		return domain.ErrNotFound
 	}
+	if inv.Status != expectedStatus {
+		return domain.ErrInvitationNotPending
+	}
 	inv.Status = status
+	return nil
+}
+
+// AcceptTx approximates postgres.InvitationRepository.AcceptTx's atomicity
+// for tests: it holds r.mu across both the status CAS (when
+// transitionStatus is true) and the AddMember callback, so a concurrent
+// UpdateStatus call for the same invitation ID is serialized against this
+// one exactly as a real DB transaction's row lock would serialize it. See
+// the AddMember field's doc comment.
+func (r *InvitationRepo) AcceptTx(ctx context.Context, invitationID string, expectedStatus invitation.Status, transitionStatus bool, member *domainroom.RoomMember) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if transitionStatus {
+		if err := r.updateStatusLocked(invitationID, invitation.StatusAccepted, expectedStatus); err != nil {
+			return err
+		}
+	}
+
+	if r.AddMember != nil {
+		return r.AddMember(ctx, member)
+	}
 	return nil
 }
 

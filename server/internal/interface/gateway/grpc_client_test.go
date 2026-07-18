@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -31,12 +32,15 @@ const bufconnSize = 1024 * 1024
 type fakeCompletionServer struct {
 	llmgatewaypb.UnimplementedCompletionServiceServer
 
-	mu           sync.Mutex
-	calls        int
-	failTimes    int
-	failCode     codes.Code
-	resp         *llmgatewaypb.CompletionResponse
-	estimateResp *llmgatewaypb.TokenEstimateResponse
+	mu                sync.Mutex
+	calls             int
+	failTimes         int
+	failCode          codes.Code
+	resp              *llmgatewaypb.CompletionResponse
+	estimateResp      *llmgatewaypb.TokenEstimateResponse
+	estimateCalls     int
+	estimateFailTimes int
+	estimateFailCode  codes.Code
 }
 
 func (s *fakeCompletionServer) Complete(_ context.Context, _ *llmgatewaypb.CompletionRequest) (*llmgatewaypb.CompletionResponse, error) {
@@ -49,11 +53,25 @@ func (s *fakeCompletionServer) Complete(_ context.Context, _ *llmgatewaypb.Compl
 	return s.resp, nil
 }
 
-// EstimateTokens returns the configured estimateResp, ignoring the
-// failTimes/failCode retry-injection fields Complete uses (no test currently
-// needs EstimateTokens retry coverage).
+// EstimateTokens returns the configured estimateResp, failing with
+// estimateFailTimes/estimateFailCode the same way Complete uses
+// failTimes/failCode -- kept as a separate counter/config pair so a test can
+// exercise EstimateTokens' retry behavior (GRPCClient.callWithRetry, still
+// used for this read-only RPC) independently of Complete's.
 func (s *fakeCompletionServer) EstimateTokens(_ context.Context, _ *llmgatewaypb.TokenEstimateRequest) (*llmgatewaypb.TokenEstimateResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.estimateCalls++
+	if s.estimateCalls <= s.estimateFailTimes {
+		return nil, status.Error(s.estimateFailCode, "injected failure")
+	}
 	return s.estimateResp, nil
+}
+
+func (s *fakeCompletionServer) estimateCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.estimateCalls
 }
 
 func (s *fakeCompletionServer) callCount() int {
@@ -208,6 +226,38 @@ func TestGRPCClientCompleteHappyPath(t *testing.T) {
 	}
 }
 
+// TestGRPCClientCompleteRejectsOutOfRangeMaxTokens asserts a negative or
+// larger-than-uint32 MaxTokens is rejected with a domain.ErrLLMGateway-wrapped
+// error before the unvalidated int -> uint32 cast, rather than silently
+// wrapping around to an unrelated value on the wire.
+func TestGRPCClientCompleteRejectsOutOfRangeMaxTokens(t *testing.T) {
+	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
+	defer stop()
+
+	negative := -1
+	tooLarge := int(math.MaxUint32) + 1
+
+	for name, maxTokens := range map[string]int{"negative": negative, "too large": tooLarge} {
+		t.Run(name, func(t *testing.T) {
+			req := &ai.CompletionRequest{
+				Model:       "gpt-5.2",
+				Messages:    []ai.ChatMessage{{Role: "user", Content: "hi"}},
+				MaxTokens:   &maxTokens,
+			}
+			_, err := fixture.client.Complete(context.Background(), req)
+			if err == nil {
+				t.Fatal("expected an error for an out-of-range max_tokens")
+			}
+			if !errors.Is(err, domain.ErrLLMGateway) {
+				t.Errorf("expected domain.ErrLLMGateway-wrapped error, got: %v", err)
+			}
+		})
+	}
+	if got := fixture.completion.callCount(); got != 0 {
+		t.Errorf("expected no RPC invocation for rejected requests, got %d", got)
+	}
+}
+
 func TestGRPCClientListModelsHappyPath(t *testing.T) {
 	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
 	defer stop()
@@ -286,11 +336,17 @@ func TestGRPCClientEstimateTokensHappyPath(t *testing.T) {
 	}
 }
 
-func TestGRPCClientCompleteRetriesOnUnavailableThenSucceeds(t *testing.T) {
+// TestGRPCClientCompleteDoesNotRetryOnUnavailable asserts Complete's
+// idempotency fix: even a classically-retryable code (codes.Unavailable)
+// must not be retried, since Complete may have already reached the upstream
+// provider before the Unavailable was observed, and a retry would risk
+// double-billing that provider call. A single failing attempt must surface
+// immediately as an error, with exactly one RPC invocation.
+func TestGRPCClientCompleteDoesNotRetryOnUnavailable(t *testing.T) {
 	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
 	defer stop()
 
-	fixture.completion.failTimes = 2
+	fixture.completion.failTimes = 1
 	fixture.completion.failCode = codes.Unavailable
 	fixture.completion.resp = &llmgatewaypb.CompletionResponse{
 		Model: "gpt-5.2",
@@ -301,14 +357,43 @@ func TestGRPCClientCompleteRetriesOnUnavailableThenSucceeds(t *testing.T) {
 	}
 
 	req := &ai.CompletionRequest{Model: "gpt-5.2", Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}}}
-	resp, err := fixture.client.Complete(context.Background(), req)
+	_, err := fixture.client.Complete(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected Complete to surface the first failure rather than retrying")
+	}
+	if !errors.Is(err, domain.ErrLLMGateway) {
+		t.Errorf("expected domain.ErrLLMGateway-wrapped error, got: %v", err)
+	}
+	if got := fixture.completion.callCount(); got != 1 {
+		t.Errorf("expected exactly 1 invocation (no retry), got %d", got)
+	}
+}
+
+// TestGRPCClientEstimateTokensRetriesOnUnavailableThenSucceeds covers a
+// read-only RPC still going through GRPCClient.callWithRetry: unlike
+// Complete (see TestGRPCClientCompleteDoesNotRetryOnUnavailable),
+// EstimateTokens has no side effect to double-apply, so it is safe -- and
+// still expected -- to retry transient failures.
+func TestGRPCClientEstimateTokensRetriesOnUnavailableThenSucceeds(t *testing.T) {
+	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
+	defer stop()
+
+	fixture.completion.estimateFailTimes = 2
+	fixture.completion.estimateFailCode = codes.Unavailable
+	fixture.completion.estimateResp = &llmgatewaypb.TokenEstimateResponse{
+		Model:           "gpt-5.2",
+		EstimatedTokens: 42,
+	}
+
+	req := &ai.TokenEstimateRequest{Model: "gpt-5.2", Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}}}
+	resp, err := fixture.client.EstimateTokens(context.Background(), req)
 	if err != nil {
 		t.Fatalf("expected success after retries, got error: %v", err)
 	}
-	if resp.Content != "recovered" {
-		t.Errorf("expected content %q, got %q", "recovered", resp.Content)
+	if resp.EstimatedTokens != 42 {
+		t.Errorf("expected EstimatedTokens 42, got %d", resp.EstimatedTokens)
 	}
-	if got := fixture.completion.callCount(); got != 3 {
+	if got := fixture.completion.estimateCallCount(); got != 3 {
 		t.Errorf("expected exactly 3 invocations (2 failures + 1 success), got %d", got)
 	}
 }
@@ -333,22 +418,26 @@ func TestGRPCClientCompleteNonRetryableCodeReturnsImmediately(t *testing.T) {
 	}
 }
 
-func TestGRPCClientCompleteExhaustsRetriesOnPersistentUnavailable(t *testing.T) {
+// TestGRPCClientEstimateTokensExhaustsRetriesOnPersistentUnavailable covers
+// the read-only-RPC retry-exhaustion path (previously exercised via
+// Complete, before Complete stopped retrying -- see
+// TestGRPCClientCompleteDoesNotRetryOnUnavailable).
+func TestGRPCClientEstimateTokensExhaustsRetriesOnPersistentUnavailable(t *testing.T) {
 	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
 	defer stop()
 
-	fixture.completion.failTimes = 100 // always fails
-	fixture.completion.failCode = codes.Unavailable
+	fixture.completion.estimateFailTimes = 100 // always fails
+	fixture.completion.estimateFailCode = codes.Unavailable
 
-	req := &ai.CompletionRequest{Model: "gpt-5.2", Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}}}
-	_, err := fixture.client.Complete(context.Background(), req)
+	req := &ai.TokenEstimateRequest{Model: "gpt-5.2", Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}}}
+	_, err := fixture.client.EstimateTokens(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected an error after exhausting retries")
 	}
 	if !errors.Is(err, domain.ErrLLMGateway) {
 		t.Errorf("expected domain.ErrLLMGateway-wrapped error, got: %v", err)
 	}
-	if got := fixture.completion.callCount(); got != 3 {
+	if got := fixture.completion.estimateCallCount(); got != 3 {
 		t.Errorf("expected exactly 3 invocations (maxRetries), got %d", got)
 	}
 }

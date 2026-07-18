@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
@@ -111,18 +112,120 @@ func (r *InvitationRepository) ListPendingByInviteeID(ctx context.Context, invit
 	return scanInvitations(rows)
 }
 
-// UpdateStatus updates the status of the invitation identified by id. It
-// returns domain.ErrNotFound if the invitation does not exist.
-func (r *InvitationRepository) UpdateStatus(ctx context.Context, id string, status invitation.Status) error {
-	tag, err := r.pool.Exec(ctx,
-		`UPDATE room_invitations SET status = $1 WHERE id = $2`,
-		string(status), id,
+// roomMembersUniqueConstraint is the name of room_members' UNIQUE(room_id,
+// user_id) constraint (see migrations/20260220060722_initial.sql), checked
+// by isAlreadyMemberConflict to translate a concurrent duplicate-membership
+// insert into domain.ErrAlreadyMember.
+const roomMembersUniqueConstraint = "room_members_room_id_user_id_key"
+
+// isAlreadyMemberConflict reports whether err is a unique-constraint
+// violation on room_members' (room_id, user_id) pair.
+func isAlreadyMemberConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation && pgErr.ConstraintName == roomMembersUniqueConstraint
+}
+
+// insertRoomMember inserts member into room_members using exec (either the
+// shared *pgxpool.Pool or an open pgx.Tx — both satisfy this minimal
+// querier interface, mirroring insertPayment in payment_repository.go),
+// translating a unique-constraint violation on (room_id, user_id) into
+// domain.ErrAlreadyMember rather than returning the raw pgconn error.
+func insertRoomMember(ctx context.Context, exec interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}, member *domainroom.RoomMember) error {
+	_, err := exec.Exec(ctx,
+		`INSERT INTO room_members (id, room_id, user_id, role, joined_at)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		member.ID, member.RoomID, member.UserID, string(member.Role), member.JoinedAt,
+	)
+	if err != nil && isAlreadyMemberConflict(err) {
+		return domain.ErrAlreadyMember
+	}
+	return err
+}
+
+// updateStatusCAS runs UpdateStatus's compare-and-swap UPDATE using exec
+// (either the pool or an open tx) and translates its RowsAffected into the
+// domain.ErrNotFound / domain.ErrInvitationNotPending contract documented on
+// invitation.InvitationRepository.UpdateStatus. existsCheck is used only on
+// the RowsAffected == 0 path, to distinguish "no such invitation" from
+// "invitation exists but is not in expectedStatus" — it is passed in
+// (rather than always calling r.GetByID) so AcceptTx can reuse the same tx
+// for that follow-up read instead of issuing it against the pool.
+func updateStatusCAS(
+	ctx context.Context,
+	exec interface {
+		Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	},
+	existsCheck func(ctx context.Context, id string) (bool, error),
+	id string,
+	status, expectedStatus invitation.Status,
+) error {
+	tag, err := exec.Exec(ctx,
+		`UPDATE room_invitations SET status = $1 WHERE id = $2 AND status = $3`,
+		string(status), id, string(expectedStatus),
 	)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	exists, err := existsCheck(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		return domain.ErrNotFound
+	}
+	return domain.ErrInvitationNotPending
+}
+
+// UpdateStatus implements invitation.InvitationRepository.UpdateStatus (see
+// its GoDoc for the compare-and-swap contract).
+func (r *InvitationRepository) UpdateStatus(ctx context.Context, id string, status, expectedStatus invitation.Status) error {
+	return updateStatusCAS(ctx, r.pool, r.exists, id, status, expectedStatus)
+}
+
+// exists reports whether an invitation with the given id exists, used by
+// updateStatusCAS to distinguish a missing row from a CAS mismatch after a
+// zero-RowsAffected UPDATE.
+func (r *InvitationRepository) exists(ctx context.Context, id string) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM room_invitations WHERE id = $1)`, id).Scan(&exists)
+	return exists, err
+}
+
+// AcceptTx implements invitation.InvitationRepository.AcceptTx (see its
+// GoDoc for the atomicity guarantee and error contract). It opens a single
+// database transaction, optionally runs UpdateStatus's CAS UPDATE within
+// it, and only inserts member into room_members if that CAS succeeded (or
+// transitionStatus is false), before committing.
+func (r *InvitationRepository) AcceptTx(ctx context.Context, invitationID string, expectedStatus invitation.Status, transitionStatus bool, member *domainroom.RoomMember) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	// Safe no-op after a successful Commit below.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if transitionStatus {
+		existsCheck := func(ctx context.Context, id string) (bool, error) {
+			var exists bool
+			err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM room_invitations WHERE id = $1)`, id).Scan(&exists)
+			return exists, err
+		}
+		if err := updateStatusCAS(ctx, tx, existsCheck, invitationID, invitation.StatusAccepted, expectedStatus); err != nil {
+			return err
+		}
+	}
+
+	if err := insertRoomMember(ctx, tx, member); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
 }

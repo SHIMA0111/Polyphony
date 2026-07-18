@@ -25,52 +25,71 @@ async fn main() {
 
     tracing::info!(port = config.port, "starting LLM Gateway");
 
-    // Dependency injection assembly
+    // Dependency injection assembly.
+    //
+    // Post-review fix: previously all three providers were constructed and registered
+    // unconditionally, which meant `GET /ready` (CompletionService::readiness, which
+    // checks every *registered* provider's key is resolvable) could never succeed
+    // unless every one of OPENAI_API_KEY/ANTHROPIC_API_KEY/GEMINI_API_KEY was set --
+    // even for deployments that only intend to use a subset of providers. A provider is
+    // now only constructed and registered when its `{PROVIDER}_API_KEY` env var is
+    // present and non-empty; skipped providers are logged at info level and simply
+    // absent from `list_models`/dispatch, not treated as an error. Only having zero
+    // providers register at all is an error (nothing could ever be served), matching
+    // this gateway's fail-fast-at-startup posture.
     let key_store = Arc::new(EnvKeyStore);
-    let openai_provider = match OpenAIProvider::new(
-        key_store.clone(),
-        config.http.clone(),
-        config.openai.clone(),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("failed to initialize OpenAIProvider: {e}");
-            std::process::exit(1);
-        }
-    };
+    let mut providers: Vec<Box<dyn llm_gateway::ports::outbound::provider::LLMProvider>> =
+        Vec::new();
 
-    let anthropic_provider = match AnthropicProvider::new(
-        key_store.clone(),
-        config.http.clone(),
-        config.anthropic.clone(),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("failed to initialize AnthropicProvider: {e}");
-            std::process::exit(1);
+    if has_api_key("OPENAI_API_KEY") {
+        match OpenAIProvider::new(key_store.clone(), config.http.clone(), config.openai.clone()) {
+            Ok(p) => providers.push(Box::new(p)),
+            Err(e) => {
+                tracing::error!(provider = "openai", error = %e, "failed to initialize provider");
+                std::process::exit(1);
+            }
         }
-    };
+    } else {
+        tracing::info!(provider = "openai", "OPENAI_API_KEY not set, skipping provider registration");
+    }
 
-    let gemini_provider = match GeminiProvider::new(
-        key_store.clone(),
-        config.http.clone(),
-        config.gemini.clone(),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("failed to initialize GeminiProvider: {e}");
-            std::process::exit(1);
+    if has_api_key("ANTHROPIC_API_KEY") {
+        match AnthropicProvider::new(
+            key_store.clone(),
+            config.http.clone(),
+            config.anthropic.clone(),
+        ) {
+            Ok(p) => providers.push(Box::new(p)),
+            Err(e) => {
+                tracing::error!(provider = "anthropic", error = %e, "failed to initialize provider");
+                std::process::exit(1);
+            }
         }
-    };
+    } else {
+        tracing::info!(provider = "anthropic", "ANTHROPIC_API_KEY not set, skipping provider registration");
+    }
 
-    let service = CompletionService::new(
-        vec![
-            Box::new(openai_provider),
-            Box::new(anthropic_provider),
-            Box::new(gemini_provider),
-        ],
-        key_store,
-    );
+    if has_api_key("GEMINI_API_KEY") {
+        match GeminiProvider::new(key_store.clone(), config.http.clone(), config.gemini.clone()) {
+            Ok(p) => providers.push(Box::new(p)),
+            Err(e) => {
+                tracing::error!(provider = "gemini", error = %e, "failed to initialize provider");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        tracing::info!(provider = "gemini", "GEMINI_API_KEY not set, skipping provider registration");
+    }
+
+    if providers.is_empty() {
+        tracing::error!(
+            "no LLM providers registered: set at least one of OPENAI_API_KEY, \
+             ANTHROPIC_API_KEY, or GEMINI_API_KEY"
+        );
+        std::process::exit(1);
+    }
+
+    let service = CompletionService::new(providers, key_store);
     // Coerced to the trait object once here so the exact same instance is shared by
     // both the REST router and the gRPC server below — no second `CompletionService`
     // is ever constructed.
@@ -101,6 +120,17 @@ async fn main() {
     };
 
     tokio::join!(rest_server, grpc_server);
+}
+
+/// Reports whether the named environment variable is set to a non-empty value.
+///
+/// Used to decide whether a given provider's API key is present before constructing
+/// and registering that provider (see the provider-assembly block in `main`) --
+/// treating an empty string the same as "unset" avoids silently registering a
+/// provider with a blank key that would only fail later, at request or readiness
+/// time.
+fn has_api_key(var_name: &str) -> bool {
+    std::env::var(var_name).is_ok_and(|v| !v.is_empty())
 }
 
 /// Waits for a `Ctrl+C` (SIGINT) or, on Unix, a `SIGTERM` signal, whichever comes

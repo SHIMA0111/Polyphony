@@ -102,7 +102,7 @@ func (u *RoomUsecase) UpdateRoom(ctx context.Context, userID, roomID, name, desc
 	rm.Description = description
 	rm.UpdatedAt = time.Now()
 
-	if err = u.roomRepo.Update(ctx, rm); err != nil {
+	if err = u.roomRepo.UpdateDetails(ctx, roomID, name, description); err != nil {
 		return nil, err
 	}
 
@@ -137,7 +137,7 @@ func (u *RoomUsecase) UpdateAIContextCutoff(ctx context.Context, userID, roomID 
 	rm.AIContextCutoffAt = cutoff
 	rm.UpdatedAt = time.Now()
 
-	if err = u.roomRepo.Update(ctx, rm); err != nil {
+	if err = u.roomRepo.UpdateAIContextCutoff(ctx, roomID, cutoff); err != nil {
 		return nil, err
 	}
 
@@ -218,9 +218,14 @@ func (u *RoomUsecase) LeaveRoom(ctx context.Context, callerID, roomID, targetUse
 // returns domain.ErrForbidden if the caller lacks that capability. It
 // returns domainroom.ErrOwnerRoleProtected if targetUserID is the room's
 // current owner — the owner's role can only change via TransferOwnership,
-// never directly. It returns domain.ErrNotFound if targetUserID is not a
-// member of roomID. Rejecting newRole == domainroom.RoleMaster is validated
-// at the handler layer, so this method never needs to special-case it.
+// never directly — or if newRole is domainroom.RoleMaster, which would
+// leave the room with two masters instead of transferring ownership away
+// from the current one. Rejecting newRole == domainroom.RoleMaster is
+// already validated at the handler layer (HTTP 400 before this method is
+// ever called via HTTP); this method re-checks it as defense in depth for
+// any other caller, per this codebase's pattern (see e.g. Step 25's review
+// fix). It returns domain.ErrNotFound if targetUserID is not a member of
+// roomID.
 //
 // Unlike LeaveRoom, this never calls hub.Revoke: a role change (even a
 // demotion, e.g. to domainroom.RoleReader) never removes room membership
@@ -235,6 +240,9 @@ func (u *RoomUsecase) ChangeMemberRole(ctx context.Context, callerID, roomID, ta
 	}
 	if err := domainroom.Authorize(caller.Role, domainroom.ActionManageMembers); err != nil {
 		return nil, err
+	}
+	if newRole == domainroom.RoleMaster {
+		return nil, domainroom.ErrOwnerRoleProtected
 	}
 
 	rm, err := u.roomRepo.GetByID(ctx, roomID)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -565,5 +566,73 @@ func TestKratosValidateTokenSelfHeal(t *testing.T) {
 	}
 	if claims.UserID != linkedUser.ID {
 		t.Errorf("expected claims.UserID %q to match self-healed user %q", claims.UserID, linkedUser.ID)
+	}
+}
+
+// TestKratosEnsureLocalUserConcurrentFirstLoginRace covers the
+// concurrent-first-login race documented on ensureLocalUser: two callers
+// racing ValidateToken for the same brand-new Kratos identity can both reach
+// userRepo.Create for the same email/username, since both see
+// GetByKratosIdentityID/GetByEmail miss before either has written. The
+// loser must self-heal by re-resolving to the winner's row via
+// GetByKratosIdentityID rather than surfacing a
+// domain.ErrEmailAlreadyExists/domain.ErrUsernameAlreadyExists failure to
+// the caller. Run with -race to confirm the mocks.UserRepo access itself is
+// also race-free.
+func TestKratosEnsureLocalUserConcurrentFirstLoginRace(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	identityID := uuid.New().String()
+	f.whoamiBody = kratosWhoamiRespDTO{
+		Identity: kratosIdentityDTO{
+			ID:     identityID,
+			Traits: kratosTraitsDTO{Email: "race@example.com", Username: "raceuser"},
+		},
+	}
+
+	userRepo := &mocks.UserRepo{}
+	svc := newTestKratosService(f, userRepo)
+
+	const goroutines = 2
+	var wg sync.WaitGroup
+	userIDs := make([]string, goroutines)
+	errs := make([]error, goroutines)
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+			claims, err := svc.ValidateToken(context.Background(), "cookie:some-cookie-value")
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			userIDs[i] = claims.UserID
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: ValidateToken failed: %v", i, err)
+		}
+	}
+	if userIDs[0] == "" || userIDs[1] == "" {
+		t.Fatalf("expected both goroutines to resolve a user ID, got %q and %q", userIDs[0], userIDs[1])
+	}
+	if userIDs[0] != userIDs[1] {
+		t.Fatalf("expected both concurrent first-logins to resolve to the same user, got %q and %q", userIDs[0], userIDs[1])
+	}
+
+	// Exactly one users row should have been created for this identity, not
+	// two racing Create calls both succeeding.
+	count := 0
+	for _, u := range userRepo.Users {
+		if u.Email == "race@example.com" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 local user row for the raced identity, got %d", count)
 	}
 }

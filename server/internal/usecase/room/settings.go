@@ -56,7 +56,7 @@ func (u *RoomUsecase) UpdateSettings(ctx context.Context, userID, roomID string,
 	rm.AIModel = applySettingField(rm.AIModel, aiModel)
 	rm.UpdatedAt = time.Now()
 
-	if err = u.roomRepo.Update(ctx, rm); err != nil {
+	if err = u.roomRepo.UpdateAISettings(ctx, roomID, rm.AIProvider, rm.AIModel); err != nil {
 		return nil, err
 	}
 

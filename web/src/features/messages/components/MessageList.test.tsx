@@ -336,4 +336,58 @@ describe("MessageList", () => {
 
     expect(screen.queryByText("Private")).not.toBeInTheDocument()
   })
+
+  // --- Step 13: auto-load older pages when the first page doesn't fill the viewport ---
+
+  it("fetches the next page when there is more history and the container isn't scrollable (jsdom reports scrollHeight/clientHeight both 0)", () => {
+    const fetchNextPage = vi.fn()
+
+    render(
+      <MessageList
+        messages={messages}
+        onRegenerate={vi.fn()}
+        isRegenerating={null}
+        {...noopPaginationProps}
+        hasNextPage={true}
+        fetchNextPage={fetchNextPage}
+      />,
+    )
+
+    expect(fetchNextPage).toHaveBeenCalled()
+  })
+
+  it("does not fetch the next page while a fetch is already in flight, even if the container isn't scrollable", () => {
+    const fetchNextPage = vi.fn()
+
+    render(
+      <MessageList
+        messages={messages}
+        onRegenerate={vi.fn()}
+        isRegenerating={null}
+        {...noopPaginationProps}
+        hasNextPage={true}
+        isFetchingNextPage={true}
+        fetchNextPage={fetchNextPage}
+      />,
+    )
+
+    expect(fetchNextPage).not.toHaveBeenCalled()
+  })
+
+  it("does not fetch the next page when there is no more history", () => {
+    const fetchNextPage = vi.fn()
+
+    render(
+      <MessageList
+        messages={messages}
+        onRegenerate={vi.fn()}
+        isRegenerating={null}
+        {...noopPaginationProps}
+        hasNextPage={false}
+        fetchNextPage={fetchNextPage}
+      />,
+    )
+
+    expect(fetchNextPage).not.toHaveBeenCalled()
+  })
 })

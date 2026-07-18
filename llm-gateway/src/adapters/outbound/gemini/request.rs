@@ -156,8 +156,12 @@ struct GeminiErrorDetail {
 ///
 /// This is a temporary text-only simplification: full Gemini function-calling
 /// (`functionCall`/`functionResponse` parts) is out of scope until a future
-/// tool-calling phase, so `Role::Tool` is represented as plain text under Gemini's
-/// `"function"` role.
+/// tool-calling phase. Gemini's `Content.role` only documents two accepted values,
+/// `"user"` and `"model"` -- there is no `"function"` (or any other) role accepted in
+/// `contents` outside the structured function-calling flow, so sending one risks a live
+/// `400 Bad Request`. `Role::Tool` is therefore represented as plain text under
+/// Gemini's `"user"` role, mirroring the Anthropic adapter's documented fallback for
+/// the same "no dedicated tool role" situation.
 ///
 /// # Arguments
 /// * `role` — Domain role to convert. Must not be `Role::System` — system messages are
@@ -167,12 +171,12 @@ struct GeminiErrorDetail {
 /// # Returns
 /// - `User` → `"user"`
 /// - `Assistant` → `"model"`
-/// - `Tool` → `"function"`
+/// - `Tool` → `"user"`
 fn role_to_gemini_role(role: &Role) -> &'static str {
     match role {
         Role::User => "user",
         Role::Assistant => "model",
-        Role::Tool => "function",
+        Role::Tool => "user",
         Role::System => {
             debug_assert!(
                 false,
@@ -190,14 +194,15 @@ fn role_to_gemini_role(role: &Role) -> &'static str {
 /// * `s` — Role string as received from Gemini (e.g. `"model"`, `"user"`).
 ///
 /// # Returns
-/// `"model"` → `Assistant`, `"user"` → `User`, `"function"` → `Tool`; any other string
-/// falls back to `User` with a `tracing::warn!`, mirroring the OpenAI adapter's lenient
-/// fallback behavior for unknown role strings.
+/// `"model"` → `Assistant`, `"user"` → `User`; any other string (including the
+/// undocumented `"function"`, which Gemini never returns in a `generateContent`
+/// response's `candidates[].content.role` today, only accepted historically in some
+/// function-calling flows) falls back to `User` with a `tracing::warn!`, mirroring the
+/// OpenAI adapter's lenient fallback behavior for unknown role strings.
 fn gemini_role_to_role(s: &str) -> Role {
     match s {
         "model" => Role::Assistant,
         "user" => Role::User,
-        "function" => Role::Tool,
         other => {
             tracing::warn!(role = other, "unknown Gemini role, falling back to User");
             Role::User
@@ -610,11 +615,20 @@ mod tests {
     fn test_role_to_gemini_role_and_back_round_trip() {
         assert_eq!(role_to_gemini_role(&Role::User), "user");
         assert_eq!(role_to_gemini_role(&Role::Assistant), "model");
-        assert_eq!(role_to_gemini_role(&Role::Tool), "function");
+        // Gemini's Content.role only documents "user"/"model"; Role::Tool falls back to
+        // "user" (mirroring the Anthropic adapter's documented fallback) rather than the
+        // undocumented "function" value, to avoid a live 400.
+        assert_eq!(role_to_gemini_role(&Role::Tool), "user");
 
         assert_eq!(gemini_role_to_role("user"), Role::User);
         assert_eq!(gemini_role_to_role("model"), Role::Assistant);
-        assert_eq!(gemini_role_to_role("function"), Role::Tool);
+    }
+
+    /// `"function"` is not a documented Gemini response role; it should fall back to
+    /// `User` like any other unrecognized role string, not round-trip to `Role::Tool`.
+    #[test]
+    fn test_gemini_role_to_role_function_falls_back_to_user() {
+        assert_eq!(gemini_role_to_role("function"), Role::User);
     }
 
     #[test]

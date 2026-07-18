@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { useQuery } from "@tanstack/react-query"
 import { Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/react"
-import { Pen } from "lucide-react"
+import { AlertTriangle, Pen } from "lucide-react"
 import { PasswordInput } from "@/components/ui/password-input"
 import { toaster } from "@/components/ui/toaster"
 import { getErrorMessage } from "@/lib/get-error-message"
@@ -121,77 +121,124 @@ export function LoginForm() {
           </Card.Description>
         </Card.Header>
         <Card.Body>
-          <form onSubmit={onSubmit} noValidate>
-            <Flex direction="column" gap={4}>
-              <Field.Root invalid={!!errors.email || identifierMessages.length > 0}>
-                <Field.Label>Email</Field.Label>
-                <Input
-                  type="email"
-                  placeholder="you@example.com"
-                  {...register("email")}
-                />
-                {errors.email && (
-                  <Field.ErrorText role="alert">
-                    {errors.email.message}
-                  </Field.ErrorText>
-                )}
-                {!errors.email &&
-                  identifierMessages.map((message) => (
-                    <Field.ErrorText role="alert" key={message}>
-                      {message}
-                    </Field.ErrorText>
-                  ))}
-              </Field.Root>
-              <Field.Root invalid={!!errors.password || passwordMessages.length > 0}>
-                <Field.Label>Password</Field.Label>
-                <PasswordInput
-                  placeholder="Enter your password"
-                  {...register("password")}
-                />
-                {errors.password && (
-                  <Field.ErrorText role="alert">
-                    {errors.password.message}
-                  </Field.ErrorText>
-                )}
-                {!errors.password &&
-                  passwordMessages.map((message) => (
-                    <Field.ErrorText role="alert" key={message}>
-                      {message}
-                    </Field.ErrorText>
-                  ))}
-              </Field.Root>
-              <Button
-                type="submit"
-                colorPalette="blue"
-                size="lg"
-                w="full"
-                // Disabled until the Kratos login flow has loaded: onSubmit
-                // silently no-ops while `flow` is null, so a click in that
-                // window would otherwise be dropped without any feedback
-                // (caught live by the wave-7 integration run as a stuck
-                // login under load).
-                disabled={!flow}
-                loading={loginMutation.isPending}
-                loadingText="Signing in..."
+          {flowQuery.isError ? (
+            // The Kratos login flow failed to load at all: `flow` will
+            // never become non-null on its own, so the form below would
+            // otherwise render permanently disabled (`disabled={!flow}`)
+            // with no explanation and no way to recover short of a full
+            // page reload. Surface a retry affordance instead, matching
+            // RoomList's isError error-surface style.
+            <Flex
+              direction="column"
+              align="center"
+              justify="center"
+              py={8}
+              textAlign="center"
+              gap={3}
+            >
+              <Flex
+                h={12}
+                w={12}
+                rounded="full"
+                bg="bg.subtle"
+                align="center"
+                justify="center"
               >
-                Sign in
+                <AlertTriangle
+                  size={24}
+                  color="var(--chakra-colors-fg-error)"
+                />
+              </Flex>
+              <Heading size="sm">Couldn&apos;t load the sign-in form</Heading>
+              <Text color="fg.muted" fontSize="sm" maxW="xs">
+                {getErrorMessage(
+                  flowQuery.error,
+                  "Something went wrong while preparing the sign-in form.",
+                )}
+              </Text>
+              <Button
+                variant="outline"
+                onClick={() => flowQuery.refetch()}
+                loading={flowQuery.isFetching}
+              >
+                Try again
               </Button>
             </Flex>
-          </form>
-          {flow && <SocialLoginButtons flow={flow} />}
-          <Text mt={6} textAlign="center" fontSize="sm" color="fg.muted">
-            Don&apos;t have an account?{" "}
-            <Link href="/register">
-              <Text
-                as="span"
-                color="blue.500"
-                fontWeight="medium"
-                _hover={{ textDecoration: "underline" }}
-              >
-                Register
+          ) : (
+            <>
+              <form onSubmit={onSubmit} noValidate>
+                <Flex direction="column" gap={4}>
+                  <Field.Root invalid={!!errors.email || identifierMessages.length > 0}>
+                    <Field.Label>Email</Field.Label>
+                    <Input
+                      type="email"
+                      placeholder="you@example.com"
+                      {...register("email")}
+                    />
+                    {errors.email && (
+                      <Field.ErrorText role="alert">
+                        {errors.email.message}
+                      </Field.ErrorText>
+                    )}
+                    {!errors.email &&
+                      identifierMessages.map((message) => (
+                        <Field.ErrorText role="alert" key={message}>
+                          {message}
+                        </Field.ErrorText>
+                      ))}
+                  </Field.Root>
+                  <Field.Root invalid={!!errors.password || passwordMessages.length > 0}>
+                    <Field.Label>Password</Field.Label>
+                    <PasswordInput
+                      placeholder="Enter your password"
+                      {...register("password")}
+                    />
+                    {errors.password && (
+                      <Field.ErrorText role="alert">
+                        {errors.password.message}
+                      </Field.ErrorText>
+                    )}
+                    {!errors.password &&
+                      passwordMessages.map((message) => (
+                        <Field.ErrorText role="alert" key={message}>
+                          {message}
+                        </Field.ErrorText>
+                      ))}
+                  </Field.Root>
+                  <Button
+                    type="submit"
+                    colorPalette="blue"
+                    size="lg"
+                    w="full"
+                    // Disabled until the Kratos login flow has loaded: onSubmit
+                    // silently no-ops while `flow` is null, so a click in that
+                    // window would otherwise be dropped without any feedback
+                    // (caught live by the wave-7 integration run as a stuck
+                    // login under load).
+                    disabled={!flow}
+                    loading={loginMutation.isPending}
+                    loadingText="Signing in..."
+                  >
+                    Sign in
+                  </Button>
+                </Flex>
+              </form>
+              {flow && <SocialLoginButtons flow={flow} />}
+              <Text mt={6} textAlign="center" fontSize="sm" color="fg.muted">
+                Don&apos;t have an account?{" "}
+                <Link href="/register">
+                  <Text
+                    as="span"
+                    color="blue.500"
+                    fontWeight="medium"
+                    _hover={{ textDecoration: "underline" }}
+                  >
+                    Register
+                  </Text>
+                </Link>
               </Text>
-            </Link>
-          </Text>
+            </>
+          )}
         </Card.Body>
       </Card.Root>
     </Flex>

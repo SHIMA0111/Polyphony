@@ -27,6 +27,13 @@ pub trait CompletionUseCase: Send + Sync {
     ///
     /// # Returns
     /// A future resolving to the aggregated model list.
+    ///
+    /// # Errors
+    /// Never returns an error — the return type carries no `Result` at all, since
+    /// aggregating each provider's static model list (`LLMProvider::models`) performs no
+    /// I/O and cannot fail (see `adapters::inbound::grpc::models_service::GrpcModelsService::list_models`,
+    /// which documents the same infallibility for its own gRPC wrapper around this
+    /// method).
     fn list_models(&self) -> BoxFuture<'_, Vec<ModelInfo>>;
 
     /// Executes a streaming chat completion.

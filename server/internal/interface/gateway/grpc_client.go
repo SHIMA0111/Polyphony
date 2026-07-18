@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"strings"
 	"time"
@@ -92,9 +93,17 @@ func (c *GRPCClient) Close() error {
 }
 
 // Complete sends a chat completion request to the LLM Gateway over gRPC and
-// returns the response, retrying transient failures per callWithRetry. It
-// returns a domain.ErrLLMGateway-wrapped error if the request ultimately
-// fails.
+// returns the response. It returns a domain.ErrLLMGateway-wrapped error if
+// the request fails.
+//
+// Unlike ListModels and EstimateTokens, Complete deliberately does NOT go
+// through callWithRetry. The Complete RPC is not idempotent: a transient
+// codes.Unavailable/DeadlineExceeded can occur after the LLM Gateway has
+// already dispatched the request to (and been billed by) the upstream
+// provider, while the response is still in flight back to this client. A
+// blind retry in that situation would issue a second upstream completion
+// request for the same logical send, double-billing the room's token
+// balance. ListModels and EstimateTokens are read-only and safe to retry.
 func (c *GRPCClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
 	pbReq := &llmgatewaypb.CompletionRequest{
 		Model:    req.Model,
@@ -105,16 +114,14 @@ func (c *GRPCClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*
 		pbReq.Temperature = &temp
 	}
 	if req.MaxTokens != nil {
-		maxTokens := uint32(*req.MaxTokens) // #nosec G115 -- max_tokens is always a small, non-negative token count
+		if *req.MaxTokens < 0 || *req.MaxTokens > math.MaxUint32 {
+			return nil, fmt.Errorf("%w: max_tokens %d out of range for uint32", domain.ErrLLMGateway, *req.MaxTokens)
+		}
+		maxTokens := uint32(*req.MaxTokens) // #nosec G115 -- validated non-negative and <= math.MaxUint32 above
 		pbReq.MaxTokens = &maxTokens
 	}
 
-	var resp *llmgatewaypb.CompletionResponse
-	err := c.callWithRetry(ctx, func(ctx context.Context) error {
-		var callErr error
-		resp, callErr = c.completionClient.Complete(ctx, pbReq)
-		return callErr
-	})
+	resp, err := c.completionClient.Complete(ctx, pbReq)
 	if err != nil {
 		return nil, fmt.Errorf("%w: complete: %v", domain.ErrLLMGateway, err)
 	}

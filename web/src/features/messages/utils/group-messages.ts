@@ -21,9 +21,25 @@ export type DisplayItem =
       messages: Message[]
     }
 
-/** Midnight (local time) of the day containing `date`, as an epoch timestamp. */
-function startOfDay(date: Date): number {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+/**
+ * Midnight of the day containing `date`, as an epoch timestamp — in local
+ * time, or in UTC when `useUTC` is true.
+ *
+ * The UTC variant exists so the day-boundary *key* (used to decide when to
+ * insert a day separator / start a fresh group) can be computed in the same
+ * timezone reference as {@link dayLabel}'s `now: null` branch, which always
+ * renders the label in UTC. Before this, the key was always local-time even
+ * when the label was UTC: near a runtime-local midnight that doesn't align
+ * with UTC midnight, the key could flip a day while the UTC-rendered label
+ * didn't (or vice versa), so two adjacent day separators could show
+ * identical labels, or a single calendar day (by the label's own reckoning)
+ * could get split into two. Passing the same `useUTC` flag to both keeps
+ * them in lockstep, independent of the runtime's local timezone.
+ */
+function startOfDay(date: Date, useUTC: boolean): number {
+  return useUTC
+    ? Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+    : new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
 }
 
 /**
@@ -56,7 +72,9 @@ function startOfDay(date: Date): number {
 function dayLabel(date: Date, now: Date | null): string {
   if (now) {
     const dayMs = 24 * 60 * 60 * 1000
-    const diffDays = Math.round((startOfDay(now) - startOfDay(date)) / dayMs)
+    const diffDays = Math.round(
+      (startOfDay(now, false) - startOfDay(date, false)) / dayMs,
+    )
 
     if (diffDays === 0) return "Today"
     if (diffDays === 1) return "Yesterday"
@@ -101,6 +119,11 @@ export function groupMessagesForDisplay(
   now: Date | null = new Date(),
 ): DisplayItem[] {
   const items: DisplayItem[] = []
+  // dayLabel(date, null) always renders in UTC (see its docstring); align the
+  // day-boundary key to the same reference so a day separator's label and
+  // the boundary that triggered it always agree, regardless of the
+  // runtime's local timezone.
+  const useUTC = now === null
 
   let lastDayKey: number | null = null
   let lastMessage: Message | null = null
@@ -108,7 +131,7 @@ export function groupMessagesForDisplay(
 
   for (const message of messages) {
     const createdAt = new Date(message.created_at)
-    const dayKey = startOfDay(createdAt)
+    const dayKey = startOfDay(createdAt, useUTC)
 
     if (lastDayKey === null || dayKey !== lastDayKey) {
       items.push({

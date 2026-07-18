@@ -4,6 +4,8 @@ package invitation
 import (
 	"context"
 	"errors"
+
+	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 )
 
 // ErrInviteCodeConflict indicates Create failed because the generated
@@ -46,7 +48,44 @@ type InvitationRepository interface {
 	// targeted at a specific user.
 	ListPendingByInviteeID(ctx context.Context, inviteeID string) ([]*Invitation, error)
 
-	// UpdateStatus updates the status of the invitation identified by id.
-	// Returns domain.ErrNotFound if no invitation with that ID exists.
-	UpdateStatus(ctx context.Context, id string, status Status) error
+	// UpdateStatus transitions the invitation identified by id to status, but
+	// only if its current status is still expectedStatus (compare-and-swap,
+	// via a `WHERE id = ... AND status = ...` update). This closes a
+	// lost-update race between two concurrent callers transitioning the same
+	// invitation (e.g. a concurrent Accept and Reject both reading
+	// StatusPending before either writes): only the first writer's UPDATE
+	// matches the WHERE clause, so the second's affects zero rows and must
+	// be rejected rather than blindly overwriting the first writer's status.
+	//
+	// Returns domain.ErrNotFound if no invitation with that ID exists at
+	// all, and domain.ErrInvitationNotPending if it exists but its current
+	// status is not expectedStatus.
+	UpdateStatus(ctx context.Context, id string, status, expectedStatus Status) error
+
+	// AcceptTx atomically performs an invitation accept: when
+	// transitionStatus is true (a username-targeted invitation), it first
+	// transitions the invitation identified by invitationID from
+	// expectedStatus to StatusAccepted exactly as UpdateStatus's CAS does;
+	// only if that transition succeeds (or transitionStatus is false, for a
+	// reusable link invitation, which never changes status) does it then
+	// insert member into room_members — both statements committing or
+	// rolling back together in a single database transaction.
+	//
+	// This closes the race UpdateStatus's CAS alone cannot: without a shared
+	// transaction, two callers could each pass their own pre-check (GetByID
+	// + a stale status read) before either writes, and separately call
+	// AddMember and UpdateStatus, leaving a room_members row inserted for an
+	// invitation whose status a concurrent Reject just set to
+	// StatusRejected (or vice versa: a status flip to StatusAccepted with no
+	// corresponding member row, if AddMember's separate call failed after
+	// UpdateStatus succeeded).
+	//
+	// Returns domain.ErrNotFound if the invitation does not exist,
+	// domain.ErrInvitationNotPending if transitionStatus is true and the
+	// invitation's current status is not expectedStatus, and
+	// domain.ErrAlreadyMember if member.UserID is already a member of
+	// member.RoomID (a unique-constraint violation on room_members, e.g. a
+	// concurrent accept of a different invitation into the same room won
+	// first).
+	AcceptTx(ctx context.Context, invitationID string, expectedStatus Status, transitionStatus bool, member *domainroom.RoomMember) error
 }

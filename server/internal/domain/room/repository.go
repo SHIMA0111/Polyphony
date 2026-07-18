@@ -4,6 +4,7 @@ package room
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 )
@@ -26,11 +27,42 @@ type RoomRepository interface {
 	// caller's per-room role is needed (e.g. to populate RoomResponse.Role).
 	ListByUserIDWithRole(ctx context.Context, userID string) ([]*RoomWithRole, error)
 
-	// Update updates room fields, including AIProvider and AIModel (persisted
-	// as part of a normal update alongside name/description/
-	// ai_context_cutoff_at — there is no separate settings-only persistence
-	// method). Returns ErrNotFound if not found.
-	Update(ctx context.Context, room *Room) error
+	// UpdateDetails updates a room's Name and Description (and UpdatedAt). It
+	// is a narrow, dedicated setter — like SetArchived below — that touches
+	// only these two columns plus updated_at, not the whole row. This
+	// matters because UpdateDetails, UpdateAIContextCutoff, and
+	// UpdateAISettings are each driven by a separate usecase endpoint
+	// (RoomUsecase.UpdateRoom / UpdateAIContextCutoff / UpdateSettings) that
+	// can be called concurrently for the same room: a single full-row
+	// Update(ctx, *Room) — the shape this interface used before this
+	// three-way split — would have each caller load a Room snapshot, mutate
+	// only the field(s) its own endpoint owns, and write the whole struct
+	// back, silently reverting any column a concurrent sibling call had just
+	// changed in between (a classic lost update). Splitting Update into
+	// three single-purpose setters, one per disjoint column group, makes
+	// that race structurally impossible: each setter only ever touches its
+	// own columns. Returns ErrNotFound if the room does not exist.
+	UpdateDetails(ctx context.Context, roomID, name, description string) error
+
+	// UpdateAIContextCutoff sets or clears a room's AIContextCutoffAt column
+	// (and UpdatedAt). A nil cutoff clears the restriction. See
+	// UpdateDetails's GoDoc for why this is a narrow setter rather than
+	// routing through a full-row update. Returns ErrNotFound if the room
+	// does not exist.
+	UpdateAIContextCutoff(ctx context.Context, roomID string, cutoff *time.Time) error
+
+	// UpdateAISettings sets a room's AIProvider and AIModel columns (and
+	// UpdatedAt) to exactly the given values — a nil aiProvider/aiModel is
+	// persisted as SQL NULL, clearing that column. Both parameters are
+	// final values to persist, not a "leave unchanged" sentinel: the
+	// usecase layer (RoomUsecase.UpdateSettings) is responsible for
+	// resolving its own nil/empty-string-sentinel/value request convention
+	// against the room's current values (via GetByID) before calling this
+	// method, so by the time UpdateAISettings runs there is nothing left
+	// for it to resolve. See UpdateDetails's GoDoc for why this touches
+	// only these two columns rather than routing through a full-row
+	// update. Returns ErrNotFound if the room does not exist.
+	UpdateAISettings(ctx context.Context, roomID string, aiProvider, aiModel *string) error
 
 	// Delete removes a room by ID. Returns ErrNotFound if not found.
 	Delete(ctx context.Context, id string) error
@@ -66,9 +98,14 @@ type RoomRepository interface {
 	// sets the new owner's room_members.role to RoleMaster, and sets the
 	// previous owner's (oldOwnerID) room_members.role to RoleAdmin, all
 	// within a single transaction so a room is never observed with zero or
-	// two masters. It returns domain.ErrNotFound if either the room or
-	// either membership row (oldOwnerID, newOwnerID) does not exist,
-	// rolling back any partial writes.
+	// two masters. The rooms.owner_id update is a compare-and-swap against
+	// oldOwnerID (not a blind write), guarding against two concurrent
+	// transfers for the same room racing on a stale oldOwnerID. It returns
+	// domain.ErrNotFound if the room does not exist, if oldOwnerID is no
+	// longer the current owner (a concurrent transfer already moved
+	// ownership, i.e. a stale-owner CAS conflict), or if either membership
+	// row (oldOwnerID, newOwnerID) does not exist, rolling back any partial
+	// writes.
 	TransferOwnership(ctx context.Context, roomID, oldOwnerID, newOwnerID string) error
 }
 

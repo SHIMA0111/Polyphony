@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useRef, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react"
 import { Box, Button, Spinner } from "@chakra-ui/react"
 import { ArrowDown } from "lucide-react"
 import type { Message } from "@/features/messages/types"
@@ -81,7 +81,7 @@ export function MessageList({
   // node via the `setContainerNode` callback ref below, so both hooks each
   // keep their own simple, independently-memoizable ref.
   const loadOlderRef = useRef<HTMLDivElement>(null)
-  useLoadOlderOnScroll({
+  const { triggerLoadOlder } = useLoadOlderOnScroll({
     containerRef: loadOlderRef,
     hasNextPage,
     isFetchingNextPage,
@@ -96,6 +96,24 @@ export function MessageList({
     },
     [containerRef],
   )
+
+  // If the currently-loaded page(s) don't fill the container's viewport at
+  // all, there is no scrollable area for the user to reach the top of, so
+  // `useLoadOlderOnScroll`'s `scroll` listener never fires and older
+  // history becomes permanently unreachable (e.g. a room whose first page
+  // of history is shorter than the viewport). Proactively keep loading
+  // older pages until the container is actually scrollable or history is
+  // exhausted. Keyed on `messages.length`/`pageCount` (not just mount) so
+  // this re-checks — and, if still unfilled, loads the next page in turn —
+  // every time a page lands, naturally looping page-by-page rather than
+  // requiring a manual loop here.
+  useEffect(() => {
+    const el = loadOlderRef.current
+    if (!el || !hasNextPage || isFetchingNextPage) return
+    if (el.scrollHeight > el.clientHeight) return
+
+    triggerLoadOlder()
+  }, [messages.length, pageCount, hasNextPage, isFetchingNextPage, triggerLoadOlder])
 
   // `groupMessagesForDisplay`'s "Today"/"Yesterday" day-separator labels
   // depend on wall-clock time and the runtime's local timezone/locale, both

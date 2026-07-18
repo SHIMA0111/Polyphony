@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -27,14 +28,27 @@ func TestNewRedisHubConstruction(t *testing.T) {
 }
 
 // TestRedisHubPublishNeverErrorsToCaller verifies RedisHub.Publish's
-// best-effort contract: given a client that cannot reach Redis (an
-// unroutable address with a short timeout), Publish must still return
-// promptly without panicking and without any error return value (it has
-// none, per the MessageHub interface), matching the "publishing never fails
-// the caller" guarantee documented on both InProcessHub and RedisHub.
+// best-effort contract: given a client that cannot reach Redis, Publish must
+// still return promptly without panicking and without any error return
+// value (it has none, per the MessageHub interface), matching the
+// "publishing never fails the caller" guarantee documented on both
+// InProcessHub and RedisHub.
+//
+// The unreachable address is obtained by asking the OS for a free
+// 127.0.0.1 port (net.Listen with port 0) and immediately closing that
+// listener, rather than a hardcoded port or a supposedly-unroutable IP
+// (e.g. a 10.x address): the freed port is guaranteed nothing is listening
+// on it, so the connection attempt fails immediately with ECONNREFUSED —
+// deterministic and fast — instead of depending on network-routability
+// assumptions that don't hold in every sandboxed/CI environment (some
+// route or firewall 10.x traffic differently, turning what's meant to be a
+// fast local refusal into a real multi-second timeout) and without risking
+// collision with a real service already bound to a fixed test port.
 func TestRedisHubPublishNeverErrorsToCaller(t *testing.T) {
+	addr := unusedTCPAddr(t)
+
 	client := redis.NewClient(&redis.Options{
-		Addr:        "10.255.255.1:1", // unroutable per RFC 5737-style test range; connection attempt fails fast via timeout
+		Addr:        addr,
 		DialTimeout: 100 * time.Millisecond,
 		MaxRetries:  -1, // disable go-redis's built-in retries so the test doesn't wait through several dial attempts
 	})
@@ -60,6 +74,28 @@ func TestRedisHubPublishNeverErrorsToCaller(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Publish did not return promptly against an unreachable Redis")
 	}
+}
+
+// unusedTCPAddr asks the OS for a free 127.0.0.1 TCP port by binding a
+// listener with port 0 and immediately closing it, returning the resulting
+// "127.0.0.1:<port>" address. Nothing else can bind that exact port in the
+// brief window before the caller connects (the OS won't hand it out again
+// immediately), so a connection attempt to it reliably fails fast with
+// ECONNREFUSED rather than depending on a hardcoded port (risking
+// collision with something else already listening) or an assumed-
+// unroutable address (risking an environment-dependent timeout instead of
+// an immediate refusal).
+func unusedTCPAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate a free TCP port: %v", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("failed to close probe listener: %v", err)
+	}
+	return addr
 }
 
 // TestContainsUserID exercises the containsUserID helper directly, since it

@@ -232,8 +232,11 @@ func (h *MessageHandler) UpdateExclude(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
 	}
+	if req.ExcludeFromAI == nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "exclude_from_ai is required"})
+	}
 
-	msg, err := h.usecase.SetExcludeFromAI(c.Request().Context(), userID, roomID, messageID, req.ExcludeFromAI)
+	msg, err := h.usecase.SetExcludeFromAI(c.Request().Context(), userID, roomID, messageID, *req.ExcludeFromAI)
 	if err != nil {
 		return handleMessageError(c, err)
 	}

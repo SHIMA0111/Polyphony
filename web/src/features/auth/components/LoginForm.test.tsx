@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import userEvent from "@testing-library/user-event"
 import { render, screen, waitFor } from "@/test/render"
 import { server } from "@/test/msw/server"
-import { makeLoginFlowUiWithError } from "@/features/auth/api/handlers"
+import { makeLoginFlowUi, makeLoginFlowUiWithError } from "@/features/auth/api/handlers"
 import { LoginForm } from "./LoginForm"
 
 const pushMock = vi.fn()
@@ -79,5 +79,45 @@ describe("LoginForm", () => {
       expect(screen.getByRole("status")).toHaveTextContent("Sign in failed"),
     )
     expect(pushMock).not.toHaveBeenCalled()
+  })
+
+  // --- HEAD-only item 2: flow-fetch failure must not strand the user on a
+  // permanently disabled form with no feedback ---
+
+  it("shows a retry-able error state when the login flow fails to load, and recovers once the retry succeeds", async () => {
+    server.use(
+      http.get("/api/kratos/self-service/login/browser", () => {
+        return HttpResponse.json({ error: "boom" }, { status: 500 })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<LoginForm />)
+
+    expect(
+      await screen.findByText("Couldn't load the sign-in form"),
+    ).toBeInTheDocument()
+    // The form fields must not render at all while the flow failed to load
+    // -- there is nothing to submit against.
+    expect(
+      screen.queryByPlaceholderText("you@example.com"),
+    ).not.toBeInTheDocument()
+
+    const retryButton = screen.getByRole("button", { name: "Try again" })
+
+    // The next GET (the retry) succeeds via the default MSW handler.
+    server.use(
+      http.get("/api/kratos/self-service/login/browser", () => {
+        return HttpResponse.json({ ui: makeLoginFlowUi() })
+      }),
+    )
+    await user.click(retryButton)
+
+    expect(
+      await screen.findByPlaceholderText("you@example.com"),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText("Couldn't load the sign-in form"),
+    ).not.toBeInTheDocument()
   })
 })

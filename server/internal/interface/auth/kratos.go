@@ -243,7 +243,7 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 // knows about an identity that this app's database has not (yet) mirrored
 // to that identity.
 //
-// A missing link is resolved in one of two ways, tried in order:
+// A missing link is resolved in one of three ways, tried in order:
 //  1. Relink by traits: if a local users row already exists with this
 //     identity's email (e.g. a pre-Kratos-migration SimpleJWT account not
 //     yet backfilled by cmd/kratosmigrate, or a row created by Register but
@@ -254,9 +254,21 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 //     that already exists in users would fail on the column's unique
 //     constraint (domain.ErrEmailAlreadyExists), turning a self-heal
 //     opportunity into a permanent login failure for that account.
-//  2. Create: only if no local row exists for this email at all (e.g. an
+//  2. Create: if no local row exists for this email at all (e.g. an
 //     identity created directly via the Kratos Admin API for a brand-new
 //     user) is a new row created and linked.
+//  3. Concurrent-first-login race recovery: two callers can both reach step 2
+//     for the same brand-new identity at once (e.g. two requests racing in on
+//     a session that was only just established) -- both saw GetByEmail return
+//     domain.ErrNotFound, so both attempt Create, and exactly one wins; the
+//     loser's Create fails with domain.ErrEmailAlreadyExists or
+//     domain.ErrUsernameAlreadyExists. Rather than surfacing that as a login
+//     failure, the loser retries GetByKratosIdentityID once: the winner has
+//     very likely already called SetKratosIdentityID for the same
+//     identity.ID by then, so the retry resolves to the same single row both
+//     callers were trying to create. If the retry still comes back
+//     domain.ErrNotFound (a genuine collision on a *different* pre-existing
+//     account, not this race), the original Create error is returned as-is.
 //
 // This is the single shared implementation Login and ValidateToken both
 // rely on so neither path can silently diverge from the other.
@@ -293,6 +305,13 @@ func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identity kratos
 		UpdatedAt:        now,
 	}
 	if err := s.userRepo.Create(ctx, u); err != nil {
+		if errors.Is(err, domain.ErrEmailAlreadyExists) || errors.Is(err, domain.ErrUsernameAlreadyExists) {
+			if winner, retryErr := s.userRepo.GetByKratosIdentityID(ctx, identityID); retryErr == nil {
+				return winner, nil
+			} else if !errors.Is(retryErr, domain.ErrNotFound) {
+				return nil, retryErr
+			}
+		}
 		return nil, err
 	}
 	if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {

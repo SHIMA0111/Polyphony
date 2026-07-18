@@ -323,6 +323,31 @@ mod tests {
         assert!(service.readiness().is_ok());
     }
 
+    /// Post-review fix (Step 7): `main` used to construct and register all
+    /// three providers unconditionally, so `/ready` (this method) could
+    /// never succeed unless every provider's API key was set. `main` now
+    /// only registers a provider when its key env var is present, so a
+    /// gateway configured with only a subset of providers registers only
+    /// that subset — this proves `readiness()` itself has always correctly
+    /// judged "ready" purely by the *registered* provider set, confirming
+    /// the fix's premise (that gating registration in `main`, not touching
+    /// this method, is the correct place for the fix) still holds when only
+    /// one of several possible providers is registered.
+    #[tokio::test]
+    async fn test_readiness_ok_with_only_a_subset_of_providers_registered() {
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("anthropic", vec!["claude-opus-4"]))],
+            Arc::new(StubKeyStore),
+        );
+
+        assert!(service.readiness().is_ok());
+        // list_models must also reflect only the registered subset, not
+        // silently include openai/gemini.
+        let models = service.list_models().await;
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].provider, "anthropic");
+    }
+
     #[test]
     fn test_readiness_fails_when_key_missing() {
         struct MissingKeyStore;

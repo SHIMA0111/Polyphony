@@ -313,3 +313,39 @@ describe("MessageInput private mode toggle", () => {
     ).not.toBeInTheDocument()
   })
 })
+
+/**
+ * Step 34's review fix: "Send with AI" must have its own disabled condition
+ * that also accounts for there being no model to send to — sharing the
+ * plain-send button's `isDisabled` alone would let it render clickable (and
+ * silently no-op via `handleSendAI`'s own `!effectiveModel` guard) whenever
+ * `models` is empty, e.g. before the model list has loaded or in a room
+ * with no configured models.
+ */
+describe("MessageInput AI-send button model gating", () => {
+  it("disables 'Send with AI' when there is text but no model available", async () => {
+    const user = userEvent.setup()
+    render(<MessageInput roomId="room-1" {...noopHandlers} models={[]} />)
+
+    await user.type(
+      screen.getByPlaceholderText("Ask me anything..."),
+      "Hello with no model",
+    )
+
+    expect(screen.getByRole("button", { name: "Send with AI" })).toBeDisabled()
+  })
+
+  it("enables 'Send with AI' once a model is available", async () => {
+    const user = userEvent.setup()
+    render(<MessageInput roomId="room-1" {...noopHandlers} models={models} />)
+
+    await user.type(
+      screen.getByPlaceholderText("Ask me anything..."),
+      "Hello with a model",
+    )
+
+    expect(
+      screen.getByRole("button", { name: "Send with AI" }),
+    ).not.toBeDisabled()
+  })
+})

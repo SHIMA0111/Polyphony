@@ -178,6 +178,14 @@ export function MessageBubble({
       align={message.type === "human" ? "flex-end" : "flex-start"}
       gap={1}
       role="group"
+      // Stable per-message anchor point for `use-load-older-on-scroll.ts`'s
+      // element-based scroll anchoring: it locates the topmost visible
+      // message by this attribute before an older page fetch, then restores
+      // that exact element's on-screen offset once the new page lands,
+      // rather than relying purely on scrollHeight-delta math (which
+      // over-adjusts when content also changes at the bottom during the
+      // fetch — e.g. a live message arriving mid-fetch).
+      data-message-id={message.id}
     >
       <Box
         display="inline-block"

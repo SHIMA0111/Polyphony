@@ -371,6 +371,14 @@ func Load() (*Config, error) {
 	llmGatewayGRPCMaxRetries := defaultLLMGatewayGRPCMaxRetries
 	if v := os.Getenv("LLM_GATEWAY_GRPC_MAX_RETRIES"); v != "" {
 		n, err := strconv.Atoi(v)
+		// A negative value parses successfully as an int but is not a valid
+		// retry count (GRPCClient.callWithRetry only guards maxRetries < 1 by
+		// clamping to 1, so a negative value would silently behave like 1
+		// attempt with no indication anything was wrong) — treat it the same
+		// as a parse failure: warn and keep the default.
+		if err == nil && n < 0 {
+			err = fmt.Errorf("must be non-negative, got %d", n)
+		}
 		if err != nil {
 			slog.Default().Warn("invalid LLM_GATEWAY_GRPC_MAX_RETRIES, using default",
 				"value", v, "default", defaultLLMGatewayGRPCMaxRetries, "error", err)

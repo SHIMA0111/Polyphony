@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm, useWatch } from "react-hook-form"
 import { useQuery } from "@tanstack/react-query"
 import { Button, Card, Field, Flex, Heading, Input, Text } from "@chakra-ui/react"
-import { Pen } from "lucide-react"
+import { AlertTriangle, Pen } from "lucide-react"
 import { PasswordInput, PasswordStrengthMeter } from "@/components/ui/password-input"
 import { toaster } from "@/components/ui/toaster"
 import { getErrorMessage } from "@/lib/get-error-message"
@@ -131,114 +131,164 @@ export function RegisterForm() {
           </Card.Description>
         </Card.Header>
         <Card.Body>
-          <form onSubmit={onSubmit} noValidate>
-            <Flex direction="column" gap={4}>
-              <Field.Root invalid={!!errors.email || emailMessages.length > 0}>
-                <Field.Label>Email</Field.Label>
-                <Input
-                  type="email"
-                  placeholder="you@example.com"
-                  {...register("email")}
-                />
-                {errors.email && (
-                  <Field.ErrorText role="alert">
-                    {errors.email.message}
-                  </Field.ErrorText>
-                )}
-                {!errors.email &&
-                  emailMessages.map((message) => (
-                    <Field.ErrorText role="alert" key={message}>
-                      {message}
-                    </Field.ErrorText>
-                  ))}
-              </Field.Root>
-              <Field.Root invalid={!!errors.username || usernameMessages.length > 0}>
-                <Field.Label>Username</Field.Label>
-                <Input
-                  type="text"
-                  placeholder="johndoe"
-                  {...register("username")}
-                />
-                {errors.username && (
-                  <Field.ErrorText role="alert">
-                    {errors.username.message}
-                  </Field.ErrorText>
-                )}
-                {!errors.username &&
-                  usernameMessages.map((message) => (
-                    <Field.ErrorText role="alert" key={message}>
-                      {message}
-                    </Field.ErrorText>
-                  ))}
-              </Field.Root>
-              <Field.Root invalid={!!errors.password || passwordMessages.length > 0}>
-                <Field.Label>Password</Field.Label>
-                <PasswordInput
-                  placeholder="Create a password"
-                  {...register("password")}
-                />
-                {errors.password && (
-                  <Field.ErrorText role="alert">
-                    {errors.password.message}
-                  </Field.ErrorText>
-                )}
-                {!errors.password &&
-                  passwordMessages.map((message) => (
-                    <Field.ErrorText role="alert" key={message}>
-                      {message}
-                    </Field.ErrorText>
-                  ))}
-                {password.length > 0 && (
-                  <PasswordStrengthMeter
-                    mt={2}
-                    value={getPasswordStrength(password)}
-                  />
-                )}
-              </Field.Root>
-              <Field.Root invalid={!!errors.confirmPassword}>
-                <Field.Label>Confirm Password</Field.Label>
-                <PasswordInput
-                  placeholder="Confirm your password"
-                  {...register("confirmPassword")}
-                />
-                {errors.confirmPassword && (
-                  <Field.ErrorText role="alert">
-                    {errors.confirmPassword.message}
-                  </Field.ErrorText>
-                )}
-              </Field.Root>
-              <Button
-                type="submit"
-                colorPalette="blue"
-                size="lg"
-                w="full"
-                // Disabled until the Kratos registration flow has loaded:
-                // onSubmit silently no-ops while `flow` is null, so a click
-                // in that window would otherwise be dropped without any
-                // feedback (caught live by the wave-7 integration run as
-                // registrations stuck on /register under load).
-                disabled={!flow}
-                loading={registerMutation.isPending}
-                loadingText="Creating account..."
+          {flowQuery.isError ? (
+            // The Kratos registration flow failed to load at all: `flow`
+            // will never become non-null on its own, so the form below
+            // would otherwise render permanently disabled
+            // (`disabled={!flow}`) with no explanation and no way to
+            // recover short of a full page reload. Surface a retry
+            // affordance instead, matching RoomList's isError error-surface
+            // style.
+            <Flex
+              direction="column"
+              align="center"
+              justify="center"
+              py={8}
+              textAlign="center"
+              gap={3}
+            >
+              <Flex
+                h={12}
+                w={12}
+                rounded="full"
+                bg="bg.subtle"
+                align="center"
+                justify="center"
               >
-                Create account
+                <AlertTriangle
+                  size={24}
+                  color="var(--chakra-colors-fg-error)"
+                />
+              </Flex>
+              <Heading size="sm">
+                Couldn&apos;t load the registration form
+              </Heading>
+              <Text color="fg.muted" fontSize="sm" maxW="xs">
+                {getErrorMessage(
+                  flowQuery.error,
+                  "Something went wrong while preparing the registration form.",
+                )}
+              </Text>
+              <Button
+                variant="outline"
+                onClick={() => flowQuery.refetch()}
+                loading={flowQuery.isFetching}
+              >
+                Try again
               </Button>
             </Flex>
-          </form>
-          {flow && <SocialLoginButtons flow={flow} />}
-          <Text mt={6} textAlign="center" fontSize="sm" color="fg.muted">
-            Already have an account?{" "}
-            <Link href="/login">
-              <Text
-                as="span"
-                color="blue.500"
-                fontWeight="medium"
-                _hover={{ textDecoration: "underline" }}
-              >
-                Sign in
+          ) : (
+            <>
+              <form onSubmit={onSubmit} noValidate>
+                <Flex direction="column" gap={4}>
+                  <Field.Root invalid={!!errors.email || emailMessages.length > 0}>
+                    <Field.Label>Email</Field.Label>
+                    <Input
+                      type="email"
+                      placeholder="you@example.com"
+                      {...register("email")}
+                    />
+                    {errors.email && (
+                      <Field.ErrorText role="alert">
+                        {errors.email.message}
+                      </Field.ErrorText>
+                    )}
+                    {!errors.email &&
+                      emailMessages.map((message) => (
+                        <Field.ErrorText role="alert" key={message}>
+                          {message}
+                        </Field.ErrorText>
+                      ))}
+                  </Field.Root>
+                  <Field.Root invalid={!!errors.username || usernameMessages.length > 0}>
+                    <Field.Label>Username</Field.Label>
+                    <Input
+                      type="text"
+                      placeholder="johndoe"
+                      {...register("username")}
+                    />
+                    {errors.username && (
+                      <Field.ErrorText role="alert">
+                        {errors.username.message}
+                      </Field.ErrorText>
+                    )}
+                    {!errors.username &&
+                      usernameMessages.map((message) => (
+                        <Field.ErrorText role="alert" key={message}>
+                          {message}
+                        </Field.ErrorText>
+                      ))}
+                  </Field.Root>
+                  <Field.Root invalid={!!errors.password || passwordMessages.length > 0}>
+                    <Field.Label>Password</Field.Label>
+                    <PasswordInput
+                      placeholder="Create a password"
+                      {...register("password")}
+                    />
+                    {errors.password && (
+                      <Field.ErrorText role="alert">
+                        {errors.password.message}
+                      </Field.ErrorText>
+                    )}
+                    {!errors.password &&
+                      passwordMessages.map((message) => (
+                        <Field.ErrorText role="alert" key={message}>
+                          {message}
+                        </Field.ErrorText>
+                      ))}
+                    {password.length > 0 && (
+                      <PasswordStrengthMeter
+                        mt={2}
+                        value={getPasswordStrength(password)}
+                      />
+                    )}
+                  </Field.Root>
+                  <Field.Root invalid={!!errors.confirmPassword}>
+                    <Field.Label>Confirm Password</Field.Label>
+                    <PasswordInput
+                      placeholder="Confirm your password"
+                      {...register("confirmPassword")}
+                    />
+                    {errors.confirmPassword && (
+                      <Field.ErrorText role="alert">
+                        {errors.confirmPassword.message}
+                      </Field.ErrorText>
+                    )}
+                  </Field.Root>
+                  <Button
+                    type="submit"
+                    colorPalette="blue"
+                    size="lg"
+                    w="full"
+                    // Disabled until the Kratos registration flow has loaded:
+                    // onSubmit silently no-ops while `flow` is null, so a click
+                    // in that window would otherwise be dropped without any
+                    // feedback (caught live by the wave-7 integration run as
+                    // registrations stuck on /register under load).
+                    disabled={!flow}
+                    loading={registerMutation.isPending}
+                    loadingText="Creating account..."
+                  >
+                    Create account
+                  </Button>
+                </Flex>
+              </form>
+              {flow && <SocialLoginButtons flow={flow} />}
+              <Text mt={6} textAlign="center" fontSize="sm" color="fg.muted">
+                Already have an account?{" "}
+                <Link href="/login">
+                  <Text
+                    as="span"
+                    color="blue.500"
+                    fontWeight="medium"
+                    _hover={{ textDecoration: "underline" }}
+                  >
+                    Sign in
+                  </Text>
+                </Link>
               </Text>
-            </Link>
-          </Text>
+            </>
+          )}
         </Card.Body>
       </Card.Root>
     </Flex>

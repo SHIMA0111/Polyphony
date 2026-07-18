@@ -451,6 +451,31 @@ func TestChangeMemberRoleOwnerProtected(t *testing.T) {
 	}
 }
 
+// TestChangeMemberRoleRejectsGrantingMaster asserts ChangeMemberRole rejects
+// newRole == domainroom.RoleMaster as defense in depth, even though the
+// handler layer already rejects it with HTTP 400 before ever calling the
+// usecase (Step 25's review fix): granting master to a non-owner member
+// through this endpoint would leave the room with two masters instead of
+// going through TransferOwnership.
+func TestChangeMemberRoleRejectsGrantingMaster(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleAdmin,
+	})
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m3", RoomID: rwr.Room.ID, UserID: "user-3", Role: domainroom.RoleMember,
+	})
+
+	_, err := uc.ChangeMemberRole(ctx, "user-2", rwr.Room.ID, "user-3", domainroom.RoleMaster)
+	if !errors.Is(err, domainroom.ErrOwnerRoleProtected) {
+		t.Fatalf("expected ErrOwnerRoleProtected, got %v", err)
+	}
+}
+
 func TestTransferOwnershipSucceeds(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
@@ -483,6 +508,44 @@ func TestTransferOwnershipSucceeds(t *testing.T) {
 	}
 	if oldOwnerMember.Role != domainroom.RoleAdmin {
 		t.Fatalf("expected old owner role admin, got %s", oldOwnerMember.Role)
+	}
+}
+
+// TestTransferOwnershipRejectsStaleOwner (Step 27's review fix) exercises
+// mocks.RoomRepo.TransferOwnership's compare-and-swap directly at the
+// repository level: a second call passing the original (now-stale)
+// oldOwnerID after a first transfer already succeeded must be rejected with
+// domain.ErrNotFound, mirroring postgres.RoomRepository.TransferOwnership's
+// `WHERE id = ... AND owner_id = ...` guard.
+func TestTransferOwnershipRejectsStaleOwner(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m2", RoomID: rwr.Room.ID, UserID: "user-2", Role: domainroom.RoleMember,
+	})
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m3", RoomID: rwr.Room.ID, UserID: "user-3", Role: domainroom.RoleMember,
+	})
+
+	if err := repo.TransferOwnership(ctx, rwr.Room.ID, "user-1", "user-2"); err != nil {
+		t.Fatalf("first TransferOwnership failed: %v", err)
+	}
+
+	// A second call using the now-stale original owner ID must be rejected.
+	err := repo.TransferOwnership(ctx, rwr.Room.ID, "user-1", "user-3")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound for a stale-owner CAS, got %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, rwr.Room.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.OwnerID != "user-2" {
+		t.Fatalf("expected owner_id to remain user-2 after the rejected stale CAS, got %s", got.OwnerID)
 	}
 }
 

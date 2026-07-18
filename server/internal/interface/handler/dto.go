@@ -178,8 +178,14 @@ type RegenerateAIMessageRequest struct {
 
 // UpdateMessageExcludeRequest is the request body for
 // PATCH /rooms/:roomId/messages/:messageId.
+//
+// ExcludeFromAI is a *bool, not bool: a bare bool would make an omitted
+// field indistinguishable from an explicit `false`, which would silently
+// un-exclude a message on any request that forgot to set the field (e.g. a
+// client sending `{}`). MessageHandler.UpdateExclude rejects a nil
+// ExcludeFromAI with HTTP 400 rather than defaulting it.
 type UpdateMessageExcludeRequest struct {
-	ExcludeFromAI bool `json:"exclude_from_ai"`
+	ExcludeFromAI *bool `json:"exclude_from_ai"`
 }
 
 // MessageResponse is the JSON response representation of a single message.

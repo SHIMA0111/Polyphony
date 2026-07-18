@@ -461,6 +461,26 @@ func TestLoadLLMGatewayGRPCMaxRetriesInvalidFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestLoadLLMGatewayGRPCMaxRetriesNegativeFallsBackToDefault is the review
+// fix for a negative retry count parsing successfully via strconv.Atoi (it
+// is a valid integer, just not a valid retry count) and then misbehaving —
+// GRPCClient.callWithRetry only clamps maxRetries < 1 up to 1, so a
+// negative value would silently behave like "retry disabled" with no
+// warning logged. A negative value must now be treated the same as a parse
+// failure: warn and keep the default.
+func TestLoadLLMGatewayGRPCMaxRetriesNegativeFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("LLM_GATEWAY_GRPC_MAX_RETRIES", "-1")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on a negative retry count, got: %v", err)
+	}
+	if cfg.LLMGatewayGRPCMaxRetries != 3 {
+		t.Errorf("expected fallback to default LLMGatewayGRPCMaxRetries 3, got %d", cfg.LLMGatewayGRPCMaxRetries)
+	}
+}
+
 func TestLoadLLMGatewayGRPCBaseBackoffInvalidFallsBackToDefault(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("LLM_GATEWAY_GRPC_BASE_BACKOFF", "not-a-duration")

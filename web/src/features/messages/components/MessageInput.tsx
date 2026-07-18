@@ -316,7 +316,13 @@ export function MessageInput({
   }
 
   const isDisabled = !input.trim() || isSending || disabled || hasUploadingAttachment
-  const isSendWithAIDisabled = isDisabled || visionGated
+  // Unlike the plain-send button, the AI-send button also needs a model to
+  // invoke — `isDisabled` alone doesn't check for one, since plain send has
+  // no such requirement. Without this, a room with no models configured (or
+  // between mount and `models` loading) would render the AI-send button
+  // clickable and let `handleSendAI` below silently no-op on its own
+  // `!effectiveModel` early return.
+  const isSendWithAIDisabled = isDisabled || visionGated || !effectiveModel
 
   return (
     <Box bg="bg/80" backdropFilter="blur(8px)" pb={4} pt={2}>
