@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import Link from "next/link"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm, useWatch } from "react-hook-form"
@@ -41,12 +41,16 @@ export function RegisterForm() {
   // treated as new query data (which `staleTime: 0` would otherwise
   // immediately refetch away).
   const [flow, setFlow] = useState<UiContainer | null>(null)
-
-  useEffect(() => {
-    if (flowQuery.data) {
-      setFlow(flowQuery.data)
-    }
-  }, [flowQuery.data])
+  // Adopt freshly fetched flow data during render (React's "adjust state
+  // while rendering" pattern, same as LoginForm/MessageInput) rather than
+  // in a `useEffect`-that-calls-`setState` -- exactly once per actual data
+  // change, without clobbering an error flow a failed submission swapped in
+  // via `setFlow(result.flow)`.
+  const [lastQueryFlow, setLastQueryFlow] = useState<UiContainer | null>(null)
+  if (flowQuery.data && flowQuery.data !== lastQueryFlow) {
+    setLastQueryFlow(flowQuery.data)
+    setFlow(flowQuery.data)
+  }
 
   const {
     register,
