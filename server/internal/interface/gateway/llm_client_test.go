@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -149,5 +150,160 @@ func TestLLMClientListModelsFlattensMetadata(t *testing.T) {
 	want1 := ai.ModelInfo{ID: "claude-opus", Name: "Claude Opus", Provider: "anthropic"}
 	if models[1] != want1 {
 		t.Errorf("unexpected model[1] (absent optional fields should flatten to zero values): got %+v, want %+v", models[1], want1)
+	}
+}
+
+// TestLLMClientCompleteTextOnlyMessageMarshalsPlainStringContent asserts that
+// a text-only ai.ChatMessage (no Parts) still marshals `content` as a bare
+// JSON string, matching the LLM Gateway's backward-compatible REST contract
+// (this is a regression check: a naive migration to a multimodal-capable
+// content shape could accidentally start wrapping every message in a
+// single-element array).
+func TestLLMClientCompleteTextOnlyMessageMarshalsPlainStringContent(t *testing.T) {
+	var capturedBody completionReqDTO
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		// Decode into a generic map first so the test can assert the raw JSON
+		// shape of `content` (string, not array) before also decoding into
+		// completionReqDTO for field-level assertions.
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Fatalf("failed to decode raw request body: %v", err)
+		}
+		messages, _ := raw["messages"].([]any)
+		if len(messages) != 1 {
+			t.Fatalf("expected 1 message in raw body, got %+v", raw["messages"])
+		}
+		msg, _ := messages[0].(map[string]any)
+		if _, ok := msg["content"].(string); !ok {
+			t.Fatalf("expected content to be a plain JSON string, got %+v (%T)", msg["content"], msg["content"])
+		}
+
+		if err := json.Unmarshal(body, &capturedBody); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(completionRespDTO{
+			Model: "gpt-5.2",
+			Choices: []choiceDTO{
+				{Message: chatMsgDTO{Role: "assistant", Content: "hi there"}},
+			},
+			Usage: usageDTO{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		})
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	req := &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hello world"}},
+	}
+
+	resp, err := client.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+
+	if len(capturedBody.Messages) != 1 || capturedBody.Messages[0].Content != "hello world" {
+		t.Fatalf("expected marshalled content to be the plain string hello world, got %+v", capturedBody.Messages)
+	}
+	if resp.Content != "hi there" {
+		t.Fatalf("expected decoded content %q, got %q", "hi there", resp.Content)
+	}
+}
+
+// TestLLMClientCompleteImagePartsMessageMarshalsContentPartsArray asserts
+// that an ai.ChatMessage with Parts marshals `content` as an array of typed
+// content-part objects matching the LLM Gateway's ContentPartDto shape
+// (llm-gateway/src/adapters/inbound/rest/request.rs): a text part, an
+// image_url part, and an image_base64 part.
+func TestLLMClientCompleteImagePartsMessageMarshalsContentPartsArray(t *testing.T) {
+	var capturedRaw map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		if err := json.Unmarshal(body, &capturedRaw); err != nil {
+			t.Fatalf("failed to decode raw request body: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(completionRespDTO{
+			Model: "gpt-5.2",
+			Choices: []choiceDTO{
+				{Message: chatMsgDTO{Role: "assistant", Content: "it's a cat"}},
+			},
+			Usage: usageDTO{PromptTokens: 10, CompletionTokens: 3, TotalTokens: 13},
+		})
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	req := &ai.CompletionRequest{
+		Model: "gpt-5.2",
+		Messages: []ai.ChatMessage{
+			{
+				Role: "user",
+				Parts: []ai.ContentPart{
+					{Type: ai.ContentPartTypeText, Text: "what is this?"},
+					{Type: ai.ContentPartTypeImageURL, ImageURL: "https://example.com/cat.png"},
+					{
+						Type: ai.ContentPartTypeImageBase64,
+						ImageBase64: &ai.ImageBase64Data{
+							MediaType: "image/png",
+							Data:      "abcd",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := client.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if resp.Content != "it's a cat" {
+		t.Fatalf("expected decoded content %q, got %q", "it's a cat", resp.Content)
+	}
+
+	messages, _ := capturedRaw["messages"].([]any)
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message in raw body, got %+v", capturedRaw["messages"])
+	}
+	msg, _ := messages[0].(map[string]any)
+	parts, ok := msg["content"].([]any)
+	if !ok || len(parts) != 3 {
+		t.Fatalf("expected content to be a 3-element array, got %+v (%T)", msg["content"], msg["content"])
+	}
+
+	textPart, _ := parts[0].(map[string]any)
+	if textPart["type"] != "text" || textPart["text"] != "what is this?" {
+		t.Fatalf("unexpected text part: %+v", textPart)
+	}
+
+	imageURLPart, _ := parts[1].(map[string]any)
+	if imageURLPart["type"] != "image_url" {
+		t.Fatalf("unexpected image_url part: %+v", imageURLPart)
+	}
+	nestedImageURL, _ := imageURLPart["image_url"].(map[string]any)
+	if nestedImageURL["url"] != "https://example.com/cat.png" {
+		t.Fatalf("unexpected nested image_url object: %+v", nestedImageURL)
+	}
+
+	imageBase64Part, _ := parts[2].(map[string]any)
+	if imageBase64Part["type"] != "image_base64" ||
+		imageBase64Part["media_type"] != "image/png" ||
+		imageBase64Part["data"] != "abcd" {
+		t.Fatalf("unexpected image_base64 part: %+v", imageBase64Part)
 	}
 }

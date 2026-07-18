@@ -60,16 +60,7 @@ func (b *DefaultContextBuilder) Build(msgs []*message.Message, cutoff *time.Time
 	chatMsgs := make([]ChatMessage, 0, len(msgs))
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
-		if m.IsDeleted {
-			continue
-		}
-		if m.ExcludeFromAI {
-			continue
-		}
-		if m.Status == message.MessageStatusFailed {
-			continue
-		}
-		if cutoff != nil && m.CreatedAt.Before(*cutoff) {
+		if !IsEligibleForContext(m, cutoff) {
 			continue
 		}
 		role := "user"
@@ -79,4 +70,32 @@ func (b *DefaultContextBuilder) Build(msgs []*message.Message, cutoff *time.Time
 		chatMsgs = append(chatMsgs, ChatMessage{Role: role, Content: m.Content})
 	}
 	return chatMsgs
+}
+
+// IsEligibleForContext reports whether m passes ContextBuilder's exclusion rules (see
+// the ContextBuilder doc comment for the exact list): not soft-deleted, not
+// exclude_from_ai, not a failed AI placeholder, and not before cutoff.
+//
+// It is exported so callers that need to correlate DefaultContextBuilder.Build's
+// output back to its source messages can reproduce the exact same filter without
+// duplicating its logic. In particular, Build's signature is frozen (it returns
+// []ChatMessage, not the source []*message.Message, so there is no message ID on the
+// output to correlate by): usecase/message's attachment-enrichment step (Step 39)
+// calls IsEligibleForContext itself, in the same iteration order Build uses, to
+// rebuild the parallel []*message.Message slice it needs to look up attachments per
+// ChatMessage entry.
+func IsEligibleForContext(m *message.Message, cutoff *time.Time) bool {
+	if m.IsDeleted {
+		return false
+	}
+	if m.ExcludeFromAI {
+		return false
+	}
+	if m.Status == message.MessageStatusFailed {
+		return false
+	}
+	if cutoff != nil && m.CreatedAt.Before(*cutoff) {
+		return false
+	}
+	return true
 }

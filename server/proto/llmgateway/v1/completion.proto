@@ -7,8 +7,9 @@ syntax = "proto3";
 // endpoint (`llm-gateway/src/adapters/inbound/rest/`); both transports share the same
 // domain service (`CompletionUseCase`) and must stay semantically identical.
 //
-// Streaming completions and multimodal (Vision) message content are explicitly out of
-// scope for this contract version — see `docs/tasks/step19.md` for the rationale.
+// Streaming completions are explicitly out of scope for this contract version — see
+// `docs/tasks/step19.md` for the rationale. Multimodal (Vision) message content was
+// added in Step 39 via `ChatMessage.content`'s `text`/`parts` oneof (see below).
 package polyphony.llmgateway.v1;
 
 option go_package = "github.com/SHIMA0111/multi-user-ai/server/internal/interface/gateway/grpc/llmgatewaypb;llmgatewaypb";
@@ -28,13 +29,47 @@ enum ChatRole {
   CHAT_ROLE_TOOL = 4;
 }
 
+// A single part of a multimodal message's content, mirroring the domain `ContentPart`
+// enum (`llm-gateway/src/domain/model.rs`) and the REST `ContentPartDto` union
+// (`llm-gateway/src/adapters/inbound/rest/request.rs`).
+message ContentPart {
+  oneof part {
+    // A plain text segment.
+    string text = 1;
+    // A reference to an image by URL.
+    string image_url = 2;
+    // An inline base64-encoded image.
+    ImageBase64Data image_base64 = 3;
+  }
+}
+
+// An inline base64-encoded image, referenced by `ContentPart.image_base64`.
+message ImageBase64Data {
+  // MIME type of the image (e.g. "image/png").
+  string media_type = 1;
+  // Base64-encoded image bytes.
+  string data = 2;
+}
+
+// A sequence of content parts (text mixed with images), referenced by
+// `ChatMessage.content`'s `parts` oneof member.
+message ContentParts {
+  repeated ContentPart parts = 1;
+}
+
 // A single chat message.
 //
-// `content` is plain text only. Multimodal content parts (images) are not represented
-// in this contract version; see the file-level comment.
+// `content` is a oneof: `text` (field 2) is the original plain-text shape and is
+// wire-compatible with the pre-Step-39 `string content = 2` field it replaces (same
+// field number, same wire type); `parts` (field 3) carries multimodal (Vision)
+// content, added in Step 39. Exactly one of `text`/`parts` is set on any message
+// this contract produces or expects.
 message ChatMessage {
   ChatRole role = 1;
-  string content = 2;
+  oneof content {
+    string text = 2;
+    ContentParts parts = 3;
+  }
 }
 
 // A chat completion request.

@@ -280,7 +280,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	authUC := authusecase.NewAuthUsecase(authService)
 	roomUC := roomusecase.NewRoomUsecase(roomRepo)
 	billingUC := billingusecase.NewBillingUsecase(billingRepo, roomRepo)
-	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub, billingUC, cfg.DefaultAIModel)
+	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub, billingUC, attachmentRepo, objectStorage, cfg.DefaultAIModel)
 	userUC := userusecase.NewUserUsecase(userRepo)
 	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
 	modelUC := modelusecase.NewModelUsecase(llmGateway)

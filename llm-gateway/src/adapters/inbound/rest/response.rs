@@ -2,6 +2,8 @@ use serde::Serialize;
 
 use crate::domain::model::{CompletionResponse, ModelInfo, ModelPricing, TokenEstimateResponse};
 
+use super::request::ContentDto;
+
 /// Completion response DTO for the REST API.
 #[derive(Serialize)]
 pub struct CompletionResponseDto {
@@ -20,10 +22,17 @@ pub struct ChoiceDto {
 }
 
 /// Message DTO for the REST API.
+///
+/// `content` uses the same `ContentDto` shape as the inbound request DTO (see
+/// `adapters::inbound::rest::request::ContentDto`): a completion response's message is
+/// almost always plain text today (no provider adapter yet echoes image content back),
+/// but reusing the same untagged enum keeps the response contract forward-compatible
+/// with a future provider that does, and serializes today's plain-text case as an
+/// unchanged bare JSON string.
 #[derive(Serialize)]
 pub struct MessageDto {
     pub role: String,
-    pub content: String,
+    pub content: ContentDto,
 }
 
 /// Token usage DTO for the REST API.
@@ -46,7 +55,7 @@ impl From<CompletionResponse> for CompletionResponseDto {
                     index: c.index,
                     message: MessageDto {
                         role: c.message.role.as_str().to_string(),
-                        content: c.message.content.as_text(),
+                        content: c.message.content.into(),
                     },
                     finish_reason: c.finish_reason,
                 })

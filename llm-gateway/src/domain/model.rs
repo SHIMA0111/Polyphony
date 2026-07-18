@@ -61,12 +61,10 @@ impl Role {
 
 /// A single part of a multimodal message's content.
 ///
-/// `ImageUrl`/`ImageBase64` are not yet consumed anywhere (Vision support lands in a
-/// later phase); they exist now so `MessageContent` can represent them without another
-/// domain rewrite when that phase arrives.
-// Only constructed in tests today — allowed dead code until a later Vision step
-// starts producing these variants from real request/response parsing.
-#[allow(dead_code)]
+/// `ImageUrl`/`ImageBase64` are produced from the REST/gRPC inbound Vision content-part
+/// DTOs (`adapters::inbound::rest::request::ContentPartDto`, the gRPC `ChatMessage`
+/// content oneof) and consumed by each outbound provider adapter's `request.rs` (Step
+/// 39), which maps them into that provider's own Vision request shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentPart {
     /// A plain text segment.
@@ -84,16 +82,13 @@ pub enum ContentPart {
 
 /// Content of a chat message.
 ///
-/// Most messages today are plain text (`Text`); `Parts` is provided so future Vision
-/// input can be represented without changing `ChatMessage`'s shape again.
+/// Most messages today are plain text (`Text`); `Parts` represents multimodal (Vision)
+/// content built from one or more `ContentPart`s (see `ContentPart`'s doc comment).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageContent {
     /// Plain text content.
     Text(String),
     /// A sequence of content parts (text mixed with images).
-    // Only constructed in tests today — allowed dead code until a later Vision step
-    // starts producing this variant from real request parsing.
-    #[allow(dead_code)]
     Parts(Vec<ContentPart>),
 }
 
