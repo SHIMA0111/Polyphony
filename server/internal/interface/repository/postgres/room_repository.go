@@ -168,13 +168,21 @@ func (r *RoomRepository) UpdateAIContextCutoff(ctx context.Context, roomID strin
 }
 
 // UpdateAISettings implements room.RoomRepository.UpdateAISettings: a
-// narrow UPDATE touching only ai_provider, ai_model, and updated_at. See
-// UpdateDetails's GoDoc for why this is kept separate from a full-row
-// update.
-func (r *RoomRepository) UpdateAISettings(ctx context.Context, roomID string, aiProvider, aiModel *string) error {
+// single narrow UPDATE touching only ai_provider, ai_model, and updated_at.
+// setProvider/setModel gate each column's assignment via SQL CASE WHEN so an
+// omitted field (its flag false) evaluates to the column's own current
+// value — i.e. is left untouched — entirely within this one statement,
+// rather than via a read-modify-write that would race a concurrent partial
+// update to the other field. See UpdateDetails's GoDoc for why this is kept
+// separate from a full-row update.
+func (r *RoomRepository) UpdateAISettings(ctx context.Context, roomID string, setProvider bool, aiProvider *string, setModel bool, aiModel *string) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE rooms SET ai_provider = $1, ai_model = $2, updated_at = NOW() WHERE id = $3`,
-		aiProvider, aiModel, roomID,
+		`UPDATE rooms SET
+			ai_provider = CASE WHEN $1 THEN $2 ELSE ai_provider END,
+			ai_model = CASE WHEN $3 THEN $4 ELSE ai_model END,
+			updated_at = NOW()
+		 WHERE id = $5`,
+		setProvider, aiProvider, setModel, aiModel, roomID,
 	)
 	if err != nil {
 		return err

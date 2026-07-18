@@ -466,3 +466,101 @@ func TestHandleWebhookEventSubscriptionDeleted(t *testing.T) {
 		t.Fatal("expected CanceledAt to be set")
 	}
 }
+
+// --- Out-of-order webhook delivery: no local subscription row yet ---
+//
+// invoice.paid, customer.subscription.updated, and customer.subscription.
+// deleted can all legitimately arrive before the checkout.session.completed
+// that creates the local Subscription row, since Stripe does not guarantee
+// ordered delivery. The three tests below assert that HandleWebhookEvent
+// returns a non-nil error in that case (so the handler returns a non-2xx
+// response and Stripe redelivers the event later), rather than silently
+// ACKing and permanently dropping it.
+
+func TestHandleWebhookEventInvoicePaidNoLocalSubscriptionReturnsError(t *testing.T) {
+	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
+		ID:   "evt_invoice_no_sub",
+		Type: domainbilling.EventTypeInvoicePaid,
+		Invoice: &domainbilling.InvoiceData{
+			InvoiceID: "in_no_sub", StripeSubscriptionID: "sub_does_not_exist", BillingReason: "subscription_cycle",
+			AmountPaid: 500, Currency: "usd",
+		},
+	}}
+	uc, _, _, _ := newStripeTestUsecase(gw)
+
+	err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+	if err == nil {
+		t.Fatal("expected a non-nil error for invoice.paid referencing an unknown subscription, so Stripe redelivers it")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected the error to wrap domain.ErrNotFound, got %v", err)
+	}
+}
+
+func TestHandleWebhookEventSubscriptionUpdatedNoLocalSubscriptionReturnsError(t *testing.T) {
+	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
+		ID:   "evt_sub_updated_no_sub",
+		Type: domainbilling.EventTypeSubscriptionUpdated,
+		Subscription: &domainbilling.SubscriptionEventData{
+			StripeSubscriptionID: "sub_does_not_exist", Status: "active",
+		},
+	}}
+	uc, _, _, _ := newStripeTestUsecase(gw)
+
+	err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+	if err == nil {
+		t.Fatal("expected a non-nil error for customer.subscription.updated referencing an unknown subscription, so Stripe redelivers it")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected the error to wrap domain.ErrNotFound, got %v", err)
+	}
+}
+
+func TestHandleWebhookEventSubscriptionDeletedNoLocalSubscriptionReturnsError(t *testing.T) {
+	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
+		ID:   "evt_sub_deleted_no_sub",
+		Type: domainbilling.EventTypeSubscriptionDeleted,
+		Subscription: &domainbilling.SubscriptionEventData{
+			StripeSubscriptionID: "sub_does_not_exist",
+		},
+	}}
+	uc, _, _, _ := newStripeTestUsecase(gw)
+
+	err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+	if err == nil {
+		t.Fatal("expected a non-nil error for customer.subscription.deleted referencing an unknown subscription, so Stripe redelivers it")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected the error to wrap domain.ErrNotFound, got %v", err)
+	}
+}
+
+// --- Nil subscriptionRepo/paymentRepo guards (Step 49 follow-up) ---
+
+// TestGetSubscriptionNilRepoReturnsBillingNotConfigured asserts that
+// GetSubscription returns domain.ErrBillingNotConfigured instead of
+// panicking when subscriptionRepo was never wired up.
+func TestGetSubscriptionNilRepoReturnsBillingNotConfigured(t *testing.T) {
+	balanceRepo := &mocks.BalanceRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	uc := NewBillingUsecase(balanceRepo, roomRepo, nil, nil, nil, nil, nil, "", "")
+
+	_, err := uc.GetSubscription(context.Background(), "user-1")
+	if !errors.Is(err, domain.ErrBillingNotConfigured) {
+		t.Fatalf("expected domain.ErrBillingNotConfigured, got %v", err)
+	}
+}
+
+// TestListPaymentHistoryNilRepoReturnsBillingNotConfigured asserts that
+// ListPaymentHistory returns domain.ErrBillingNotConfigured instead of
+// panicking when paymentRepo was never wired up.
+func TestListPaymentHistoryNilRepoReturnsBillingNotConfigured(t *testing.T) {
+	balanceRepo := &mocks.BalanceRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	uc := NewBillingUsecase(balanceRepo, roomRepo, nil, nil, nil, nil, nil, "", "")
+
+	_, err := uc.ListPaymentHistory(context.Background(), "user-1", "", 10)
+	if !errors.Is(err, domain.ErrBillingNotConfigured) {
+		t.Fatalf("expected domain.ErrBillingNotConfigured, got %v", err)
+	}
+}

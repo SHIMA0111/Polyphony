@@ -98,12 +98,18 @@ type Container struct {
 	MsgRepo  domainmessage.MessageRepository
 	// AttachmentRepo is the domain/attachment.AttachmentRepository backing
 	// AttachmentUC's presign/link/list operations.
-	AttachmentRepo   domainattachment.AttachmentRepository
-	InvitationRepo   domaininvitation.InvitationRepository
-	BillingRepo      domainbilling.BalanceRepository
-	GroupRepo        domaingroup.GroupRepository
+	AttachmentRepo domainattachment.AttachmentRepository
+	InvitationRepo domaininvitation.InvitationRepository
+	BillingRepo    domainbilling.BalanceRepository
+	// GroupRepo backs GroupUC's personal-group and group-membership
+	// persistence.
+	GroupRepo domaingroup.GroupRepository
+	// SubscriptionRepo backs BillingUC's Stripe subscription-lifecycle
+	// persistence (Step 49).
 	SubscriptionRepo domainbilling.SubscriptionRepository
-	PaymentRepo      domainbilling.PaymentRepository
+	// PaymentRepo backs BillingUC's Stripe payment/token-credit persistence
+	// (Step 49).
+	PaymentRepo domainbilling.PaymentRepository
 	// ContextSummaryRepository caches and invalidates per-room AI context
 	// summaries (Step 50, phases.md Phase 18); see
 	// usecase/message.MessageUsecase.assembleAIContext.
@@ -140,7 +146,9 @@ type Container struct {
 	ModelUC      *modelusecase.ModelUsecase
 	InvitationUC *invitationusecase.InvitationUsecase
 	BillingUC    *billingusecase.BillingUsecase
-	GroupUC      *groupusecase.GroupUsecase
+	// GroupUC implements personal-group CRUD, group-membership management,
+	// and BatchInviteToRoom (see usecase/group.GroupUsecase).
+	GroupUC *groupusecase.GroupUsecase
 
 	// Handlers
 	HealthHandler  *handler.HealthHandler
@@ -158,7 +166,9 @@ type Container struct {
 	InvitationHandler *handler.InvitationHandler
 	TokenHandler      *handler.TokenHandler
 	BillingHandler    *handler.BillingHandler
-	GroupHandler      *handler.GroupHandler
+	// GroupHandler serves the personal-group CRUD, membership, and
+	// batch-invite HTTP endpoints, delegating to GroupUC.
+	GroupHandler *handler.GroupHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,

@@ -18,13 +18,13 @@ import type { RoomRole } from "@/features/members/types"
  * exposed since callers should compare via {@link roleAtLeast} instead of
  * relying on the index.
  */
-export const ROLE_ORDER: RoomRole[] = [
+export const ROLE_ORDER = [
   "reader",
   "guest",
   "member",
   "admin",
   "master",
-]
+] as const
 
 /**
  * Whether `role` carries at least as much privilege as `min`, per

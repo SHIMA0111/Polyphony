@@ -51,18 +51,26 @@ type RoomRepository interface {
 	// does not exist.
 	UpdateAIContextCutoff(ctx context.Context, roomID string, cutoff *time.Time) error
 
-	// UpdateAISettings sets a room's AIProvider and AIModel columns (and
-	// UpdatedAt) to exactly the given values — a nil aiProvider/aiModel is
-	// persisted as SQL NULL, clearing that column. Both parameters are
-	// final values to persist, not a "leave unchanged" sentinel: the
-	// usecase layer (RoomUsecase.UpdateSettings) is responsible for
-	// resolving its own nil/empty-string-sentinel/value request convention
-	// against the room's current values (via GetByID) before calling this
-	// method, so by the time UpdateAISettings runs there is nothing left
-	// for it to resolve. See UpdateDetails's GoDoc for why this touches
+	// UpdateAISettings conditionally sets a room's AIProvider and AIModel
+	// columns (and UpdatedAt) in a single atomic UPDATE: setProvider and
+	// setModel are independent field-presence flags, and each field's
+	// corresponding *string value is only consulted (and only written) when
+	// its flag is true. A false flag leaves that column completely
+	// untouched at the database level — the implementation must express
+	// this as a conditional column assignment (e.g. SQL CASE WHEN) evaluated
+	// within one UPDATE statement, not as a read-modify-write, so that two
+	// concurrent calls each setting a disjoint field (e.g. one setting only
+	// AIProvider, the other only AIModel) can never lose one call's write
+	// to the other's stale snapshot. When a flag is true, a nil value
+	// clears that column to SQL NULL and a non-nil value sets it to
+	// *value — this is the final value to persist, not a "leave unchanged"
+	// sentinel. The usecase layer (RoomUsecase.UpdateSettings) is
+	// responsible for translating its own nil/empty-string-sentinel/value
+	// request convention into this set-flag/value pair per field before
+	// calling this method. See UpdateDetails's GoDoc for why this touches
 	// only these two columns rather than routing through a full-row
 	// update. Returns ErrNotFound if the room does not exist.
-	UpdateAISettings(ctx context.Context, roomID string, aiProvider, aiModel *string) error
+	UpdateAISettings(ctx context.Context, roomID string, setProvider bool, aiProvider *string, setModel bool, aiModel *string) error
 
 	// Delete removes a room by ID. Returns ErrNotFound if not found.
 	Delete(ctx context.Context, id string) error

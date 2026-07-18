@@ -2,7 +2,6 @@ package room
 
 import (
 	"context"
-	"time"
 
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 )
@@ -47,33 +46,42 @@ func (u *RoomUsecase) UpdateSettings(ctx context.Context, userID, roomID string,
 		return nil, err
 	}
 
-	rm, err := u.roomRepo.GetByID(ctx, roomID)
-	if err != nil {
+	setProvider, providerValue := settingUpdate(aiProvider)
+	setModel, modelValue := settingUpdate(aiModel)
+
+	if err := u.roomRepo.UpdateAISettings(ctx, roomID, setProvider, providerValue, setModel, modelValue); err != nil {
 		return nil, err
 	}
 
-	rm.AIProvider = applySettingField(rm.AIProvider, aiProvider)
-	rm.AIModel = applySettingField(rm.AIModel, aiModel)
-	rm.UpdatedAt = time.Now()
-
-	if err = u.roomRepo.UpdateAISettings(ctx, roomID, rm.AIProvider, rm.AIModel); err != nil {
+	// Re-read the room after the atomic UPDATE (rather than merging into a
+	// pre-update snapshot, as before) so the returned struct reflects the
+	// room's true persisted state, including any field this call left
+	// untouched. Using a pre-update snapshot to fill in the untouched
+	// field(s) here would reintroduce exactly the lost-update race
+	// UpdateAISettings's CASE WHEN UPDATE was built to avoid: this
+	// GetByID's result is never written back, only returned to the caller.
+	rm, err := u.roomRepo.GetByID(ctx, roomID)
+	if err != nil {
 		return nil, err
 	}
 
 	return &domainroom.RoomWithRole{Room: rm, Role: member.Role}, nil
 }
 
-// applySettingField applies UpdateSettings's nil/empty-string-sentinel/value
-// convention to a single nullable string field: a nil update leaves current
-// unchanged, a pointer to "" clears the field to nil, and any other pointer
-// value replaces current with a copy of the pointed-to value.
-func applySettingField(current *string, update *string) *string {
+// settingUpdate translates UpdateSettings's nil/empty-string-sentinel/value
+// request convention for a single field into UpdateAISettings's
+// set-flag/value pair: a nil update means "field omitted" (set=false, value
+// ignored), a pointer to "" means "clear to NULL" (set=true, value=nil), and
+// any other pointer value means "set to that value" (set=true, value=a copy
+// of *update so the repository's persisted state can't later alias the
+// caller's own pointer).
+func settingUpdate(update *string) (set bool, value *string) {
 	if update == nil {
-		return current
+		return false, nil
 	}
 	if *update == "" {
-		return nil
+		return true, nil
 	}
 	v := *update
-	return &v
+	return true, &v
 }

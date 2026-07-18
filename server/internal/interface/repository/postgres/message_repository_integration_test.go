@@ -474,3 +474,90 @@ func TestMessageRepository_CreateBatch(t *testing.T) {
 		t.Fatalf("expected CreateBatch's failure to roll back entirely (still 4 messages), got %d", count)
 	}
 }
+
+// TestMessageRepository_ListByRoomCursorVisibility proves that ListByRoom's
+// cursor-resolution subquery applies the same visibilityFilter as the
+// surrounding list queries: a non-owner using another user's private
+// message ID as a cursor gets domain.ErrNotFound identical to using an
+// unknown cursor, instead of the cursor silently resolving against a row
+// the caller cannot otherwise see.
+func TestMessageRepository_ListByRoomCursorVisibility(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "cursor-vis-owner")
+
+	other := &domainuser.User{
+		ID:           uuid.New().String(),
+		Email:        "cursor-vis-other@example.com",
+		Username:     "cursor-vis-other",
+		PasswordHash: "hash",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if err := userRepo.Create(ctx, other); err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+
+	now := time.Now()
+	privateMsg := &domainmessage.Message{
+		ID:         uuid.New().String(),
+		RoomID:     rm.ID,
+		SenderID:   &rm.OwnerID,
+		Content:    "a private cursor target",
+		Type:       domainmessage.MessageTypeHuman,
+		Status:     domainmessage.MessageStatusCompleted,
+		Sequence:   1,
+		Visibility: domainmessage.MessageVisibilityPrivate,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := msgRepo.Create(ctx, privateMsg); err != nil {
+		t.Fatalf("create private message: %v", err)
+	}
+
+	// A trailing public message so the room is non-empty for the owner's
+	// cursor-based page below.
+	publicMsg := &domainmessage.Message{
+		ID:         uuid.New().String(),
+		RoomID:     rm.ID,
+		SenderID:   &rm.OwnerID,
+		Content:    "a public message",
+		Type:       domainmessage.MessageTypeHuman,
+		Status:     domainmessage.MessageStatusCompleted,
+		Sequence:   2,
+		Visibility: domainmessage.MessageVisibilityPublic,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := msgRepo.Create(ctx, publicMsg); err != nil {
+		t.Fatalf("create public message: %v", err)
+	}
+
+	// Baseline: an unknown cursor yields a wrapped domain.ErrNotFound.
+	_, unknownErr := msgRepo.ListByRoom(ctx, rm.ID, uuid.New().String(), 20, other.ID)
+	if !errors.Is(unknownErr, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an unknown cursor, got %v", unknownErr)
+	}
+
+	// A non-owner using the private message's ID as the cursor must get the
+	// identical error, not a resolved page.
+	_, privateErr := msgRepo.ListByRoom(ctx, rm.ID, privateMsg.ID, 20, other.ID)
+	if !errors.Is(privateErr, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for a non-owner's private-message cursor, got %v", privateErr)
+	}
+
+	// The owner, by contrast, can use the private message as a cursor: it is
+	// visible to them, so the page resolves normally.
+	ownerPage, err := msgRepo.ListByRoom(ctx, rm.ID, privateMsg.ID, 20, rm.OwnerID)
+	if err != nil {
+		t.Fatalf("expected owner cursor lookup on the private message to succeed, got error: %v", err)
+	}
+	if len(ownerPage.Messages) != 0 {
+		t.Fatalf("expected no messages older than sequence 1, got %d", len(ownerPage.Messages))
+	}
+}

@@ -127,7 +127,7 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 	if err := u.msgRepo.Create(ctx, aiMsg); err != nil {
 		return nil, err
 	}
-	u.hub.Publish(ctx, event.RoomEvent{
+	u.publishMessageEvent(ctx, event.RoomEvent{
 		Type:          event.EventMessageCreated,
 		RoomID:        roomID,
 		Message:       aiMsg,
@@ -183,7 +183,7 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 		}
 		aiMsg.Status = domainmessage.MessageStatusFailed
 		aiMsg.UpdatedAt = failedNow
-		u.hub.Publish(ctx, event.RoomEvent{
+		u.publishMessageEvent(ctx, event.RoomEvent{
 			Type:               event.EventMessageUpdated,
 			RoomID:             roomID,
 			Message:            aiMsg,
@@ -288,7 +288,7 @@ func (u *MessageUsecase) consumeAIStream(
 	aiMsg.Status = status
 	aiMsg.UpdatedAt = now
 
-	u.hub.Publish(ctx, event.RoomEvent{
+	u.publishMessageEvent(ctx, event.RoomEvent{
 		Type:               event.EventMessageUpdated,
 		RoomID:             roomID,
 		Message:            &aiMsg,
@@ -374,7 +374,7 @@ func (u *MessageUsecase) completeAIMessageFallback(
 	aiMsg.Status = status
 	aiMsg.UpdatedAt = now
 
-	u.hub.Publish(ctx, event.RoomEvent{
+	u.publishMessageEvent(ctx, event.RoomEvent{
 		Type:               event.EventMessageUpdated,
 		RoomID:             roomID,
 		Message:            &aiMsg,

@@ -4,12 +4,20 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/group"
 )
+
+// groupMembersUniqueConstraint is the name of group_members's UNIQUE
+// (group_id, user_id) constraint, per schema.sql. AddMember maps a
+// violation of it to domain.ErrAlreadyMember, mirroring
+// InvitationRepository.Create's roomMembersUniqueConstraint mapping.
+const groupMembersUniqueConstraint = "group_members_group_id_user_id_key"
 
 // GroupRepository implements the group.GroupRepository interface using PostgreSQL.
 type GroupRepository struct {
@@ -102,14 +110,26 @@ func (r *GroupRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// AddMember adds a user to a group.
+// AddMember adds a user to a group. It returns domain.ErrAlreadyMember if
+// (group_id, user_id) already exists — a concurrent duplicate insert lands
+// on that path (via groupMembersUniqueConstraint) rather than surfacing an
+// unmapped constraint-violation error to callers, mirroring
+// InvitationRepository.Create's Postgres unique-violation mapping.
 func (r *GroupRepository) AddMember(ctx context.Context, member *group.GroupMember) error {
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO group_members (id, group_id, user_id, added_at)
 		 VALUES ($1, $2, $3, $4)`,
 		member.ID, member.GroupID, member.UserID, member.AddedAt,
 	)
-	return err
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation &&
+			pgErr.ConstraintName == groupMembersUniqueConstraint {
+			return domain.ErrAlreadyMember
+		}
+		return err
+	}
+	return nil
 }
 
 // GetMember retrieves a specific group membership by group ID and user ID.

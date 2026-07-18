@@ -310,6 +310,50 @@ func TestLLMClientCompleteImagePartsMessageMarshalsContentPartsArray(t *testing.
 	}
 }
 
+// TestLLMClientCompleteContentPartsResponseConcatenatesTextParts asserts
+// that Complete correctly extracts text from a multimodal (content-parts)
+// response message, rather than silently returning empty content: the
+// gateway's `content` field is decoded generically as `any` (see
+// chatMsgDTO's doc comment), so a content-parts response arrives as
+// []interface{} of part maps, not a Go string — Complete must route it
+// through contentDTOToText (mirroring pbContentToText's gRPC-transport
+// semantics) instead of only handling the plain-string case.
+func TestLLMClientCompleteContentPartsResponseConcatenatesTextParts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(completionRespDTO{
+			Model: "gpt-5.2",
+			Choices: []choiceDTO{
+				{Message: chatMsgDTO{
+					Role: "assistant",
+					Content: []contentPartDTO{
+						{Type: "text", Text: "it's "},
+						{Type: "image_url", ImageURL: &imageURLDTO{URL: "https://example.com/cat.png"}},
+						{Type: "text", Text: "a cat"},
+					},
+				}},
+			},
+			Usage: usageDTO{PromptTokens: 10, CompletionTokens: 3, TotalTokens: 13},
+		})
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	req := &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "what is this?"}},
+	}
+
+	resp, err := client.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if resp.Content != "it's a cat" {
+		t.Fatalf("expected the text parts concatenated (image part ignored), got %q", resp.Content)
+	}
+}
+
 // drainStream collects every ai.StreamResult from ch until it closes,
 // failing the test if that takes longer than 2 seconds (guards against a
 // hung goroutine leaving the test to time out at the suite level instead).

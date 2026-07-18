@@ -59,16 +59,35 @@ func (r *PaymentRepo) Create(_ context.Context, payment *billing.PaymentRecord) 
 }
 
 // CreateAndCredit atomically (from the caller's point of view — this fake
-// is single-threaded per call under its mutex) inserts payment and, only
-// when it is newly inserted, credits userID's balance via BalanceRepo. It
-// returns alreadyProcessed=true (with the balance left untouched) for a
-// replayed payment.StripeEventID.
+// holds r.mu for its entire duration, including the BalanceRepo calls)
+// inserts payment and, only when it is newly inserted, credits userID's
+// balance via BalanceRepo. It returns alreadyProcessed=true (with the
+// balance left untouched) for a replayed payment.StripeEventID.
+//
+// The credit calls run, and must both succeed, before payment is published
+// into byID/byEventID — mirroring the real postgres.PaymentRepository's
+// single-transaction atomicity, where the INSERT and the balance UPDATE
+// commit or roll back together. Recording the payment first (as an earlier
+// version of this fake did) and only crediting afterward would let a failed
+// credit leave the payment recorded anyway: a Stripe event retry would then
+// hit the alreadyProcessed short-circuit above and never retry the credit,
+// permanently losing it.
 func (r *PaymentRepo) CreateAndCredit(ctx context.Context, payment *billing.PaymentRecord, userID string, amount int64, description string) (bool, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.ensureInit()
+
 	if _, ok := r.byEventID[payment.StripeEventID]; ok {
-		r.mu.Unlock()
 		return true, nil
+	}
+
+	if r.BalanceRepo != nil {
+		if _, err := r.BalanceRepo.GetOrCreateBalance(ctx, userID); err != nil {
+			return false, err
+		}
+		if _, err := r.BalanceRepo.CreditAndRecord(ctx, userID, billing.TransactionTypeCharge, amount, description); err != nil {
+			return false, err
+		}
 	}
 
 	cp := *payment
@@ -78,17 +97,7 @@ func (r *PaymentRepo) CreateAndCredit(ctx context.Context, payment *billing.Paym
 	cp.CreatedAt = time.Now()
 	r.byID[cp.ID] = &cp
 	r.byEventID[cp.StripeEventID] = &cp
-	r.mu.Unlock()
 
-	if r.BalanceRepo == nil {
-		return false, nil
-	}
-	if _, err := r.BalanceRepo.GetOrCreateBalance(ctx, userID); err != nil {
-		return false, err
-	}
-	if _, err := r.BalanceRepo.CreditAndRecord(ctx, userID, billing.TransactionTypeCharge, amount, description); err != nil {
-		return false, err
-	}
 	return false, nil
 }
 

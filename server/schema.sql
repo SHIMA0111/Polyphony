@@ -133,7 +133,7 @@ CREATE TABLE group_members (
 );
 
 CREATE INDEX idx_groups_owner_id ON groups(owner_id);
-CREATE INDEX idx_group_members_group_id ON group_members(group_id);
+CREATE INDEX idx_group_members_user_id ON group_members(user_id);
 
 CREATE TABLE subscriptions (
     id UUID PRIMARY KEY,

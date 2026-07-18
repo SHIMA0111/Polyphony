@@ -55,14 +55,23 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   const session = await getKratosSessionFromCookie(request.headers.get("cookie"))
 
+  // Only attach traits when the Kratos session's identity matches Hydra's
+  // authoritative subject for this consent request. A stale or unrelated
+  // session cookie (e.g. left over from a different browser identity) must
+  // not leak its email/username into another subject's ID token — treat
+  // that mismatch exactly like "no session": omit the claims but still
+  // accept consent for Hydra's subject, no flow rejection/restart.
+  const matchingSession =
+    session?.identity.id === consentRequest.subject ? session : undefined
+
   const { redirect_to } = await acceptConsentRequest(consentChallenge, {
     grant_scope: consentRequest.requested_scope,
     grant_access_token_audience: consentRequest.requested_access_token_audience,
     session: {
-      id_token: session
+      id_token: matchingSession
         ? {
-            email: session.identity.traits.email,
-            preferred_username: session.identity.traits.username,
+            email: matchingSession.identity.traits.email,
+            preferred_username: matchingSession.identity.traits.username,
           }
         : undefined,
     },

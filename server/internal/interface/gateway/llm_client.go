@@ -124,6 +124,47 @@ func toContentPartDTO(p ai.ContentPart) contentPartDTO {
 	}
 }
 
+// contentDTOToText extracts the plain-text representation of a decoded
+// chatMsgDTO.Content value, mirroring pbContentToText's semantics for the
+// gRPC transport (see grpc_client.go) so both transports agree on what a
+// multimodal response degrades to. content is untyped because chatMsgDTO's
+// Content field is `any` (see its doc comment): json.Unmarshal decodes the
+// gateway's untagged `content` union into either a Go string (the
+// text-only case) or a []interface{} of map[string]interface{} content-part
+// objects (the multimodal case, matching contentPartDTO's wire shape but
+// without contentPartDTO's static typing, since the field was decoded
+// generically).
+//
+// A bare string is returned as-is. A []interface{} is walked in order,
+// concatenating the Text field of every element whose "type" is "text";
+// image parts ("image_url"/"image_base64") contribute nothing, matching
+// pbContentToText dropping non-text gRPC content parts. Any other shape —
+// nil, a malformed element, an unrecognized type — contributes nothing and
+// never panics: a completion response's content is best-effort to parse,
+// not something a caller should crash the request over.
+func contentDTOToText(content any) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case []interface{}:
+		var sb strings.Builder
+		for _, elem := range c {
+			part, ok := elem.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if t, _ := part["type"].(string); t == "text" {
+				if text, ok := part["text"].(string); ok {
+					sb.WriteString(text)
+				}
+			}
+		}
+		return sb.String()
+	default:
+		return ""
+	}
+}
+
 type completionRespDTO struct {
 	Model   string      `json:"model"`
 	Choices []choiceDTO `json:"choices"`
@@ -233,16 +274,9 @@ func (c *LLMClient) Complete(ctx context.Context, req *ai.CompletionRequest) (*a
 		return nil, fmt.Errorf("%w: decode response: %v", domain.ErrLLMGateway, err)
 	}
 
-	// The gateway's completion response message content is always plain text
-	// today (no provider adapter yet echoes image content back in a
-	// response), so it always decodes as a bare JSON string; a non-string
-	// value here (e.g. a future multimodal response) is treated as empty
-	// rather than panicking on a failed type assertion.
 	content := ""
 	if len(result.Choices) > 0 {
-		if s, ok := result.Choices[0].Message.Content.(string); ok {
-			content = s
-		}
+		content = contentDTOToText(result.Choices[0].Message.Content)
 	}
 
 	return &ai.CompletionResponse{

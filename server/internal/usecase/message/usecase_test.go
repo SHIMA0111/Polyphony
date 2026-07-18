@@ -256,6 +256,164 @@ func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 	}
 }
 
+// TestSendAIMessageContextFetchFailureCreatesFailedPlaceholder proves that a
+// ListByRoom failure after the human message has already been persisted
+// (see SendAIMessage) does not leave the human message orphaned without a
+// corresponding AI message: exactly one human message and one failed-status
+// AI message must exist afterward, so a client retry lands on
+// RegenerateAIMessage's UPDATE-in-place path instead of duplicating the
+// human message via a second SendAIMessage call.
+func TestSendAIMessageContextFetchFailureCreatesFailedPlaceholder(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{ListByRoomErr: errors.New("boom: context fetch failed")}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	_, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
+	if err == nil {
+		t.Fatal("expected SendAIMessage to return the context-fetch error")
+	}
+
+	var humanCount, failedAICount int
+	for _, m := range msgRepo.Messages {
+		if m.RoomID != "room-1" {
+			continue
+		}
+		switch m.Type {
+		case domainmessage.MessageTypeHuman:
+			humanCount++
+		case domainmessage.MessageTypeAI:
+			if m.Status != domainmessage.MessageStatusFailed {
+				t.Fatalf("expected the AI message to have failed status, got %s", m.Status)
+			}
+			failedAICount++
+		}
+	}
+	if humanCount != 1 {
+		t.Fatalf("expected exactly 1 human message, got %d", humanCount)
+	}
+	if failedAICount != 1 {
+		t.Fatalf("expected exactly 1 failed AI message, got %d", failedAICount)
+	}
+}
+
+// TestSendAIMessageContextEnrichmentFailureCreatesFailedPlaceholder is the
+// same regression test as
+// TestSendAIMessageContextFetchFailureCreatesFailedPlaceholder, but for a
+// failure downstream in assembleAIContext (via
+// buildAndEnrichContextBucket/enrichWithAttachments) instead of the initial
+// ListByRoom fetch: it must be routed through the same failed-placeholder
+// path, leaving exactly one human message and one failed-status AI message.
+func TestSendAIMessageContextEnrichmentFailureCreatesFailedPlaceholder(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	attachmentRepo := &mocks.AttachmentRepo{ListByMessageIDErr: errors.New("boom: attachment enrichment failed")}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, attachmentRepo, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	_, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
+	if err == nil {
+		t.Fatal("expected SendAIMessage to return the context-enrichment error")
+	}
+
+	var humanCount, failedAICount int
+	for _, m := range msgRepo.Messages {
+		if m.RoomID != "room-1" {
+			continue
+		}
+		switch m.Type {
+		case domainmessage.MessageTypeHuman:
+			humanCount++
+		case domainmessage.MessageTypeAI:
+			if m.Status != domainmessage.MessageStatusFailed {
+				t.Fatalf("expected the AI message to have failed status, got %s", m.Status)
+			}
+			failedAICount++
+		}
+	}
+	if humanCount != 1 {
+		t.Fatalf("expected exactly 1 human message, got %d", humanCount)
+	}
+	if failedAICount != 1 {
+		t.Fatalf("expected exactly 1 failed AI message, got %d", failedAICount)
+	}
+}
+
+// TestPublishMessageEventSuppressesOwnerlessPrivateMessage proves that
+// publishMessageEvent skips the hub entirely for a private message whose
+// SenderID is nil (an "ownerless" private message — see its doc comment for
+// how messages.sender_id's ON DELETE SET NULL produces this state): a
+// subscriber to the room must receive nothing, rather than the broadcast
+// targetUserIDsForVisibility's nil fallback would otherwise cause.
+func TestPublishMessageEventSuppressesOwnerlessPrivateMessage(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	hub := event.NewInProcessHub()
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	events, unsubscribe := hub.Subscribe(ctx, "room-1", "some-room-member")
+	defer unsubscribe()
+
+	ownerlessPrivateMsg := &domainmessage.Message{
+		ID:         "msg-ownerless",
+		RoomID:     "room-1",
+		SenderID:   nil,
+		Content:    "orphaned by a deleted sender",
+		Type:       domainmessage.MessageTypeAI,
+		Status:     domainmessage.MessageStatusCompleted,
+		Visibility: domainmessage.MessageVisibilityPrivate,
+	}
+	uc.publishMessageEvent(ctx, event.RoomEvent{
+		Type:          event.EventMessageCreated,
+		RoomID:        "room-1",
+		Message:       ownerlessPrivateMsg,
+		TargetUserIDs: targetUserIDsForVisibility(ownerlessPrivateMsg),
+		OccurredAt:    time.Now(),
+	})
+
+	select {
+	case got := <-events:
+		t.Fatalf("expected no event to be published for an ownerless private message, got %+v", got)
+	default:
+		// Expected: nothing was published.
+	}
+
+	// Control case: a normal public message is still delivered, proving the
+	// subscriber setup above would have caught a real (non-suppressed) publish.
+	publicMsg := &domainmessage.Message{
+		ID:         "msg-public",
+		RoomID:     "room-1",
+		Content:    "a normal public message",
+		Type:       domainmessage.MessageTypeHuman,
+		Status:     domainmessage.MessageStatusCompleted,
+		Visibility: domainmessage.MessageVisibilityPublic,
+	}
+	uc.publishMessageEvent(ctx, event.RoomEvent{
+		Type:          event.EventMessageCreated,
+		RoomID:        "room-1",
+		Message:       publicMsg,
+		TargetUserIDs: targetUserIDsForVisibility(publicMsg),
+		OccurredAt:    time.Now(),
+	})
+
+	select {
+	case got := <-events:
+		if got.Message.ID != publicMsg.ID {
+			t.Fatalf("expected to receive the public message, got %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected the public message's event to be delivered, got nothing")
+	}
+}
+
 func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}

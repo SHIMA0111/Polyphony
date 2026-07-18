@@ -320,8 +320,8 @@ func TestBatchInviteToRoomMixedSuccessAndSkip(t *testing.T) {
 	if len(result.Skipped) != 1 || result.Skipped[0].UserID != "bob-1" {
 		t.Fatalf("expected bob skipped, got %+v", result.Skipped)
 	}
-	if result.Skipped[0].Reason == "" {
-		t.Fatal("expected a non-empty skip reason")
+	if result.Skipped[0].Reason != BatchInviteSkipReasonAlreadyMember {
+		t.Fatalf("expected skip reason %q, got %q", BatchInviteSkipReasonAlreadyMember, result.Skipped[0].Reason)
 	}
 }
 
@@ -361,6 +361,42 @@ func TestBatchInviteToRoomDuplicatePendingInviteSkip(t *testing.T) {
 	}
 	if len(result2.Skipped) != 1 || result2.Skipped[0].UserID != "bob-1" {
 		t.Fatalf("expected bob skipped on second call, got %+v", result2.Skipped)
+	}
+	if result2.Skipped[0].Reason != BatchInviteSkipReasonInvitationAlreadyExists {
+		t.Fatalf("expected skip reason %q, got %q", BatchInviteSkipReasonInvitationAlreadyExists, result2.Skipped[0].Reason)
+	}
+}
+
+// TestBatchInviteToRoomAbortsOnUnrecognizedError asserts that a per-member
+// CreateInvitation error other than domain.ErrAlreadyMember or
+// domain.ErrInvitationAlreadyExists is not swallowed into a skip entry: it
+// aborts the whole batch immediately, returning (nil, err), rather than
+// continuing to the remaining members.
+func TestBatchInviteToRoomAbortsOnUnrecognizedError(t *testing.T) {
+	uc, groupRepo, _, _, invitationRepo := newTestFixture()
+	ctx := context.Background()
+
+	g, err := uc.CreateGroup(ctx, "owner-1", "Team", "")
+	if err != nil {
+		t.Fatalf("CreateGroup failed: %v", err)
+	}
+	// dave is the group's only member but was never registered in userRepo,
+	// so CreateInvitation's userRepo.GetByUsername("dave") lookup fails with
+	// domain.ErrNotFound — an error BatchInviteToRoom does not recognize as
+	// a skippable per-member outcome. SeedMember bypasses
+	// GroupUsecase.AddMember's own userRepo lookup, which would otherwise
+	// reject an unregistered username outright.
+	groupRepo.SeedMember(g.ID, "dave-1", "dave")
+
+	result, err := uc.BatchInviteToRoom(ctx, "owner-1", "room-1", g.ID, domainroom.RoleMember, nil)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound to abort the batch, got result=%+v err=%v", result, err)
+	}
+	if result != nil {
+		t.Fatalf("expected a nil result on abort, got %+v", result)
+	}
+	if len(invitationRepo.Invitations) != 0 {
+		t.Fatalf("expected zero invitations persisted when the batch aborts, got %d", len(invitationRepo.Invitations))
 	}
 }
 

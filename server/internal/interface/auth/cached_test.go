@@ -161,3 +161,81 @@ func TestCachedAuthServiceRevokeDeletesCacheAndDelegates(t *testing.T) {
 		t.Fatalf("expected ValidateToken to hit inner again after Revoke purged the cache, got %d calls", got)
 	}
 }
+
+// TestCachedAuthServiceRevokeCallsInnerBeforeDeletingCache proves the
+// ordering fix: inner.Revoke runs to completion before the cache entry is
+// deleted. It asserts this by checking, from inside inner's RevokeFunc, that
+// the whoami cache entry is still present — if the cache delete happened
+// first (the old, buggy ordering), a concurrent ValidateToken racing with
+// Revoke could repopulate the entry in the gap between the delete and
+// inner.Revoke, keeping a revoked token's claims servable from cache for up
+// to the full TTL. Deleting only after inner.Revoke closes that window.
+func TestCachedAuthServiceRevokeCallsInnerBeforeDeletingCache(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	var cacheEntryPresentDuringInnerRevoke bool
+	inner := &mocks.AuthService{
+		ValidateTokenFunc: func(_ context.Context, _ string) (*domainauth.Claims, error) {
+			return &domainauth.Claims{UserID: "user-1"}, nil
+		},
+		RevokeFunc: func(ctx context.Context, token string) error {
+			_, err := client.Get(ctx, whoamiCacheKey(token)).Result()
+			cacheEntryPresentDuringInnerRevoke = err == nil
+			return nil
+		},
+	}
+	cached := NewCachedAuthService(inner, client, cachedTestTTL)
+
+	ctx := context.Background()
+
+	if _, err := cached.ValidateToken(ctx, "tok-order"); err != nil {
+		t.Fatalf("priming ValidateToken call failed: %v", err)
+	}
+
+	if err := cached.Revoke(ctx, "tok-order"); err != nil {
+		t.Fatalf("Revoke returned unexpected error: %v", err)
+	}
+	if !cacheEntryPresentDuringInnerRevoke {
+		t.Fatal("expected the cache entry to still be present while inner.Revoke ran, but it was already deleted")
+	}
+
+	// The cache entry must be gone by the time Revoke returns.
+	if _, err := client.Get(ctx, whoamiCacheKey("tok-order")).Result(); err != redis.Nil {
+		t.Fatalf("expected the cache entry to be deleted after Revoke returns, got err=%v", err)
+	}
+}
+
+// TestCachedAuthServiceRevokeDeletesCacheEvenWhenInnerRevokeFails proves that
+// the cache entry is still deleted, and inner's error is still propagated to
+// the caller, when inner.Revoke fails — the cache-delete step must run
+// regardless of inner's outcome, not only on success.
+func TestCachedAuthServiceRevokeDeletesCacheEvenWhenInnerRevokeFails(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	wantErr := errors.New("revoke failed")
+	inner := &mocks.AuthService{
+		ValidateTokenFunc: func(_ context.Context, _ string) (*domainauth.Claims, error) {
+			return &domainauth.Claims{UserID: "user-1"}, nil
+		},
+		RevokeFunc: func(_ context.Context, _ string) error {
+			return wantErr
+		},
+	}
+	cached := NewCachedAuthService(inner, client, cachedTestTTL)
+
+	ctx := context.Background()
+
+	if _, err := cached.ValidateToken(ctx, "tok-fail"); err != nil {
+		t.Fatalf("priming ValidateToken call failed: %v", err)
+	}
+
+	if err := cached.Revoke(ctx, "tok-fail"); !errors.Is(err, wantErr) {
+		t.Fatalf("expected Revoke to propagate inner's error %v, got %v", wantErr, err)
+	}
+
+	if _, err := client.Get(ctx, whoamiCacheKey("tok-fail")).Result(); err != redis.Nil {
+		t.Fatalf("expected the cache entry to be deleted despite inner.Revoke failing, got err=%v", err)
+	}
+}

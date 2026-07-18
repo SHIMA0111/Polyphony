@@ -90,7 +90,7 @@ func TestForkRoomSuccess(t *testing.T) {
 	// only a real repo write is observed by ForkRoom's own GetByID read
 	// below.
 	aiProvider, aiModel := "anthropic", "claude-opus-4"
-	if err := roomRepo.UpdateAISettings(ctx, src.Room.ID, &aiProvider, &aiModel); err != nil {
+	if err := roomRepo.UpdateAISettings(ctx, src.Room.ID, true, &aiProvider, true, &aiModel); err != nil {
 		t.Fatalf("UpdateAISettings failed: %v", err)
 	}
 

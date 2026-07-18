@@ -17,6 +17,14 @@ import (
 type AttachmentRepo struct {
 	mu          sync.Mutex
 	Attachments map[string]*attachment.Attachment
+
+	// ListByMessageIDErr, if non-nil, makes ListByMessageID return it
+	// instead of a result — for tests exercising a caller's handling of an
+	// attachment-enrichment failure (e.g.
+	// MessageUsecase.enrichWithAttachments, reached via
+	// buildAndEnrichContextBucket/assembleAIContext), without needing a
+	// real error condition inside this fake.
+	ListByMessageIDErr error
 }
 
 func (r *AttachmentRepo) ensureInit() {
@@ -95,6 +103,10 @@ func (r *AttachmentRepo) AttachToMessage(_ context.Context, attachmentID, messag
 func (r *AttachmentRepo) ListByMessageID(_ context.Context, messageID string) ([]*attachment.Attachment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if r.ListByMessageIDErr != nil {
+		return nil, r.ListByMessageIDErr
+	}
 
 	var result []*attachment.Attachment
 	for _, a := range r.Attachments {

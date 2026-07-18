@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -219,6 +220,82 @@ func TestGroupRepositoryAddMemberGetMemberRemoveMember(t *testing.T) {
 	}
 	if err := repo.RemoveMember(ctx, g.ID, member.ID); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound removing an already-removed member, got %v", err)
+	}
+}
+
+// TestGroupRepositoryAddMemberDuplicateReturnsAlreadyMember asserts that a
+// second AddMember call for the same (group_id, user_id) pair returns
+// domain.ErrAlreadyMember rather than an unmapped Postgres unique-violation
+// error.
+func TestGroupRepositoryAddMemberDuplicateReturnsAlreadyMember(t *testing.T) {
+	ctx := context.Background()
+	repo, owner, member := newGroupTestFixture(ctx, t)
+
+	g := newTestGroup(owner.ID)
+	if err := repo.Create(ctx, g); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	if err := repo.AddMember(ctx, &group.GroupMember{ID: uuid.New().String(), GroupID: g.ID, UserID: member.ID, AddedAt: time.Now()}); err != nil {
+		t.Fatalf("first AddMember failed: %v", err)
+	}
+
+	err := repo.AddMember(ctx, &group.GroupMember{ID: uuid.New().String(), GroupID: g.ID, UserID: member.ID, AddedAt: time.Now()})
+	if !errors.Is(err, domain.ErrAlreadyMember) {
+		t.Fatalf("expected domain.ErrAlreadyMember for a duplicate AddMember, got %v", err)
+	}
+}
+
+// TestGroupRepositoryConcurrentAddMemberOneWinsOneAlreadyMember races two
+// concurrent AddMember calls for the same (group_id, user_id) pair: exactly
+// one must succeed and the other must observe domain.ErrAlreadyMember (never
+// an unmapped constraint-violation error), and exactly one group_members row
+// must exist afterward regardless of which call the database happened to
+// commit first.
+func TestGroupRepositoryConcurrentAddMemberOneWinsOneAlreadyMember(t *testing.T) {
+	ctx := context.Background()
+	repo, owner, member := newGroupTestFixture(ctx, t)
+
+	g := newTestGroup(owner.ID)
+	if err := repo.Create(ctx, g); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var err1, err2 error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		err1 = repo.AddMember(ctx, &group.GroupMember{ID: uuid.New().String(), GroupID: g.ID, UserID: member.ID, AddedAt: time.Now()})
+	}()
+	go func() {
+		defer wg.Done()
+		err2 = repo.AddMember(ctx, &group.GroupMember{ID: uuid.New().String(), GroupID: g.ID, UserID: member.ID, AddedAt: time.Now()})
+	}()
+	wg.Wait()
+
+	successes, alreadyMembers := 0, 0
+	for _, err := range []error{err1, err2} {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, domain.ErrAlreadyMember):
+			alreadyMembers++
+		default:
+			t.Fatalf("expected nil or domain.ErrAlreadyMember, got %v", err)
+		}
+	}
+	if successes != 1 || alreadyMembers != 1 {
+		t.Fatalf("expected exactly one success and one ErrAlreadyMember, got successes=%d alreadyMembers=%d (err1=%v, err2=%v)",
+			successes, alreadyMembers, err1, err2)
+	}
+
+	members, err := repo.ListMembers(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("ListMembers failed: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("expected exactly 1 member after the race, got %d", len(members))
 	}
 }
 

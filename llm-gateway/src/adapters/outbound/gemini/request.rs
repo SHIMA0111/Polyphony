@@ -2,6 +2,7 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::outbound::http_retry::send_with_retry;
+use crate::adapters::outbound::system_message_text;
 use crate::domain::error::DomainError;
 use crate::domain::model::{
     ChatMessage, Choice, CompletionRequest, CompletionResponse, ContentPart, MessageContent, Role,
@@ -265,14 +266,17 @@ fn to_gemini_part(part: &ContentPart) -> GeminiPartDto {
 /// `system_instruction`, Gemini's `generateContent` requires a non-empty `contents`
 /// array, and an all-system request would otherwise be sent with `contents: []` and
 /// fail remotely with an opaque `400 Bad Request` instead of being rejected locally
-/// with a clear message.
+/// with a clear message. Also returns `DomainError::InvalidRequest` if any system
+/// message's content is `MessageContent::Parts` containing a non-text part (see
+/// `system_message_text`): this adapter's `systemInstruction` mapping is text-only and
+/// cannot carry an image.
 pub(super) fn to_gemini_request(req: &CompletionRequest) -> Result<GeminiRequest, DomainError> {
     let mut system_texts = Vec::new();
     let mut contents = Vec::new();
 
     for m in &req.messages {
         match m.role {
-            Role::System => system_texts.push(m.content.as_text()),
+            Role::System => system_texts.push(system_message_text(&m.content)?),
             _ => contents.push(GeminiRequestContent {
                 role: Some(role_to_gemini_role(&m.role).to_string()),
                 parts: to_gemini_parts(&m.content),
@@ -591,6 +595,70 @@ mod tests {
             Ok(_) => panic!("an all-system request should be rejected locally"),
             Err(e) => assert!(matches!(e, DomainError::InvalidRequest(_))),
         }
+    }
+
+    /// A system message whose content is `MessageContent::Parts` and contains an image
+    /// part has no representable target in this adapter's text-only
+    /// `system_instruction` mapping, so it must be rejected locally rather than
+    /// silently dropped.
+    #[test]
+    fn test_to_gemini_request_system_message_with_image_part_is_invalid_request() {
+        let req = CompletionRequest {
+            model: "gemini-3-pro".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: MessageContent::Parts(vec![
+                        ContentPart::Text("You are helpful.".to_string()),
+                        ContentPart::ImageBase64 {
+                            media_type: "image/png".to_string(),
+                            data: "abcd".to_string(),
+                        },
+                    ]),
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: "Hello".to_string().into(),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        match to_gemini_request(&req) {
+            Ok(_) => panic!("a system message containing an image part should be rejected"),
+            Err(e) => assert!(matches!(e, DomainError::InvalidRequest(_))),
+        }
+    }
+
+    /// A plain-text system message (`MessageContent::Text`) is unaffected by the
+    /// image-part check and joins into `system_instruction` exactly as before.
+    #[test]
+    fn test_to_gemini_request_plain_text_system_message_unchanged() {
+        let req = CompletionRequest {
+            model: "gemini-3-pro".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: "You are helpful.".to_string().into(),
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: "Hello".to_string().into(),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let gemini_req = to_gemini_request(&req).expect("plain-text system message is valid");
+        let system_instruction = gemini_req
+            .system_instruction
+            .expect("system message should produce a system_instruction");
+        assert_eq!(
+            serde_json::to_value(&system_instruction.parts[0]).unwrap(),
+            serde_json::json!({"text": "You are helpful."})
+        );
     }
 
     /// `MessageContent::Text` becomes a single-element `parts` array with a `text`

@@ -183,7 +183,7 @@ func (u *MessageUsecase) createHumanMessage(ctx context.Context, userID, roomID,
 		return nil, err
 	}
 
-	u.hub.Publish(ctx, event.RoomEvent{
+	u.publishMessageEvent(ctx, event.RoomEvent{
 		Type:          event.EventMessageCreated,
 		RoomID:        roomID,
 		Message:       msg,
@@ -208,6 +208,44 @@ func targetUserIDsForVisibility(msg *domainmessage.Message) []string {
 		return nil
 	}
 	return []string{*msg.SenderID}
+}
+
+// publishMessageEvent publishes evt via u.hub, except when evt.Message is a
+// private message with a nil SenderID — an "ownerless" private message,
+// which can occur because messages.sender_id is ON DELETE SET NULL (see
+// schema.sql): if the user who sent a private message is later deleted, the
+// row survives with SenderID reset to nil, but its Visibility stays
+// private.
+//
+// For that combination, targetUserIDsForVisibility falls through to its nil
+// return (its documented "broadcast to every subscriber of the room"
+// sentinel), because it has no other value to return once SenderID is nil.
+// That would broadcast a private exchange to the whole room the instant its
+// owner's account is deleted — exactly the leak private messages exist to
+// prevent. There is no TargetUserIDs value that means "deliver to nobody"
+// (see event.RoomEvent.TargetUserIDs's doc comment: nil and empty both mean
+// "everyone"), so the only correct app-layer response is to suppress the
+// publish entirely rather than attempt to express it through TargetUserIDs.
+// This is deliberately not enforced with a DB CHECK constraint: sender_id's
+// ON DELETE SET NULL is what keeps user deletion from being blocked by (or
+// cascading through) their message history, and a CHECK forbidding
+// private+null together would conflict with that by construction.
+//
+// The message itself is unaffected by this suppression — it was already
+// durably persisted before evt was built, and every read path
+// (MessageRepository.GetByID/ListByRoom/ListByRoomUpTo's visibilityFilter)
+// already excludes a private message from every requestingUserID including
+// its own former sender, so it simply becomes unreadable by anyone from
+// that point on. Only the live WebSocket delivery is skipped. The
+// suppression is logged at Error level, since it reflects a real (if rare)
+// data state worth surfacing rather than a routine, expected condition.
+func (u *MessageUsecase) publishMessageEvent(ctx context.Context, evt event.RoomEvent) {
+	if evt.Message != nil && evt.Message.Visibility == domainmessage.MessageVisibilityPrivate && evt.Message.SenderID == nil {
+		slog.Error("suppressing publish for an ownerless private message: no TargetUserIDs value can express delivery to nobody",
+			"room_id", evt.RoomID, "message_id", evt.Message.ID, "event_type", evt.Type)
+		return
+	}
+	u.hub.Publish(ctx, evt)
 }
 
 // ListMessages returns paginated messages for a room. Any valid member
@@ -297,8 +335,19 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 
 	// Fetch context messages. Passing userID as requestingUserID excludes
 	// any other user's private messages from the context this AI call sees.
+	//
+	// From here on, humanMsg has already been durably persisted and
+	// broadcast (see createHumanMessage above): every remaining error path
+	// in this function must go through persistFailedAIPlaceholder before
+	// returning, so that a client retry lands on RegenerateAIMessage's
+	// UPDATE-in-place path instead of calling SendAIMessage again and
+	// duplicating the human message.
 	contextPage, err := u.msgRepo.ListByRoom(ctx, roomID, "", defaultContextMessages, userID)
 	if err != nil {
+		if _, phErr := u.persistFailedAIPlaceholder(ctx, roomID, userID, humanMsg, aiSeq, visibility, private, false); phErr != nil {
+			slog.Error("failed to persist failed AI message placeholder after context fetch error",
+				"error", phErr, "room_id", roomID, "human_message_id", humanMsg.ID)
+		}
 		return nil, err
 	}
 
@@ -308,6 +357,10 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	// would overflow model's resolved context window (Step 50).
 	chatMsgs, usedSummary, err := u.assembleAIContext(ctx, rm, model, contextPage.Messages)
 	if err != nil {
+		if _, phErr := u.persistFailedAIPlaceholder(ctx, roomID, userID, humanMsg, aiSeq, visibility, private, usedSummary); phErr != nil {
+			slog.Error("failed to persist failed AI message placeholder after context assembly error",
+				"error", phErr, "room_id", roomID, "human_message_id", humanMsg.ID)
+		}
 		return nil, err
 	}
 
@@ -316,6 +369,14 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		Model:    model,
 		Messages: chatMsgs,
 	})
+
+	if llmErr != nil {
+		aiMsg, err := u.persistFailedAIPlaceholder(ctx, roomID, userID, humanMsg, aiSeq, visibility, private, usedSummary)
+		if err != nil {
+			return nil, err
+		}
+		return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg, UsedContextSummary: usedSummary}, nil
+	}
 
 	aiNow := time.Now()
 	aiMsg := &domainmessage.Message{
@@ -339,31 +400,13 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 		aiMsg.SenderID = &userID
 	}
 
-	if llmErr != nil {
-		// Save failed placeholder so regenerate can update it later
-		aiMsg.Content = ""
-		aiMsg.Status = domainmessage.MessageStatusFailed
-		if err := u.msgRepo.Create(ctx, aiMsg); err != nil {
-			return nil, err
-		}
-		u.hub.Publish(ctx, event.RoomEvent{
-			Type:               event.EventMessageCreated,
-			RoomID:             roomID,
-			Message:            aiMsg,
-			TargetUserIDs:      targetUserIDsForVisibility(aiMsg),
-			OccurredAt:         aiNow,
-			UsedContextSummary: usedSummary,
-		})
-		return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg, UsedContextSummary: usedSummary}, nil
-	}
-
 	aiMsg.Content = completion.Content
 	aiMsg.Status = domainmessage.MessageStatusCompleted
 
 	if err = u.msgRepo.Create(ctx, aiMsg); err != nil {
 		return nil, err
 	}
-	u.hub.Publish(ctx, event.RoomEvent{
+	u.publishMessageEvent(ctx, event.RoomEvent{
 		Type:               event.EventMessageCreated,
 		RoomID:             roomID,
 		Message:            aiMsg,
@@ -379,6 +422,57 @@ func (u *MessageUsecase) SendAIMessage(ctx context.Context, userID, roomID, cont
 	}
 
 	return &SendAIResult{HumanMessage: humanMsg, AIMessage: aiMsg, UsedContextSummary: usedSummary}, nil
+}
+
+// persistFailedAIPlaceholder creates and publishes a failed-status AI message
+// standing in for the response SendAIMessage was unable to produce, whatever
+// the cause — the context fetch (ListByRoom), context assembly
+// (assembleAIContext), or the LLM call itself. It is the single choke point
+// every SendAIMessage error path takes once humanMsg has already been
+// durably persisted and broadcast, so that a client retry after any such
+// error finds an existing failed AI message for humanMsg and lands on
+// RegenerateAIMessage's UPDATE-in-place path (see its GoDoc) instead of
+// calling SendAIMessage again and duplicating the human message.
+//
+// A failure to persist or publish the placeholder itself is returned to the
+// caller rather than swallowed, since the two current call sites need
+// different treatment: SendAIMessage's context-fetch/context-assembly error
+// paths only log it (their own, more specific error is what gets returned
+// to the client), while its LLM-failure path treats it the same as any
+// other message-persistence failure and returns it directly.
+func (u *MessageUsecase) persistFailedAIPlaceholder(ctx context.Context, roomID, userID string, humanMsg *domainmessage.Message, aiSeq int64, visibility domainmessage.MessageVisibility, private, usedSummary bool) (*domainmessage.Message, error) {
+	aiNow := time.Now()
+	aiMsg := &domainmessage.Message{
+		ID:                    uuid.New().String(),
+		RoomID:                roomID,
+		SenderID:              nil,
+		Content:               "",
+		Type:                  domainmessage.MessageTypeAI,
+		Status:                domainmessage.MessageStatusFailed,
+		Sequence:              aiSeq,
+		Visibility:            visibility,
+		InResponseToMessageID: &humanMsg.ID,
+		CreatedAt:             aiNow,
+		UpdatedAt:             aiNow,
+	}
+	if private {
+		// See the matching comment in SendAIMessage's successful-completion
+		// path for why a private AI message records userID as its SenderID.
+		aiMsg.SenderID = &userID
+	}
+
+	if err := u.msgRepo.Create(ctx, aiMsg); err != nil {
+		return nil, err
+	}
+	u.publishMessageEvent(ctx, event.RoomEvent{
+		Type:               event.EventMessageCreated,
+		RoomID:             roomID,
+		Message:            aiMsg,
+		TargetUserIDs:      targetUserIDsForVisibility(aiMsg),
+		OccurredAt:         aiNow,
+		UsedContextSummary: usedSummary,
+	})
+	return aiMsg, nil
 }
 
 // RegenerateAIMessage regenerates the AI response for a specific human message.
@@ -495,7 +589,7 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 		slog.Error("failed to record token usage", "error", err, "room_id", roomID, "message_id", nextMsg.ID)
 	}
 
-	u.hub.Publish(ctx, event.RoomEvent{
+	u.publishMessageEvent(ctx, event.RoomEvent{
 		Type:               event.EventMessageUpdated,
 		RoomID:             roomID,
 		Message:            nextMsg,

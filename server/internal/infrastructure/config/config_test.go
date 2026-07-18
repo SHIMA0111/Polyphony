@@ -63,6 +63,7 @@ func withRequiredEnv(t *testing.T) {
 	}
 }
 
+// TestLoadDBDurationDefaults proves DB_MAX_CONN_LIFETIME/DB_MAX_CONN_IDLE_TIME/DB_HEALTH_CHECK_PERIOD default when unset.
 func TestLoadDBDurationDefaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -82,6 +83,7 @@ func TestLoadDBDurationDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadDBDurationOverrides proves DB_MAX_CONN_LIFETIME/DB_MAX_CONN_IDLE_TIME/DB_HEALTH_CHECK_PERIOD are read from the environment when set.
 func TestLoadDBDurationOverrides(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("DB_MAX_CONN_LIFETIME", "2h")
@@ -104,6 +106,7 @@ func TestLoadDBDurationOverrides(t *testing.T) {
 	}
 }
 
+// TestLoadDBDurationInvalidFallsBackToDefault proves an unparseable DB_MAX_CONN_LIFETIME falls back to its default instead of failing Load.
 func TestLoadDBDurationInvalidFallsBackToDefault(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("DB_MAX_CONN_LIFETIME", "not-a-duration")
@@ -117,6 +120,7 @@ func TestLoadDBDurationInvalidFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestLoadMissingRequiredVars proves Load fails when DATABASE_URL and JWT_SECRET are both unset.
 func TestLoadMissingRequiredVars(t *testing.T) {
 	if _, err := Load(); err == nil {
 		t.Fatal("expected Load to fail when DATABASE_URL and JWT_SECRET are unset")
@@ -181,6 +185,7 @@ func TestLoadCORSOriginsTrimsWhitespaceAndDropsEmpties(t *testing.T) {
 	}
 }
 
+// TestLoadS3Defaults proves the S3 connection settings default when unset.
 func TestLoadS3Defaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -209,6 +214,7 @@ func TestLoadS3Defaults(t *testing.T) {
 	}
 }
 
+// TestLoadS3Overrides proves the S3 connection settings are read from the environment when set.
 func TestLoadS3Overrides(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("S3_ENDPOINT", "http://minio.example.com:9000")
@@ -261,6 +267,7 @@ func TestLoadS3ForcePathStyleInvalidValueDefaultsWithoutError(t *testing.T) {
 	}
 }
 
+// TestLoadWSTicketSecretDefaultsToJWTSecret proves WSTicketSecret defaults to JWTSecret when WS_TICKET_SECRET is unset.
 func TestLoadWSTicketSecretDefaultsToJWTSecret(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -273,6 +280,7 @@ func TestLoadWSTicketSecretDefaultsToJWTSecret(t *testing.T) {
 	}
 }
 
+// TestLoadWSTicketSecretOverride proves WSTicketSecret is read from WS_TICKET_SECRET when set, independent of JWTSecret.
 func TestLoadWSTicketSecretOverride(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("WS_TICKET_SECRET", "ws-ticket-secret")
@@ -286,6 +294,7 @@ func TestLoadWSTicketSecretOverride(t *testing.T) {
 	}
 }
 
+// TestLoadAuthModeDefault proves AuthMode defaults to simple_jwt when AUTH_MODE is unset.
 func TestLoadAuthModeDefault(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -298,6 +307,7 @@ func TestLoadAuthModeDefault(t *testing.T) {
 	}
 }
 
+// TestLoadAuthModeKratos proves AuthMode is set to kratos when AUTH_MODE=kratos.
 func TestLoadAuthModeKratos(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("AUTH_MODE", "kratos")
@@ -311,6 +321,7 @@ func TestLoadAuthModeKratos(t *testing.T) {
 	}
 }
 
+// TestLoadAuthModeInvalidReturnsError proves Load fails for an unrecognized AUTH_MODE value.
 func TestLoadAuthModeInvalidReturnsError(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("AUTH_MODE", "oidc")
@@ -320,6 +331,7 @@ func TestLoadAuthModeInvalidReturnsError(t *testing.T) {
 	}
 }
 
+// TestLoadMessageHubDriverDefault proves MessageHubDriver defaults to inprocess with an empty RedisURL when MESSAGE_HUB_DRIVER is unset.
 func TestLoadMessageHubDriverDefault(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -335,6 +347,7 @@ func TestLoadMessageHubDriverDefault(t *testing.T) {
 	}
 }
 
+// TestLoadMessageHubDriverRedisRequiresRedisURL proves Load fails when MESSAGE_HUB_DRIVER=redis and REDIS_URL is unset.
 func TestLoadMessageHubDriverRedisRequiresRedisURL(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("MESSAGE_HUB_DRIVER", "redis")
@@ -344,6 +357,7 @@ func TestLoadMessageHubDriverRedisRequiresRedisURL(t *testing.T) {
 	}
 }
 
+// TestLoadMessageHubDriverRedisWithRedisURL proves MessageHubDriver and RedisURL are set correctly when MESSAGE_HUB_DRIVER=redis and REDIS_URL is provided.
 func TestLoadMessageHubDriverRedisWithRedisURL(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("MESSAGE_HUB_DRIVER", "redis")
@@ -361,6 +375,7 @@ func TestLoadMessageHubDriverRedisWithRedisURL(t *testing.T) {
 	}
 }
 
+// TestLoadMessageHubDriverInvalidReturnsError proves Load fails for an unrecognized MESSAGE_HUB_DRIVER value.
 func TestLoadMessageHubDriverInvalidReturnsError(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("MESSAGE_HUB_DRIVER", "kafka")
@@ -370,6 +385,7 @@ func TestLoadMessageHubDriverInvalidReturnsError(t *testing.T) {
 	}
 }
 
+// TestLoadKratosDefaults proves the Kratos URL and cookie name settings default when unset.
 func TestLoadKratosDefaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -388,6 +404,7 @@ func TestLoadKratosDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadLLMGatewayGRPCDefaults proves the LLM Gateway transport/address/retry/backoff settings default when unset.
 func TestLoadLLMGatewayGRPCDefaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -409,6 +426,7 @@ func TestLoadLLMGatewayGRPCDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadLLMGatewayGRPCOverrides proves the LLM Gateway transport/address/retry/backoff settings are read from the environment when set.
 func TestLoadLLMGatewayGRPCOverrides(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("LLM_GATEWAY_TRANSPORT", "grpc")
@@ -448,6 +466,7 @@ func TestLoadLLMGatewayTransportInvalidReturnsError(t *testing.T) {
 	}
 }
 
+// TestLoadLLMGatewayGRPCMaxRetriesInvalidFallsBackToDefault proves an unparseable LLM_GATEWAY_GRPC_MAX_RETRIES falls back to its default instead of failing Load.
 func TestLoadLLMGatewayGRPCMaxRetriesInvalidFallsBackToDefault(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("LLM_GATEWAY_GRPC_MAX_RETRIES", "not-a-number")
@@ -481,6 +500,7 @@ func TestLoadLLMGatewayGRPCMaxRetriesNegativeFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestLoadLLMGatewayGRPCBaseBackoffInvalidFallsBackToDefault proves an unparseable LLM_GATEWAY_GRPC_BASE_BACKOFF falls back to its default instead of failing Load.
 func TestLoadLLMGatewayGRPCBaseBackoffInvalidFallsBackToDefault(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("LLM_GATEWAY_GRPC_BASE_BACKOFF", "not-a-duration")
@@ -494,6 +514,7 @@ func TestLoadLLMGatewayGRPCBaseBackoffInvalidFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestLoadRateLimitAndWhoamiCacheDefaults proves the rate-limit and whoami-cache settings default when unset.
 func TestLoadRateLimitAndWhoamiCacheDefaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -512,6 +533,7 @@ func TestLoadRateLimitAndWhoamiCacheDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadRateLimitAndWhoamiCacheOverrides proves the rate-limit and whoami-cache settings are read from the environment when set.
 func TestLoadRateLimitAndWhoamiCacheOverrides(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "5")
@@ -533,6 +555,7 @@ func TestLoadRateLimitAndWhoamiCacheOverrides(t *testing.T) {
 	}
 }
 
+// TestLoadRateLimitInvalidFallsBackToDefault proves unparseable RATE_LIMIT_LOGIN_PER_MINUTE/RATE_LIMIT_AI_INVOKE_PER_MINUTE values fall back to their defaults instead of failing Load.
 func TestLoadRateLimitInvalidFallsBackToDefault(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "not-a-number")
@@ -550,6 +573,50 @@ func TestLoadRateLimitInvalidFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestLoadRateLimitZeroFallsBackToDefault is the review fix for a zero
+// rate-limit value parsing successfully via strconv.Atoi (it is a valid
+// integer, just not a valid per-minute limit) and then silently disabling
+// the limiter — treat zero the same as a parse failure: warn and keep the
+// default. Mirrors LLM_GATEWAY_GRPC_MAX_RETRIES's negative-value handling
+// (see TestLoadLLMGatewayGRPCMaxRetriesNegativeFallsBackToDefault).
+func TestLoadRateLimitZeroFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "0")
+	t.Setenv("RATE_LIMIT_AI_INVOKE_PER_MINUTE", "0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on a zero rate-limit value, got: %v", err)
+	}
+	if cfg.RateLimitLoginPerMinute != 10 {
+		t.Errorf("expected fallback to default RateLimitLoginPerMinute 10, got %d", cfg.RateLimitLoginPerMinute)
+	}
+	if cfg.RateLimitAIInvokePerMinute != 20 {
+		t.Errorf("expected fallback to default RateLimitAIInvokePerMinute 20, got %d", cfg.RateLimitAIInvokePerMinute)
+	}
+}
+
+// TestLoadRateLimitNegativeFallsBackToDefault proves a negative rate-limit
+// value is likewise treated as invalid and falls back to the default,
+// rather than parsing as a nonsensical negative per-minute limit.
+func TestLoadRateLimitNegativeFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "-1")
+	t.Setenv("RATE_LIMIT_AI_INVOKE_PER_MINUTE", "-1")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on a negative rate-limit value, got: %v", err)
+	}
+	if cfg.RateLimitLoginPerMinute != 10 {
+		t.Errorf("expected fallback to default RateLimitLoginPerMinute 10, got %d", cfg.RateLimitLoginPerMinute)
+	}
+	if cfg.RateLimitAIInvokePerMinute != 20 {
+		t.Errorf("expected fallback to default RateLimitAIInvokePerMinute 20, got %d", cfg.RateLimitAIInvokePerMinute)
+	}
+}
+
+// TestLoadWhoamiCacheTTLInvalidFallsBackToDefault proves an unparseable WHOAMI_CACHE_TTL falls back to its default instead of failing Load.
 func TestLoadWhoamiCacheTTLInvalidFallsBackToDefault(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("WHOAMI_CACHE_TTL", "not-a-duration")
@@ -563,6 +630,7 @@ func TestLoadWhoamiCacheTTLInvalidFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestLoadStripeDefaults proves the Stripe secret/webhook/catalog/checkout-URL settings default when unset.
 func TestLoadStripeDefaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -586,6 +654,7 @@ func TestLoadStripeDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadStripePlansAndPackagesParsed proves STRIPE_PLANS_JSON/STRIPE_TOKEN_PACKAGES_JSON and the checkout URLs are parsed correctly from the environment.
 func TestLoadStripePlansAndPackagesParsed(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("STRIPE_SECRET_KEY", "sk_test_123")
@@ -613,6 +682,7 @@ func TestLoadStripePlansAndPackagesParsed(t *testing.T) {
 	}
 }
 
+// TestLoadStripePlansInvalidJSONIgnoredNotFatal proves invalid STRIPE_PLANS_JSON/STRIPE_TOKEN_PACKAGES_JSON is ignored (empty catalogs) instead of failing Load.
 func TestLoadStripePlansInvalidJSONIgnoredNotFatal(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("STRIPE_PLANS_JSON", "not-valid-json")

@@ -230,12 +230,15 @@ func (r *RoomRepo) UpdateAIContextCutoff(_ context.Context, roomID string, cutof
 	return nil
 }
 
-// UpdateAISettings updates a room's AIProvider and AIModel, mirroring
-// postgres.RoomRepository.UpdateAISettings's narrow-column-set contract.
-// Returns domain.ErrNotFound if the room does not exist. Stores clones of
-// aiProvider/aiModel (see cloneStringPtr) so later mutation of the caller's
-// own *string can't alias the repo's state.
-func (r *RoomRepo) UpdateAISettings(_ context.Context, roomID string, aiProvider, aiModel *string) error {
+// UpdateAISettings conditionally updates a room's AIProvider and/or
+// AIModel, mirroring postgres.RoomRepository.UpdateAISettings's
+// narrow-column-set, CASE-WHEN-gated contract: setProvider/setModel each
+// independently gate whether the corresponding field is touched at all,
+// leaving an unset field exactly as it was rather than overwriting it with
+// a stale read. Returns domain.ErrNotFound if the room does not exist.
+// Stores clones of aiProvider/aiModel (see cloneStringPtr) so later
+// mutation of the caller's own *string can't alias the repo's state.
+func (r *RoomRepo) UpdateAISettings(_ context.Context, roomID string, setProvider bool, aiProvider *string, setModel bool, aiModel *string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -243,8 +246,12 @@ func (r *RoomRepo) UpdateAISettings(_ context.Context, roomID string, aiProvider
 	if !ok {
 		return domain.ErrNotFound
 	}
-	rm.AIProvider = cloneStringPtr(aiProvider)
-	rm.AIModel = cloneStringPtr(aiModel)
+	if setProvider {
+		rm.AIProvider = cloneStringPtr(aiProvider)
+	}
+	if setModel {
+		rm.AIModel = cloneStringPtr(aiModel)
+	}
 	rm.UpdatedAt = time.Now()
 	return nil
 }

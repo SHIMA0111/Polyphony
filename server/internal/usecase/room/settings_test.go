@@ -14,6 +14,8 @@ func strPtr(v string) *string { return &v }
 
 // --- UpdateSettings (Step 24: per-room AI provider/model settings) ---
 
+// TestUpdateSettingsAdminCanSet asserts that a room admin can set both
+// AIProvider and AIModel via UpdateSettings.
 func TestUpdateSettingsAdminCanSet(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
@@ -36,6 +38,8 @@ func TestUpdateSettingsAdminCanSet(t *testing.T) {
 	}
 }
 
+// TestUpdateSettingsMasterCanSet asserts that a room master (owner) can set
+// AIModel via UpdateSettings.
 func TestUpdateSettingsMasterCanSet(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
@@ -52,6 +56,8 @@ func TestUpdateSettingsMasterCanSet(t *testing.T) {
 	}
 }
 
+// TestUpdateSettingsMemberForbidden asserts that a plain room member is
+// rejected with domain.ErrForbidden when calling UpdateSettings.
 func TestUpdateSettingsMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
@@ -67,6 +73,8 @@ func TestUpdateSettingsMemberForbidden(t *testing.T) {
 	}
 }
 
+// TestUpdateSettingsGuestForbidden asserts that a room guest is rejected
+// with domain.ErrForbidden when calling UpdateSettings.
 func TestUpdateSettingsGuestForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
@@ -82,6 +90,8 @@ func TestUpdateSettingsGuestForbidden(t *testing.T) {
 	}
 }
 
+// TestUpdateSettingsReaderForbidden asserts that a room reader is rejected
+// with domain.ErrForbidden when calling UpdateSettings.
 func TestUpdateSettingsReaderForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
@@ -97,6 +107,9 @@ func TestUpdateSettingsReaderForbidden(t *testing.T) {
 	}
 }
 
+// TestUpdateSettingsNonMemberForbidden asserts that a caller who is not a
+// member of the room at all is rejected with domain.ErrForbidden when
+// calling UpdateSettings.
 func TestUpdateSettingsNonMemberForbidden(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)

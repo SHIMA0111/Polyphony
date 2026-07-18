@@ -79,10 +79,28 @@ var (
 	// pure config read that works even when Stripe is unconfigured.
 	ErrStripeNotConfigured = errors.New("stripe is not configured")
 
+	// ErrBillingNotConfigured indicates a billing endpoint that depends on
+	// usecase/billing.BillingUsecase's subscriptionRepo or paymentRepo
+	// (GetSubscription, CancelSubscription, CreateBillingPortalSession,
+	// ListPaymentHistory) was called in a deployment where that repository
+	// was constructed as nil — the same "not wired up" condition
+	// ErrStripeNotConfigured guards against for stripeGateway, kept as a
+	// distinct sentinel since a deployment can have Stripe configured
+	// without necessarily wiring the subscription/payment repositories (or
+	// vice versa). Mapped to HTTP 503 alongside ErrStripeNotConfigured.
+	ErrBillingNotConfigured = errors.New("billing is not configured")
+
 	// ErrInvalidWebhookSignature indicates a Stripe webhook payload failed
 	// signature verification (unknown/wrong STRIPE_WEBHOOK_SECRET, or a
-	// tampered payload). POST /webhooks/stripe maps this to HTTP 400 — the
-	// only case in which that endpoint returns a non-200 status.
+	// tampered payload). POST /webhooks/stripe maps this to HTTP 400. That
+	// endpoint can also return HTTP 503 (domain.ErrStripeNotConfigured, when
+	// Stripe is unconfigured) or HTTP 500 (any other dispatch failure,
+	// including the deliberately-non-nil errors HandleWebhookEvent now
+	// returns for an out-of-order event referencing a not-yet-created local
+	// subscription — see BillingUsecase.handleInvoicePaid), so 400 is not
+	// the only non-200 status it returns — see
+	// handler.BillingHandler.HandleStripeWebhook's error mapping for the
+	// full set.
 	ErrInvalidWebhookSignature = errors.New("invalid stripe webhook signature")
 
 	// ErrArchivedRoom indicates a new message (SendMessage/SendAIMessage)

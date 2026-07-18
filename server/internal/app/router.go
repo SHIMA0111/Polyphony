@@ -18,6 +18,17 @@ import (
 func NewRouter(c *Container) *echo.Echo {
 	e := echo.New()
 	e.HideBanner = true
+	// The API server is exposed directly in docker-compose (no reverse
+	// proxy in front of it), so a client-supplied X-Forwarded-For or
+	// X-Real-IP header cannot be trusted: echo.ExtractIPFromRealIPHeader /
+	// ExtractIPFromXFFHeader would let a caller forge whichever IP it wants
+	// and thereby dodge or collide with another caller's rate-limit bucket
+	// (see interface/middleware's Redis token-bucket limiter, which keys on
+	// c.RealIP()). ExtractIPDirect always uses the TCP peer address instead.
+	// Phase 21 puts an ALB in front of the service; at that point this
+	// should switch to ExtractIPFromXFFHeader scoped to the ALB's CIDR so
+	// the real client IP (rather than the ALB's) is used for rate limiting.
+	e.IPExtractor = echo.ExtractIPDirect()
 	e.Use(echomw.Recover())
 	e.Use(echomw.RequestID())
 	e.Use(echomw.CORSWithConfig(echomw.CORSConfig{

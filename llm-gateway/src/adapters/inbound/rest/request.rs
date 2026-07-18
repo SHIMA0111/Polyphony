@@ -79,6 +79,15 @@ pub struct ImageUrlDto {
 
 impl ContentDto {
     /// Converts this DTO into the domain `MessageContent`.
+    ///
+    /// # Arguments
+    /// * `self` — Wire-shape content, either a plain string or an array of typed
+    ///   content parts.
+    ///
+    /// # Returns
+    /// `ContentDto::Text` maps to `MessageContent::Text` unchanged; `ContentDto::Parts`
+    /// maps to `MessageContent::Parts`, converting each part via
+    /// `ContentPartDto::into_domain`.
     pub fn into_domain(self) -> MessageContent {
         match self {
             ContentDto::Text(s) => MessageContent::Text(s),
@@ -91,6 +100,16 @@ impl ContentDto {
 
 impl ContentPartDto {
     /// Converts this DTO into the domain `ContentPart`.
+    ///
+    /// # Arguments
+    /// * `self` — A single wire-shape content part (text, image URL, or inline
+    ///   base64 image).
+    ///
+    /// # Returns
+    /// The corresponding domain `ContentPart` variant: `Text` maps to
+    /// `ContentPart::Text`, `ImageUrl` unwraps its nested `image_url.url` into
+    /// `ContentPart::ImageUrl`, and `ImageBase64` maps field-for-field to
+    /// `ContentPart::ImageBase64`.
     pub fn into_domain(self) -> ContentPart {
         match self {
             ContentPartDto::Text { text } => ContentPart::Text(text),

@@ -10,17 +10,31 @@ import (
 // other value is a recognized-by-Stripe-but-unhandled-by-us event type and
 // is treated as a no-op (see step49.md's webhook dispatch table).
 const (
+	// EventTypeCheckoutSessionCompleted is Stripe's checkout.session.completed
+	// event type: a Checkout Session (token purchase or subscription signup)
+	// finished successfully.
 	EventTypeCheckoutSessionCompleted = "checkout.session.completed"
-	EventTypeInvoicePaid              = "invoice.paid"
-	EventTypeSubscriptionUpdated      = "customer.subscription.updated"
-	EventTypeSubscriptionDeleted      = "customer.subscription.deleted"
+	// EventTypeInvoicePaid is Stripe's invoice.paid event type: a
+	// subscription invoice (creation or renewal cycle) was paid.
+	EventTypeInvoicePaid = "invoice.paid"
+	// EventTypeSubscriptionUpdated is Stripe's customer.subscription.updated
+	// event type: a subscription's status, period, price, or cancellation
+	// flag changed.
+	EventTypeSubscriptionUpdated = "customer.subscription.updated"
+	// EventTypeSubscriptionDeleted is Stripe's customer.subscription.deleted
+	// event type: a subscription reached its final canceled state.
+	EventTypeSubscriptionDeleted = "customer.subscription.deleted"
 )
 
 // Checkout Session modes, mirroring Stripe's own "payment"/"subscription"
 // mode strings, surfaced on CheckoutSessionData.Mode so the usecase can
 // branch without importing the stripe-go SDK.
 const (
-	CheckoutModePayment      = "payment"
+	// CheckoutModePayment is a one-time-payment Checkout Session (used for
+	// token package purchases).
+	CheckoutModePayment = "payment"
+	// CheckoutModeSubscription is a recurring-subscription Checkout Session
+	// (used for plan signups).
 	CheckoutModeSubscription = "subscription"
 )
 

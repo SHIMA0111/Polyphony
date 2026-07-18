@@ -102,10 +102,14 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 			roomID, limit+1, requestingUserID,
 		)
 	} else {
-		// Get cursor message's sequence
+		// Get cursor message's sequence. The same visibilityFilter as the
+		// surrounding list queries applies here so a cursor pointing at
+		// another user's private message resolves identically to an
+		// unknown cursor, rather than leaking that a private message with
+		// that ID exists.
 		var cursorSeq int64
 		err = r.pool.QueryRow(ctx,
-			`SELECT sequence FROM messages WHERE id = $1 AND room_id = $2`, cursor, roomID,
+			`SELECT sequence FROM messages WHERE id = $1 AND room_id = $2 AND `+visibilityFilter(3), cursor, roomID, requestingUserID,
 		).Scan(&cursorSeq)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

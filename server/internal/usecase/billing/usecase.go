@@ -212,8 +212,13 @@ func (u *BillingUsecase) CreateTokenPurchaseCheckoutSession(ctx context.Context,
 }
 
 // GetSubscription returns userID's current Subscription. It returns
+// domain.ErrBillingNotConfigured if subscriptionRepo is nil (this
+// deployment never wired one up — see NewBillingUsecase's GoDoc), or
 // domain.ErrNotFound if the user has no subscription row.
 func (u *BillingUsecase) GetSubscription(ctx context.Context, userID string) (*domainbilling.Subscription, error) {
+	if u.subscriptionRepo == nil {
+		return nil, domain.ErrBillingNotConfigured
+	}
 	return u.subscriptionRepo.GetByUserID(ctx, userID)
 }
 
@@ -221,9 +226,13 @@ func (u *BillingUsecase) GetSubscription(ctx context.Context, userID string) (*d
 // at the end of the current billing period (not immediately), and persists
 // CancelAtPeriodEnd=true locally. The final status transition to "canceled"
 // arrives later via the customer.subscription.deleted webhook, not
-// synchronously here. It returns domain.ErrNotFound if the user has no
+// synchronously here. It returns domain.ErrBillingNotConfigured if
+// subscriptionRepo is nil, domain.ErrNotFound if the user has no
 // subscription, or domain.ErrStripeNotConfigured if Stripe is unconfigured.
 func (u *BillingUsecase) CancelSubscription(ctx context.Context, userID string) (*domainbilling.Subscription, error) {
+	if u.subscriptionRepo == nil {
+		return nil, domain.ErrBillingNotConfigured
+	}
 	sub, err := u.subscriptionRepo.GetByUserID(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -244,10 +253,14 @@ func (u *BillingUsecase) CancelSubscription(ctx context.Context, userID string) 
 
 // CreateBillingPortalSession returns a Stripe Billing Portal session URL for
 // userID's Stripe customer, for self-service plan/payment-method
-// management. It returns domain.ErrNotFound if the user has no subscription
-// row yet (nothing to manage), or domain.ErrStripeNotConfigured if Stripe is
+// management. It returns domain.ErrBillingNotConfigured if subscriptionRepo
+// is nil, domain.ErrNotFound if the user has no subscription row yet
+// (nothing to manage), or domain.ErrStripeNotConfigured if Stripe is
 // unconfigured.
 func (u *BillingUsecase) CreateBillingPortalSession(ctx context.Context, userID, returnURL string) (string, error) {
+	if u.subscriptionRepo == nil {
+		return "", domain.ErrBillingNotConfigured
+	}
 	sub, err := u.subscriptionRepo.GetByUserID(ctx, userID)
 	if err != nil {
 		return "", err
@@ -260,8 +273,12 @@ func (u *BillingUsecase) CreateBillingPortalSession(ctx context.Context, userID,
 
 // ListPaymentHistory returns a cursor-paginated page of userID's payment
 // history, newest first. limit is clamped to [1, 100], defaulting to 20
-// when <= 0, mirroring ListTransactions.
+// when <= 0, mirroring ListTransactions. It returns
+// domain.ErrBillingNotConfigured if paymentRepo is nil.
 func (u *BillingUsecase) ListPaymentHistory(ctx context.Context, userID, cursor string, limit int) (*domainbilling.PaymentHistoryPage, error) {
+	if u.paymentRepo == nil {
+		return nil, domain.ErrBillingNotConfigured
+	}
 	if limit <= 0 {
 		limit = defaultTransactionLimit
 	}
@@ -439,8 +456,16 @@ func (u *BillingUsecase) upsertSubscriptionFromCheckout(ctx context.Context, ses
 // handleInvoicePaid processes an invoice.paid event: for a subscription
 // creation/renewal invoice, it credits the subscription owner's balance by
 // its plan's monthly token allocation and records a payment_history row.
-// Any other billing_reason, or an invoice for a subscription this server
-// has no local record of, is a no-op.
+// Any other billing_reason is a no-op. An invoice for a subscription this
+// server has no local record of is NOT treated as a no-op: Stripe does not
+// guarantee ordered delivery, so this invoice.paid can legitimately arrive
+// before the checkout.session.completed that would have created the local
+// Subscription row. Returning the underlying domain.ErrNotFound here (via
+// isNotFound's err, not a swallowed nil) makes HandleWebhookEvent return a
+// non-2xx response, so Stripe redelivers this event later — once
+// checkout.session.completed has landed, the retried invoice.paid will find
+// the row and credit correctly. Silently ACKing it instead would permanently
+// drop that credit.
 func (u *BillingUsecase) handleInvoicePaid(ctx context.Context, event domainbilling.WebhookEvent) error {
 	invoice := event.Invoice
 	if invoice == nil {
@@ -453,9 +478,8 @@ func (u *BillingUsecase) handleInvoicePaid(ctx context.Context, event domainbill
 	sub, err := u.subscriptionRepo.GetByStripeSubscriptionID(ctx, invoice.StripeSubscriptionID)
 	if err != nil {
 		if isNotFound(err) {
-			slog.Warn("invoice.paid for unrecognized subscription, ignoring",
+			slog.Warn("invoice.paid for unrecognized subscription, requesting Stripe redelivery",
 				"stripe_subscription_id", invoice.StripeSubscriptionID)
-			return nil
 		}
 		return err
 	}
@@ -488,8 +512,12 @@ func (u *BillingUsecase) handleInvoicePaid(ctx context.Context, event domainbill
 // handleSubscriptionUpdated processes a customer.subscription.updated
 // event, syncing status/period/cancellation fields onto the matching local
 // Subscription row. An update for a subscription this server has no local
-// record of is a no-op (e.g. a redelivered event racing the corresponding
-// checkout.session.completed).
+// record of is NOT treated as a no-op: it may simply be racing the
+// corresponding checkout.session.completed's delivery, which is not
+// guaranteed to land first. Returning the underlying domain.ErrNotFound
+// (rather than swallowing it into nil) makes HandleWebhookEvent return a
+// non-2xx response so Stripe redelivers this event until the local row
+// exists — see handleInvoicePaid's identical rationale.
 func (u *BillingUsecase) handleSubscriptionUpdated(ctx context.Context, event domainbilling.WebhookEvent) error {
 	data := event.Subscription
 	if data == nil {
@@ -499,9 +527,8 @@ func (u *BillingUsecase) handleSubscriptionUpdated(ctx context.Context, event do
 	sub, err := u.subscriptionRepo.GetByStripeSubscriptionID(ctx, data.StripeSubscriptionID)
 	if err != nil {
 		if isNotFound(err) {
-			slog.Warn("customer.subscription.updated for unrecognized subscription, ignoring",
+			slog.Warn("customer.subscription.updated for unrecognized subscription, requesting Stripe redelivery",
 				"stripe_subscription_id", data.StripeSubscriptionID)
-			return nil
 		}
 		return err
 	}
@@ -522,7 +549,11 @@ func (u *BillingUsecase) handleSubscriptionUpdated(ctx context.Context, event do
 
 // handleSubscriptionDeleted processes a customer.subscription.deleted
 // event, marking the matching local Subscription row canceled. A deletion
-// for a subscription this server has no local record of is a no-op.
+// for a subscription this server has no local record of is NOT treated as
+// a no-op, for the same out-of-order-delivery reason as
+// handleSubscriptionUpdated: returning the underlying domain.ErrNotFound
+// makes HandleWebhookEvent return a non-2xx response so Stripe redelivers
+// this event until the local row exists.
 func (u *BillingUsecase) handleSubscriptionDeleted(ctx context.Context, event domainbilling.WebhookEvent) error {
 	data := event.Subscription
 	if data == nil {
@@ -532,9 +563,8 @@ func (u *BillingUsecase) handleSubscriptionDeleted(ctx context.Context, event do
 	sub, err := u.subscriptionRepo.GetByStripeSubscriptionID(ctx, data.StripeSubscriptionID)
 	if err != nil {
 		if isNotFound(err) {
-			slog.Warn("customer.subscription.deleted for unrecognized subscription, ignoring",
+			slog.Warn("customer.subscription.deleted for unrecognized subscription, requesting Stripe redelivery",
 				"stripe_subscription_id", data.StripeSubscriptionID)
-			return nil
 		}
 		return err
 	}

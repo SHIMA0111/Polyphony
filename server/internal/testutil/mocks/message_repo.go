@@ -22,6 +22,12 @@ type MessageRepo struct {
 	mu       sync.Mutex
 	Messages map[string]*message.Message
 	Seqs     map[string]int64 // roomID -> next sequence to allocate
+
+	// ListByRoomErr, if non-nil, makes ListByRoom return it instead of a
+	// page — for tests exercising the caller's handling of a context-fetch
+	// failure (e.g. MessageUsecase.SendAIMessage's failed-AI-placeholder
+	// path), without needing a real error condition inside this fake.
+	ListByRoomErr error
 }
 
 func (m *MessageRepo) ensureInit() {
@@ -82,6 +88,10 @@ func visibleTo(msg *message.Message, requestingUserID string) bool {
 func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int, requestingUserID string) (*message.CursorPage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.ListByRoomErr != nil {
+		return nil, m.ListByRoomErr
+	}
 
 	var msgs []*message.Message
 	for _, msg := range m.Messages {

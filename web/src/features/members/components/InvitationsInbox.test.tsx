@@ -65,6 +65,9 @@ describe("InvitationsInbox", () => {
   })
 
   it("calls accept on click and navigates into the room", async () => {
+    const push = vi.fn()
+    useRouterMock.mockReturnValue({ push })
+
     server.use(
       http.get("/api/proxy/invitations", () => {
         return HttpResponse.json<InvitationListResponse>({
@@ -92,6 +95,7 @@ describe("InvitationsInbox", () => {
     await user.click(await screen.findByRole("button", { name: "Accept" }))
 
     await waitFor(() => expect(acceptCalled).toBe(true))
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/rooms/room-9"))
   })
 
   it("calls reject on click for a username-targeted invitation", async () => {

@@ -101,6 +101,12 @@ impl From<CompletionChunk> for CompletionChunkDto {
 /// * `service` — Shared `CompletionUseCase` state.
 /// * `dto` — Same request shape as `POST /completions`.
 ///
+/// # Returns
+/// A `200 OK` `text/event-stream` response whose body is the SSE event sequence
+/// described in the module-level docs: one `data:` frame per successfully produced
+/// chunk, an `event: error` frame for a mid-stream failure, and a terminating
+/// `data: [DONE]` frame.
+///
 /// # Errors
 /// Returns `AppError` (mapped to the existing non-SSE HTTP status codes) if the DTO
 /// fails to convert to a domain request, or if `CompletionUseCase::stream` itself fails
@@ -113,18 +119,31 @@ pub async fn complete_stream(
     Json(dto): Json<CompletionRequestDto>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
     let req = dto.into_domain()?;
+    let model = req.model.clone();
     let chunk_stream = service.stream(req).await?;
 
-    let events = chunk_stream.map(|item| {
+    let events = chunk_stream.map(move |item| {
         let event = match item {
             Ok(chunk) => Event::default()
                 .json_data(CompletionChunkDto::from(chunk))
                 .unwrap_or_else(|e| {
+                    tracing::error!(
+                        error = %e,
+                        model = %model,
+                        "failed to JSON-encode completion chunk for SSE"
+                    );
                     Event::default()
                         .event("error")
                         .data(format!("failed to encode completion chunk: {e}"))
                 }),
-            Err(err) => Event::default().event("error").data(err.to_string()),
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    model = %model,
+                    "upstream provider stream yielded an error"
+                );
+                Event::default().event("error").data(err.to_string())
+            }
         };
         Ok(event)
     });

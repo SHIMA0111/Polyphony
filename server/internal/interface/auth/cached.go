@@ -130,24 +130,36 @@ func (c *CachedAuthService) ValidateToken(ctx context.Context, token string) (*d
 	return claims, nil
 }
 
-// Revoke deletes the cached entry for token (best-effort — a failure is
-// logged and ignored, since the underlying session revocation below is the
-// authoritative action) and, if inner implements domainauth.Revoker, also
-// calls inner.Revoke and returns its error. If inner does not implement
-// domainauth.Revoker (no backend currently wraps a non-Revoker in
-// CachedAuthService, but the fallback is documented for completeness), it
-// returns nil, mirroring AuthUsecase.Logout's own no-op contract.
+// Revoke calls inner.Revoke first (if inner implements domainauth.Revoker)
+// and only then deletes the cached entry for token, regardless of whether
+// inner.Revoke succeeded. This ordering matters: deleting the cache entry
+// before calling inner.Revoke would leave a window in which a concurrent
+// ValidateToken call repopulates the cache with the still-valid (not yet
+// revoked) claims, and that repopulated entry would then continue serving
+// authenticated requests for up to the full cache TTL despite the logout —
+// deleting the cache only after revocation has already taken effect closes
+// that window. The cache delete is best-effort — a failure is logged and
+// ignored (not returned), since inner.Revoke is the authoritative action
+// and a lingering cache entry only extends exposure by at most the TTL,
+// which is bounded and short.
+//
+// If inner does not implement domainauth.Revoker (no backend currently
+// wraps a non-Revoker in CachedAuthService, but the fallback is documented
+// for completeness), Revoke still deletes the cache entry and returns nil,
+// mirroring AuthUsecase.Logout's own no-op contract.
 func (c *CachedAuthService) Revoke(ctx context.Context, token string) error {
+	var revokeErr error
+	if revoker, ok := c.inner.(domainauth.Revoker); ok {
+		revokeErr = revoker.Revoke(ctx, token)
+	}
+
 	if c.redisClient != nil {
 		if err := c.redisClient.Del(ctx, whoamiCacheKey(token)).Err(); err != nil {
 			slog.Default().Warn("whoami cache delete failed during revoke", "error", err)
 		}
 	}
 
-	if revoker, ok := c.inner.(domainauth.Revoker); ok {
-		return revoker.Revoke(ctx, token)
-	}
-	return nil
+	return revokeErr
 }
 
 // whoamiCacheKey computes the Redis key ValidateToken/Revoke use for token —

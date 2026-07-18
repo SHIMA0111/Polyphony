@@ -764,7 +764,7 @@ func TestRoomRepositoryAIProviderModelRoundTrip(t *testing.T) {
 
 	provider := "anthropic"
 	model := "claude-opus-4"
-	if err := roomRepo.UpdateAISettings(ctx, rm.ID, &provider, &model); err != nil {
+	if err := roomRepo.UpdateAISettings(ctx, rm.ID, true, &provider, true, &model); err != nil {
 		t.Fatalf("UpdateAISettings failed: %v", err)
 	}
 
@@ -809,7 +809,7 @@ func TestRoomRepositoryAIProviderModelRoundTrip(t *testing.T) {
 	}
 
 	// Clearing back to nil round-trips as well.
-	if err := roomRepo.UpdateAISettings(ctx, rm.ID, nil, nil); err != nil {
+	if err := roomRepo.UpdateAISettings(ctx, rm.ID, true, nil, true, nil); err != nil {
 		t.Fatalf("UpdateAISettings (clear) failed: %v", err)
 	}
 	cleared, err := roomRepo.GetByID(ctx, rm.ID)
@@ -1014,7 +1014,7 @@ func TestRoomRepositoryUpdateDetailsAIContextCutoffAndAISettingsDoNotClobber(t *
 
 	provider := "openai"
 	model := "gpt-5.2"
-	if err := roomRepo.UpdateAISettings(ctx, rm.ID, &provider, &model); err != nil {
+	if err := roomRepo.UpdateAISettings(ctx, rm.ID, true, &provider, true, &model); err != nil {
 		t.Fatalf("UpdateAISettings failed: %v", err)
 	}
 
@@ -1030,5 +1030,71 @@ func TestRoomRepositoryUpdateDetailsAIContextCutoffAndAISettingsDoNotClobber(t *
 	}
 	if got.AIProvider == nil || *got.AIProvider != provider || got.AIModel == nil || *got.AIModel != model {
 		t.Fatalf("expected UpdateAISettings's write to survive, got provider=%v model=%v", got.AIProvider, got.AIModel)
+	}
+}
+
+// TestConcurrentUpdateAISettingsPartialFieldsNoLostUpdate is a concurrency
+// regression test for UpdateAISettings's CASE-WHEN-gated single UPDATE
+// (mirroring TestConcurrentUpdateRoomAndAIContextCutoffNoLostUpdate's
+// mock-level counterpart in usecase/room, but exercised here against real
+// Postgres): two concurrent calls, each setting only one of AIProvider/
+// AIModel and leaving the other field's flag false, must both land. Before
+// this UPDATE was made CASE-WHEN-gated, UpdateAISettings always wrote both
+// columns from whatever values its caller passed; a caller resolving "leave
+// unchanged" by reading the room first and echoing back its current value
+// (the old usecase-layer pattern) could have its stale read of the
+// sibling's column overwrite that column's concurrently-written value. The
+// CASE WHEN UPDATE below closes that race structurally: a false flag never
+// touches its column at the database level, regardless of interleaving, so
+// there is nothing left to race.
+func TestConcurrentUpdateAISettingsPartialFieldsNoLostUpdate(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "ai-settings-race-owner")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "AI Settings Race Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	provider := "anthropic"
+	model := "claude-opus-4"
+
+	var wg sync.WaitGroup
+	var providerErr, modelErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		providerErr = roomRepo.UpdateAISettings(ctx, rm.ID, true, &provider, false, nil)
+	}()
+	go func() {
+		defer wg.Done()
+		modelErr = roomRepo.UpdateAISettings(ctx, rm.ID, false, nil, true, &model)
+	}()
+	wg.Wait()
+
+	if providerErr != nil {
+		t.Fatalf("UpdateAISettings (provider only) failed: %v", providerErr)
+	}
+	if modelErr != nil {
+		t.Fatalf("UpdateAISettings (model only) failed: %v", modelErr)
+	}
+
+	got, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.AIProvider == nil || *got.AIProvider != provider {
+		t.Fatalf("expected both concurrent calls' ai_provider change to land (%q), got %v", provider, got.AIProvider)
+	}
+	if got.AIModel == nil || *got.AIModel != model {
+		t.Fatalf("expected both concurrent calls' ai_model change to land (%q), got %v", model, got.AIModel)
 	}
 }

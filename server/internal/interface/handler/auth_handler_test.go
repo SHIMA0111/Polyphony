@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -117,9 +118,19 @@ func TestLoginHandler401(t *testing.T) {
 
 // TestAuthHandlerLogout proves that a request routed through a real
 // middleware.JWTAuth instance (which populates middleware.GetToken) and then
-// into AuthHandler.Logout returns HTTP 200.
+// into AuthHandler.Logout returns HTTP 200, and — the part that actually
+// protects the revocation behavior — that the bearer token extracted from
+// the Authorization header is the exact token passed through to
+// AuthService.Revoke, not some other value (e.g. an empty string, or the
+// "Bearer " prefix still attached).
 func TestAuthHandlerLogout(t *testing.T) {
-	svc := &mocks.AuthService{}
+	var revokedToken string
+	svc := &mocks.AuthService{
+		RevokeFunc: func(_ context.Context, token string) error {
+			revokedToken = token
+			return nil
+		},
+	}
 	uc := authusecase.NewAuthUsecase(svc)
 	h := NewAuthHandler(uc)
 
@@ -137,5 +148,8 @@ func TestAuthHandlerLogout(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if revokedToken != "some-token" {
+		t.Fatalf("expected AuthService.Revoke to be called with %q, got %q", "some-token", revokedToken)
 	}
 }

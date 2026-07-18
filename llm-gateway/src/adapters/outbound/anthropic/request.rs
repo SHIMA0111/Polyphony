@@ -2,6 +2,7 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::outbound::http_retry::send_with_retry;
+use crate::adapters::outbound::system_message_text;
 use crate::domain::error::DomainError;
 use crate::domain::model::{
     ChatMessage, Choice, CompletionRequest, CompletionResponse, ContentPart, MessageContent, Role,
@@ -152,14 +153,16 @@ fn role_to_anthropic_str(role: &Role) -> &'static str {
 /// Anthropic's Messages API requires a non-empty `messages` array, and an all-system
 /// request would otherwise be sent with `messages: []` and fail remotely with an
 /// opaque `400 invalid_request_error` instead of being rejected locally with a clear
-/// message.
+/// message. Also returns `DomainError::InvalidRequest` if any system message's content
+/// is `MessageContent::Parts` containing a non-text part (see `system_message_text`):
+/// Anthropic's `system` field is a flat string and cannot carry an image.
 pub(super) fn to_anthropic_request(req: &CompletionRequest) -> Result<AnthropicRequest, DomainError> {
     let mut system_parts = Vec::new();
     let mut messages = Vec::new();
 
     for m in &req.messages {
         if m.role == Role::System {
-            system_parts.push(m.content.as_text());
+            system_parts.push(system_message_text(&m.content)?);
         } else {
             messages.push(AnthropicMessage {
                 role: role_to_anthropic_str(&m.role).to_string(),
@@ -529,6 +532,63 @@ mod tests {
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abcd"}},
             ])
         );
+    }
+
+    /// A system message whose content is `MessageContent::Parts` and contains an image
+    /// part has no representable target in Anthropic's flat-string `system` field, so
+    /// it must be rejected locally rather than silently dropped.
+    #[test]
+    fn test_to_anthropic_request_system_message_with_image_part_is_invalid_request() {
+        let req = CompletionRequest {
+            model: "claude-opus-4-6".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: MessageContent::Parts(vec![
+                        ContentPart::Text("You are helpful.".to_string()),
+                        ContentPart::ImageBase64 {
+                            media_type: "image/png".to_string(),
+                            data: "abcd".to_string(),
+                        },
+                    ]),
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: "Hello".to_string().into(),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        match to_anthropic_request(&req) {
+            Ok(_) => panic!("a system message containing an image part should be rejected"),
+            Err(e) => assert!(matches!(e, DomainError::InvalidRequest(_))),
+        }
+    }
+
+    /// A plain-text system message (`MessageContent::Text`) is unaffected by the
+    /// image-part check and hoists into `system` exactly as before.
+    #[test]
+    fn test_to_anthropic_request_plain_text_system_message_unchanged() {
+        let req = CompletionRequest {
+            model: "claude-opus-4-6".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: "You are helpful.".to_string().into(),
+                },
+                ChatMessage {
+                    role: Role::User,
+                    content: "Hello".to_string().into(),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        let anthropic_req = to_anthropic_request(&req).expect("plain-text system message is valid");
+        assert_eq!(anthropic_req.system, Some("You are helpful.".to_string()));
     }
 
     #[test]
