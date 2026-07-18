@@ -494,7 +494,11 @@ func TestHandleWebhookEventSubscriptionUpdatedPlanChangeResyncsEntitlements(t *t
 // asserts that an unrecognized StripePriceID leaves PlanCode and
 // MonthlyTokenAllocation untouched (warn-and-skip, mirroring
 // upsertSubscriptionFromCheckout's unrecognized-plan_code handling) while
-// still syncing status.
+// still syncing status. The seed and event statuses are deliberately
+// different ("active" -> "past_due"): if they matched, the status-sync
+// assertion below would pass trivially even if handleSubscriptionUpdated
+// stopped writing sub.Status altogether, proving nothing about the sync
+// itself.
 func TestHandleWebhookEventSubscriptionUpdatedUnrecognizedPriceSkipsResync(t *testing.T) {
 	gw := &mocks.StripeGateway{}
 	uc, _, subRepo, _ := newStripeTestUsecase(gw)
@@ -510,7 +514,7 @@ func TestHandleWebhookEventSubscriptionUpdatedUnrecognizedPriceSkipsResync(t *te
 		ID:   "evt_sub_updated_unknown_price",
 		Type: domainbilling.EventTypeSubscriptionUpdated,
 		Subscription: &domainbilling.SubscriptionEventData{
-			StripeSubscriptionID: "sub_1", Status: "active", StripePriceID: "price_does_not_exist",
+			StripeSubscriptionID: "sub_1", Status: "past_due", StripePriceID: "price_does_not_exist",
 		},
 	}
 
@@ -525,8 +529,8 @@ func TestHandleWebhookEventSubscriptionUpdatedUnrecognizedPriceSkipsResync(t *te
 	if sub.StripePriceID != "price_starter" || sub.PlanCode != "starter" || sub.MonthlyTokenAllocation != 100000 {
 		t.Fatalf("expected plan/entitlements untouched for unrecognized price, got %+v", sub)
 	}
-	if sub.Status != "active" {
-		t.Fatalf("expected status still synced to active, got %s", sub.Status)
+	if sub.Status != "past_due" {
+		t.Fatalf("expected status synced to the event's past_due, got %s", sub.Status)
 	}
 }
 
@@ -634,30 +638,144 @@ func TestHandleWebhookEventSubscriptionDeletedNoLocalSubscriptionReturnsError(t 
 
 // --- Nil subscriptionRepo/paymentRepo guards (Step 49 follow-up) ---
 
-// TestGetSubscriptionNilRepoReturnsBillingNotConfigured asserts that
-// GetSubscription returns domain.ErrBillingNotConfigured instead of
-// panicking when subscriptionRepo was never wired up.
-func TestGetSubscriptionNilRepoReturnsBillingNotConfigured(t *testing.T) {
-	balanceRepo := &mocks.BalanceRepo{}
-	roomRepo := &mocks.RoomRepo{}
-	uc := NewBillingUsecase(balanceRepo, roomRepo, nil, nil, nil, nil, nil, "", "")
-
-	_, err := uc.GetSubscription(context.Background(), "user-1")
-	if !errors.Is(err, domain.ErrBillingNotConfigured) {
-		t.Fatalf("expected domain.ErrBillingNotConfigured, got %v", err)
+// TestNilRepoGuardsReturnBillingNotConfigured is a table test covering every
+// domain.ErrBillingNotConfigured guard in this package that depends on
+// subscriptionRepo or paymentRepo being nil: both the direct per-method
+// guards (GetSubscription, ListPaymentHistory) and the
+// HandleWebhookEvent dispatch-switch guards keyed by event type
+// (EventTypeSubscriptionUpdated, EventTypeCheckoutSessionCompleted). Each
+// case nils exactly one of subscriptionRepo/paymentRepo, with every other
+// dependency (the other repo, stripeGateway, and the plan/package catalog)
+// wired to a valid mock — unlike an earlier version of this test, which
+// nil'd subscriptionRepo, paymentRepo, and stripeGateway all at once (plus
+// an empty catalog) regardless of which single guard was under test, so a
+// case could pass for a reason unrelated to the guard it claimed to verify.
+//
+// balanceRepo is deliberately not included as a case: HandleWebhookEvent's
+// GoDoc documents that balanceRepo (like roomRepo) is assumed always wired
+// and is not nil-guarded, so nil-ing it would panic on the first
+// balanceRepo dereference (e.g. in handleCheckoutSessionCompleted's
+// token-purchase branch) rather than exercise a guard.
+func TestNilRepoGuardsReturnBillingNotConfigured(t *testing.T) {
+	tests := []struct {
+		name                string
+		nilSubscriptionRepo bool
+		nilPaymentRepo      bool
+		// run exercises the guard under test against uc, which is built by
+		// the loop below with exactly one of subscriptionRepo/paymentRepo
+		// nil'd per nilSubscriptionRepo/nilPaymentRepo and every other
+		// dependency wired to a valid mock.
+		run func(uc *BillingUsecase) error
+	}{
+		{
+			name:                "GetSubscription with nil subscriptionRepo",
+			nilSubscriptionRepo: true,
+			run: func(uc *BillingUsecase) error {
+				_, err := uc.GetSubscription(context.Background(), "user-1")
+				return err
+			},
+		},
+		{
+			name:           "ListPaymentHistory with nil paymentRepo",
+			nilPaymentRepo: true,
+			run: func(uc *BillingUsecase) error {
+				_, err := uc.ListPaymentHistory(context.Background(), "user-1", "", 10)
+				return err
+			},
+		},
+		{
+			name:                "HandleWebhookEvent(customer.subscription.updated) with nil subscriptionRepo",
+			nilSubscriptionRepo: true,
+			run: func(uc *BillingUsecase) error {
+				uc.stripeGateway.(*mocks.StripeGateway).WebhookEvent = domainbilling.WebhookEvent{
+					ID:   "evt_nil_sub_repo",
+					Type: domainbilling.EventTypeSubscriptionUpdated,
+					Subscription: &domainbilling.SubscriptionEventData{
+						StripeSubscriptionID: "sub_1", Status: "active",
+					},
+				}
+				return uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+			},
+		},
+		{
+			name:           "HandleWebhookEvent(checkout.session.completed) with nil paymentRepo",
+			nilPaymentRepo: true,
+			run: func(uc *BillingUsecase) error {
+				uc.stripeGateway.(*mocks.StripeGateway).WebhookEvent = domainbilling.WebhookEvent{
+					ID:   "evt_nil_payment_repo",
+					Type: domainbilling.EventTypeCheckoutSessionCompleted,
+					CheckoutSession: &domainbilling.CheckoutSessionData{
+						SessionID: "cs_1", Mode: domainbilling.CheckoutModePayment, Kind: "token_purchase",
+						UserID: "user-1", PackageCode: "topup_small", AmountTotal: 300, Currency: "usd",
+					},
+				}
+				return uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+			},
+		},
+		{
+			name:                "HandleWebhookEvent(checkout.session.completed subscription mode) with nil subscriptionRepo",
+			nilSubscriptionRepo: true,
+			run: func(uc *BillingUsecase) error {
+				uc.stripeGateway.(*mocks.StripeGateway).WebhookEvent = domainbilling.WebhookEvent{
+					ID:   "evt_nil_checkout_sub_repo",
+					Type: domainbilling.EventTypeCheckoutSessionCompleted,
+					CheckoutSession: &domainbilling.CheckoutSessionData{
+						SessionID: "cs_2", Mode: domainbilling.CheckoutModeSubscription,
+						UserID: "user-1", PlanCode: "starter", StripeSubscriptionID: "sub_1", StripeCustomerID: "cus_1",
+					},
+				}
+				return uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+			},
+		},
+		{
+			name:                "HandleWebhookEvent(invoice.paid) with nil subscriptionRepo",
+			nilSubscriptionRepo: true,
+			run: func(uc *BillingUsecase) error {
+				uc.stripeGateway.(*mocks.StripeGateway).WebhookEvent = domainbilling.WebhookEvent{
+					ID:   "evt_nil_invoice_sub_repo",
+					Type: domainbilling.EventTypeInvoicePaid,
+					Invoice: &domainbilling.InvoiceData{
+						InvoiceID: "in_1", StripeSubscriptionID: "sub_1", BillingReason: "subscription_cycle",
+						AmountPaid: 500, Currency: "usd",
+					},
+				}
+				return uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+			},
+		},
+		{
+			name:                "HandleWebhookEvent(customer.subscription.deleted) with nil subscriptionRepo",
+			nilSubscriptionRepo: true,
+			run: func(uc *BillingUsecase) error {
+				uc.stripeGateway.(*mocks.StripeGateway).WebhookEvent = domainbilling.WebhookEvent{
+					ID:   "evt_nil_sub_deleted_repo",
+					Type: domainbilling.EventTypeSubscriptionDeleted,
+					Subscription: &domainbilling.SubscriptionEventData{StripeSubscriptionID: "sub_1"},
+				}
+				return uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig")
+			},
+		},
 	}
-}
 
-// TestListPaymentHistoryNilRepoReturnsBillingNotConfigured asserts that
-// ListPaymentHistory returns domain.ErrBillingNotConfigured instead of
-// panicking when paymentRepo was never wired up.
-func TestListPaymentHistoryNilRepoReturnsBillingNotConfigured(t *testing.T) {
-	balanceRepo := &mocks.BalanceRepo{}
-	roomRepo := &mocks.RoomRepo{}
-	uc := NewBillingUsecase(balanceRepo, roomRepo, nil, nil, nil, nil, nil, "", "")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			balanceRepo := &mocks.BalanceRepo{}
+			roomRepo := &mocks.RoomRepo{}
+			var subRepo domainbilling.SubscriptionRepository = &mocks.SubscriptionRepo{}
+			var paymentRepo domainbilling.PaymentRepository = &mocks.PaymentRepo{BalanceRepo: balanceRepo}
+			if tt.nilSubscriptionRepo {
+				subRepo = nil
+			}
+			if tt.nilPaymentRepo {
+				paymentRepo = nil
+			}
 
-	_, err := uc.ListPaymentHistory(context.Background(), "user-1", "", 10)
-	if !errors.Is(err, domain.ErrBillingNotConfigured) {
-		t.Fatalf("expected domain.ErrBillingNotConfigured, got %v", err)
+			uc := NewBillingUsecase(balanceRepo, roomRepo, subRepo, paymentRepo, &mocks.StripeGateway{},
+				testPlans(), testPackages(), "https://example.com/success", "https://example.com/cancel")
+
+			err := tt.run(uc)
+			if !errors.Is(err, domain.ErrBillingNotConfigured) {
+				t.Fatalf("expected domain.ErrBillingNotConfigured, got %v", err)
+			}
+		})
 	}
 }

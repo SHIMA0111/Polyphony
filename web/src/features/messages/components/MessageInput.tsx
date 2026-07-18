@@ -153,19 +153,21 @@ export function MessageInput({
   }, [input])
 
   // Debounced live token estimate: recomputed whenever the draft, selected
-  // model, or visible message list changes. Advisory only — a failed
-  // estimate is logged and swallowed rather than blocking or disabling
-  // send (see `estimateTokens`'s docstring).
+  // model, canInvokeAI, or visible message list changes. Advisory only — a
+  // failed estimate is logged and swallowed rather than blocking or
+  // disabling send (see `estimateTokens`'s docstring).
   useEffect(() => {
-    if (!effectiveModel) return
-
     // Invalidate any in-flight estimate and clear the stale display
     // synchronously, before scheduling the debounce below -- otherwise an
     // older, slower request already in flight from the *previous* deps could
     // still resolve during this debounce window and briefly overwrite the
-    // display with a now-stale token count.
+    // display with a now-stale token count. This runs before either
+    // early-return below so a stale estimate never lingers once the model
+    // disappears or the viewer loses AI access.
     setEstimatedTokens(null)
     const requestId = ++estimateRequestIdRef.current
+
+    if (!effectiveModel || !canInvokeAI) return
 
     const timeoutId = setTimeout(() => {
       // Defends against any not-yet-reconciled optimistic/WS cache entry
@@ -204,7 +206,7 @@ export function MessageInput({
     }, TOKEN_ESTIMATE_DEBOUNCE_MS)
 
     return () => clearTimeout(timeoutId)
-  }, [input, effectiveModel, messages])
+  }, [input, effectiveModel, messages, canInvokeAI])
 
   const doneAttachmentIds = attachments
     .filter((a) => a.status === "done" && a.attachmentId)
@@ -511,8 +513,10 @@ export function MessageInput({
         </Text>
 
         {/* Live, debounced token estimate (Step 38) — advisory only, never
-            blocks send. */}
-        {estimatedTokens !== null && (
+            blocks send. Only rendered when the viewer can invoke AI at all;
+            see the estimate effect above, which likewise skips fetching one
+            when `canInvokeAI` is false. */}
+        {canInvokeAI && estimatedTokens !== null && (
           <Text textAlign="center" fontSize="2xs" color="fg.muted">
             ~{estimatedTokens} tokens
           </Text>
