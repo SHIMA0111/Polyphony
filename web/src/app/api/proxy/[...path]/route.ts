@@ -38,6 +38,14 @@ interface RouteContext {
  * `Transfer-Encoding` are intentionally dropped since the body was already
  * read and decoded here.
  *
+ * The upstream `fetch` *and* the subsequent read of its response body are
+ * both bounded by a single `AbortController` timeout
+ * (`UPSTREAM_TIMEOUT_MS`, default 30s): an upstream that hangs while
+ * sending the response body (rather than erroring immediately, or not
+ * responding at all) would otherwise leave the caller's request pending
+ * indefinitely even though the initial `fetch` call had already resolved.
+ * The timeout is only cleared once both steps have settled.
+ *
  * @param request - The incoming Next.js request.
  * @param context - Route context carrying the (Next 16 async) dynamic `path` segments.
  * @returns A `NextResponse` mirroring the upstream status and body.
@@ -66,6 +74,7 @@ async function proxy(
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
 
   let upstreamRes: Response
+  let responseBody: ArrayBuffer
   try {
     upstreamRes = await fetch(upstreamUrl, {
       method: request.method,
@@ -73,6 +82,7 @@ async function proxy(
       body: hasBody ? await request.arrayBuffer() : undefined,
       signal: controller.signal,
     })
+    responseBody = await upstreamRes.arrayBuffer()
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       return NextResponse.json({ message: "upstream timeout" }, { status: 504 })
@@ -82,7 +92,6 @@ async function proxy(
     clearTimeout(timeout)
   }
 
-  const responseBody = await upstreamRes.arrayBuffer()
   const responseHeaders: Record<string, string> = {}
   const upstreamContentType = upstreamRes.headers.get("Content-Type")
   if (upstreamContentType) {

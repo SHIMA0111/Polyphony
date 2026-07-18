@@ -2,7 +2,7 @@ import { renderHook, waitFor } from "@testing-library/react"
 import { http, HttpResponse } from "msw"
 import { describe, expect, it } from "vitest"
 import { server } from "@/test/msw/server"
-import { createQueryClientWrapper } from "@/test/render"
+import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import {
   fixtureAiMessage,
   fixtureAiMessageResponse,
@@ -221,5 +221,62 @@ describe("useChatRoom handleRetry", () => {
     await waitFor(() => {
       expect(result.current.messages.some((m) => m.status === "failed")).toBe(false)
     })
+  })
+
+  it("retains a failed AI send's retry intent across a remount of useChatRoom, since it lives in the QueryClient rather than a component ref", async () => {
+    let aiCallCount = 0
+    let capturedRetryBody: { content?: string; model?: string } | undefined
+
+    server.use(
+      http.get("/api/proxy/rooms/:roomId/messages", () => {
+        return HttpResponse.json<MessagePage>({ messages: [], next_cursor: null })
+      }),
+      http.post("/api/proxy/rooms/:roomId/messages/ai", async ({ request }) => {
+        aiCallCount += 1
+        if (aiCallCount === 1) {
+          return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+        }
+        capturedRetryBody = (await request.json()) as { content?: string; model?: string }
+        return HttpResponse.json(fixtureAiMessageResponse, { status: 201 })
+      }),
+    )
+
+    // A single QueryClient shared across the unmount/remount below -- unlike
+    // a fresh QueryClient per render, this is what proves the retry intent
+    // outlives the component instance, since it is only the QueryClient (not
+    // any component-local ref) that persists across the remount.
+    const queryClient = createTestQueryClient()
+
+    const first = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+    await waitFor(() => expect(first.result.current.isLoading).toBe(false))
+
+    await expect(
+      first.result.current.handleSendWithAI("Hello, AI!", "gpt-5"),
+    ).rejects.toThrow()
+    await waitFor(() => {
+      const failedHuman = first.result.current.messages.find((m) => m.status === "failed")
+      expect(failedHuman).toBeDefined()
+    })
+    const failedHuman = first.result.current.messages.find((m) => m.status === "failed")
+    if (!failedHuman) throw new Error("expected a failed human message")
+
+    // Unmount (simulating navigating away from the room) before retrying --
+    // a `useRef`-backed intent store would be discarded here.
+    first.unmount()
+
+    const second = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+    await waitFor(() => expect(second.result.current.isLoading).toBe(false))
+
+    await second.result.current.handleRetry(failedHuman.id, "Hello, AI!")
+
+    await waitFor(() => expect(aiCallCount).toBe(2))
+    // The retry after remount still went through the AI mutation with the
+    // original model -- proof the intent was read from the QueryClient, not
+    // lost with the first render's now-unmounted component.
+    expect(capturedRetryBody).toEqual({ content: "Hello, AI!", model: "gpt-5" })
   })
 })

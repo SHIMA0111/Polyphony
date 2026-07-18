@@ -3,14 +3,14 @@ import { http, HttpResponse } from "msw"
 import { describe, expect, it, vi } from "vitest"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
-import { fixtureAiMessage } from "@/features/messages/api/handlers"
+import { fixtureAiMessage, fixtureHumanMessage } from "@/features/messages/api/handlers"
 import type { MessagesInfiniteData } from "@/features/messages/lib/message-cache"
 import { useRegenerateAIMessage } from "./use-regenerate-ai-message"
 
 const queryKey = ["rooms", "room-1", "messages"] as const
 
 describe("useRegenerateAIMessage", () => {
-  it("replaces the matching AI message in the cache on success", async () => {
+  it("replaces the matching AI message in the cache on success, even when it lives in an older page rather than pages[0]", async () => {
     const regenerated = { ...fixtureAiMessage, content: "Regenerated content" }
     server.use(
       http.post(
@@ -20,9 +20,18 @@ describe("useRegenerateAIMessage", () => {
     )
 
     const queryClient = createTestQueryClient()
+    // Two pages (newest-first): pages[0] is a *different*, newer page that
+    // never contained the target AI message; `fixtureAiMessage` lives only
+    // in pages[1], the older page. `useRegenerateAIMessage` searches every
+    // loaded page (`replaceMessageInAnyPage`), not just pages[0] -- a
+    // single-page fixture couldn't distinguish that from a bug that only
+    // ever checked pages[0].
     queryClient.setQueryData<MessagesInfiniteData>(queryKey, {
-      pages: [{ messages: [fixtureAiMessage], next_cursor: null }],
-      pageParams: [undefined],
+      pages: [
+        { messages: [fixtureHumanMessage], next_cursor: "2" },
+        { messages: [fixtureAiMessage], next_cursor: null },
+      ],
+      pageParams: [undefined, "2"],
     })
 
     const { result } = renderHook(() => useRegenerateAIMessage("room-1"), {
@@ -35,7 +44,9 @@ describe("useRegenerateAIMessage", () => {
     })
 
     const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
-    expect(data?.pages[0]?.messages[0]?.content).toBe("Regenerated content")
+    expect(data?.pages[1]?.messages[0]?.content).toBe("Regenerated content")
+    // pages[0] must be left untouched by the replace.
+    expect(data?.pages[0]?.messages[0]?.id).toBe(fixtureHumanMessage.id)
   })
 
   // Regression test for item [24]: onMutate must cancel any in-flight
