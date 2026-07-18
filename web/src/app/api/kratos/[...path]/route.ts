@@ -8,9 +8,14 @@ const KRATOS_PUBLIC_URL = process.env.KRATOS_PUBLIC_URL ?? "http://localhost:443
  * respond before aborting the upstream request and returning a `504` to the
  * caller. Configurable via `KRATOS_PROXY_TIMEOUT_MS` for environments where
  * Kratos is known to be slower (e.g. a cold-started dev stack); defaults to
- * 30 seconds.
+ * 30 seconds. Any value that is not a finite number greater than zero
+ * (unset, non-numeric, negative, zero, or `Infinity`) falls back to the
+ * default.
  */
-const KRATOS_PROXY_TIMEOUT_MS = Number(process.env.KRATOS_PROXY_TIMEOUT_MS) || 30_000
+const KRATOS_PROXY_TIMEOUT_MS = (() => {
+  const parsed = Number(process.env.KRATOS_PROXY_TIMEOUT_MS)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000
+})()
 
 /** Route handlers must not be statically optimized: every request carries a distinct session cookie. */
 export const dynamic = "force-dynamic"
@@ -72,14 +77,20 @@ interface RouteContext {
  * dropped since the body was already read and decoded here (mirrors
  * `app/api/proxy/[...path]/route.ts`).
  *
- * The upstream `fetch` is bounded by an `AbortController` timeout
- * (`KRATOS_PROXY_TIMEOUT_MS`, default 30s): a Kratos instance that hangs
- * (rather than erroring immediately) would otherwise leave the caller's
- * request pending indefinitely. An abort is reported as a `504` JSON body;
- * any other network-level rejection (e.g. Kratos unreachable, DNS failure)
- * is reported as a `502` JSON body, so a caller always gets a timely,
- * well-formed response instead of an unhandled exception bubbling out of
- * the route handler.
+ * The upstream `fetch` *and* — for non-redirect responses — the subsequent
+ * read of its response body are both bounded by a single `AbortController`
+ * timeout (`KRATOS_PROXY_TIMEOUT_MS`, default 30s): a Kratos instance that
+ * hangs while sending the response body (rather than erroring immediately,
+ * or not responding at all) would otherwise leave the caller's request
+ * pending indefinitely even though the initial `fetch` call had already
+ * resolved. The timeout is only cleared once both steps have settled (the
+ * redirect branch never reads a body, so for it the timeout is cleared as
+ * soon as `fetch` resolves). An abort at either stage is reported as a
+ * `504` JSON body; any other network-level rejection (e.g. Kratos
+ * unreachable, DNS failure) is reported as a `502` JSON body, so a caller
+ * always gets a timely, well-formed response instead of an unhandled
+ * exception — or an indefinitely pending request — bubbling out of the
+ * route handler.
  *
  * @param request - The incoming Next.js request.
  * @param context - Route context carrying the (Next 16 async) dynamic `path` segments.
@@ -113,6 +124,7 @@ async function proxy(
   const timeoutId = setTimeout(() => controller.abort(), KRATOS_PROXY_TIMEOUT_MS)
 
   let upstreamRes: Response
+  let responseBody: ArrayBuffer | null = null
   try {
     upstreamRes = await fetch(upstreamUrl, {
       method: request.method,
@@ -121,6 +133,9 @@ async function proxy(
       redirect: "manual",
       signal: controller.signal,
     })
+    if (!(upstreamRes.status >= 300 && upstreamRes.status < 400)) {
+      responseBody = await upstreamRes.arrayBuffer()
+    }
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       return NextResponse.json(
@@ -152,7 +167,6 @@ async function proxy(
     })
   }
 
-  const responseBody = await upstreamRes.arrayBuffer()
   const upstreamContentType = upstreamRes.headers.get("Content-Type")
   if (upstreamContentType) {
     responseHeaders.set("Content-Type", upstreamContentType)

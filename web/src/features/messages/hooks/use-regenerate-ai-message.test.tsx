@@ -3,8 +3,9 @@ import { http, HttpResponse } from "msw"
 import { describe, expect, it, vi } from "vitest"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
-import { fixtureAiMessage } from "@/features/messages/api/handlers"
+import { fixtureAiMessage, fixtureHumanMessage } from "@/features/messages/api/handlers"
 import { toaster } from "@/components/ui/toaster"
+import type { MessagesInfiniteData } from "@/features/messages/lib/message-cache"
 import type { Message } from "@/features/messages/types"
 import { useRegenerateAIMessage } from "./use-regenerate-ai-message"
 
@@ -17,7 +18,7 @@ import { useRegenerateAIMessage } from "./use-regenerate-ai-message"
  * covers the caller-level 402 -> `aiError` half.
  */
 describe("useRegenerateAIMessage", () => {
-  it("replaces the target message in the cache and invalidates the balance query on success", async () => {
+  it("replaces the target message in the cache and invalidates the balance query on success, even when it lives in an older page rather than pages[0]", async () => {
     server.use(
       http.post(
         "/api/proxy/rooms/:roomId/messages/:messageId/regenerate",
@@ -27,9 +28,18 @@ describe("useRegenerateAIMessage", () => {
 
     const queryClient = createTestQueryClient()
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries")
+    // Two pages (newest-first): pages[0] is a *different*, newer page that
+    // never contained the target AI message; `fixtureAiMessage` lives only
+    // in pages[1], the older page. `useRegenerateAIMessage` searches every
+    // loaded page (`replaceMessageInAnyPage`), not just pages[0] -- a
+    // single-page fixture couldn't distinguish that from a bug that only
+    // ever checked pages[0].
     queryClient.setQueryData(["rooms", "room-1", "messages"], {
-      pages: [{ messages: [fixtureAiMessage], next_cursor: null }],
-      pageParams: [undefined],
+      pages: [
+        { messages: [fixtureHumanMessage], next_cursor: "2" },
+        { messages: [fixtureAiMessage], next_cursor: null },
+      ],
+      pageParams: [undefined, "2"],
     })
 
     const { result } = renderHook(() => useRegenerateAIMessage("room-1"), {
@@ -44,6 +54,11 @@ describe("useRegenerateAIMessage", () => {
     await waitFor(() =>
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["billing", "balance"] }),
     )
+
+    const data = queryClient.getQueryData<MessagesInfiniteData>(["rooms", "room-1", "messages"])
+    expect(data?.pages[1]?.messages[0]?.content).toBe("Regenerated")
+    // pages[0] must be left untouched by the replace.
+    expect(data?.pages[0]?.messages[0]?.id).toBe(fixtureHumanMessage.id)
   })
 
   it("shows a generic toast for a non-402 regenerate failure", async () => {

@@ -9,7 +9,10 @@ import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useMessages } from "@/features/messages/hooks/use-messages"
 import { useModels } from "@/features/messages/hooks/use-models"
 import { useSendMessage } from "@/features/messages/hooks/use-send-message"
-import { useSendAIMessage } from "@/features/messages/hooks/use-send-ai-message"
+import {
+  useSendAIMessage,
+  takeFailedAISendIntent,
+} from "@/features/messages/hooks/use-send-ai-message"
 import { useRegenerateAIMessage } from "@/features/messages/hooks/use-regenerate-ai-message"
 import { attachToMessage } from "@/features/messages/api/attach-to-message"
 import { listAttachments } from "@/features/messages/api/list-attachments"
@@ -342,20 +345,18 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
       )
 
       // A failed AI send leaves its human echo's optimistic id recorded in
-      // `sendAIMessageMutation.failedIntentsRef.current` (set in that
-      // hook's own `onError`, see its docstring) -- consulting it here is
-      // what makes a retry of an AI send actually retry as an AI send (with
-      // the original model/stream/private), instead of this method
-      // previously always falling back to the plain-send mutation regardless
-      // of how the message was originally sent -- which also silently
-      // downgraded a failed private send's retry to a public one. A failed
-      // *plain* send has no entry here, so it falls through to the
-      // plain-send branch exactly as before. Read/written here (inside this
-      // callback), never during either hook's render, per `failedIntentsRef`'s
-      // own doc comment.
-      const failedIntents = sendAIMessageMutation.failedIntentsRef.current
-      const aiIntent = failedIntents.get(messageId)
-      failedIntents.delete(messageId)
+      // the `QueryClient`-backed retry-intent map (set in
+      // `useSendAIMessage`'s own `onError`, see its docstring and
+      // `takeFailedAISendIntent`'s) -- consulting it here is what makes a
+      // retry of an AI send actually retry as an AI send (with the original
+      // model/stream/private), instead of this method previously always
+      // falling back to the plain-send mutation regardless of how the
+      // message was originally sent -- which also silently downgraded a
+      // failed private send's retry to a public one. A failed *plain* send
+      // has no entry here, so it falls through to the plain-send branch
+      // exactly as before. Stored in the `QueryClient` rather than a
+      // component-local ref so it survives a remount of this hook.
+      const aiIntent = takeFailedAISendIntent(queryClient, roomId, messageId)
 
       // Mirrors `handleRegenerate`'s error handling: both mutations' own
       // `onError` already roll back the optimistic entry (to `status:

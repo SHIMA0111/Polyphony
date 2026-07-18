@@ -345,8 +345,8 @@ func TestInvitationRepositoryAcceptTxConcurrentAcceptReject(t *testing.T) {
 		if acceptErr != nil {
 			t.Fatalf("status is accepted but AcceptTx returned an error: %v", acceptErr)
 		}
-		if rejectErr == nil {
-			t.Fatal("status is accepted but RejectInvitation's UpdateStatus did not report a conflict")
+		if !errors.Is(rejectErr, domain.ErrInvitationNotPending) {
+			t.Fatalf("status is accepted but RejectInvitation's UpdateStatus did not report ErrInvitationNotPending, got %v", rejectErr)
 		}
 		if !isMember {
 			t.Fatal("status is accepted but the room member was never inserted")
@@ -355,8 +355,8 @@ func TestInvitationRepositoryAcceptTxConcurrentAcceptReject(t *testing.T) {
 		if rejectErr != nil {
 			t.Fatalf("status is rejected but UpdateStatus returned an error: %v", rejectErr)
 		}
-		if acceptErr == nil {
-			t.Fatal("status is rejected but AcceptTx did not report a conflict")
+		if !errors.Is(acceptErr, domain.ErrInvitationNotPending) {
+			t.Fatalf("status is rejected but AcceptTx did not report ErrInvitationNotPending, got %v", acceptErr)
 		}
 		if isMember {
 			t.Fatal("status is rejected but a room member was inserted anyway")
