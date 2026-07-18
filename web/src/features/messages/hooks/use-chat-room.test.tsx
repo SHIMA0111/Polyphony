@@ -288,3 +288,68 @@ describe("useChatRoom handleRetry", () => {
     expect(capturedRetryBody).toEqual({ content: "Hello, AI!", model: "gpt-5" })
   })
 })
+
+/**
+ * Step 48's 402 (insufficient token balance) handling: `handleSendWithAI`
+ * must distinguish a `402` rejection from any other failure, surfacing it
+ * via `aiError` (for `MessageInput`'s inline error) while still re-throwing
+ * so `useSendAIMessage`'s own optimistic-rollback `onError` still runs, and
+ * must invalidate `["billing", "balance"]` after a *successful* send.
+ */
+describe("useChatRoom handleSendWithAI", () => {
+  it("sets aiError and does not invalidate the balance query on a 402 response", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+        return HttpResponse.json(
+          { message: "insufficient token balance" },
+          { status: 402 },
+        )
+      }),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+    expect(result.current.aiError).toBeNull()
+
+    await expect(
+      result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini"),
+    ).rejects.toThrow()
+
+    await waitFor(() => expect(result.current.aiError).toBe("Insufficient token balance."))
+  })
+
+  it("clears any prior aiError and invalidates the balance query on a successful send", async () => {
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini")
+
+    expect(result.current.aiError).toBeNull()
+  })
+
+  it("does not set aiError for a non-402 failure", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+        return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+      }),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await expect(
+      result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini"),
+    ).rejects.toThrow()
+
+    expect(result.current.aiError).toBeNull()
+  })
+})

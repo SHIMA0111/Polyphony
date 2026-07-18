@@ -1,7 +1,8 @@
 "use client"
 
-import { useCallback, useMemo } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { useQueryClient, type QueryClient } from "@tanstack/react-query"
+import { ApiRequestError } from "@/lib/http-client"
 import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useMessages } from "@/features/messages/hooks/use-messages"
 import { useModels } from "@/features/messages/hooks/use-models"
@@ -12,6 +13,13 @@ import { flattenMessagePages } from "@/features/messages/lib/flatten-message-pag
 import { removeFromNewestPage, type MessagesInfiniteData } from "@/features/messages/lib/message-cache"
 import type { Message, ModelInfo } from "@/features/messages/types"
 import type { Room } from "@/features/rooms/types"
+
+/**
+ * Copy shown by `MessageInput`'s inline error line when an AI send is
+ * rejected with HTTP 402 (`domain.ErrInsufficientBalance`, see
+ * `server/internal/usecase/billing/usecase.go`'s `CheckBalance`).
+ */
+export const INSUFFICIENT_BALANCE_MESSAGE = "Insufficient token balance."
 
 /** Stable identity fallbacks so `useCallback`/`useMemo` deps below don't
  * change on every render while a query has no data yet. */
@@ -107,6 +115,15 @@ export interface UseChatRoomResult {
   /** Re-sends a failed human message's original content, replacing its
    * failed optimistic entry so no duplicate bubble is left behind. */
   handleRetry: (messageId: string, content: string) => Promise<void>
+  /**
+   * Set to {@link INSUFFICIENT_BALANCE_MESSAGE} when the most recent
+   * `handleSendWithAI` call was rejected with HTTP 402, `null` otherwise
+   * (including after any other kind of send failure, which the mutation's
+   * own toast already surfaces). Cleared at the start of every subsequent
+   * `handleSendWithAI` call so a resolved-then-retried send doesn't leave a
+   * stale error on screen.
+   */
+  aiError: string | null
 }
 
 /**
@@ -122,6 +139,7 @@ export interface UseChatRoomResult {
  */
 export function useChatRoom(roomId: string): UseChatRoomResult {
   const queryClient = useQueryClient()
+  const [aiError, setAiError] = useState<string | null>(null)
 
   const roomQuery = useRoom(roomId)
   const messagesQuery = useMessages(roomId)
@@ -164,9 +182,30 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
 
   const handleSendWithAI = useCallback(
     async (content: string, model: string) => {
-      await sendAIMessageMutation.mutateAsync({ content, model })
+      setAiError(null)
+      try {
+        await sendAIMessageMutation.mutateAsync({ content, model })
+        // Refresh the top-bar balance promptly after a successful AI send,
+        // rather than waiting for `useBalance`'s background poll — a send
+        // debits the room owner's balance server-side (see
+        // `BillingUsecase.RecordUsage`).
+        await queryClient.invalidateQueries({ queryKey: ["billing", "balance"] })
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status === 402) {
+          // Distinguish "the AI declined to answer" from "the request was
+          // never even allowed to run": surface a specific, actionable error
+          // to `MessageInput` instead of the generic failed-send toast
+          // `useSendAIMessage`'s own `onError` already shows.
+          setAiError(INSUFFICIENT_BALANCE_MESSAGE)
+        }
+        // Re-throw regardless of status so `MessageInput`'s own catch still
+        // restores the typed content and `useSendAIMessage`'s `onError`
+        // still rolls back the optimistic entries — this only adds the
+        // 402-specific `aiError` state on top of that existing handling.
+        throw error
+      }
     },
-    [sendAIMessageMutation],
+    [sendAIMessageMutation, queryClient],
   )
 
   const handleRegenerate = useCallback(
@@ -253,5 +292,6 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
     handleSendWithAI,
     handleRegenerate,
     handleRetry,
+    aiError,
   }
 }
