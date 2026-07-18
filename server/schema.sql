@@ -19,6 +19,7 @@ CREATE TABLE rooms (
     name VARCHAR(255) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     owner_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    ai_context_cutoff_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -47,6 +48,8 @@ CREATE TABLE messages (
     status VARCHAR(20) NOT NULL DEFAULT 'completed',
     sequence BIGINT NOT NULL,
     in_response_to_message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
+    is_deleted BOOLEAN NOT NULL DEFAULT false,
+    exclude_from_ai BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT messages_room_sequence_unique UNIQUE (room_id, sequence)
@@ -66,3 +69,42 @@ CREATE TABLE message_attachments (
 
 CREATE INDEX idx_message_attachments_message_id ON message_attachments(message_id);
 CREATE INDEX idx_message_attachments_room_id ON message_attachments(room_id);
+
+CREATE TABLE room_invitations (
+    id UUID PRIMARY KEY,
+    room_id UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    inviter_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    invitee_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    invite_code VARCHAR(64) NOT NULL,
+    role VARCHAR(50) NOT NULL DEFAULT 'member',
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT room_invitations_invite_code_unique UNIQUE (invite_code),
+    CONSTRAINT room_invitations_role_check CHECK (role IN ('reader', 'guest', 'member', 'admin', 'master')),
+    CONSTRAINT room_invitations_status_check CHECK (status IN ('pending', 'accepted', 'rejected', 'revoked'))
+);
+
+CREATE INDEX idx_room_invitations_room_id ON room_invitations(room_id);
+CREATE INDEX idx_room_invitations_invitee_id ON room_invitations(invitee_id) WHERE invitee_id IS NOT NULL;
+
+CREATE TABLE token_balances (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    balance BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE token_transactions (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    room_id UUID REFERENCES rooms(id) ON DELETE SET NULL,
+    message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
+    type VARCHAR(20) NOT NULL,
+    amount BIGINT NOT NULL,
+    balance_after BIGINT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT token_transactions_type_check CHECK (type IN ('consumption', 'charge', 'adjustment'))
+);
+
+CREATE INDEX idx_token_transactions_user_created ON token_transactions(user_id, created_at DESC, id DESC);

@@ -14,17 +14,21 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainattachment "github.com/SHIMA0111/multi-user-ai/server/internal/domain/attachment"
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
+	domainbilling "github.com/SHIMA0111/multi-user-ai/server/internal/domain/billing"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
+	domaininvitation "github.com/SHIMA0111/multi-user-ai/server/internal/domain/invitation"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	domainstorage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/storage"
 	domainuser "github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/infrastructure/config"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/infrastructure/database"
+	infraevent "github.com/SHIMA0111/multi-user-ai/server/internal/infrastructure/event"
 	ifauth "github.com/SHIMA0111/multi-user-ai/server/internal/interface/auth"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/gateway"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/handler"
@@ -33,6 +37,8 @@ import (
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/wsticket"
 	attachmentusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/attachment"
 	authusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/auth"
+	billingusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/billing"
+	invitationusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/invitation"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
 	modelusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/model"
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
@@ -59,6 +65,15 @@ type Container struct {
 	// Logger is the base structured logger used to build request-scoped loggers.
 	Logger *slog.Logger
 
+	// RedisClient is the shared Redis client used when Config.MessageHubDriver
+	// is "redis". It is nil when the inprocess driver is selected. It is kept
+	// on the Container (rather than only captured in a closure) so later
+	// steps (e.g. Step 33's rate limiting and Kratos session cache) can reuse
+	// the same client instead of opening a second connection pool. Callers
+	// are responsible for closing it (typically via a deferred
+	// RedisClient.Close() in main, guarded by a nil check).
+	RedisClient *redis.Client
+
 	// Repositories
 	UserRepo domainuser.UserRepository
 	RoomRepo domainroom.RoomRepository
@@ -66,6 +81,8 @@ type Container struct {
 	// AttachmentRepo is the domain/attachment.AttachmentRepository backing
 	// AttachmentUC's presign/link/list operations.
 	AttachmentRepo domainattachment.AttachmentRepository
+	InvitationRepo domaininvitation.InvitationRepository
+	BillingRepo    domainbilling.BalanceRepository
 
 	// Services / Gateways
 	AuthService domainauth.AuthService
@@ -89,7 +106,9 @@ type Container struct {
 	AttachmentUC *attachmentusecase.AttachmentUsecase
 	// ModelUC lists available AI models across all configured providers via
 	// LLMGateway (see usecase/model.ModelUsecase).
-	ModelUC *modelusecase.ModelUsecase
+	ModelUC      *modelusecase.ModelUsecase
+	InvitationUC *invitationusecase.InvitationUsecase
+	BillingUC    *billingusecase.BillingUsecase
 
 	// Handlers
 	HealthHandler  *handler.HealthHandler
@@ -103,7 +122,10 @@ type Container struct {
 	AttachmentHandler *handler.AttachmentHandler
 	// WebSocketHandler serves the ticket-issuance and connection-upgrade
 	// endpoints that push real-time event.RoomEvent updates to clients.
-	WebSocketHandler *handler.WebSocketHandler
+	WebSocketHandler  *handler.WebSocketHandler
+	InvitationHandler *handler.InvitationHandler
+	TokenHandler      *handler.TokenHandler
+	BillingHandler    *handler.BillingHandler
 }
 
 // NewContainer builds a Container: it opens the database connection pool,
@@ -126,6 +148,8 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	roomRepo := postgres.NewRoomRepository(pool)
 	msgRepo := postgres.NewMessageRepository(pool)
 	attachmentRepo := postgres.NewAttachmentRepository(pool)
+	invitationRepo := postgres.NewInvitationRepository(pool)
+	billingRepo := postgres.NewBillingRepository(pool)
 
 	// Services / Gateways
 	//
@@ -141,20 +165,84 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	default:
 		authService = ifauth.NewSimpleJWTService(userRepo, cfg.JWTSecret)
 	}
-	llmClient := gateway.NewLLMClient(cfg.LLMGatewayURL)
+	// LLMGateway is the Phase 8 swap point (see CLAUDE.md's Interface Swap
+	// Points table): LLM_GATEWAY_TRANSPORT selects the REST LLMClient
+	// (default) or the gRPC GRPCClient, both of which satisfy
+	// ai.LLMGateway, so no downstream usecase/handler code needs to change
+	// based on this branch.
+	var llmGateway ai.LLMGateway = gateway.NewLLMClient(cfg.LLMGatewayURL)
+	if cfg.LLMGatewayTransport == "grpc" {
+		grpcClient, err := gateway.NewGRPCClient(
+			cfg.LLMGatewayGRPCAddr, cfg.LLMGatewayGRPCMaxRetries, cfg.LLMGatewayGRPCBaseBackoff)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("build gRPC LLM Gateway client: %w", err)
+		}
+		llmGateway = grpcClient
+
+		// Fail fast/log a warning if the gateway isn't reachable, but never
+		// fail container construction on it: in Compose, the api container
+		// may start before the llm-gateway container becomes healthy, and
+		// individual Complete/ListModels calls already surface their own
+		// errors.
+		healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if healthErr := grpcClient.CheckHealth(healthCtx); healthErr != nil {
+			slog.Warn("LLM Gateway gRPC health check failed at startup", "error", healthErr)
+		} else {
+			slog.Info("LLM Gateway gRPC health check succeeded")
+		}
+		cancel()
+	}
 	objectStorage := ifstorage.NewS3Storage(
 		cfg.S3Endpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3ForcePathStyle,
 	)
-	messageHub := event.NewInProcessHub()
+	// MessageHub is the Phase 10 swap point (see CLAUDE.md's Interface Swap
+	// Points table): MESSAGE_HUB_DRIVER selects InProcessHub (default), which
+	// only fans out within this single process, or RedisHub, which fans out
+	// via Redis Pub/Sub so multiple API server replicas share message
+	// delivery. Both satisfy event.MessageHub, so nothing downstream (MsgUC,
+	// the WebSocket handler) needs to change based on this branch.
+	var messageHub event.MessageHub
+	var redisClient *redis.Client
+	switch cfg.MessageHubDriver {
+	case "redis":
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("parse REDIS_URL: %w", err)
+		}
+		redisClient = redis.NewClient(opts)
+
+		// Verify connectivity eagerly, mirroring database.NewPool's Ping check,
+		// so a misconfigured/unreachable Redis fails container construction
+		// immediately instead of lazily on the first message hub operation
+		// (e.g. the first WebSocket Publish/Subscribe call from a real user).
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		pingErr := redisClient.Ping(pingCtx).Err()
+		cancel()
+		if pingErr != nil {
+			_ = redisClient.Close()
+			pool.Close()
+			return nil, fmt.Errorf("ping redis: %w", pingErr)
+		}
+
+		messageHub = infraevent.NewRedisHub(redisClient)
+	default:
+		messageHub = event.NewInProcessHub()
+	}
+	slog.Info("message hub driver selected", "driver", cfg.MessageHubDriver)
+
 	ticketIssuer := wsticket.NewIssuer([]byte(cfg.WSTicketSecret), wsTicketTTL)
 
 	// Usecases
 	authUC := authusecase.NewAuthUsecase(authService)
 	roomUC := roomusecase.NewRoomUsecase(roomRepo)
-	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmClient, messageHub)
+	billingUC := billingusecase.NewBillingUsecase(billingRepo, roomRepo)
+	msgUC := msgusecase.NewMessageUsecase(msgRepo, roomRepo, llmGateway, messageHub, billingUC)
 	userUC := userusecase.NewUserUsecase(userRepo)
 	attachmentUC := attachmentusecase.NewAttachmentUsecase(attachmentRepo, roomRepo, msgRepo, objectStorage)
-	modelUC := modelusecase.NewModelUsecase(llmClient)
+	modelUC := modelusecase.NewModelUsecase(llmGateway)
+	invitationUC := invitationusecase.NewInvitationUsecase(invitationRepo, roomRepo, userRepo)
 
 	// Handlers
 	healthHandler := handler.NewHealthHandler()
@@ -165,19 +253,25 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	userHandler := handler.NewUserHandler(userUC)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentUC)
 	wsHandler := handler.NewWebSocketHandler(roomUC, messageHub, ticketIssuer, originPatternsFromCORS(cfg.CORSOrigins))
+	invitationHandler := handler.NewInvitationHandler(invitationUC)
+	tokenHandler := handler.NewTokenHandler(llmGateway)
+	billingHandler := handler.NewBillingHandler(billingUC)
 
 	return &Container{
-		Config: cfg,
-		Pool:   pool,
-		Logger: slog.Default(),
+		Config:      cfg,
+		Pool:        pool,
+		Logger:      slog.Default(),
+		RedisClient: redisClient,
 
 		UserRepo:       userRepo,
 		RoomRepo:       roomRepo,
 		MsgRepo:        msgRepo,
 		AttachmentRepo: attachmentRepo,
+		InvitationRepo: invitationRepo,
+		BillingRepo:    billingRepo,
 
 		AuthService:   authService,
-		LLMGateway:    llmClient,
+		LLMGateway:    llmGateway,
 		ObjectStorage: objectStorage,
 		MessageHub:    messageHub,
 
@@ -187,6 +281,8 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		UserUC:       userUC,
 		AttachmentUC: attachmentUC,
 		ModelUC:      modelUC,
+		InvitationUC: invitationUC,
+		BillingUC:    billingUC,
 
 		HealthHandler:     healthHandler,
 		AuthHandler:       authHandler,
@@ -196,6 +292,9 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		UserHandler:       userHandler,
 		AttachmentHandler: attachmentHandler,
 		WebSocketHandler:  wsHandler,
+		InvitationHandler: invitationHandler,
+		TokenHandler:      tokenHandler,
+		BillingHandler:    billingHandler,
 	}, nil
 }
 

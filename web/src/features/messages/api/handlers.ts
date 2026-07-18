@@ -24,6 +24,7 @@ export const fixtureHumanMessage: Message = {
   type: "human",
   status: "completed",
   sequence: 1,
+  in_response_to_message_id: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 }
@@ -36,6 +37,7 @@ export const fixtureAiMessage: Message = {
   type: "ai",
   status: "completed",
   sequence: 2,
+  in_response_to_message_id: "message-1",
   created_at: "2026-01-01T00:00:01Z",
   updated_at: "2026-01-01T00:00:01Z",
 }
@@ -60,7 +62,18 @@ export const fixtureModelListResponse: ModelListResponse = {
 }
 
 export const messagesHandlers = [
-  http.get("/api/proxy/rooms/:roomId/messages", () => {
+  http.get("/api/proxy/rooms/:roomId/messages", ({ request }) => {
+    const url = new URL(request.url)
+    const cursor = url.searchParams.get("cursor")
+
+    // The fixture only models a single page of room history; a `cursor`
+    // query param (as sent by `useMessages`'s `useInfiniteQuery` when
+    // fetching an older page via `fetchNextPage`) has no further history to
+    // return.
+    if (cursor) {
+      return HttpResponse.json<MessagePage>({ messages: [], next_cursor: null })
+    }
+
     return HttpResponse.json<MessagePage>(fixtureMessagePage)
   }),
 

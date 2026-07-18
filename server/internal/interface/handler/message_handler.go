@@ -141,6 +141,54 @@ func (h *MessageHandler) RegenerateAI(c echo.Context) error {
 	return c.JSON(http.StatusOK, toMessageResponse(msg))
 }
 
+// Delete handles DELETE /rooms/:roomId/messages/:messageId. It soft-deletes
+// a message: the caller must either be the message's own sender or hold at
+// least admin in the room (see MessageUsecase.DeleteMessage for the exact
+// owner-or-admin rule). On success it returns HTTP 204 with no content. It
+// returns HTTP 403 if the caller lacks permission and HTTP 404 if the
+// message does not exist or does not belong to the room.
+func (h *MessageHandler) Delete(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+	messageID := c.Param("messageId")
+
+	if err := h.usecase.DeleteMessage(c.Request().Context(), userID, roomID, messageID); err != nil {
+		return handleMessageError(c, err)
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// UpdateExclude handles PATCH /rooms/:roomId/messages/:messageId. It toggles
+// whether a message is excluded from future AI context assembly. The caller
+// must be allowed domainroom.ActionInvokeAI (member or above). On success it
+// returns HTTP 200 with the updated MessageResponse. It returns HTTP 400 if
+// the request body is malformed or omits exclude_from_ai (see
+// UpdateMessageExcludeRequest's docstring -- a missing field is rejected
+// rather than silently defaulting to false), HTTP 403 if the caller lacks
+// permission, and HTTP 404 if the message does not exist or does not belong
+// to the room.
+func (h *MessageHandler) UpdateExclude(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+	messageID := c.Param("messageId")
+
+	var req UpdateMessageExcludeRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
+	}
+	if req.ExcludeFromAI == nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "exclude_from_ai is required"})
+	}
+
+	msg, err := h.usecase.SetExcludeFromAI(c.Request().Context(), userID, roomID, messageID, *req.ExcludeFromAI)
+	if err != nil {
+		return handleMessageError(c, err)
+	}
+
+	return c.JSON(http.StatusOK, toMessageResponse(msg))
+}
+
 func toMessageResponse(msg *domainmessage.Message) MessageResponse {
 	return MessageResponse{
 		ID:                    msg.ID,
@@ -151,6 +199,8 @@ func toMessageResponse(msg *domainmessage.Message) MessageResponse {
 		Status:                string(msg.Status),
 		Sequence:              msg.Sequence,
 		InResponseToMessageID: msg.InResponseToMessageID,
+		IsDeleted:             msg.IsDeleted,
+		ExcludeFromAI:         msg.ExcludeFromAI,
 		CreatedAt:             msg.CreatedAt,
 		UpdatedAt:             msg.UpdatedAt,
 	}
@@ -169,6 +219,9 @@ func handleMessageError(c echo.Context, err error) error {
 	}
 	if errors.Is(err, domain.ErrInvalidMessageType) {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "message must be of type human"})
+	}
+	if errors.Is(err, domain.ErrInsufficientBalance) {
+		return c.JSON(http.StatusPaymentRequired, ErrorResponse{Message: "insufficient token balance"})
 	}
 	middleware.GetLogger(c).Error("unhandled message error", "error", err)
 	return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})

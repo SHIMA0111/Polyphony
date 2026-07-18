@@ -7,6 +7,7 @@ interface MessageGroupProps {
   messages: Message[]
   onRegenerate: (messageId: string) => void
   isRegenerating: string | null
+  onRetry: (messageId: string, content: string) => Promise<void>
 }
 
 /**
@@ -19,6 +20,7 @@ export function MessageGroup({
   messages,
   onRegenerate,
   isRegenerating,
+  onRetry,
 }: MessageGroupProps) {
   const isHuman = type === "human"
 
@@ -48,6 +50,7 @@ export function MessageGroup({
             message={message}
             onRegenerate={onRegenerate}
             isRegenerating={isRegenerating === message.id}
+            onRetry={onRetry}
           />
         ))}
       </Flex>

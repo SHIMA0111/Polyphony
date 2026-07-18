@@ -17,9 +17,14 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
     models,
     isLoading,
     isRegenerating,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    pageCount,
     handleSend,
     handleSendWithAI,
     handleRegenerate,
+    handleRetry,
   } = useChatRoom(roomId)
 
   if (isLoading) {
@@ -38,6 +43,11 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
         messages={messages}
         onRegenerate={handleRegenerate}
         isRegenerating={isRegenerating}
+        onRetry={handleRetry}
+        hasNextPage={hasNextPage}
+        isFetchingNextPage={isFetchingNextPage}
+        fetchNextPage={fetchNextPage}
+        pageCount={pageCount}
       />
 
       <MessageInput

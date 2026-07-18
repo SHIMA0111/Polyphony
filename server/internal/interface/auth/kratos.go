@@ -37,6 +37,19 @@ const kratosHTTPHeaderSessionToken = "X-Session-Token"
 // See ValidateToken's GoDoc for the full contract.
 const cookieTokenPrefix = "cookie:"
 
+// ensureLocalUserLinkRetries is the number of GetByKratosIdentityID attempts
+// ensureLocalUser makes after losing the Create race described in its
+// GoDoc's "Concurrency" section, before giving up and returning the original
+// conflict error.
+const ensureLocalUserLinkRetries = 20
+
+// ensureLocalUserLinkRetryDelay is the delay between each retry described on
+// ensureLocalUserLinkRetries. Kept short: the winner's SetKratosIdentityID
+// call is expected to land within microseconds of its Create, so this bounds
+// the loser's worst-case extra latency to a few milliseconds while still
+// reliably closing the race window.
+const ensureLocalUserLinkRetryDelay = 1 * time.Millisecond
+
 // KratosAuthService implements domainauth.AuthService using Ory Kratos's
 // self-service registration/login API flows and the /sessions/whoami
 // endpoint, with the caller's local users.id resolved through
@@ -243,29 +256,55 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 // (identityID, with the given email/username traits), creating or relinking
 // it as needed:
 //
-//   - If a local user already exists matching email (falling back to
-//     username) and has no kratos_identity_id yet, it is linked to
-//     identityID via SetKratosIdentityID and returned. This is the "re-login
-//     of a pre-Kratos local user" path: a users row created by
-//     SimpleJWTService before AUTH_MODE switched to "kratos", or one
-//     created directly via the Kratos Admin API (bypassing Register)
-//     without being linked yet. Without this lookup, this path would
-//     instead fall through to Create below, which — for a genuinely
-//     pre-existing email/username — fails on the unique constraint (or,
-//     absent that constraint, would create a duplicate local account for
-//     the same person).
-//   - A local user matching email/username but already linked to a
-//     *different* Kratos identity is treated as no match (falls through to
-//     Create), since relinking it here would silently reassign someone
-//     else's account.
+//   - If a local user already exists matching email EXACTLY and has no
+//     kratos_identity_id yet, it is linked to identityID via
+//     SetKratosIdentityID and returned. This is the "re-login of a
+//     pre-Kratos local user" path: a users row created by SimpleJWTService
+//     before AUTH_MODE switched to "kratos", or one created directly via
+//     the Kratos Admin API (bypassing Register) without being linked yet.
+//     Without this lookup, this path would instead fall through to Create
+//     below, which — for a genuinely pre-existing email — fails on the
+//     unique constraint (or, absent that constraint, would create a
+//     duplicate local account for the same person).
+//   - Matching is deliberately email-only, never username. A username
+//     match with a different email must NOT be treated as the same person:
+//     an attacker who registers a Kratos identity whose username trait
+//     happens to collide with a victim's local username (but uses their
+//     own, different email) must not have the victim's unlinked local
+//     account silently linked to the attacker's identity — that would be
+//     an account takeover. Such a collision instead falls through to
+//     Create, which fails on the username unique constraint and surfaces
+//     domain.ErrUsernameAlreadyExists to the caller.
+//   - A local user matching email but already linked to a *different*
+//     Kratos identity is treated as no match (falls through to Create),
+//     since relinking it here would silently reassign someone else's
+//     account.
 //   - Otherwise, a brand new local user row is created, with a
 //     kratos-managed placeholder password hash, linked to identityID.
 //
-// Used by both Register (a Kratos-side registration for an email/username
-// that already has a local-only, unlinked user record) and Login's
-// self-heal path (a Kratos identity with no local link yet).
+// Used by Register (a Kratos-side registration for an email that already
+// has a local-only, unlinked user record), Login's self-heal path (a
+// Kratos identity with no local link yet), and ValidateToken's self-heal
+// path (see its GoDoc) — the single shared implementation all three rely on
+// so none of them can silently diverge from the others.
+//
+// Concurrency: two callers racing to be the first to resolve the same brand
+// new Kratos identity (e.g. two near-simultaneous requests that both
+// observed GetByKratosIdentityID return domain.ErrNotFound) both reach the
+// Create call below. Only one Create can win the unique constraint on
+// email/username; the loser's Create returns
+// domain.ErrEmailAlreadyExists/domain.ErrUsernameAlreadyExists. Rather than
+// surfacing that as a hard failure to the losing caller, ensureLocalUser
+// re-resolves via GetByKratosIdentityID: the winner has (or is about to have,
+// within ensureLocalUserLinkRetries short retries) also called
+// SetKratosIdentityID, so the loser's retry should find the same linked row
+// and both callers converge on the same single user. If every retry still
+// reports domain.ErrNotFound (a genuine, non-race conflict — e.g. the
+// email/username collides with an unrelated, already-linked-to-someone-else
+// account, or a genuine username-only collision per the bullet above), the
+// original Create error is returned unchanged.
 func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, email, username string) (*user.User, error) {
-	existing, err := s.lookupUnlinkedLocalUser(ctx, email, username)
+	existing, err := s.lookupUnlinkedLocalUser(ctx, email)
 	if err != nil {
 		return nil, err
 	}
@@ -290,6 +329,26 @@ func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, ema
 		UpdatedAt:        now,
 	}
 	if err := s.userRepo.Create(ctx, u); err != nil {
+		if errors.Is(err, domain.ErrEmailAlreadyExists) || errors.Is(err, domain.ErrUsernameAlreadyExists) {
+			// Likely a concurrent first-login race: another goroutine's
+			// Create won and has (or is imminently about to have) linked
+			// identityID via its own SetKratosIdentityID call. Re-resolve by
+			// identity, briefly retrying to close the tiny window between the
+			// winner's Create and its SetKratosIdentityID, rather than
+			// failing this caller outright.
+			for attempt := 0; attempt < ensureLocalUserLinkRetries; attempt++ {
+				winner, getErr := s.userRepo.GetByKratosIdentityID(ctx, identityID)
+				if getErr == nil {
+					return winner, nil
+				}
+				if !errors.Is(getErr, domain.ErrNotFound) {
+					return nil, getErr
+				}
+				if attempt < ensureLocalUserLinkRetries-1 {
+					time.Sleep(ensureLocalUserLinkRetryDelay)
+				}
+			}
+		}
 		return nil, err
 	}
 	if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {
@@ -298,12 +357,22 @@ func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, ema
 	return u, nil
 }
 
-// lookupUnlinkedLocalUser looks up an existing local user matching email,
-// falling back to username, that has no kratos_identity_id yet. Returns
-// (nil, nil) — not an error — if neither matches, or if the only match
-// already has a (necessarily different, since the caller already checked
+// lookupUnlinkedLocalUser looks up an existing local user matching email
+// EXACTLY that has no kratos_identity_id yet. Returns (nil, nil) — not an
+// error — if no such row exists, or if the only email match already has a
+// (necessarily different, since the caller already checked
 // GetByKratosIdentityID) Kratos identity linked.
-func (s *KratosAuthService) lookupUnlinkedLocalUser(ctx context.Context, email, username string) (*user.User, error) {
+//
+// Deliberately does not fall back to a username match: a local user whose
+// username merely collides with the incoming identity's username trait,
+// but whose email differs, is NOT the same person and must not be relinked
+// here. Doing so would let an attacker take over a victim's account by
+// registering a Kratos identity with the victim's username and the
+// attacker's own email — see ensureLocalUser's GoDoc for the full threat
+// model. A username-only collision instead falls through to
+// ensureLocalUser's Create call, which fails on the username unique
+// constraint and surfaces domain.ErrUsernameAlreadyExists.
+func (s *KratosAuthService) lookupUnlinkedLocalUser(ctx context.Context, email string) (*user.User, error) {
 	byEmail, err := s.userRepo.GetByEmail(ctx, email)
 	if err == nil {
 		if byEmail.KratosIdentityID == nil {
@@ -315,22 +384,17 @@ func (s *KratosAuthService) lookupUnlinkedLocalUser(ctx context.Context, email, 
 		return nil, err
 	}
 
-	byUsername, err := s.userRepo.GetByUsername(ctx, username)
-	if err == nil {
-		if byUsername.KratosIdentityID == nil {
-			return byUsername, nil
-		}
-		return nil, nil
-	}
-	if !errors.Is(err, domain.ErrNotFound) {
-		return nil, err
-	}
-
 	return nil, nil
 }
 
 // ValidateToken validates a token against Kratos's GET /sessions/whoami
-// endpoint and resolves the local user via userRepo.GetByKratosIdentityID.
+// endpoint and resolves the local user via ensureLocalUser, self-healing a
+// missing local row from the whoami response's identity traits exactly as
+// Login does — this is the only path the browser data-plane exercises
+// (registration/login there go straight to Kratos via /api/kratos/*, never
+// through this package's Register/Login), so without this self-heal a
+// freshly browser-registered identity would 401 forever despite holding a
+// perfectly valid Kratos session.
 //
 // token is interpreted using the following convention, which is the
 // contract that interface/middleware.JWTAuth relies on: if token has the
@@ -343,15 +407,14 @@ func (s *KratosAuthService) lookupUnlinkedLocalUser(ctx context.Context, email, 
 // cookie), so the distinction only matters when AUTH_MODE=kratos.
 //
 // It returns domain.ErrInvalidToken only for the whoami responses that
-// genuinely mean "this session is not valid" — a 401 or 403 status, or a 200
-// response resolving to an identity with no linked local user (see below).
-// Anything else — the httpClient.Do call itself failing (e.g. Kratos
-// unreachable), a whoami status that is neither 200 nor 401/403 (e.g. a 5xx),
-// or a 200 response whose body fails to decode — is a server-side/
-// infrastructure problem, not evidence of an invalid token, and is returned
-// as a plain wrapped error instead. This distinction matters because
-// interface/middleware.JWTAuth maps domain.ErrInvalidToken to a 401 and
-// anything else to a 5xx; flattening every failure mode here into
+// genuinely mean "this session is not valid" — a 401 or 403 status. Anything
+// else — the httpClient.Do call itself failing (e.g. Kratos unreachable), a
+// whoami status that is neither 200 nor 401/403 (e.g. a 5xx), a 200 response
+// whose body fails to decode, or ensureLocalUser's self-heal failing — is a
+// server-side/infrastructure problem, not evidence of an invalid token, and
+// is returned as a plain wrapped error instead. This distinction matters
+// because interface/middleware.JWTAuth maps domain.ErrInvalidToken to a 401
+// and anything else to a 5xx; flattening every failure mode here into
 // ErrInvalidToken would misreport a Kratos outage as "your session expired"
 // instead of a server error.
 func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error) {
@@ -387,20 +450,23 @@ func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*d
 		return nil, fmt.Errorf("decode kratos whoami response: %w", err)
 	}
 
-	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, result.Identity.ID)
+	identity := result.Identity
+	localUser, err := s.userRepo.GetByKratosIdentityID(ctx, identity.ID)
 	if err != nil {
-		// Only "no local user linked to this identity yet" is a genuine
-		// invalid-token condition (from the caller's point of view: the
-		// presented session simply doesn't map to anyone). Any other
-		// repository failure (e.g. a database outage) is a server-side
-		// problem, not evidence of an invalid token — flattening it to
-		// domain.ErrInvalidToken would make interface/middleware surface a
-		// misleading 401 instead of a 5xx for what is really an
-		// infrastructure failure.
-		if errors.Is(err, domain.ErrNotFound) {
-			return nil, domain.ErrInvalidToken
+		if !errors.Is(err, domain.ErrNotFound) {
+			return nil, fmt.Errorf("resolve local user for kratos identity: %w", err)
 		}
-		return nil, fmt.Errorf("resolve local user for kratos identity: %w", err)
+
+		// No local user is linked to this identity yet. Rather than treating
+		// that as an invalid token (which would 401 forever a perfectly
+		// valid Kratos session — the browser data-plane only ever exercises
+		// this method, never Register/Login above), self-heal exactly as
+		// Login does: relink an existing unlinked local user matching
+		// email/username, or create a new one.
+		localUser, err = s.ensureLocalUser(ctx, identity.ID, identity.Traits.Email, identity.Traits.Username)
+		if err != nil {
+			return nil, fmt.Errorf("resolve local user for kratos identity: %w", err)
+		}
 	}
 
 	return &domainauth.Claims{UserID: localUser.ID}, nil

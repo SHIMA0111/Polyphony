@@ -47,6 +47,10 @@ pub struct Config {
     pub http: HttpClientConfig,
     /// OpenAI-specific configuration (base URL).
     pub openai: ProviderConfig,
+    /// Anthropic-specific configuration (base URL).
+    pub anthropic: ProviderConfig,
+    /// Gemini-specific configuration (base URL).
+    pub gemini: ProviderConfig,
 }
 
 impl Config {
@@ -61,6 +65,8 @@ impl Config {
     /// - `LLM_GATEWAY_MAX_RETRIES` — Max retry attempts on `429`/`5xx` responses (default: `3`)
     /// - `LLM_GATEWAY_RETRY_BASE_DELAY_MS` — Base backoff delay in milliseconds (default: `500`)
     /// - `OPENAI_BASE_URL` — OpenAI API base URL (default: `https://api.openai.com`)
+    /// - `ANTHROPIC_BASE_URL` — Anthropic API base URL (default: `https://api.anthropic.com`)
+    /// - `GEMINI_BASE_URL` — Gemini API base URL (default: `https://generativelanguage.googleapis.com`)
     ///
     /// # Returns
     /// A `Config` populated from the environment, falling back to defaults for any
@@ -79,6 +85,10 @@ impl Config {
 
         let base_url = std::env::var("OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com".to_string());
+        let anthropic_base_url = std::env::var("ANTHROPIC_BASE_URL")
+            .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
+        let gemini_base_url = std::env::var("GEMINI_BASE_URL")
+            .unwrap_or_else(|_| "https://generativelanguage.googleapis.com".to_string());
 
         Self {
             port,
@@ -90,6 +100,12 @@ impl Config {
                 retry_base_delay,
             },
             openai: ProviderConfig { base_url },
+            anthropic: ProviderConfig {
+                base_url: anthropic_base_url,
+            },
+            gemini: ProviderConfig {
+                base_url: gemini_base_url,
+            },
         }
     }
 }
@@ -129,6 +145,8 @@ mod tests {
         "LLM_GATEWAY_MAX_RETRIES",
         "LLM_GATEWAY_RETRY_BASE_DELAY_MS",
         "OPENAI_BASE_URL",
+        "ANTHROPIC_BASE_URL",
+        "GEMINI_BASE_URL",
     ];
 
     /// RAII guard that snapshots `CONFIG_ENV_VARS`, clears them for the duration of
@@ -190,6 +208,11 @@ mod tests {
         assert_eq!(config.http.max_retries, 3);
         assert_eq!(config.http.retry_base_delay, Duration::from_millis(500));
         assert_eq!(config.openai.base_url, "https://api.openai.com");
+        assert_eq!(config.anthropic.base_url, "https://api.anthropic.com");
+        assert_eq!(
+            config.gemini.base_url,
+            "https://generativelanguage.googleapis.com"
+        );
     }
 
     #[test]
@@ -205,6 +228,8 @@ mod tests {
             std::env::set_var("LLM_GATEWAY_MAX_RETRIES", "5");
             std::env::set_var("LLM_GATEWAY_RETRY_BASE_DELAY_MS", "100");
             std::env::set_var("OPENAI_BASE_URL", "http://localhost:9091");
+            std::env::set_var("ANTHROPIC_BASE_URL", "http://localhost:9093");
+            std::env::set_var("GEMINI_BASE_URL", "http://localhost:9092");
         }
 
         let config = Config::from_env();
@@ -216,5 +241,7 @@ mod tests {
         assert_eq!(config.http.max_retries, 5);
         assert_eq!(config.http.retry_base_delay, Duration::from_millis(100));
         assert_eq!(config.openai.base_url, "http://localhost:9091");
+        assert_eq!(config.anthropic.base_url, "http://localhost:9093");
+        assert_eq!(config.gemini.base_url, "http://localhost:9092");
     }
 }

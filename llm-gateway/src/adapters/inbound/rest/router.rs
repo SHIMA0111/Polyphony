@@ -6,7 +6,7 @@ use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
-use super::handlers::{AppState, complete, health, list_models, ready};
+use super::handlers::{AppState, complete, estimate_tokens, health, list_models, ready};
 use super::middleware::UuidRequestId;
 
 /// HTTP header used to correlate a request across logs and the response.
@@ -60,6 +60,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ready", get(ready))
         .route("/models", get(list_models))
         .route("/completions", post(complete))
+        .route("/tokens/estimate", post(estimate_tokens))
         .layer(middleware)
         .with_state(state)
 }

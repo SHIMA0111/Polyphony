@@ -42,18 +42,61 @@ type UpdateRoomRequest struct {
 	Description string `json:"description"`
 }
 
+// UpdateRoomAIContextCutoffRequest is the request body for
+// PATCH /rooms/:roomId/ai-context-cutoff. A JSON null or omitted
+// cutoff_at clears the room's AI context cutoff; a valid RFC3339 timestamp
+// sets it.
+type UpdateRoomAIContextCutoffRequest struct {
+	CutoffAt *time.Time `json:"cutoff_at"`
+}
+
 // RoomResponse is the response body for a room. Role is the requesting
 // user's role in this room (e.g. "reader", "guest", "member", "admin",
 // "master"), serialized as the plain string value of domainroom.Role so
-// clients can do direct string comparisons.
+// clients can do direct string comparisons. AIContextCutoffAt is nil when
+// the room has no AI context cutoff configured.
 type RoomResponse struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	OwnerID     string    `json:"owner_id"`
-	Role        string    `json:"role"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       string     `json:"description"`
+	OwnerID           string     `json:"owner_id"`
+	Role              string     `json:"role"`
+	AIContextCutoffAt *time.Time `json:"ai_context_cutoff_at"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+// MemberResponse is the JSON response representation of a single room
+// membership. Username is populated on the member-list endpoint (which
+// JOINs against the users table) and left empty ("") on responses built
+// from non-JOINed lookups such as the role-change endpoint.
+type MemberResponse struct {
+	ID       string    `json:"id"`
+	RoomID   string    `json:"room_id"`
+	UserID   string    `json:"user_id"`
+	Username string    `json:"username"`
+	Role     string    `json:"role"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+// MemberListResponse is the response body for GET /rooms/:roomId/members.
+type MemberListResponse struct {
+	Members []MemberResponse `json:"members"`
+}
+
+// ChangeMemberRoleRequest is the request body for
+// PATCH /rooms/:roomId/members/:userId/role. Role must be one of "reader",
+// "guest", "member", or "admin" — granting "master" through this endpoint
+// is rejected; use the ownership-transfer endpoint instead.
+type ChangeMemberRoleRequest struct {
+	Role string `json:"role"`
+}
+
+// TransferOwnershipRequest is the request body for
+// PATCH /rooms/:roomId/owner. NewOwnerID is required and must already be a
+// member of the room.
+type TransferOwnershipRequest struct {
+	NewOwnerID string `json:"new_owner_id"`
 }
 
 // --- Message DTOs ---
@@ -77,9 +120,25 @@ type RegenerateAIMessageRequest struct {
 	Model string `json:"model"`
 }
 
+// UpdateMessageExcludeRequest is the request body for
+// PATCH /rooms/:roomId/messages/:messageId.
+//
+// ExcludeFromAI is a pointer, not a bare bool: with a bare bool, a caller
+// that omits the field entirely (or sends `{}`) would silently decode to
+// `false`, un-excluding a message the caller never intended to touch. A
+// pointer lets MessageHandler.UpdateExclude distinguish "field omitted"
+// (nil) from an explicit `false` and reject the former with HTTP 400.
+type UpdateMessageExcludeRequest struct {
+	ExcludeFromAI *bool `json:"exclude_from_ai"`
+}
+
 // MessageResponse is the JSON response representation of a single message.
 // SenderID is nil for system-generated messages. InResponseToMessageID is
 // nil for human messages and set to the human message's ID for AI messages.
+// IsDeleted is true for a soft-deleted message (see DELETE
+// /rooms/:roomId/messages/:messageId); ExcludeFromAI is true when the
+// message has been opted out of AI context assembly (see PATCH
+// /rooms/:roomId/messages/:messageId).
 type MessageResponse struct {
 	ID                    string    `json:"id"`
 	RoomID                string    `json:"room_id"`
@@ -89,6 +148,8 @@ type MessageResponse struct {
 	Status                string    `json:"status"`
 	Sequence              int64     `json:"sequence"`
 	InResponseToMessageID *string   `json:"in_response_to_message_id"`
+	IsDeleted             bool      `json:"is_deleted"`
+	ExcludeFromAI         bool      `json:"exclude_from_ai"`
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`
 }
@@ -120,6 +181,31 @@ type ModelResponse struct {
 // ModelListResponse is the response body for GET /models.
 type ModelListResponse struct {
 	Models []ModelResponse `json:"models"`
+}
+
+// --- Token DTOs ---
+
+// ChatMessageDTO is the JSON representation of a single chat message used by
+// TokenEstimateRequest.
+type ChatMessageDTO struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// TokenEstimateRequest is the request body for POST /tokens/estimate. Model
+// is required; Messages may be empty (a valid estimation input for an empty
+// draft, returning just the fixed overhead).
+type TokenEstimateRequest struct {
+	Model    string           `json:"model"`
+	Messages []ChatMessageDTO `json:"messages"`
+}
+
+// TokenEstimateResponse is the response body for POST /tokens/estimate.
+// EstimatedTokens is an approximation computed by the LLM Gateway's
+// character-based heuristic, not an exact tokenizer count.
+type TokenEstimateResponse struct {
+	Model           string `json:"model"`
+	EstimatedTokens int    `json:"estimated_tokens"`
 }
 
 // --- User DTOs ---
@@ -191,6 +277,85 @@ type AttachmentViewResponse struct {
 // GET /rooms/:roomId/messages/:messageId/attachments.
 type AttachmentListResponse struct {
 	Attachments []AttachmentViewResponse `json:"attachments"`
+}
+
+// --- Invitation DTOs ---
+
+// CreateInvitationRequest is the request body for
+// POST /rooms/:roomId/invitations. If InviteeUsername is nil, a reusable
+// link invitation is created; otherwise it targets that specific user
+// (single-use). Role is required and must be one of the five valid
+// domainroom.Role values. ExpiresInHours is optional; when omitted it
+// defaults to 168 (7 days) and must otherwise fall within [1, 720].
+type CreateInvitationRequest struct {
+	InviteeUsername *string `json:"invitee_username"`
+	Role            string  `json:"role"`
+	ExpiresInHours  *int    `json:"expires_in_hours"`
+}
+
+// InvitationResponse is the JSON response representation of a single
+// invitation. InviteeID is nil for link invitations.
+type InvitationResponse struct {
+	ID         string    `json:"id"`
+	RoomID     string    `json:"room_id"`
+	InviterID  string    `json:"inviter_id"`
+	InviteeID  *string   `json:"invitee_id"`
+	InviteCode string    `json:"invite_code"`
+	Role       string    `json:"role"`
+	Status     string    `json:"status"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// InvitationListResponse is the response body for a list of invitations.
+type InvitationListResponse struct {
+	Invitations []InvitationResponse `json:"invitations"`
+}
+
+// RoomMembershipResponse is the JSON response representation of a single
+// room membership, returned by POST /invitations/:invitationId/accept.
+type RoomMembershipResponse struct {
+	ID       string    `json:"id"`
+	RoomID   string    `json:"room_id"`
+	UserID   string    `json:"user_id"`
+	Role     string    `json:"role"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+// --- Billing DTOs ---
+
+// TokenBalanceResponse is the JSON response representation of a user's
+// current token balance, returned by GET /billing/balance. Field names and
+// JSON tags match Step 48's web contract (web/src/features/billing/types.ts)
+// exactly.
+type TokenBalanceResponse struct {
+	UserID    string    `json:"user_id"`
+	Balance   int64     `json:"balance"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TokenTransactionResponse is the JSON response representation of a single
+// token_transactions ledger entry. RoomID is nil for transactions not tied
+// to any room (e.g. top-ups). Type is one of "consumption", "charge", or
+// "adjustment". Amount is signed: negative for consumption, positive for
+// charge/adjustment.
+type TokenTransactionResponse struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	RoomID       *string   `json:"room_id"`
+	Type         string    `json:"type"`
+	Amount       int64     `json:"amount"`
+	BalanceAfter int64     `json:"balance_after"`
+	Description  string    `json:"description"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// TokenTransactionListResponse is the response body for a paginated list of
+// token transactions, returned by GET /billing/transactions. NextCursor is
+// nil when there are no more pages.
+type TokenTransactionListResponse struct {
+	Transactions []TokenTransactionResponse `json:"transactions"`
+	NextCursor   *string                    `json:"next_cursor"`
 }
 
 // --- Common DTOs ---

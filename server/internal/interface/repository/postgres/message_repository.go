@@ -24,12 +24,13 @@ func NewMessageRepository(pool *pgxpool.Pool) *MessageRepository {
 	return &MessageRepository{pool: pool}
 }
 
-// Create persists a new message to the database.
+// Create persists a new message to the database. is_deleted and
+// exclude_from_ai always start false for a newly-created message.
 func (r *MessageRepository) Create(ctx context.Context, msg *message.Message) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO messages (id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		msg.ID, msg.RoomID, msg.SenderID, msg.Content, string(msg.Type), string(msg.Status), msg.Sequence, msg.InResponseToMessageID, msg.CreatedAt, msg.UpdatedAt,
+		`INSERT INTO messages (id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, is_deleted, exclude_from_ai, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		msg.ID, msg.RoomID, msg.SenderID, msg.Content, string(msg.Type), string(msg.Status), msg.Sequence, msg.InResponseToMessageID, false, false, msg.CreatedAt, msg.UpdatedAt,
 	)
 	return err
 }
@@ -38,7 +39,7 @@ func (r *MessageRepository) Create(ctx context.Context, msg *message.Message) er
 func scanMessage(scanner interface{ Scan(dest ...any) error }) (*message.Message, error) {
 	var msg message.Message
 	var msgType, status string
-	err := scanner.Scan(&msg.ID, &msg.RoomID, &msg.SenderID, &msg.Content, &msgType, &status, &msg.Sequence, &msg.InResponseToMessageID, &msg.CreatedAt, &msg.UpdatedAt)
+	err := scanner.Scan(&msg.ID, &msg.RoomID, &msg.SenderID, &msg.Content, &msgType, &status, &msg.Sequence, &msg.InResponseToMessageID, &msg.IsDeleted, &msg.ExcludeFromAI, &msg.CreatedAt, &msg.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +48,7 @@ func scanMessage(scanner interface{ Scan(dest ...any) error }) (*message.Message
 	return &msg, nil
 }
 
-const messageColumns = `id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, created_at, updated_at`
+const messageColumns = `id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, is_deleted, exclude_from_ai, created_at, updated_at`
 
 // GetByID retrieves a message by its unique identifier. It returns domain.ErrNotFound if the message does not exist.
 func (r *MessageRepository) GetByID(ctx context.Context, id string) (*message.Message, error) {
@@ -73,7 +74,7 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 
 	if cursor == "" {
 		rows, err = r.pool.Query(ctx,
-			`SELECT `+messageColumns+` FROM messages WHERE room_id = $1
+			`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND is_deleted = false
 			 ORDER BY sequence DESC LIMIT $2`,
 			roomID, limit+1,
 		)
@@ -91,7 +92,7 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 		}
 
 		rows, err = r.pool.Query(ctx,
-			`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence < $2
+			`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence < $2 AND is_deleted = false
 			 ORDER BY sequence DESC LIMIT $3`,
 			roomID, cursorSeq, limit+1,
 		)
@@ -129,7 +130,7 @@ func (r *MessageRepository) ListByRoom(ctx context.Context, roomID string, curso
 // ListByRoomUpTo returns up to limit messages with sequence less than or equal to maxSequence, ordered newest first.
 func (r *MessageRepository) ListByRoomUpTo(ctx context.Context, roomID string, maxSequence int64, limit int) ([]*message.Message, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence <= $2
+		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence <= $2 AND is_deleted = false
 		 ORDER BY sequence DESC LIMIT $3`,
 		roomID, maxSequence, limit,
 	)
@@ -187,9 +188,32 @@ func (r *MessageRepository) UpdateAIResponse(ctx context.Context, id string, con
 	return nil
 }
 
-// Delete removes a message by its unique identifier. It returns domain.ErrNotFound if the message does not exist.
+// UpdateExcludeFromAI sets the exclude_from_ai flag and updated_at of a
+// message. It returns domain.ErrNotFound if the message does not exist.
+func (r *MessageRepository) UpdateExcludeFromAI(ctx context.Context, id string, exclude bool, updatedAt time.Time) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE messages SET exclude_from_ai = $1, updated_at = $2 WHERE id = $3`,
+		exclude, updatedAt, id,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// Delete soft-deletes a message by its unique identifier: it sets
+// is_deleted = true and updated_at = NOW() rather than physically removing
+// the row, so a soft-deleted message remains fetchable via GetByID but is
+// excluded from ListByRoom, ListByRoomUpTo, and AI context assembly. It
+// returns domain.ErrNotFound if the message does not exist or was already
+// deleted (RowsAffected() == 0 covers both cases, so a client double-deleting
+// sees a 404 rather than a silent no-op success).
 func (r *MessageRepository) Delete(ctx context.Context, id string) error {
-	tag, err := r.pool.Exec(ctx, `DELETE FROM messages WHERE id = $1`, id)
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE messages SET is_deleted = true, updated_at = NOW() WHERE id = $1 AND is_deleted = false`, id)
 	if err != nil {
 		return err
 	}

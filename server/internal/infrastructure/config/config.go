@@ -18,6 +18,16 @@ const (
 	defaultDBHealthCheckPeriod = time.Minute
 )
 
+// Defaults applied to the gRPC LLM Gateway client's transport-selection and
+// retry/backoff tuning knobs when the corresponding environment variable is
+// unset or fails to parse.
+const (
+	defaultLLMGatewayTransport       = "rest"
+	defaultLLMGatewayGRPCAddr        = "llm-gateway:50051"
+	defaultLLMGatewayGRPCMaxRetries  = 3
+	defaultLLMGatewayGRPCBaseBackoff = 100 * time.Millisecond
+)
+
 // Config holds the application configuration loaded from environment variables.
 type Config struct {
 	// Port is the HTTP server listen port (default "8080").
@@ -86,6 +96,43 @@ type Config struct {
 	// read by the auth middleware as a fallback when no Authorization
 	// header is present (env KRATOS_COOKIE_NAME, default "ory_kratos_session").
 	KratosCookieName string
+
+	// LLMGatewayTransport selects which ai.LLMGateway implementation
+	// container.go wires up: "rest" (default) for the existing
+	// gateway.LLMClient, or "grpc" for gateway.GRPCClient (env
+	// LLM_GATEWAY_TRANSPORT). This is the Phase 8 swap point noted in
+	// CLAUDE.md's Interface Swap Points table. Any value other than "rest"
+	// or "grpc" falls back to "rest" with a logged warning, rather than
+	// failing Load, since this is an optional transport-selection knob.
+	LLMGatewayTransport string
+	// LLMGatewayGRPCAddr is the dial target used by gateway.NewGRPCClient
+	// when LLMGatewayTransport is "grpc" (env LLM_GATEWAY_GRPC_ADDR,
+	// default "llm-gateway:50051").
+	LLMGatewayGRPCAddr string
+	// LLMGatewayGRPCMaxRetries is the maximum number of attempts
+	// gateway.GRPCClient makes for a single RPC before giving up on
+	// transient failures (env LLM_GATEWAY_GRPC_MAX_RETRIES, default 3).
+	// Falls back to the default if unset or unparseable as an int.
+	LLMGatewayGRPCMaxRetries int
+	// LLMGatewayGRPCBaseBackoff is the initial delay in gateway.GRPCClient's
+	// exponential backoff schedule between retry attempts (env
+	// LLM_GATEWAY_GRPC_BASE_BACKOFF, default 100ms). Falls back to the
+	// default if unset or unparseable as a time.Duration.
+	LLMGatewayGRPCBaseBackoff time.Duration
+
+	// RedisURL is the Redis connection string (env REDIS_URL), required only
+	// when MessageHubDriver is "redis". It is passed to redis.ParseURL by
+	// container.go to build the shared *redis.Client used by RedisHub (and,
+	// in a later step, rate limiting/session caching).
+	RedisURL string
+	// MessageHubDriver selects the event.MessageHub implementation
+	// container.go wires up: "inprocess" (default) for InProcessHub, a
+	// single-process, dependency-free implementation suitable for local dev
+	// without Redis, or "redis" for RedisHub, which fans events out via
+	// Redis Pub/Sub so multiple API replicas share message delivery (env
+	// MESSAGE_HUB_DRIVER). Load returns an error for any other non-empty
+	// value, and for "redis" without REDIS_URL also set.
+	MessageHubDriver string
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -175,6 +222,56 @@ func Load() (*Config, error) {
 		kratosCookieName = "ory_kratos_session"
 	}
 
+	llmGatewayTransport := os.Getenv("LLM_GATEWAY_TRANSPORT")
+	if llmGatewayTransport == "" {
+		llmGatewayTransport = defaultLLMGatewayTransport
+	}
+	if llmGatewayTransport != "rest" && llmGatewayTransport != "grpc" {
+		slog.Default().Warn("invalid LLM_GATEWAY_TRANSPORT, using default",
+			"value", llmGatewayTransport, "default", defaultLLMGatewayTransport)
+		llmGatewayTransport = defaultLLMGatewayTransport
+	}
+
+	llmGatewayGRPCAddr := os.Getenv("LLM_GATEWAY_GRPC_ADDR")
+	if llmGatewayGRPCAddr == "" {
+		llmGatewayGRPCAddr = defaultLLMGatewayGRPCAddr
+	}
+
+	llmGatewayGRPCMaxRetries := defaultLLMGatewayGRPCMaxRetries
+	if v := os.Getenv("LLM_GATEWAY_GRPC_MAX_RETRIES"); v != "" {
+		n, err := strconv.Atoi(v)
+		switch {
+		case err != nil:
+			slog.Default().Warn("invalid LLM_GATEWAY_GRPC_MAX_RETRIES, using default",
+				"value", v, "default", defaultLLMGatewayGRPCMaxRetries, "error", err)
+		case n < 0:
+			// A negative retry count parses successfully but is nonsensical
+			// (GRPCClient.callWithRetry would then treat it the same as "at
+			// least 1 attempt" via its own clamp, silently ignoring the
+			// caller's intent) -- treat it like a parse failure rather than
+			// passing it through.
+			slog.Default().Warn("invalid LLM_GATEWAY_GRPC_MAX_RETRIES, using default",
+				"value", v, "default", defaultLLMGatewayGRPCMaxRetries, "error", "must not be negative")
+		default:
+			llmGatewayGRPCMaxRetries = n
+		}
+	}
+
+	llmGatewayGRPCBaseBackoff := parseDurationEnv("LLM_GATEWAY_GRPC_BASE_BACKOFF", defaultLLMGatewayGRPCBaseBackoff)
+
+	hubDriver := os.Getenv("MESSAGE_HUB_DRIVER")
+	if hubDriver == "" {
+		hubDriver = "inprocess"
+	}
+	if hubDriver != "inprocess" && hubDriver != "redis" {
+		return nil, fmt.Errorf("MESSAGE_HUB_DRIVER must be %q or %q, got %q", "inprocess", "redis", hubDriver)
+	}
+
+	redisURL := os.Getenv("REDIS_URL")
+	if hubDriver == "redis" && redisURL == "" {
+		return nil, fmt.Errorf("REDIS_URL is required when MESSAGE_HUB_DRIVER=redis")
+	}
+
 	return &Config{
 		Port:                port,
 		DatabaseURL:         dbURL,
@@ -195,6 +292,14 @@ func Load() (*Config, error) {
 		KratosPublicURL:     kratosPublicURL,
 		KratosAdminURL:      kratosAdminURL,
 		KratosCookieName:    kratosCookieName,
+
+		LLMGatewayTransport:       llmGatewayTransport,
+		LLMGatewayGRPCAddr:        llmGatewayGRPCAddr,
+		LLMGatewayGRPCMaxRetries:  llmGatewayGRPCMaxRetries,
+		LLMGatewayGRPCBaseBackoff: llmGatewayGRPCBaseBackoff,
+
+		RedisURL:         redisURL,
+		MessageHubDriver: hubDriver,
 	}, nil
 }
 

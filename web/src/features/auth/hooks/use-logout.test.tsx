@@ -14,12 +14,12 @@ vi.mock("next/navigation", () => ({
 /**
  * RTL + MSW tests for `useLogout`.
  *
- * Covers both the happy path (the `POST /api/auth/logout` call succeeds) and
- * the failure path (that call errors out) to guard the `onSettled`-based
+ * Covers both the happy path (Kratos logout succeeds) and the failure path
+ * (the Kratos logout call errors out) to guard the `onSettled`-based
  * clearing/navigation: a failed logout must still clear the entire query
  * cache and navigate to `/login`, since stranding the user on the current
  * page after a failed logout attempt is worse than navigating away with a
- * possibly-stale session cookie.
+ * possibly-stale server-side session.
  */
 describe("useLogout", () => {
   beforeEach(() => {
@@ -42,10 +42,10 @@ describe("useLogout", () => {
     expect(pushMock).toHaveBeenCalledWith("/login")
   })
 
-  it("still clears the query cache and navigates to /login when the logout call fails", async () => {
+  it("still clears the query cache and navigates to /login when the Kratos logout call fails", async () => {
     server.use(
-      http.post("/api/auth/logout", () => {
-        return HttpResponse.json({ message: "boom" }, { status: 500 })
+      http.get("/api/kratos/self-service/logout/browser", () => {
+        return HttpResponse.json({ error: "boom" }, { status: 500 })
       }),
     )
 

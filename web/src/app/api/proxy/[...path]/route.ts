@@ -1,7 +1,4 @@
-import { cookies } from "next/headers"
 import { NextResponse, type NextRequest } from "next/server"
-
-import { ACCESS_TOKEN_COOKIE } from "@/lib/auth-cookie"
 
 /** Base URL of the Go API, read server-side only (never inlined into the client bundle). */
 const API_URL = process.env.API_URL ?? "http://localhost:8080"
@@ -16,7 +13,7 @@ const UPSTREAM_TIMEOUT_MS = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_UPSTREAM_TIMEOUT_MS
 })()
 
-/** Route handlers must not be statically optimized: every request reads the session cookie. */
+/** Route handlers must not be statically optimized: every request carries a distinct session cookie. */
 export const dynamic = "force-dynamic"
 
 interface RouteContext {
@@ -25,17 +22,29 @@ interface RouteContext {
 
 /**
  * Shared implementation for every HTTP method the data-plane proxy
- * forwards. Reads the `access_token` cookie server-side, rebuilds the
- * upstream URL (path + original query string) against the Go API, forwards
- * the method/body/`Content-Type`, and attaches `Authorization: Bearer
- * <token>` only when the cookie is present — public endpoints (e.g.
- * `GET /models`) still work without a session, and protected endpoints get
- * the Go API's own `401` when the cookie is absent.
+ * forwards. Rebuilds the upstream URL (path + original query string)
+ * against the Go API and forwards the method/body/`Content-Type`/`Cookie`
+ * verbatim — no bespoke bearer token is minted or attached here. The
+ * browser's `ory_kratos_session` cookie (set on this app's origin by the
+ * `/api/kratos/*` proxy after a successful Kratos flow submission) is
+ * forwarded as-is; `server/internal/interface/middleware/auth.go` falls
+ * back to reading that named cookie when no `Authorization` header is
+ * present, so this is sufficient for both public endpoints (e.g.
+ * `GET /models`, reachable without a session) and protected endpoints
+ * (which get the Go API's own `401` when the cookie is absent or invalid).
  *
  * The upstream body is streamed back unchanged, but the only response
  * header forwarded is `Content-Type` — `Content-Encoding`/
  * `Transfer-Encoding` are intentionally dropped since the body was already
  * read and decoded here.
+ *
+ * The upstream `fetch` *and* the subsequent read of its response body are
+ * both bounded by a single `AbortController` timeout
+ * (`UPSTREAM_TIMEOUT_MS`, default 30s): an upstream that hangs while
+ * sending the response body (rather than erroring immediately, or not
+ * responding at all) would otherwise leave the caller's request pending
+ * indefinitely even though the initial `fetch` call had already resolved.
+ * The timeout is only cleared once both steps have settled.
  *
  * @param request - The incoming Next.js request.
  * @param context - Route context carrying the (Next 16 async) dynamic `path` segments.
@@ -54,10 +63,9 @@ async function proxy(
     headers["Content-Type"] = contentType
   }
 
-  const cookieStore = await cookies()
-  const token = cookieStore.get(ACCESS_TOKEN_COOKIE)?.value
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`
+  const cookie = request.headers.get("Cookie")
+  if (cookie) {
+    headers["Cookie"] = cookie
   }
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD"
@@ -66,6 +74,7 @@ async function proxy(
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
 
   let upstreamRes: Response
+  let responseBody: ArrayBuffer
   try {
     upstreamRes = await fetch(upstreamUrl, {
       method: request.method,
@@ -73,6 +82,7 @@ async function proxy(
       body: hasBody ? await request.arrayBuffer() : undefined,
       signal: controller.signal,
     })
+    responseBody = await upstreamRes.arrayBuffer()
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       return NextResponse.json({ message: "upstream timeout" }, { status: 504 })
@@ -82,7 +92,6 @@ async function proxy(
     clearTimeout(timeout)
   }
 
-  const responseBody = await upstreamRes.arrayBuffer()
   const responseHeaders: Record<string, string> = {}
   const upstreamContentType = upstreamRes.headers.get("Content-Type")
   if (upstreamContentType) {

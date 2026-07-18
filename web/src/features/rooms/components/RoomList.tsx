@@ -112,9 +112,14 @@ export function RoomList() {
                         <Text>Members</Text>
                       </Flex>
                       <Text>
+                        {/* `timeZone: "UTC"` pins this to the same string on
+                            the server and in the browser regardless of
+                            either host's local timezone, avoiding a React
+                            hydration mismatch. */}
                         {new Date(room.created_at).toLocaleDateString("en-US", {
                           month: "short",
                           day: "numeric",
+                          timeZone: "UTC",
                         })}
                       </Text>
                     </Flex>

@@ -59,7 +59,7 @@ phases.md          — Development Phase Plan (26 phases)
 ### Quick Start (Docker Compose)
 
 ```bash
-# Start all services (PostgreSQL, Go API, LLM Gateway, Web Frontend)
+# Start all services (PostgreSQL, Redis, Go API, LLM Gateway, Web Frontend)
 task up
 # or: docker compose up -d
 

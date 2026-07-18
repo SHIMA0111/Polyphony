@@ -9,8 +9,14 @@ type Room struct {
 	Name        string
 	Description string
 	OwnerID     string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// AIContextCutoffAt, when non-nil, is the earliest CreatedAt an AI
+	// context message may have: messages created strictly before this
+	// timestamp are excluded from ai.ContextBuilder.Build's output. A nil
+	// value means no cutoff is configured — the room's entire eligible
+	// history is considered.
+	AIContextCutoffAt *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // RoomMember represents a user's membership in a room, including their
@@ -21,6 +27,14 @@ type RoomMember struct {
 	UserID   string
 	Role     Role
 	JoinedAt time.Time
+	// Username is the member's display username, populated by
+	// RoomRepository.ListMembers and RoomRepository.GetMember (both JOIN
+	// against the users table). It is left empty ("") only on RoomMember
+	// values that were never round-tripped through the database with a
+	// users JOIN -- e.g. the struct AddMember's caller constructs before
+	// calling it, or values returned by other write-oriented repository
+	// methods that have no reason to look up the username at all.
+	Username string
 }
 
 // RoomWithRole pairs a Room with a specific user's Role in that room. It is

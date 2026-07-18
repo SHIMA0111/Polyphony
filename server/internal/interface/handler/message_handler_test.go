@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 	msgusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/message"
@@ -18,8 +21,9 @@ func setupMessageTest(isMember bool) (*echo.Echo, *MessageHandler) {
 	roomRepo := &mocks.RoomRepo{}
 	if isMember {
 		roomRepo.SeedMember("room-1", "user-1", "member")
+		roomRepo.SeedRoom("room-1", nil)
 	}
-	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub())
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
 	return echo.New(), NewMessageHandler(uc)
 }
 
@@ -137,7 +141,8 @@ func TestSendAIHandlerLLMFailure201(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedMember("room-1", "user-1", "member")
-	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub())
+	roomRepo.SeedRoom("room-1", nil)
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{ShouldErr: true}, event.NewInProcessHub(), &mocks.BillingGuard{})
 	e := echo.New()
 	h := NewMessageHandler(uc)
 
@@ -164,5 +169,228 @@ func TestSendAIHandlerLLMFailure201(t *testing.T) {
 	}
 	if !strings.Contains(body, `"user_message"`) {
 		t.Fatal("response should contain user_message")
+	}
+}
+
+// TestMessageHandlerDelete covers DELETE /rooms/:roomId/messages/:messageId:
+// 204 on success (sender deleting their own message), 403 for a non-sender
+// non-admin member, and 404 for a message that does not belong to the room.
+func TestMessageHandlerDelete(t *testing.T) {
+	t.Run("204 sender deletes own message", func(t *testing.T) {
+		e, h := setupMessageTest(true)
+
+		sendReq := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages",
+			strings.NewReader(`{"content":"hello"}`))
+		sendReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		sendRec := httptest.NewRecorder()
+		sendCtx := e.NewContext(sendReq, sendRec)
+		sendCtx.SetParamNames("roomId")
+		sendCtx.SetParamValues("room-1")
+		sendCtx.Set("user_id", "user-1")
+		if err := h.Send(sendCtx); err != nil {
+			t.Fatalf("Send error: %v", err)
+		}
+		var sent MessageResponse
+		if err := json.Unmarshal(sendRec.Body.Bytes(), &sent); err != nil {
+			t.Fatalf("failed to unmarshal sent message: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodDelete, "/rooms/room-1/messages/"+sent.ID, nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId", "messageId")
+		c.SetParamValues("room-1", sent.ID)
+		c.Set("user_id", "user-1")
+
+		if err := h.Delete(c); err != nil {
+			t.Fatalf("Delete error: %v", err)
+		}
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d", rec.Code)
+		}
+	})
+
+	t.Run("403 non-sender non-admin", func(t *testing.T) {
+		msgRepo := &mocks.MessageRepo{}
+		roomRepo := &mocks.RoomRepo{}
+		roomRepo.SeedMember("room-1", "user-1", "member")
+		roomRepo.SeedMember("room-1", "user-2", "member")
+		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+		e := echo.New()
+		h := NewMessageHandler(uc)
+
+		sent, err := uc.SendMessage(context.Background(), "user-1", "room-1", "hello")
+		if err != nil {
+			t.Fatalf("SendMessage failed: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodDelete, "/rooms/room-1/messages/"+sent.ID, nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId", "messageId")
+		c.SetParamValues("room-1", sent.ID)
+		c.Set("user_id", "user-2")
+
+		if err := h.Delete(c); err != nil {
+			t.Fatalf("Delete error: %v", err)
+		}
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", rec.Code)
+		}
+	})
+
+	t.Run("404 message not in room", func(t *testing.T) {
+		msgRepo := &mocks.MessageRepo{}
+		roomRepo := &mocks.RoomRepo{}
+		roomRepo.SeedMember("room-1", "user-1", "member")
+		roomRepo.SeedMember("room-2", "user-1", "member")
+		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+		e := echo.New()
+		h := NewMessageHandler(uc)
+
+		sent, err := uc.SendMessage(context.Background(), "user-1", "room-1", "hello")
+		if err != nil {
+			t.Fatalf("SendMessage failed: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodDelete, "/rooms/room-2/messages/"+sent.ID, nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId", "messageId")
+		c.SetParamValues("room-2", sent.ID)
+		c.Set("user_id", "user-1")
+
+		if err := h.Delete(c); err != nil {
+			t.Fatalf("Delete error: %v", err)
+		}
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rec.Code)
+		}
+	})
+}
+
+// TestMessageHandlerUpdateExclude covers
+// PATCH /rooms/:roomId/messages/:messageId: 200 with the updated body on
+// success, and 400 for a malformed JSON request body.
+func TestMessageHandlerUpdateExclude(t *testing.T) {
+	t.Run("200 updates exclude_from_ai", func(t *testing.T) {
+		msgRepo := &mocks.MessageRepo{}
+		roomRepo := &mocks.RoomRepo{}
+		roomRepo.SeedMember("room-1", "user-1", "member")
+		uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{})
+		e := echo.New()
+		h := NewMessageHandler(uc)
+
+		sent, err := uc.SendMessage(context.Background(), "user-1", "room-1", "hello")
+		if err != nil {
+			t.Fatalf("SendMessage failed: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPatch, "/rooms/room-1/messages/"+sent.ID,
+			strings.NewReader(`{"exclude_from_ai":true}`))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId", "messageId")
+		c.SetParamValues("room-1", sent.ID)
+		c.Set("user_id", "user-1")
+
+		if err := h.UpdateExclude(c); err != nil {
+			t.Fatalf("UpdateExclude error: %v", err)
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+
+		var resp MessageResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if !resp.ExcludeFromAI {
+			t.Fatal("expected exclude_from_ai true in response")
+		}
+	})
+
+	t.Run("400 invalid body", func(t *testing.T) {
+		e, h := setupMessageTest(true)
+
+		req := httptest.NewRequest(http.MethodPatch, "/rooms/room-1/messages/msg-1",
+			strings.NewReader(`{invalid`))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId", "messageId")
+		c.SetParamValues("room-1", "msg-1")
+		c.Set("user_id", "user-1")
+
+		if err := h.UpdateExclude(c); err != nil {
+			t.Fatalf("UpdateExclude error: %v", err)
+		}
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", rec.Code)
+		}
+	})
+
+	// Regression test: an empty body (or one that simply omits
+	// exclude_from_ai) must be rejected with 400, not silently decoded as
+	// exclude_from_ai=false -- see UpdateMessageExcludeRequest's docstring.
+	t.Run("400 empty body omitting exclude_from_ai", func(t *testing.T) {
+		e, h := setupMessageTest(true)
+
+		req := httptest.NewRequest(http.MethodPatch, "/rooms/room-1/messages/msg-1",
+			strings.NewReader(`{}`))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId", "messageId")
+		c.SetParamValues("room-1", "msg-1")
+		c.Set("user_id", "user-1")
+
+		if err := h.UpdateExclude(c); err != nil {
+			t.Fatalf("UpdateExclude error: %v", err)
+		}
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", rec.Code)
+		}
+
+		var resp ErrorResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.Message == "" {
+			t.Fatal("expected a non-empty error message")
+		}
+	})
+}
+
+// TestSendAIHandlerInsufficientBalance402 asserts that SendAI returns HTTP
+// 402 with body {"message":"insufficient token balance"} when the usecase
+// returns domain.ErrInsufficientBalance (Step 42).
+func TestSendAIHandlerInsufficientBalance402(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	guard := &mocks.BillingGuard{CheckBalanceErr: domain.ErrInsufficientBalance}
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), guard)
+	e := echo.New()
+	h := NewMessageHandler(uc)
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai",
+		strings.NewReader(`{"content":"Hello","model":"test"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.SendAI(c); err != nil {
+		t.Fatalf("SendAI error: %v", err)
+	}
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("expected 402, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `{"message":"insufficient token balance"}`) {
+		t.Fatalf("expected insufficient token balance body, got %s", rec.Body.String())
 	}
 }

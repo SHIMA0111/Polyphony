@@ -26,7 +26,7 @@ use llm_gateway::adapters::inbound::rest::router::build_router;
 use llm_gateway::domain::error::DomainError;
 use llm_gateway::domain::model::{
     ChatMessage, Choice, CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, Role,
-    Usage,
+    TokenEstimateRequest, TokenEstimateResponse, Usage,
 };
 use llm_gateway::ports::inbound::completion::CompletionUseCase;
 
@@ -132,6 +132,16 @@ impl CompletionUseCase for StubUseCase {
     fn readiness(&self) -> Result<(), DomainError> {
         self.ready
             .map_err(|()| DomainError::KeyNotFound("stub".to_string()))
+    }
+
+    fn estimate_tokens(&self, req: TokenEstimateRequest) -> TokenEstimateResponse {
+        // Delegates to the real heuristic (same as `CompletionService`) so this test
+        // double exercises the actual estimation behavior through the HTTP layer,
+        // rather than a canned value.
+        TokenEstimateResponse {
+            model: req.model,
+            estimated_tokens: llm_gateway::domain::token_estimator::estimate_tokens(&req.messages),
+        }
     }
 }
 
@@ -371,4 +381,49 @@ async fn test_completions_rate_limited_returns_too_many_requests_with_retry_afte
             .expect("Retry-After header should be set"),
         "7"
     );
+}
+
+/// Builds a `POST /tokens/estimate` request with a JSON body for the given model,
+/// role, and message content.
+fn tokens_estimate_request(model: &str, role: &str, content: &str) -> Request<Body> {
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role": role, "content": content}],
+    });
+    Request::builder()
+        .method("POST")
+        .uri("/tokens/estimate")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_tokens_estimate_happy_path_returns_ok() {
+    let router = test_router(StubUseCase::new());
+
+    let response = router
+        .oneshot(tokens_estimate_request(KNOWN_MODEL, "user", "hello world"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["model"], KNOWN_MODEL);
+    let estimated_tokens = body["estimated_tokens"]
+        .as_u64()
+        .expect("estimated_tokens should be an integer");
+    assert!(estimated_tokens > 0);
+}
+
+#[tokio::test]
+async fn test_tokens_estimate_unknown_role_returns_bad_request() {
+    let router = test_router(StubUseCase::new());
+
+    let response = router
+        .oneshot(tokens_estimate_request(KNOWN_MODEL, "bogus-role", "hello"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

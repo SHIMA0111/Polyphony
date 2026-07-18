@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use llm_gateway::adapters::inbound::grpc::serve_grpc;
 use llm_gateway::adapters::inbound::rest::router::build_router;
+use llm_gateway::adapters::outbound::anthropic::AnthropicProvider;
 use llm_gateway::adapters::outbound::env_key::EnvKeyStore;
+use llm_gateway::adapters::outbound::gemini::GeminiProvider;
 use llm_gateway::adapters::outbound::openai::OpenAIProvider;
 use llm_gateway::config::Config;
 use llm_gateway::domain::service::CompletionService;
@@ -23,21 +25,85 @@ async fn main() {
 
     tracing::info!(port = config.port, "starting LLM Gateway");
 
-    // Dependency injection assembly
+    // Dependency injection assembly.
+    //
+    // Each provider is only registered when its API key environment variable is
+    // present and non-empty. This keeps `GET /ready` (backed by
+    // `CompletionService::readiness`, which checks exactly the registered providers)
+    // truthful in deployments that only configure a subset of providers -- without
+    // this gating, readiness would fail forever unless ALL of
+    // OPENAI/ANTHROPIC/GEMINI_API_KEY were set, even for operators who only intend to
+    // use one provider.
     let key_store = Arc::new(EnvKeyStore);
-    let openai_provider = match OpenAIProvider::new(
-        key_store.clone(),
-        config.http.clone(),
-        config.openai.clone(),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("failed to initialize OpenAIProvider: {e}");
-            std::process::exit(1);
-        }
-    };
+    let mut providers: Vec<Box<dyn llm_gateway::ports::outbound::provider::LLMProvider>> =
+        Vec::new();
 
-    let service = CompletionService::new(vec![Box::new(openai_provider)], key_store);
+    if has_non_empty_env("OPENAI_API_KEY") {
+        match OpenAIProvider::new(
+            key_store.clone(),
+            config.http.clone(),
+            config.openai.clone(),
+        ) {
+            Ok(p) => providers.push(Box::new(p)),
+            Err(e) => {
+                tracing::error!(provider = "openai", error = %e, "failed to initialize provider");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        tracing::info!(
+            provider = "openai",
+            "OPENAI_API_KEY not set, skipping provider registration"
+        );
+    }
+
+    if has_non_empty_env("ANTHROPIC_API_KEY") {
+        match AnthropicProvider::new(
+            key_store.clone(),
+            config.http.clone(),
+            config.anthropic.clone(),
+        ) {
+            Ok(p) => providers.push(Box::new(p)),
+            Err(e) => {
+                tracing::error!(provider = "anthropic", error = %e, "failed to initialize provider");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        tracing::info!(
+            provider = "anthropic",
+            "ANTHROPIC_API_KEY not set, skipping provider registration"
+        );
+    }
+
+    if has_non_empty_env("GEMINI_API_KEY") {
+        match GeminiProvider::new(
+            key_store.clone(),
+            config.http.clone(),
+            config.gemini.clone(),
+        ) {
+            Ok(p) => providers.push(Box::new(p)),
+            Err(e) => {
+                tracing::error!(provider = "gemini", error = %e, "failed to initialize provider");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        tracing::info!(
+            provider = "gemini",
+            "GEMINI_API_KEY not set, skipping provider registration"
+        );
+    }
+
+    if providers.is_empty() {
+        tracing::error!(
+            "no LLM providers registered: set at least one of OPENAI_API_KEY, \
+             ANTHROPIC_API_KEY, GEMINI_API_KEY"
+        );
+        std::process::exit(1);
+    }
+
+    let service = CompletionService::new(providers, key_store);
     // Coerced to the trait object once here so the exact same instance is shared by
     // both the REST router and the gRPC server below — no second `CompletionService`
     // is ever constructed.
@@ -82,6 +148,35 @@ async fn main() {
     };
 
     tokio::join!(signal_task, rest_server, grpc_server);
+}
+
+/// Reports whether environment variable `key` is set to a non-empty value.
+///
+/// Used to gate provider registration in `main` on API key presence: a variable that
+/// is unset OR set to the empty string is treated the same way (provider skipped),
+/// since an empty key could never authenticate a real request anyway.
+///
+/// # Arguments
+/// * `key` — Environment variable name to check.
+///
+/// # Returns
+/// `true` if `key` is set in the environment to a non-empty string, `false` otherwise.
+fn has_non_empty_env(key: &str) -> bool {
+    is_non_empty(std::env::var(key).ok().as_deref())
+}
+
+/// Reports whether an optional string value is present and non-empty.
+///
+/// Pure helper extracted from `has_non_empty_env` so its non-empty/empty/absent logic
+/// can be unit-tested without mutating process-global environment state.
+///
+/// # Arguments
+/// * `v` — The value to check, as `Some(&str)` if present or `None` if absent.
+///
+/// # Returns
+/// `true` if `v` is `Some` and non-empty, `false` otherwise.
+fn is_non_empty(v: Option<&str>) -> bool {
+    v.is_some_and(|v| !v.is_empty())
 }
 
 /// Waits until `rx` observes a `true` value, i.e. until the shared shutdown signal has
@@ -130,5 +225,25 @@ async fn shutdown_signal() {
         _ = terminate => {
             tracing::info!("received SIGTERM, starting graceful shutdown");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_non_empty_true_when_set_and_non_empty() {
+        assert!(is_non_empty(Some("sk-x")));
+    }
+
+    #[test]
+    fn test_is_non_empty_false_when_unset() {
+        assert!(!is_non_empty(None));
+    }
+
+    #[test]
+    fn test_is_non_empty_false_when_empty_string() {
+        assert!(!is_non_empty(Some("")));
     }
 }

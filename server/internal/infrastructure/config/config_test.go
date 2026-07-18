@@ -316,6 +316,56 @@ func TestLoadAuthModeInvalidReturnsError(t *testing.T) {
 	}
 }
 
+func TestLoadMessageHubDriverDefault(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.MessageHubDriver != "inprocess" {
+		t.Errorf("expected default MessageHubDriver %q, got %q", "inprocess", cfg.MessageHubDriver)
+	}
+	if cfg.RedisURL != "" {
+		t.Errorf("expected empty RedisURL when MESSAGE_HUB_DRIVER is unset, got %q", cfg.RedisURL)
+	}
+}
+
+func TestLoadMessageHubDriverRedisRequiresRedisURL(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("MESSAGE_HUB_DRIVER", "redis")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to fail when MESSAGE_HUB_DRIVER=redis and REDIS_URL is unset")
+	}
+}
+
+func TestLoadMessageHubDriverRedisWithRedisURL(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("MESSAGE_HUB_DRIVER", "redis")
+	t.Setenv("REDIS_URL", "redis://localhost:6379/0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.MessageHubDriver != "redis" {
+		t.Errorf("expected MessageHubDriver %q, got %q", "redis", cfg.MessageHubDriver)
+	}
+	if cfg.RedisURL != "redis://localhost:6379/0" {
+		t.Errorf("expected RedisURL to be set, got %q", cfg.RedisURL)
+	}
+}
+
+func TestLoadMessageHubDriverInvalidReturnsError(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("MESSAGE_HUB_DRIVER", "kafka")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to fail for an unrecognized MESSAGE_HUB_DRIVER value")
+	}
+}
+
 func TestLoadKratosDefaults(t *testing.T) {
 	withRequiredEnv(t)
 
@@ -331,5 +381,107 @@ func TestLoadKratosDefaults(t *testing.T) {
 	}
 	if cfg.KratosCookieName != "ory_kratos_session" {
 		t.Errorf("expected default KratosCookieName, got %q", cfg.KratosCookieName)
+	}
+}
+
+func TestLoadLLMGatewayGRPCDefaults(t *testing.T) {
+	withRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.LLMGatewayTransport != "rest" {
+		t.Errorf("expected default LLMGatewayTransport %q, got %q", "rest", cfg.LLMGatewayTransport)
+	}
+	if cfg.LLMGatewayGRPCAddr != "llm-gateway:50051" {
+		t.Errorf("expected default LLMGatewayGRPCAddr %q, got %q", "llm-gateway:50051", cfg.LLMGatewayGRPCAddr)
+	}
+	if cfg.LLMGatewayGRPCMaxRetries != 3 {
+		t.Errorf("expected default LLMGatewayGRPCMaxRetries 3, got %d", cfg.LLMGatewayGRPCMaxRetries)
+	}
+	if cfg.LLMGatewayGRPCBaseBackoff != 100*time.Millisecond {
+		t.Errorf("expected default LLMGatewayGRPCBaseBackoff 100ms, got %v", cfg.LLMGatewayGRPCBaseBackoff)
+	}
+}
+
+func TestLoadLLMGatewayGRPCOverrides(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("LLM_GATEWAY_TRANSPORT", "grpc")
+	t.Setenv("LLM_GATEWAY_GRPC_ADDR", "localhost:9999")
+	t.Setenv("LLM_GATEWAY_GRPC_MAX_RETRIES", "5")
+	t.Setenv("LLM_GATEWAY_GRPC_BASE_BACKOFF", "250ms")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.LLMGatewayTransport != "grpc" {
+		t.Errorf("expected overridden LLMGatewayTransport %q, got %q", "grpc", cfg.LLMGatewayTransport)
+	}
+	if cfg.LLMGatewayGRPCAddr != "localhost:9999" {
+		t.Errorf("expected overridden LLMGatewayGRPCAddr, got %q", cfg.LLMGatewayGRPCAddr)
+	}
+	if cfg.LLMGatewayGRPCMaxRetries != 5 {
+		t.Errorf("expected overridden LLMGatewayGRPCMaxRetries 5, got %d", cfg.LLMGatewayGRPCMaxRetries)
+	}
+	if cfg.LLMGatewayGRPCBaseBackoff != 250*time.Millisecond {
+		t.Errorf("expected overridden LLMGatewayGRPCBaseBackoff 250ms, got %v", cfg.LLMGatewayGRPCBaseBackoff)
+	}
+}
+
+func TestLoadLLMGatewayTransportInvalidFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("LLM_GATEWAY_TRANSPORT", "carrier-pigeon")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on an invalid transport, got: %v", err)
+	}
+	if cfg.LLMGatewayTransport != "rest" {
+		t.Errorf("expected fallback to default LLMGatewayTransport %q, got %q", "rest", cfg.LLMGatewayTransport)
+	}
+}
+
+func TestLoadLLMGatewayGRPCMaxRetriesInvalidFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("LLM_GATEWAY_GRPC_MAX_RETRIES", "not-a-number")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on an invalid retry count, got: %v", err)
+	}
+	if cfg.LLMGatewayGRPCMaxRetries != 3 {
+		t.Errorf("expected fallback to default LLMGatewayGRPCMaxRetries 3, got %d", cfg.LLMGatewayGRPCMaxRetries)
+	}
+}
+
+// TestLoadLLMGatewayGRPCMaxRetriesNegativeFallsBackToDefault proves that a
+// negative LLM_GATEWAY_GRPC_MAX_RETRIES value -- which strconv.Atoi parses
+// successfully, unlike "not-a-number" -- is still rejected in favor of the
+// default, rather than being passed through to misbehave downstream.
+func TestLoadLLMGatewayGRPCMaxRetriesNegativeFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("LLM_GATEWAY_GRPC_MAX_RETRIES", "-1")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on a negative retry count, got: %v", err)
+	}
+	if cfg.LLMGatewayGRPCMaxRetries != 3 {
+		t.Errorf("expected fallback to default LLMGatewayGRPCMaxRetries 3, got %d", cfg.LLMGatewayGRPCMaxRetries)
+	}
+}
+
+func TestLoadLLMGatewayGRPCBaseBackoffInvalidFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("LLM_GATEWAY_GRPC_BASE_BACKOFF", "not-a-duration")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on an invalid backoff duration, got: %v", err)
+	}
+	if cfg.LLMGatewayGRPCBaseBackoff != 100*time.Millisecond {
+		t.Errorf("expected fallback to default LLMGatewayGRPCBaseBackoff 100ms, got %v", cfg.LLMGatewayGRPCBaseBackoff)
 	}
 }

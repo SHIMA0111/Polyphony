@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react"
 import { Box, Button, Flex, Separator, Spacer, Text } from "@chakra-ui/react"
 import { ArrowUp, Sparkles } from "lucide-react"
+import { Tooltip } from "@/components/ui/tooltip"
 import { ModelSelector, type Model } from "./ModelSelector"
 
 interface MessageInputProps {
@@ -41,22 +42,35 @@ export function MessageInput({
   }, [input])
 
   const handleSend = useCallback(async () => {
-    if (!input.trim() || isSending) return
+    const content = input.trim()
+    if (!content || isSending) return
     setIsSending(true)
     try {
-      await onSend(input.trim())
+      await onSend(content)
       setInput("")
+    } catch {
+      // The mutation's own `onError` already appended a retryable "failed"
+      // bubble to the transcript and surfaced a failure toast — restore the
+      // typed content here so it isn't lost, rather than letting the
+      // rejection go uncaught.
+      setInput(content)
     } finally {
       setIsSending(false)
     }
   }, [input, isSending, onSend])
 
   const handleSendWithAI = useCallback(async () => {
-    if (!input.trim() || isSending || !selectedModel) return
+    const content = input.trim()
+    if (!content || isSending || !selectedModel) return
     setIsSending(true)
     try {
-      await onSendWithAI(input.trim(), selectedModel.id)
+      await onSendWithAI(content, selectedModel.id)
       setInput("")
+    } catch {
+      // See `handleSend`'s catch above: restore the content instead of
+      // losing it, the toast/failed-bubble is already handled by the
+      // mutation itself.
+      setInput(content)
     } finally {
       setIsSending(false)
     }
@@ -75,6 +89,12 @@ export function MessageInput({
   }
 
   const isDisabled = !input.trim() || isSending || disabled
+  // The AI send button has its own, stricter disabled condition: sending
+  // with AI additionally requires a selected model (handleSendWithAI itself
+  // no-ops without one), so the button must reflect that -- otherwise it
+  // renders as clickable while a click would silently do nothing whenever
+  // `models` hasn't loaded a selection yet.
+  const isAISendDisabled = isDisabled || !selectedModel
 
   return (
     <Box bg="bg/80" backdropFilter="blur(8px)" pb={4} pt={2}>
@@ -141,24 +161,41 @@ export function MessageInput({
               <ArrowUp size={14} />
               Send
             </Button>
-            <Button
-              size="sm"
-              onClick={handleSendWithAI}
-              disabled={isDisabled}
-              h={8}
-              px={3}
-              fontSize="xs"
-              fontWeight="medium"
-              gap={1.5}
-              rounded="lg"
-              colorPalette="blue"
-              bg="linear-gradient(to right, var(--chakra-colors-blue-500), var(--chakra-colors-blue-600))"
-              color="white"
-              _hover={{ opacity: 0.9 }}
+            <Tooltip
+              content="Select a model to send with AI"
+              disabled={!!selectedModel}
             >
-              <Sparkles size={14} />
-              Send with AI
-            </Button>
+              {/*
+                A `disabled` native button doesn't fire pointer or focus
+                events in most browsers, so a Tooltip wrapping it directly
+                would never trigger — not on mouse hover, and not on
+                keyboard focus (Tab). Wrapping the Button in a focusable
+                (`tabIndex={0}`) `span` gives the tooltip an always-
+                interactive element to anchor to, so "Select a model to send
+                with AI" is reachable both by hovering and by tabbing to it,
+                even while the button itself is disabled.
+              */}
+              <Box as="span" display="inline-flex" tabIndex={0}>
+                <Button
+                  size="sm"
+                  onClick={handleSendWithAI}
+                  disabled={isAISendDisabled}
+                  h={8}
+                  px={3}
+                  fontSize="xs"
+                  fontWeight="medium"
+                  gap={1.5}
+                  rounded="lg"
+                  colorPalette="blue"
+                  bg="linear-gradient(to right, var(--chakra-colors-blue-500), var(--chakra-colors-blue-600))"
+                  color="white"
+                  _hover={{ opacity: 0.9 }}
+                >
+                  <Sparkles size={14} />
+                  Send with AI
+                </Button>
+              </Box>
+            </Tooltip>
           </Flex>
         </Box>
 

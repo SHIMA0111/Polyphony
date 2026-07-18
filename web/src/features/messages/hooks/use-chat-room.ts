@@ -1,12 +1,15 @@
 "use client"
 
-import { useCallback } from "react"
+import { useCallback, useMemo } from "react"
+import { useQueryClient, type QueryClient } from "@tanstack/react-query"
 import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useMessages } from "@/features/messages/hooks/use-messages"
 import { useModels } from "@/features/messages/hooks/use-models"
 import { useSendMessage } from "@/features/messages/hooks/use-send-message"
 import { useSendAIMessage } from "@/features/messages/hooks/use-send-ai-message"
 import { useRegenerateAIMessage } from "@/features/messages/hooks/use-regenerate-ai-message"
+import { flattenMessagePages } from "@/features/messages/lib/flatten-message-pages"
+import { removeFromNewestPage, type MessagesInfiniteData } from "@/features/messages/lib/message-cache"
 import type { Message, ModelInfo } from "@/features/messages/types"
 import type { Room } from "@/features/rooms/types"
 
@@ -15,6 +18,74 @@ import type { Room } from "@/features/rooms/types"
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_MODELS: ModelInfo[] = []
 
+/** The AI-send parameters a retry needs to replay a failed AI send faithfully. */
+interface RetryIntent {
+  model?: string
+}
+
+/**
+ * Query key under which the retry-intent map for `roomId` is stored in the
+ * `QueryClient`, keyed by each failed AI send's human-echo optimistic id.
+ * Kept in the query cache -- rather than a component-local `useRef` -- so a
+ * failed AI send's retry intent (which mutation to retry through, and with
+ * what model) survives a remount of the chat room screen (e.g. navigating
+ * away and back before retrying a failed send): the `QueryClient` instance
+ * outlives any single mount of `useChatRoom`, while a ref does not. No
+ * component ever subscribes to this key via `useQuery`; it is only ever
+ * read/written directly through `queryClient.getQueryData`/`setQueryData`
+ * below.
+ */
+function retryIntentQueryKey(roomId: string) {
+  return ["retry-intent", roomId] as const
+}
+
+/**
+ * Records `intent` for `humanMessageId` in `roomId`'s retry-intent map.
+ * Called from `useSendAIMessage`'s `onSendFailed` whenever an AI send
+ * fails, so a later `handleRetry` call for this exact message id knows to
+ * replay it through the AI mutation instead of falling back to a plain
+ * resend.
+ */
+function setRetryIntent(
+  queryClient: QueryClient,
+  roomId: string,
+  humanMessageId: string,
+  intent: RetryIntent,
+): void {
+  const key = retryIntentQueryKey(roomId)
+  const current = queryClient.getQueryData<Map<string, RetryIntent>>(key)
+  const next = new Map(current)
+  next.set(humanMessageId, intent)
+  queryClient.setQueryData(key, next)
+}
+
+/**
+ * Reads and removes any retry intent recorded for `messageId` in `roomId`'s
+ * retry-intent map, returning it (or `undefined` if the failed message
+ * originated from a plain, non-AI send). Removed unconditionally as soon as
+ * `handleRetry` consults it -- whether the ensuing retry itself succeeds or
+ * fails -- since a retry that fails again repopulates the map under the
+ * *new* optimistic id `onSendFailed` produces for that new attempt; leaving
+ * the old entry behind would only grow the map without it ever being read
+ * again (the original failed message id no longer exists in the message
+ * cache once `handleRetry` removes it below).
+ */
+function takeRetryIntent(
+  queryClient: QueryClient,
+  roomId: string,
+  messageId: string,
+): RetryIntent | undefined {
+  const key = retryIntentQueryKey(roomId)
+  const current = queryClient.getQueryData<Map<string, RetryIntent>>(key)
+  const intent = current?.get(messageId)
+  if (current?.has(messageId)) {
+    const next = new Map(current)
+    next.delete(messageId)
+    queryClient.setQueryData(key, next)
+  }
+  return intent
+}
+
 export interface UseChatRoomResult {
   room: Room | undefined
   messages: Message[]
@@ -22,9 +93,20 @@ export interface UseChatRoomResult {
   isLoading: boolean
   /** The AI message id currently being regenerated, or `null`. */
   isRegenerating: string | null
+  /** Whether an older page of history is available via `fetchNextPage`. */
+  hasNextPage: boolean
+  /** Whether the next (older) page is currently being fetched. */
+  isFetchingNextPage: boolean
+  /** Fetches the next older page of message history. */
+  fetchNextPage: () => Promise<unknown>
+  /** Number of currently loaded pages; used to anchor scroll position across a load. */
+  pageCount: number
   handleSend: (content: string) => Promise<void>
   handleSendWithAI: (content: string, model: string) => Promise<void>
   handleRegenerate: (aiMessageId: string) => Promise<void>
+  /** Re-sends a failed human message's original content, replacing its
+   * failed optimistic entry so no duplicate bubble is left behind. */
+  handleRetry: (messageId: string, content: string) => Promise<void>
 }
 
 /**
@@ -39,16 +121,36 @@ export interface UseChatRoomResult {
  * @param roomId - The room to load and interact with.
  */
 export function useChatRoom(roomId: string): UseChatRoomResult {
+  const queryClient = useQueryClient()
+
   const roomQuery = useRoom(roomId)
   const messagesQuery = useMessages(roomId)
   const modelsQuery = useModels()
 
   const sendMessageMutation = useSendMessage(roomId)
-  const sendAIMessageMutation = useSendAIMessage(roomId)
+
+  // Tracks the send intent of each *currently failed* message that
+  // originated from an AI send, keyed by the failed human echo's id (the
+  // same id `MessageBubble` passes back to `handleRetry` below): populated
+  // by `useSendAIMessage`'s `onSendFailed` callback whenever an AI send
+  // fails, and consulted (then cleared) by `handleRetry` to decide whether
+  // a retry must re-invoke the AI mutation with the original model instead
+  // of silently falling back to a plain resend. Stored in the `QueryClient`
+  // (see `retryIntentQueryKey`'s docstring above), not a `useRef`, so this
+  // intent survives a remount of `useChatRoom` itself.
+  const sendAIMessageMutation = useSendAIMessage(roomId, {
+    onSendFailed: (humanMessageId, model) => {
+      setRetryIntent(queryClient, roomId, humanMessageId, { model })
+    },
+  })
   const regenerateMutation = useRegenerateAIMessage(roomId)
 
   const room = roomQuery.data
-  const messages = messagesQuery.data ?? EMPTY_MESSAGES
+  const pages = messagesQuery.data?.pages
+  const messages = useMemo(
+    () => (pages ? flattenMessagePages(pages) : EMPTY_MESSAGES),
+    [pages],
+  )
   const models = modelsQuery.data ?? EMPTY_MODELS
   const isLoading =
     roomQuery.isPending || messagesQuery.isPending || modelsQuery.isPending
@@ -69,27 +171,68 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
 
   const handleRegenerate = useCallback(
     async (aiMessageId: string) => {
-      // Find the human message that precedes this AI message
-      const msgIndex = messages.findIndex((m) => m.id === aiMessageId)
-      if (msgIndex < 0) return
-
-      // Find the preceding human message
-      let humanMessageId: string | null = null
-      for (let i = msgIndex - 1; i >= 0; i--) {
-        if (messages[i].type === "human") {
-          humanMessageId = messages[i].id
-          break
-        }
+      // Resolve the target human message directly from the AI message's
+      // `in_response_to_message_id` link (a Step 7 server addition) instead
+      // of scanning `messages` backwards by array position — the previous
+      // approach could resolve the wrong human message whenever the AI
+      // message wasn't immediately preceded by its own human message (e.g.
+      // after an interleaved system/failed entry).
+      const aiMessage = messages.find((m) => m.id === aiMessageId)
+      if (!aiMessage?.in_response_to_message_id) {
+        // Should not happen for an AI message created via `SendAIMessage`
+        // (see `server/internal/usecase/message/usecase.go`); no-op rather
+        // than guess at a fallback target.
+        return
       }
-      if (!humanMessageId) return
 
       try {
-        await regenerateMutation.mutateAsync({ aiMessageId, humanMessageId })
+        await regenerateMutation.mutateAsync({
+          aiMessageId,
+          humanMessageId: aiMessage.in_response_to_message_id,
+        })
       } catch {
-        // TODO: handle error
+        // The mutation's rejection is enough for callers that want to
+        // observe it (e.g. via `regenerateMutation.isError`); `MessageBubble`
+        // already reflects a persisted `status: "failed"` AI message via its
+        // own styling, so there is nothing further to do here.
       }
     },
     [messages, regenerateMutation],
+  )
+
+  const handleRetry = useCallback(
+    async (messageId: string, content: string) => {
+      // A failed message that originated from an AI send has an entry here
+      // (see `retryIntentQueryKey`'s docstring above); anything else (a
+      // plain send's failure) has none, and falls back to a plain resend
+      // below — its original intent already *was* plain, so there is
+      // nothing to recover.
+      const intent = takeRetryIntent(queryClient, roomId, messageId)
+
+      // Drop the stale failed optimistic entry first so the mutation's own
+      // `onMutate` (which appends a *new* optimistic entry with a fresh id)
+      // doesn't leave both the old failed bubble and the new "sending"
+      // bubble on screen at once.
+      queryClient.setQueryData<MessagesInfiniteData>(
+        ["rooms", roomId, "messages"],
+        (old) => removeFromNewestPage(old, messageId),
+      )
+
+      try {
+        if (intent) {
+          await sendAIMessageMutation.mutateAsync({ content, model: intent.model })
+        } else {
+          await sendMessageMutation.mutateAsync(content)
+        }
+      } catch {
+        // The mutation's own `onError` already reflects the failure (a new
+        // `status: "failed"` entry, plus a toast) and — for the AI path —
+        // re-populates the retry-intent map for the newly-failed message id
+        // via `onSendFailed`; there is nothing further to do here, mirroring
+        // `handleRegenerate`'s identical catch-and-ignore above.
+      }
+    },
+    [queryClient, roomId, sendMessageMutation, sendAIMessageMutation],
   )
 
   const isRegenerating = regenerateMutation.isPending
@@ -102,8 +245,13 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
     models,
     isLoading,
     isRegenerating,
+    hasNextPage: messagesQuery.hasNextPage,
+    isFetchingNextPage: messagesQuery.isFetchingNextPage,
+    fetchNextPage: messagesQuery.fetchNextPage,
+    pageCount: pages?.length ?? 0,
     handleSend,
     handleSendWithAI,
     handleRegenerate,
+    handleRetry,
   }
 }

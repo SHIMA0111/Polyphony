@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# verify_redis_hub.sh — Step 31 multi-instance MessageHub smoke check
+# (docs/tasks/step31.md).
+#
+# Brings up db, redis, and llm-gateway, applies migrations via the one-shot
+# `migrate` container (matching the `migrate:apply` Task), then scales `api`
+# to two replicas using docker-compose.scale-test.yml (so each replica gets
+# its own auto-assigned host port instead of colliding on 8080). It registers
+# a test user, opens a WebSocket connection against replica 1, sends a room
+# message via HTTP against replica 2, and asserts the message is delivered
+# over replica 1's WebSocket within a timeout — proving RedisHub fans events
+# out across API server processes rather than only within one, which
+# InProcessHub cannot do.
+#
+# Exits 0 on success, non-zero on any failure (missing prerequisite, replica
+# never becomes healthy, or the cross-instance delivery timing out).
+#
+# Idempotent and non-destructive by design: `--wait` is only ever applied to
+# long-running services (db, redis, llm-gateway) — never to the one-shot
+# `migrate` service, whose container legitimately exits 0 after applying
+# migrations and would otherwise make a bare `--wait db migrate redis
+# llm-gateway` fail any time a previously-exited `migrate` container from an
+# earlier run/dev session still exists in the project. The cleanup trap is
+# scoped to only the resources this script itself brought up (the scaled
+# `api` replicas) — it never runs a project-wide `docker compose down`, so it
+# will not tear down a stack the developer already had running. Because
+# scaling `api` back down (`stop`/`rm`) necessarily removes every replica —
+# including the original, non-scaled one, if `api` was already running
+# before this script started — the trap records that pre-existing state up
+# front and restores a single, normally-configured `api` instance afterward
+# so the dev stack isn't left without one.
+#
+# Explicitly forces AUTH_MODE=simple_jwt for this stack's own bring-up
+# (independent of whatever AUTH_MODE default docker-compose.yml ships with),
+# so this script keeps working with the register/login flow below regardless
+# of which AuthService implementation is the compose default in a given
+# wave.
+#
+# Prerequisites: docker, docker compose (v2, with the `--wait` flag), curl,
+# jq, go (1.25+, to run the verifywshub WebSocket test client via `go run`).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
+
+for bin in docker curl jq go; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "verify_redis_hub: required tool '$bin' not found on PATH" >&2
+    exit 1
+  fi
+done
+
+export AUTH_MODE=simple_jwt
+
+COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.scale-test.yml)
+BASE_COMPOSE=(docker compose)
+
+# Recorded before this script touches `api` at all: whether a (non-scaled)
+# `api` container was already up, so the cleanup trap knows whether to
+# restore it after tearing down the scaled replicas below.
+API_WAS_RUNNING=""
+if [[ -n "$("${BASE_COMPOSE[@]}" ps -q api 2>/dev/null)" ]]; then
+  API_WAS_RUNNING=1
+fi
+
+RUN_SUFFIX="$(date +%s)"
+TEST_EMAIL="verify-redis-hub-${RUN_SUFFIX}@example.com"
+TEST_USERNAME="verify-redis-hub-${RUN_SUFFIX}"
+TEST_PASSWORD="verify-redis-hub-password"
+MESSAGE_CONTENT="redis-hub-cross-instance-check-${RUN_SUFFIX}"
+WS_WAIT_LOG="$(mktemp)"
+
+cleanup() {
+  local status=$?
+  echo "==> Stopping and removing only the api replicas this script scaled up"
+  "${COMPOSE[@]}" stop api >/dev/null 2>&1 || true
+  "${COMPOSE[@]}" rm -f api >/dev/null 2>&1 || true
+  if [[ -n "$API_WAS_RUNNING" ]]; then
+    echo "==> Restoring the api service that was already running before this script started"
+    "${BASE_COMPOSE[@]}" up -d --wait api || true
+  fi
+  rm -f "$WS_WAIT_LOG"
+  exit "$status"
+}
+trap cleanup EXIT
+
+echo "==> Starting db, redis, llm-gateway"
+"${BASE_COMPOSE[@]}" up -d --wait db redis llm-gateway
+
+echo "==> Applying migrations via the one-shot migrate container"
+"${BASE_COMPOSE[@]}" run --rm migrate
+
+echo "==> Scaling api to 2 replicas via docker-compose.scale-test.yml"
+"${COMPOSE[@]}" up -d --build --wait --scale api=2 api
+
+port_for_replica() {
+  # docker compose port prints "0.0.0.0:PORT"; keep only the port number.
+  "${COMPOSE[@]}" port --index="$1" api 8080 | sed -E 's/.*://'
+}
+
+PORT1="$(port_for_replica 1)"
+PORT2="$(port_for_replica 2)"
+if [[ -z "$PORT1" || -z "$PORT2" ]]; then
+  echo "verify_redis_hub: failed to resolve replica host ports" >&2
+  exit 1
+fi
+echo "==> Replica 1 on host port ${PORT1}, replica 2 on host port ${PORT2}"
+
+BASE1="http://localhost:${PORT1}"
+BASE2="http://localhost:${PORT2}"
+
+echo "==> Registering test user against replica 1"
+REGISTER_BODY="$(curl -sS -X POST "${BASE1}/auth/register" \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"${TEST_EMAIL}\",\"username\":\"${TEST_USERNAME}\",\"password\":\"${TEST_PASSWORD}\"}")"
+ACCESS_TOKEN="$(jq -r '.access_token // empty' <<<"$REGISTER_BODY")"
+if [[ -z "$ACCESS_TOKEN" ]]; then
+  echo "verify_redis_hub: registration failed: ${REGISTER_BODY}" >&2
+  exit 1
+fi
+
+echo "==> Creating a room against replica 1"
+ROOM_BODY="$(curl -sS -X POST "${BASE1}/rooms" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"redis-hub-verify-${RUN_SUFFIX}\",\"description\":\"\"}")"
+ROOM_ID="$(jq -r '.id // empty' <<<"$ROOM_BODY")"
+if [[ -z "$ROOM_ID" ]]; then
+  echo "verify_redis_hub: room creation failed: ${ROOM_BODY}" >&2
+  exit 1
+fi
+
+echo "==> Issuing a WebSocket ticket against replica 1"
+TICKET_BODY="$(curl -sS -X POST "${BASE1}/ws/ticket" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}")"
+TICKET="$(jq -r '.ticket // empty' <<<"$TICKET_BODY")"
+if [[ -z "$TICKET" ]]; then
+  echo "verify_redis_hub: ws ticket issuance failed: ${TICKET_BODY}" >&2
+  exit 1
+fi
+
+WS_URL="ws://localhost:${PORT1}/rooms/${ROOM_ID}/ws?ticket=${TICKET}"
+
+echo "==> Opening a WebSocket to replica 1 (${BASE1}) and waiting for the room event"
+(
+  cd server
+  go run ./cmd/verifywshub -url "$WS_URL" -timeout 20s
+) >"$WS_WAIT_LOG" 2>&1 &
+WS_PID=$!
+
+# The WebSocket client needs to dial, upgrade, and subscribe on the hub
+# before it can observe anything published — RedisHub's Subscribe issues a
+# Redis SUBSCRIBE command that needs a moment to take effect, especially
+# over the Docker network. Rather than guess a single fixed delay (which
+# would either be flaky under load if too short, or waste time on every run
+# if padded generously), send the message, then poll: if the WebSocket
+# client (still running) hasn't received it yet, re-send the same message
+# and check again, bounded by PUBLISH_RETRY_BUDGET_S seconds — comfortably
+# inside verifywshub's own -timeout 20s above, so a "wait" below afterward
+# always has enough of that budget left to observe a late-subscribing
+# client's eventual receipt. Re-sending is safe to grep for afterward since
+# every attempt carries the same $MESSAGE_CONTENT.
+PUBLISH_RETRY_BUDGET_S=15
+publish_deadline=$(( $(date +%s) + PUBLISH_RETRY_BUDGET_S ))
+
+echo "==> Sending the message via HTTP against replica 2 (${BASE2}), retrying until replica 1's WebSocket client receives it or the retry budget elapses"
+while true; do
+  SEND_BODY="$(curl -sS -X POST "${BASE2}/rooms/${ROOM_ID}/messages" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"content\":\"${MESSAGE_CONTENT}\"}")"
+  if [[ "$(jq -r '.id // empty' <<<"$SEND_BODY")" == "" ]]; then
+    echo "verify_redis_hub: send message via replica 2 failed: ${SEND_BODY}" >&2
+    kill "$WS_PID" 2>/dev/null || true
+    exit 1
+  fi
+
+  # Give the just-published event a moment to propagate through Redis
+  # Pub/Sub and reach the WebSocket client before deciding whether to retry.
+  sleep 1
+
+  if ! kill -0 "$WS_PID" 2>/dev/null; then
+    # verifywshub already exited -- either it received a frame (success) or
+    # its own -timeout fired (failure); either way there's nothing left to
+    # publish for. The `wait` below reports which one happened.
+    break
+  fi
+
+  if [[ $(date +%s) -ge $publish_deadline ]]; then
+    echo "==> Publish retry budget exhausted; leaving the last send in place and waiting out the WebSocket client's own timeout"
+    break
+  fi
+
+  echo "==> Replica 1's WebSocket client hasn't received the event yet; re-sending the message"
+done
+
+echo "==> Waiting for the WebSocket client (connected to replica 1) to observe the event"
+if ! wait "$WS_PID"; then
+  echo "verify_redis_hub: WebSocket client on replica 1 did not receive the event in time" >&2
+  cat "$WS_WAIT_LOG" >&2
+  exit 1
+fi
+cat "$WS_WAIT_LOG"
+
+if ! grep -q "$MESSAGE_CONTENT" "$WS_WAIT_LOG"; then
+  echo "verify_redis_hub: received event frame did not contain the expected message content" >&2
+  exit 1
+fi
+
+echo "==> SUCCESS: message sent via replica 2 was delivered over replica 1's WebSocket"

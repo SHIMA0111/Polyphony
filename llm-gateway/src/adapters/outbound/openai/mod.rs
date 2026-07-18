@@ -106,9 +106,14 @@ fn models_list() -> &'static Vec<ModelInfo> {
 /// HTTP client timeouts, retry policy) is injected explicitly via `Config` at
 /// construction time — this adapter never reads `std::env` directly.
 pub struct OpenAIProvider {
+    /// HTTP client used to send requests to the OpenAI Chat Completions API.
     client: Client,
+    /// Base URL for the OpenAI Chat Completions API (e.g. `https://api.openai.com`).
     base_url: String,
+    /// Key store used to resolve the API key lazily, per request (see the struct-level
+    /// docs above).
     key_store: Arc<dyn KeyStore>,
+    /// Retry policy applied to transient failures (429/5xx) via `send_with_retry`.
     retry_policy: RetryPolicy,
 }
 
