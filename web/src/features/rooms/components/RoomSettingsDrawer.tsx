@@ -1,8 +1,11 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import {
+  Alert,
   Box,
   Button,
   Dialog,
@@ -14,6 +17,7 @@ import {
   Input,
   NativeSelect,
   Portal,
+  Progress,
   Separator,
   Text,
   Textarea,
@@ -25,7 +29,9 @@ import { useModels } from "@/features/messages/hooks/use-models"
 import { isOwnerRole, roleAtLeast } from "@/features/members/lib/roles"
 import { formatDateTimeUtc } from "@/lib/format"
 import type { RoomRole } from "@/features/members/types"
+import { forkRoom } from "../api/fork-room"
 import { useDeleteRoom } from "../hooks/use-delete-room"
+import { useForkJob } from "../hooks/use-fork-job"
 import { useUpdateAIContextCutoff } from "../hooks/use-update-ai-context-cutoff"
 import { useUpdateRoom } from "../hooks/use-update-room"
 import { useUpdateRoomSettings } from "../hooks/use-update-room-settings"
@@ -63,10 +69,18 @@ function formatCutoff(cutoffAt: string | null): string {
  * `admin`/`master` additionally get editable controls for all four
  * (rename/description via `PUT /rooms/:roomId`, the AI default via
  * `PATCH /rooms/:roomId/settings`, the cutoff via
- * `PATCH /rooms/:roomId/ai-context-cutoff`); only `master` sees the
+ * `PATCH /rooms/:roomId/ai-context-cutoff`), plus a "Fork room" action
+ * (`POST /rooms/:roomId/fork`, Step 52); only `master` sees the
  * "Danger zone" delete-room action, gated behind a nested confirmation
  * dialog. Mirrors `MemberPanel`'s controlled `Drawer.Root` pattern and its
  * `room.role`-gated sections.
+ *
+ * The actual form/section content lives in {@link RoomSettingsDrawerBody},
+ * remounted (via the `key` below) every time the drawer opens or the room
+ * it's editing changes, so each editable field's local state
+ * (name/description/selected model/cutoff input) always initializes fresh
+ * from the current `room` -- without a reset-on-open effect syncing state
+ * that was already seeded from props.
  */
 export function RoomSettingsDrawer({
   open,
@@ -74,7 +88,58 @@ export function RoomSettingsDrawer({
   room,
   role,
 }: RoomSettingsDrawerProps) {
+  return (
+    <Drawer.Root open={open} onOpenChange={(e) => onOpenChange(e.open)}>
+      <Portal>
+        <Drawer.Backdrop />
+        <Drawer.Positioner>
+          <Drawer.Content>
+            <Drawer.Header>
+              <Drawer.Title>Room settings</Drawer.Title>
+            </Drawer.Header>
+            <RoomSettingsDrawerBody
+              key={open ? room.id : "closed"}
+              room={room}
+              role={role}
+              onClose={() => onOpenChange(false)}
+            />
+            <Drawer.CloseTrigger asChild>
+              <IconButton
+                aria-label="Close room settings"
+                variant="ghost"
+                size="sm"
+              >
+                <X size={16} />
+              </IconButton>
+            </Drawer.CloseTrigger>
+          </Drawer.Content>
+        </Drawer.Positioner>
+      </Portal>
+    </Drawer.Root>
+  )
+}
+
+interface RoomSettingsDrawerBodyProps {
+  /** The already-loaded room this drawer edits. */
+  room: Room
+  /** The viewer's own role in `room` -- the single source of truth for every gate below. */
+  role: RoomRole
+  /** Closes the parent `Drawer.Root` (e.g. after a successful delete). */
+  onClose: () => void
+}
+
+/**
+ * `RoomSettingsDrawer`'s body/footer content, split out solely so it can be
+ * remounted by `key` on open/room-id change (see that component's
+ * docstring) instead of syncing local edit state to `room` via an effect.
+ */
+function RoomSettingsDrawerBody({
+  room,
+  role,
+  onClose,
+}: RoomSettingsDrawerBodyProps) {
   const router = useRouter()
+  const queryClient = useQueryClient()
   // `admin` and above may edit; only the current owner (`master`) may delete.
   const canManage = roleAtLeast(role, "admin")
   const canDelete = isOwnerRole(role)
@@ -94,6 +159,7 @@ export function RoomSettingsDrawer({
   )
   const [cutoffInput, setCutoffInput] = useState("")
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [forkJobId, setForkJobId] = useState<string | undefined>(undefined)
 
   // Guards `handleSaveAISettings`: `useModels()` is empty until it resolves,
   // and a previously-saved model can also be absent from the catalog (e.g.
@@ -104,17 +170,21 @@ export function RoomSettingsDrawer({
     selectedModelId === GLOBAL_DEFAULT_VALUE ||
     models.some((model) => model.id === selectedModelId)
 
-  // Reconcile local edit state with the latest room data whenever the
-  // drawer opens (or the underlying room data changes, e.g. after a save)
-  // -- not on every render, so mid-edit keystrokes aren't clobbered by an
-  // in-flight background refetch.
-  useEffect(() => {
-    if (!open) return
-    setName(room.name)
-    setDescription(room.description)
-    setSelectedModelId(room.ai_model ?? GLOBAL_DEFAULT_VALUE)
-    setCutoffInput("")
-  }, [open, room.id, room.name, room.description, room.ai_model])
+  const forkRoomMutation = useMutation({
+    mutationFn: () => forkRoom(room.id),
+    onSuccess: (data) => {
+      // Seed the fork-job query cache with the response's initial
+      // ("pending") job state so the progress view below renders
+      // immediately, without waiting on `useForkJob`'s first poll.
+      queryClient.setQueryData(
+        ["rooms", room.id, "fork-jobs", data.job.id],
+        data.job,
+      )
+      setForkJobId(data.job.id)
+    },
+  })
+  const forkJobQuery = useForkJob(room.id, forkJobId)
+  const forkJob = forkJobQuery.data
 
   const reportError = (title: string, err: unknown) => {
     toaster.create({
@@ -153,11 +223,19 @@ export function RoomSettingsDrawer({
     }
   }
 
+  const handleForkRoom = async () => {
+    try {
+      await forkRoomMutation.mutateAsync()
+    } catch (err) {
+      reportError("Failed to fork room", err)
+    }
+  }
+
   const handleConfirmDelete = async () => {
     try {
       await deleteRoomMutation.mutateAsync(room.id)
       setDeleteConfirmOpen(false)
-      onOpenChange(false)
+      onClose()
       router.push("/rooms")
     } catch (err) {
       reportError("Failed to delete room", err)
@@ -165,16 +243,9 @@ export function RoomSettingsDrawer({
   }
 
   return (
-    <Drawer.Root open={open} onOpenChange={(e) => onOpenChange(e.open)}>
-      <Portal>
-        <Drawer.Backdrop />
-        <Drawer.Positioner>
-          <Drawer.Content>
-            <Drawer.Header>
-              <Drawer.Title>Room settings</Drawer.Title>
-            </Drawer.Header>
-            <Drawer.Body>
-              <Flex direction="column" gap={6}>
+    <>
+      <Drawer.Body>
+        <Flex direction="column" gap={6}>
                 <Flex direction="column" gap={3}>
                   <Heading size="sm">Room details</Heading>
                   {canManage ? (
@@ -346,6 +417,88 @@ export function RoomSettingsDrawer({
                   )}
                 </Flex>
 
+                {canManage && (
+                  <>
+                    <Separator />
+                    <Flex direction="column" gap={3}>
+                      <Heading size="sm">Fork room</Heading>
+                      <Text fontSize="xs" color="fg.muted">
+                        Copy every message in this room into a new,
+                        independent room.
+                      </Text>
+                      {forkJob ? (
+                        forkJob.status === "completed" ? (
+                          <Flex direction="column" gap={2} align="flex-start">
+                            <Text fontSize="sm" color="fg.success">
+                              Fork complete -- the new room is ready.
+                            </Text>
+                            <Link href={`/rooms/${forkJob.new_room_id}`}>
+                              <Button size="sm" colorPalette="blue">
+                                Open forked room
+                              </Button>
+                            </Link>
+                          </Flex>
+                        ) : forkJob.status === "failed" ? (
+                          <Flex direction="column" gap={2} align="flex-start">
+                            <Alert.Root status="error">
+                              <Alert.Indicator />
+                              <Alert.Content>
+                                <Alert.Title>Fork failed</Alert.Title>
+                                <Alert.Description>
+                                  {forkJob.error_message ??
+                                    "Please try again."}
+                                </Alert.Description>
+                              </Alert.Content>
+                            </Alert.Root>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              loading={forkRoomMutation.isPending}
+                              onClick={handleForkRoom}
+                            >
+                              Try again
+                            </Button>
+                          </Flex>
+                        ) : (
+                          <Flex direction="column" gap={2}>
+                            <Progress.Root
+                              value={
+                                forkJob.total_messages > 0
+                                  ? forkJob.copied_messages
+                                  : null
+                              }
+                              max={
+                                forkJob.total_messages > 0
+                                  ? forkJob.total_messages
+                                  : undefined
+                              }
+                            >
+                              <Progress.Track>
+                                <Progress.Range />
+                              </Progress.Track>
+                            </Progress.Root>
+                            <Text fontSize="xs" color="fg.muted">
+                              {forkJob.total_messages > 0
+                                ? `Copying messages… ${forkJob.copied_messages} / ${forkJob.total_messages}`
+                                : "Preparing…"}
+                            </Text>
+                          </Flex>
+                        )
+                      ) : (
+                        <Button
+                          size="sm"
+                          colorPalette="blue"
+                          alignSelf="flex-start"
+                          loading={forkRoomMutation.isPending}
+                          onClick={handleForkRoom}
+                        >
+                          Fork this room
+                        </Button>
+                      )}
+                    </Flex>
+                  </>
+                )}
+
                 {canDelete && (
                   <>
                     <Separator />
@@ -409,24 +562,12 @@ export function RoomSettingsDrawer({
                   </>
                 )}
               </Flex>
-            </Drawer.Body>
-            <Drawer.Footer>
-              <Button variant="outline" onClick={() => onOpenChange(false)}>
-                Close
-              </Button>
-            </Drawer.Footer>
-            <Drawer.CloseTrigger asChild>
-              <IconButton
-                aria-label="Close room settings"
-                variant="ghost"
-                size="sm"
-              >
-                <X size={16} />
-              </IconButton>
-            </Drawer.CloseTrigger>
-          </Drawer.Content>
-        </Drawer.Positioner>
-      </Portal>
-    </Drawer.Root>
+      </Drawer.Body>
+      <Drawer.Footer>
+        <Button variant="outline" onClick={onClose}>
+          Close
+        </Button>
+      </Drawer.Footer>
+    </>
   )
 }

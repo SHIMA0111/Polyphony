@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw"
-import type { Room } from "../types"
+import type { ForkJob, Room, RoomForkResponse } from "../types"
 
 /**
  * MSW request handlers for the rooms feature, shared by the Node
@@ -20,6 +20,8 @@ export const fixtureRoom: Room = {
   ai_context_cutoff_at: null,
   ai_provider: null,
   ai_model: null,
+  forked_from_room_id: null,
+  is_archived: false,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 }
@@ -35,10 +37,32 @@ export const fixtureRooms: Room[] = [
     ai_context_cutoff_at: null,
     ai_provider: null,
     ai_model: null,
+    forked_from_room_id: null,
+    is_archived: false,
     created_at: "2026-01-02T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
   },
 ]
+
+/** Default fixture returned by the `.../fork` and `.../fork-jobs/:jobId` handlers below. */
+export const fixtureForkJob: ForkJob = {
+  id: "fork-job-1",
+  source_room_id: "room-1",
+  new_room_id: "room-1-fork",
+  status: "pending",
+  total_messages: 0,
+  copied_messages: 0,
+  error_message: null,
+  created_at: "2026-01-03T00:00:00Z",
+  updated_at: "2026-01-03T00:00:00Z",
+}
+
+export const fixtureForkedRoom: Room = {
+  ...fixtureRoom,
+  id: "room-1-fork",
+  forked_from_room_id: "room-1",
+  is_archived: true,
+}
 
 export const roomsHandlers = [
   http.get("/api/proxy/rooms", () => {
@@ -94,4 +118,15 @@ export const roomsHandlers = [
       })
     },
   ),
+
+  http.post("/api/proxy/rooms/:roomId/fork", () => {
+    return HttpResponse.json<RoomForkResponse>(
+      { job: fixtureForkJob, new_room: fixtureForkedRoom },
+      { status: 202 },
+    )
+  }),
+
+  http.get("/api/proxy/rooms/:roomId/fork-jobs/:jobId", () => {
+    return HttpResponse.json<ForkJob>(fixtureForkJob)
+  }),
 ]
