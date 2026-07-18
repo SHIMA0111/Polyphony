@@ -46,9 +46,9 @@ describe("BillingCheckoutSuccessPage", () => {
 
     render(<BillingCheckoutSuccessPage />)
 
-    await waitFor(() => expect(screen.getByText("Payment received")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText("Checkout finished")).toBeInTheDocument())
     expect(
-      screen.getByText(/your payment was successful/i),
+      screen.getByText(/if you just completed a checkout/i),
     ).toBeInTheDocument()
     expect(screen.queryByText(/Order reference/)).not.toBeInTheDocument()
   })
@@ -62,7 +62,7 @@ describe("BillingCheckoutSuccessPage", () => {
 
     render(<BillingCheckoutSuccessPage />)
 
-    await waitFor(() => expect(screen.getByText("Payment received")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText("Checkout finished")).toBeInTheDocument())
     expect(screen.queryByText(/Order reference/)).not.toBeInTheDocument()
   })
 

@@ -158,17 +158,18 @@ function CheckoutSuccessContent() {
 
   // No session_id: either a direct/bookmarked visit or a success URL
   // configured without Stripe's placeholder. Either way there's nothing to
-  // confirm against, so show a neutral success message rather than a
-  // "still processing" state that would never resolve.
+  // confirm against, so this branch must not CLAIM a successful payment —
+  // it can only point the viewer at where their real billing state lives.
   if (sessionId === null) {
     return (
       <Flex direction="column" align="center" gap={4} py={12} textAlign="center">
-        <Box color="green.fg">
+        <Box color="fg.muted">
           <CheckCircle2 size={48} />
         </Box>
-        <Heading size="lg">Payment received</Heading>
+        <Heading size="lg">Checkout finished</Heading>
         <Text color="fg.muted">
-          Thanks — your payment was successful. It may take a moment to fully process.
+          If you just completed a checkout, it may take a moment to process. Your
+          subscription and payment history show the confirmed state.
         </Text>
         <Flex gap={3} mt={2}>
           <Button asChild colorPalette="blue">

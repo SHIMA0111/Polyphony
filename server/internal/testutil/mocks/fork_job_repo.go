@@ -2,6 +2,7 @@ package mocks
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -18,14 +19,13 @@ type ForkJobRepo struct {
 	mu   sync.Mutex
 	Jobs map[string]*roomfork.Job
 
-	// Rooms, if set, is the *RoomRepo CompleteAndUnarchive applies its
-	// room-side is_archived=false write to, mirroring
+	// Rooms is the *RoomRepo CompleteAndUnarchive applies its room-side
+	// is_archived=false write to, mirroring
 	// postgres.RoomForkRepository.CompleteAndUnarchive reaching into both
-	// the rooms and room_fork_jobs tables from one method. Tests that never
-	// assert on room archival after a fork job completes (e.g. ones that
-	// only exercise membership/status-transition logic) may leave it nil,
-	// in which case CompleteAndUnarchive skips the room-side write
-	// entirely.
+	// the rooms and room_fork_jobs tables from one method.
+	// CompleteAndUnarchive requires it and fails when unset; nil remains a
+	// valid zero value only for tests that never drive a fork to
+	// completion.
 	Rooms *RoomRepo
 }
 
@@ -164,17 +164,24 @@ func (f *ForkJobRepo) CompleteAndUnarchive(ctx context.Context, jobID, newRoomID
 		return domain.ErrNotFound
 	}
 
+	// Rooms is mandatory for this method: the real implementation updates
+	// rooms.is_archived and room_fork_jobs in one transaction, so a mock
+	// that "completed" the job without touching any room would silently
+	// break that contract for the test using it. Failing before mutating
+	// surfaces the misconfiguration instead.
+	if f.Rooms == nil {
+		return errors.New("mocks.ForkJobRepo: Rooms must be wired before calling CompleteAndUnarchive")
+	}
+
 	prevStatus := job.Status
 	prevUpdatedAt := job.UpdatedAt
 	job.Status = roomfork.StatusCompleted
 	job.UpdatedAt = time.Now()
 
-	if f.Rooms != nil {
-		if err := f.Rooms.SetArchived(ctx, newRoomID, false); err != nil {
-			job.Status = prevStatus
-			job.UpdatedAt = prevUpdatedAt
-			return err
-		}
+	if err := f.Rooms.SetArchived(ctx, newRoomID, false); err != nil {
+		job.Status = prevStatus
+		job.UpdatedAt = prevUpdatedAt
+		return err
 	}
 	return nil
 }
