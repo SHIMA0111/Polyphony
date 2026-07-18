@@ -112,6 +112,7 @@ export const fixturePaymentPage1: Payment[] = [
     currency: "usd",
     tokens_credited: 500_000,
     status: "succeeded",
+    stripe_reference_id: "in_test_pay_2",
     created_at: "2026-01-01T00:00:00Z",
   },
   {
@@ -121,6 +122,7 @@ export const fixturePaymentPage1: Payment[] = [
     currency: "usd",
     tokens_credited: 100_000,
     status: "succeeded",
+    stripe_reference_id: "cs_test_pay_1",
     created_at: "2025-12-15T00:00:00Z",
   },
 ]
@@ -133,6 +135,7 @@ export const fixturePaymentPage2: Payment[] = [
     currency: "usd",
     tokens_credited: 500_000,
     status: "succeeded",
+    stripe_reference_id: "in_test_pay_0",
     created_at: "2025-12-01T00:00:00Z",
   },
 ]

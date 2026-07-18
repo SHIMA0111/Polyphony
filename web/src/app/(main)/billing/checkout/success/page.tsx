@@ -3,13 +3,12 @@
 import { Suspense, useEffect, useState } from "react"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQueryClient } from "@tanstack/react-query"
 import { Box, Button, Flex, Heading, Spinner, Text } from "@chakra-ui/react"
 import { CheckCircle2 } from "lucide-react"
-import { getBalanceQueryOptions } from "@/features/billing/api/get-balance"
 import { usePlans } from "@/features/billing/hooks/use-plans"
+import { usePaymentHistory } from "@/features/billing/hooks/use-payment-history"
 import { useSubscription } from "@/features/billing/hooks/use-subscription"
-import { readAndClearCheckoutMarker, type CheckoutMarker } from "@/features/billing/utils/checkout-marker"
 
 /** Interval between polling attempts while waiting for the webhook to land. */
 const POLL_INTERVAL_MS = 2_000
@@ -31,26 +30,42 @@ function formatDate(iso: string): string {
 
 /**
  * The post-Checkout redirect target
- * (`/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}`, per Step
- * 49's Stripe configuration).
+ * (`/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}`, Stripe's
+ * own template placeholder, substituted with the real Checkout Session ID
+ * at redirect time — see `usecase/billing.withCheckoutSessionIDParam` on the
+ * server). This survives a page refresh natively, since it lives in the
+ * URL rather than in a `sessionStorage` marker written before the redirect
+ * (the previous mechanism, `checkout-marker.ts`, broke exactly on a
+ * mid-poll refresh — it has been removed).
  *
  * Stripe's webhook (processed server-side, asynchronously, possibly seconds
- * after this redirect) is what actually applies a purchase — so which query
- * this page polls depends on what was actually purchased, read once from the
- * `checkout-marker.ts` marker `useCreateCheckoutSession` writes immediately
- * before the redirect to Stripe:
+ * after this redirect) is what actually applies a purchase, so this page
+ * polls until server state alone can positively confirm completion. Both
+ * checks below run unconditionally — this page has no marker telling it in
+ * advance which kind of session `session_id` refers to, so whichever
+ * resolves first wins:
  *
- * - `{ kind: "subscription" }` — polls `useSubscription()` every
- *   {@link POLL_INTERVAL_MS} until its status is no longer `"none"`.
- * - `{ kind: "token_purchase", priorBalance }` — a token pack never changes
- *   the subscription, so instead polls the balance query until it exceeds
- *   `priorBalance`.
- * - marker missing (a direct/bookmarked visit, or `sessionStorage`
- *   unavailable) — renders a neutral success message with no polling at
- *   all, rather than a false "still processing" state that can never
- *   resolve.
+ * - a *recurring* purchase is confirmed once {@link useSubscription} reports
+ *   a status other than `"none"` — a subscription Checkout session always
+ *   changes subscription state;
+ * - a *token* purchase is confirmed once {@link usePaymentHistory} contains
+ *   a row whose `stripe_reference_id` equals this page's `session_id` query
+ *   parameter — matching Stripe's own Checkout Session identity, not a
+ *   balance delta (a balance delta is ambiguous: unrelated activity, e.g. AI
+ *   usage in another tab, could shift it too).
  *
- * If the relevant query errors outright, this renders a distinct retryable
+ * A matching payment record is preferred for the *displayed* confirmation
+ * (it names the exact purchase), falling back to the subscription check
+ * only when no payment record matches yet — a subscription's first
+ * payment_history row does not land until the later invoice.paid webhook,
+ * well after checkout.session.completed.
+ *
+ * No `session_id` query parameter (a direct/bookmarked visit) renders a
+ * neutral "purchase received" message with no polling at all — never
+ * claiming a confirmed payment (nothing to confirm against) or a failure
+ * (Stripe only redirects here on success).
+ *
+ * If a polled query errors outright, this renders a distinct retryable
  * error state (a manual "Try again" button) instead of silently continuing
  * to re-poll an endpoint that's already failing. If polling instead simply
  * hasn't resolved after {@link MAX_POLL_ATTEMPTS}, it shows a non-erroring
@@ -62,22 +77,15 @@ function CheckoutSuccessContent() {
   const queryClient = useQueryClient()
   const [attempts, setAttempts] = useState(0)
 
-  // Read (and clear) exactly once via lazy `useState` initialization — the
-  // marker is written once, right before the redirect to Stripe, and must
-  // not be re-read (it's already gone from `sessionStorage`) on subsequent
-  // renders of this same page visit.
-  const [marker] = useState<CheckoutMarker | null>(() => readAndClearCheckoutMarker())
-  const pollingKind = marker?.kind ?? null
-
   // Runs once on mount (React Query's `QueryClient` instance is stable for
   // the lifetime of the app, so `queryClient` never actually changes): a
-  // successful Checkout can change both the subscription and the token
-  // balance (a token-pack purchase credits tokens immediately), so both
-  // queries are invalidated here rather than relying solely on
-  // `useBalance()`'s own poll interval.
+  // successful Checkout can change subscription state, the token balance,
+  // and payment history, so all three are invalidated here rather than
+  // relying solely on each query's own poll/refetch interval.
   useEffect(() => {
     queryClient.invalidateQueries({ queryKey: ["billing", "subscription"] })
     queryClient.invalidateQueries({ queryKey: ["billing", "balance"] })
+    queryClient.invalidateQueries({ queryKey: ["billing", "payment-history"] })
   }, [queryClient])
 
   const {
@@ -88,55 +96,49 @@ function CheckoutSuccessContent() {
     refetch: refetchSubscription,
   } = useSubscription()
   const {
-    data: balance,
-    isPending: balanceIsPending,
-    isError: balanceIsError,
-    error: balanceError,
-    refetch: refetchBalance,
-  } = useQuery(getBalanceQueryOptions())
+    data: paymentHistory,
+    isPending: paymentHistoryIsPending,
+    isError: paymentHistoryIsError,
+    error: paymentHistoryError,
+    refetch: refetchPaymentHistory,
+  } = usePaymentHistory()
   const { data: plans } = usePlans()
 
-  const isPending =
-    pollingKind === "subscription"
-      ? subscriptionIsPending
-      : pollingKind === "token_purchase"
-        ? balanceIsPending
-        : false
-  const isError =
-    pollingKind === "subscription"
-      ? subscriptionIsError
-      : pollingKind === "token_purchase"
-        ? balanceIsError
-        : false
-  const error =
-    pollingKind === "subscription" ? subscriptionError : pollingKind === "token_purchase" ? balanceError : null
-  const refetch = pollingKind === "subscription" ? refetchSubscription : refetchBalance
+  const subscriptionActive = subscription !== undefined && subscription.status !== "none"
+  const matchingPayment =
+    sessionId !== null
+      ? paymentHistory?.pages
+          .flatMap((page) => page.payments)
+          .find((payment) => payment.stripe_reference_id === sessionId)
+      : undefined
+  const resolved = sessionId !== null && (matchingPayment !== undefined || subscriptionActive)
 
-  // Narrows on `marker` itself (rather than the derived `pollingKind`) so
-  // TypeScript can see `marker.priorBalance` is safe to read in the
-  // `"token_purchase"` branch.
-  const resolved =
-    marker === null
-      ? false
-      : marker.kind === "subscription"
-        ? subscription !== undefined && subscription.status !== "none"
-        : balance !== undefined && balance.balance > marker.priorBalance
-  const exhausted = pollingKind !== null && !resolved && attempts >= MAX_POLL_ATTEMPTS
+  const isPending = sessionId !== null && !resolved && (subscriptionIsPending || paymentHistoryIsPending)
+  const isError = sessionId !== null && !resolved && (subscriptionIsError || paymentHistoryIsError)
+  const error = subscriptionIsError ? subscriptionError : paymentHistoryError
+  const exhausted = sessionId !== null && !resolved && !isError && attempts >= MAX_POLL_ATTEMPTS
+
+  const retry = () => {
+    setAttempts(0)
+    refetchSubscription()
+    refetchPaymentHistory()
+  }
 
   useEffect(() => {
-    if (!pollingKind || isPending || isError || resolved || exhausted) return
+    if (!sessionId || isPending || isError || resolved || exhausted) return
     const timer = setTimeout(() => {
       setAttempts((a) => a + 1)
-      refetch()
+      refetchSubscription()
+      refetchPaymentHistory()
     }, POLL_INTERVAL_MS)
     return () => clearTimeout(timer)
-  }, [pollingKind, isPending, isError, resolved, exhausted, attempts, refetch])
+  }, [sessionId, isPending, isError, resolved, exhausted, refetchSubscription, refetchPaymentHistory])
 
-  // No marker: either a direct/bookmarked visit or `sessionStorage` was
-  // unavailable when `useCreateCheckoutSession` tried to write it. Either
-  // way there's nothing to poll for, so show a neutral success message
-  // rather than a "still processing" state that would never resolve.
-  if (!pollingKind) {
+  // No session_id: either a direct/bookmarked visit or a success URL
+  // configured without Stripe's placeholder. Either way there's nothing to
+  // confirm against, so show a neutral success message rather than a
+  // "still processing" state that would never resolve.
+  if (sessionId === null) {
     return (
       <Flex direction="column" align="center" gap={4} py={12} textAlign="center">
         <Box color="green.fg">
@@ -154,11 +156,6 @@ function CheckoutSuccessContent() {
             <Link href="/rooms">Back to rooms</Link>
           </Button>
         </Flex>
-        {sessionId && (
-          <Text fontSize="xs" color="fg.muted" mt={4}>
-            Order reference: {sessionId}
-          </Text>
-        )}
       </Flex>
     )
   }
@@ -172,14 +169,7 @@ function CheckoutSuccessContent() {
             ? error.message
             : "Something went wrong while checking your payment status."}
         </Text>
-        <Button
-          onClick={() => {
-            setAttempts(0)
-            refetch()
-          }}
-        >
-          Try again
-        </Button>
+        <Button onClick={retry}>Try again</Button>
         <Button asChild variant="ghost" size="sm">
           <Link href="/billing/plans">Go to billing</Link>
         </Button>
@@ -187,7 +177,36 @@ function CheckoutSuccessContent() {
     )
   }
 
-  if (resolved && pollingKind === "subscription" && subscription) {
+  if (matchingPayment) {
+    return (
+      <Flex direction="column" align="center" gap={4} py={12} textAlign="center">
+        <Box color="green.fg">
+          <CheckCircle2 size={48} />
+        </Box>
+        <Heading size="lg">Tokens added</Heading>
+        <Text color="fg.muted">
+          Your purchase credited{" "}
+          <Text as="span" fontWeight="semibold">
+            {matchingPayment.tokens_credited.toLocaleString("en-US")} tokens
+          </Text>
+          .
+        </Text>
+        <Flex gap={3} mt={2}>
+          <Button asChild colorPalette="blue">
+            <Link href="/billing/plans">Go to billing</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/rooms">Back to rooms</Link>
+          </Button>
+        </Flex>
+        <Text fontSize="xs" color="fg.muted" mt={4}>
+          Order reference: {sessionId}
+        </Text>
+      </Flex>
+    )
+  }
+
+  if (subscriptionActive && subscription) {
     const planName =
       plans?.find((plan) => plan.code === subscription.plan_code)?.name ??
       subscription.plan_code ??
@@ -217,42 +236,9 @@ function CheckoutSuccessContent() {
             <Link href="/rooms">Back to rooms</Link>
           </Button>
         </Flex>
-        {sessionId && (
-          <Text fontSize="xs" color="fg.muted" mt={4}>
-            Order reference: {sessionId}
-          </Text>
-        )}
-      </Flex>
-    )
-  }
-
-  if (resolved && pollingKind === "token_purchase" && balance) {
-    return (
-      <Flex direction="column" align="center" gap={4} py={12} textAlign="center">
-        <Box color="green.fg">
-          <CheckCircle2 size={48} />
-        </Box>
-        <Heading size="lg">Tokens added</Heading>
-        <Text color="fg.muted">
-          Your balance is now{" "}
-          <Text as="span" fontWeight="semibold">
-            {balance.balance.toLocaleString("en-US")} tokens
-          </Text>
-          .
+        <Text fontSize="xs" color="fg.muted" mt={4}>
+          Order reference: {sessionId}
         </Text>
-        <Flex gap={3} mt={2}>
-          <Button asChild colorPalette="blue">
-            <Link href="/billing/plans">Go to billing</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link href="/rooms">Back to rooms</Link>
-          </Button>
-        </Flex>
-        {sessionId && (
-          <Text fontSize="xs" color="fg.muted" mt={4}>
-            Order reference: {sessionId}
-          </Text>
-        )}
       </Flex>
     )
   }
@@ -262,18 +248,9 @@ function CheckoutSuccessContent() {
       <Flex direction="column" align="center" gap={4} py={12} textAlign="center">
         <Heading size="lg">Your payment is processing</Heading>
         <Text color="fg.muted">This can take a moment — check back shortly.</Text>
-        <Button
-          onClick={() => {
-            setAttempts(0)
-            refetch()
-          }}
-        >
-          Check again
-        </Button>
+        <Button onClick={retry}>Check again</Button>
         <Button asChild variant="ghost" size="sm">
-          <Link href={pollingKind === "subscription" ? "/billing/subscription" : "/billing/plans"}>
-            {pollingKind === "subscription" ? "Go to subscription" : "Go to billing"}
-          </Link>
+          <Link href="/billing/plans">Go to billing</Link>
         </Button>
       </Flex>
     )

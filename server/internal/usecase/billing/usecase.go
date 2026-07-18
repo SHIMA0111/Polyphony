@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,28 @@ import (
 	domainbilling "github.com/SHIMA0111/multi-user-ai/server/internal/domain/billing"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 )
+
+// stripeCheckoutSessionIDPlaceholder is Stripe's own Checkout template
+// placeholder: Stripe substitutes it with the real Checkout Session ID when
+// redirecting the customer back to the success URL. Passed through
+// verbatim, never resolved locally.
+const stripeCheckoutSessionIDPlaceholder = "{CHECKOUT_SESSION_ID}"
+
+// withCheckoutSessionIDParam appends a `session_id` query parameter carrying
+// Stripe's checkout-session-ID placeholder to successURL, so the web success
+// page (billing/checkout/success/page.tsx) can read `session_id` from the
+// redirect and correlate it with a payment_history row's
+// stripe_reference_id (see PaymentRecord.StripeReferenceID) once the
+// corresponding webhook lands. Joins with "&" if successURL already has a
+// query string, "?" otherwise, so an operator-configured success URL that
+// carries its own query parameters (e.g. a UTM tag) is not clobbered.
+func withCheckoutSessionIDParam(successURL string) string {
+	separator := "?"
+	if strings.Contains(successURL, "?") {
+		separator = "&"
+	}
+	return successURL + separator + "session_id=" + stripeCheckoutSessionIDPlaceholder
+}
 
 // defaultTransactionLimit is applied to ListTransactions when the caller
 // passes a non-positive limit, mirroring MessageHandler.List's clamp.
@@ -198,7 +221,7 @@ func (u *BillingUsecase) CreateSubscriptionCheckoutSession(ctx context.Context, 
 		UserID:     userID,
 		PlanCode:   plan.Code,
 		PriceID:    plan.StripePriceID,
-		SuccessURL: u.checkoutSuccessURL,
+		SuccessURL: withCheckoutSessionIDParam(u.checkoutSuccessURL),
 		CancelURL:  u.checkoutCancelURL,
 	})
 }
@@ -219,7 +242,7 @@ func (u *BillingUsecase) CreateTokenPurchaseCheckoutSession(ctx context.Context,
 		UserID:      userID,
 		PackageCode: pkg.Code,
 		PriceID:     pkg.StripePriceID,
-		SuccessURL:  u.checkoutSuccessURL,
+		SuccessURL:  withCheckoutSessionIDParam(u.checkoutSuccessURL),
 		CancelURL:   u.checkoutCancelURL,
 	})
 }

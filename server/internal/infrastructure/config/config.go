@@ -200,11 +200,15 @@ type Config struct {
 	// catalog, parsed from the single-line JSON array in
 	// STRIPE_TOKEN_PACKAGES_JSON. Empty (nil) if unset.
 	StripeTokenPackages []StripeTokenPackage
-	// StripeCheckoutSuccessURL is the URL Stripe Checkout redirects to after
-	// a successful payment (env STRIPE_CHECKOUT_SUCCESS_URL, default
-	// "http://localhost:3000/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}").
-	// "{CHECKOUT_SESSION_ID}" is Stripe's own template placeholder, passed
-	// through verbatim.
+	// StripeCheckoutSuccessURL is the base URL Stripe Checkout redirects to
+	// after a successful payment (env STRIPE_CHECKOUT_SUCCESS_URL, default
+	// "http://localhost:3000/billing/checkout/success"). It is configured
+	// without a session_id query parameter: usecase/billing appends
+	// "session_id={CHECKOUT_SESSION_ID}" (Stripe's own template placeholder)
+	// itself at Checkout Session creation time, joining with "&" instead of
+	// "?" if this URL already carries a query string — see
+	// usecase/billing.withCheckoutSessionIDParam. Do not bake the parameter
+	// into this value; doing so would duplicate it.
 	StripeCheckoutSuccessURL string
 	// StripeCheckoutCancelURL is the URL Stripe Checkout redirects to if the
 	// customer cancels (env STRIPE_CHECKOUT_CANCEL_URL, default
@@ -434,7 +438,7 @@ func Load() (*Config, error) {
 
 	stripeCheckoutSuccessURL := os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")
 	if stripeCheckoutSuccessURL == "" {
-		stripeCheckoutSuccessURL = "http://localhost:3000/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}"
+		stripeCheckoutSuccessURL = "http://localhost:3000/billing/checkout/success"
 	}
 	stripeCheckoutCancelURL := os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")
 	if stripeCheckoutCancelURL == "" {

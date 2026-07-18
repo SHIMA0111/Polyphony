@@ -60,8 +60,33 @@ func (r *ContextSummaryRepository) Get(ctx context.Context, roomID string) (*ai.
 // detected race, not a failure) and reported to the caller as a nil error,
 // per the port's no-op contract; only a genuine query failure returns an
 // error.
+//
+// The revision check and the INSERT/UPDATE it gates run inside a
+// transaction that first takes a room-scoped pg_advisory_xact_lock, the
+// same lock DeleteByRoom takes before its own delete-and-bump statement.
+// Without this, the two statements' READ COMMITTED snapshots could
+// interleave under plain autocommit: this method's revision check could
+// read a still-current revision, then a concurrent DeleteByRoom could
+// delete-and-bump and commit, and then this method's INSERT could still
+// land afterward -- a summary computed against a since-superseded revision,
+// committed after the very invalidation that was supposed to reject it.
+// Serializing both methods on the same lock closes that window: whichever
+// call acquires the lock first fully commits (or rolls back) before the
+// other's statement can even begin, so the invariant holds -- an Upsert can
+// never commit a summary that predates a committed revision bump.
 func (r *ContextSummaryRepository) Upsert(ctx context.Context, summary *ai.ContextSummary, expectedRevision int64) error {
-	tag, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, summary.RoomID); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx,
 		`INSERT INTO message_context_summaries (room_id, model, covered_up_to_sequence, summary_text, token_count, created_at, updated_at)
 		 SELECT $1, $2, $3, $4, $5, NOW(), NOW()
 		 WHERE COALESCE((SELECT revision FROM context_summary_revisions WHERE room_id = $1), 0) = $6
@@ -76,7 +101,7 @@ func (r *ContextSummaryRepository) Upsert(ctx context.Context, summary *ai.Conte
 		slog.Warn("context summary upsert skipped: room's invalidation revision moved during summarization",
 			"room_id", summary.RoomID, "expected_revision", expectedRevision)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // GetRevision returns roomID's current context-summary invalidation
@@ -107,14 +132,34 @@ func (r *ContextSummaryRepository) GetRevision(ctx context.Context, roomID strin
 // MessageUsecase.DeleteMessage/SetExcludeFromAI call this unconditionally on
 // every mutation regardless of whether a summary was ever computed for the
 // room.
+//
+// Runs inside a transaction that first takes the same room-scoped
+// pg_advisory_xact_lock Upsert takes, serializing this delete-and-bump
+// against a concurrently-committing Upsert for the same room -- see
+// Upsert's doc comment for the interleaving this closes and the invariant
+// it establishes.
 func (r *ContextSummaryRepository) DeleteByRoom(ctx context.Context, roomID string) error {
-	_, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, roomID); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx,
 		`WITH deleted AS (
 		     DELETE FROM message_context_summaries WHERE room_id = $1
 		 )
 		 INSERT INTO context_summary_revisions (room_id, revision) VALUES ($1, 1)
 		 ON CONFLICT (room_id) DO UPDATE SET revision = context_summary_revisions.revision + 1`,
 		roomID,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }

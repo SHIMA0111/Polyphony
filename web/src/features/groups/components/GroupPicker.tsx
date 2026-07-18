@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { Box, Button, Menu, Portal, Text } from "@chakra-ui/react"
+import { Box, Button, Flex, Menu, Portal, Text } from "@chakra-ui/react"
 import { ChevronDown, Users } from "lucide-react"
 import { useGroups } from "../hooks/use-groups"
 import type { Group } from "../types"
@@ -38,19 +38,14 @@ export function GroupPicker({ selectedGroup, onSelect }: GroupPickerProps) {
 
   if (isError) {
     return (
-      <Box fontSize="sm" color="fg.error" role="alert">
-        Failed to load groups.{" "}
-        <Text
-          as="span"
-          color="blue.500"
-          fontWeight="medium"
-          cursor="pointer"
-          _hover={{ textDecoration: "underline" }}
-          onClick={() => refetch()}
-        >
-          Retry
+      <Flex direction="column" align="flex-start" gap={2}>
+        <Text fontSize="sm" color="fg.error" role="alert">
+          Failed to load groups.
         </Text>
-      </Box>
+        <Button size="xs" variant="outline" onClick={() => refetch()}>
+          Retry
+        </Button>
+      </Flex>
     )
   }
 

@@ -55,8 +55,18 @@ type ForkJobRepository interface {
 	// false if and only if its Job has reached StatusCompleted (barring a
 	// separate, later archival of the room for unrelated reasons).
 	//
-	// Returns domain.ErrNotFound if jobID does not exist or newRoomID does
-	// not exist — either case rolls back the whole transaction, leaving
-	// both rows exactly as they were.
+	// The job-side write only ever performs the StatusRunning ->
+	// StatusCompleted transition, and only for the Job whose NewRoomID
+	// equals newRoomID — a mismatched newRoomID or a job not currently
+	// StatusRunning (already completed/failed, or never started) leaves
+	// both rows untouched and returns domain.ErrNotFound, the same as a
+	// nonexistent jobID. The job write is validated/applied before the
+	// room write, so a job-side failure never reaches (or archives-flips)
+	// the room.
+	//
+	// Returns domain.ErrNotFound if jobID does not exist, is not
+	// StatusRunning, is not linked to newRoomID, or newRoomID itself does
+	// not exist — every case rolls back the whole transaction, leaving both
+	// rows exactly as they were.
 	CompleteAndUnarchive(ctx context.Context, jobID, newRoomID string) error
 }

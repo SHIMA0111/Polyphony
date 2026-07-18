@@ -77,4 +77,28 @@ describe("GroupPicker", () => {
     expect(await screen.findByText(/failed to load groups/i)).toBeInTheDocument()
     expect(screen.queryByText("create one")).not.toBeInTheDocument()
   })
+
+  it("retries via a keyboard-accessible button, which succeeds once the query stops failing", async () => {
+    let requestCount = 0
+    server.use(
+      http.get("/api/proxy/groups", () => {
+        requestCount += 1
+        if (requestCount === 1) {
+          return HttpResponse.json({ error: "boom" }, { status: 500 })
+        }
+        return HttpResponse.json<GroupListResponse>({ groups: fixtureGroups })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<GroupPicker selectedGroup={null} onSelect={vi.fn()} />)
+
+    const retryButton = await screen.findByRole("button", { name: "Retry" })
+    await user.click(retryButton)
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /select a group/i })).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/failed to load groups/i)).not.toBeInTheDocument()
+  })
 })

@@ -74,6 +74,10 @@ func TestCreateSubscriptionCheckoutSessionSuccess(t *testing.T) {
 	if gw.LastSubscriptionCheckoutParams.UserID != "user-1" {
 		t.Fatalf("expected user-1, got %s", gw.LastSubscriptionCheckoutParams.UserID)
 	}
+	wantSuccessURL := "https://example.com/success?session_id={CHECKOUT_SESSION_ID}"
+	if gw.LastSubscriptionCheckoutParams.SuccessURL != wantSuccessURL {
+		t.Fatalf("expected success url %q, got %q", wantSuccessURL, gw.LastSubscriptionCheckoutParams.SuccessURL)
+	}
 }
 
 func TestCreateSubscriptionCheckoutSessionStripeNotConfigured(t *testing.T) {
@@ -105,6 +109,39 @@ func TestCreateTokenPurchaseCheckoutSessionSuccess(t *testing.T) {
 	}
 	if gw.LastTokenPurchaseCheckoutParams == nil || gw.LastTokenPurchaseCheckoutParams.PriceID != "price_topup_small" {
 		t.Fatalf("expected price_topup_small, got %+v", gw.LastTokenPurchaseCheckoutParams)
+	}
+	wantSuccessURL := "https://example.com/success?session_id={CHECKOUT_SESSION_ID}"
+	if gw.LastTokenPurchaseCheckoutParams.SuccessURL != wantSuccessURL {
+		t.Fatalf("expected success url %q, got %q", wantSuccessURL, gw.LastTokenPurchaseCheckoutParams.SuccessURL)
+	}
+}
+
+// TestCreateCheckoutSessionSuccessURLPreservesExistingQueryString verifies
+// withCheckoutSessionIDParam joins with "&" (not "?") when the configured
+// success URL already carries a query string, for both checkout session
+// kinds.
+func TestCreateCheckoutSessionSuccessURLPreservesExistingQueryString(t *testing.T) {
+	gw := &mocks.StripeGateway{CheckoutURL: "https://checkout.stripe.com/session-3"}
+	balanceRepo := &mocks.BalanceRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	subRepo := &mocks.SubscriptionRepo{}
+	paymentRepo := &mocks.PaymentRepo{BalanceRepo: balanceRepo}
+	uc := NewBillingUsecase(balanceRepo, roomRepo, subRepo, paymentRepo, gw,
+		testPlans(), testPackages(), "https://example.com/success?utm_source=email", "https://example.com/cancel")
+
+	if _, err := uc.CreateSubscriptionCheckoutSession(context.Background(), "user-1", "starter"); err != nil {
+		t.Fatalf("CreateSubscriptionCheckoutSession failed: %v", err)
+	}
+	wantSuccessURL := "https://example.com/success?utm_source=email&session_id={CHECKOUT_SESSION_ID}"
+	if gw.LastSubscriptionCheckoutParams.SuccessURL != wantSuccessURL {
+		t.Fatalf("expected success url %q, got %q", wantSuccessURL, gw.LastSubscriptionCheckoutParams.SuccessURL)
+	}
+
+	if _, err := uc.CreateTokenPurchaseCheckoutSession(context.Background(), "user-1", "topup_small"); err != nil {
+		t.Fatalf("CreateTokenPurchaseCheckoutSession failed: %v", err)
+	}
+	if gw.LastTokenPurchaseCheckoutParams.SuccessURL != wantSuccessURL {
+		t.Fatalf("expected success url %q, got %q", wantSuccessURL, gw.LastTokenPurchaseCheckoutParams.SuccessURL)
 	}
 }
 

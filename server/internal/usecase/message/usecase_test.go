@@ -913,9 +913,11 @@ func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 
 // TestDeleteMessagePropagatesSummaryInvalidationFailure proves that
 // DeleteMessage surfaces a summaryRepo.DeleteByRoom failure to the caller
-// instead of only logging it, even though the underlying soft delete has
-// already durably succeeded by that point -- see DeleteMessage's doc
-// comment for why a swallowed invalidation failure would be unsafe.
+// instead of only logging it, and that -- per the invalidate-before-mutate
+// ordering documented on DeleteMessage -- the message has NOT been deleted
+// when that happens: invalidation runs before the soft delete, so a failure
+// there means the mutation never ran at all, rather than having already
+// happened un-invalidated.
 func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -936,14 +938,15 @@ func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
 		t.Fatalf("expected DeleteMessage to propagate the summary invalidation error, got %v", err)
 	}
 
-	// The soft delete itself must still have gone through despite the
-	// propagated error.
-	deleted, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
+	// The soft delete must NOT have gone through: invalidation runs first,
+	// so a failure there means DeleteMessage returned before ever calling
+	// msgRepo.Delete.
+	notDeleted, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
 	if err != nil {
 		t.Fatalf("GetByID after DeleteMessage: %v", err)
 	}
-	if !deleted.IsDeleted {
-		t.Fatal("expected the message to still be soft-deleted despite the propagated invalidation error")
+	if notDeleted.IsDeleted {
+		t.Fatal("expected the message to remain NOT deleted when invalidation fails before the mutation runs")
 	}
 }
 
@@ -1048,10 +1051,11 @@ func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
 }
 
 // TestSetExcludeFromAIPropagatesSummaryInvalidationFailure proves that
-// SetExcludeFromAI surfaces a summaryRepo.DeleteByRoom failure to the caller
-// instead of only logging it, even though msgRepo.UpdateExcludeFromAI has
-// already durably succeeded by that point -- see SetExcludeFromAI's doc
-// comment for why a swallowed invalidation failure would be unsafe.
+// SetExcludeFromAI surfaces a summaryRepo.DeleteByRoom failure to the
+// caller, and that -- per the invalidate-before-mutate ordering documented
+// on SetExcludeFromAI -- the flag has NOT been toggled when that happens:
+// invalidation runs before msgRepo.UpdateExcludeFromAI, so a failure there
+// means the mutation never ran at all.
 func TestSetExcludeFromAIPropagatesSummaryInvalidationFailure(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -1072,14 +1076,15 @@ func TestSetExcludeFromAIPropagatesSummaryInvalidationFailure(t *testing.T) {
 		t.Fatalf("expected SetExcludeFromAI to propagate the summary invalidation error, got %v", err)
 	}
 
-	// The underlying toggle must still have gone through despite the
-	// propagated error.
-	updated, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
+	// The underlying toggle must NOT have gone through: invalidation runs
+	// first, so a failure there means SetExcludeFromAI returned before ever
+	// calling msgRepo.UpdateExcludeFromAI.
+	notUpdated, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
 	if err != nil {
 		t.Fatalf("GetByID after SetExcludeFromAI: %v", err)
 	}
-	if !updated.ExcludeFromAI {
-		t.Fatal("expected ExcludeFromAI to still be true despite the propagated invalidation error")
+	if notUpdated.ExcludeFromAI {
+		t.Fatal("expected ExcludeFromAI to remain false when invalidation fails before the mutation runs")
 	}
 }
 

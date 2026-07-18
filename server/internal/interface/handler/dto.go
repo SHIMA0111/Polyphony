@@ -578,15 +578,20 @@ type SubscriptionResponse struct {
 }
 
 // PaymentRecordResponse is the JSON response representation of a single
-// payment_history row.
+// payment_history row. StripeReferenceID is the Stripe Checkout Session ID
+// for a token_purchase row (see PaymentRecord.StripeReferenceID) — the web
+// checkout success page matches it against the "session_id" query parameter
+// Stripe's redirect carries to confirm which specific purchase completed,
+// rather than inferring completion from a balance delta.
 type PaymentRecordResponse struct {
-	ID             string    `json:"id"`
-	Kind           string    `json:"kind"`
-	AmountCents    int64     `json:"amount_cents"`
-	Currency       string    `json:"currency"`
-	TokensCredited int64     `json:"tokens_credited"`
-	Status         string    `json:"status"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID                string    `json:"id"`
+	Kind              string    `json:"kind"`
+	AmountCents       int64     `json:"amount_cents"`
+	Currency          string    `json:"currency"`
+	TokensCredited    int64     `json:"tokens_credited"`
+	Status            string    `json:"status"`
+	StripeReferenceID string    `json:"stripe_reference_id"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // PaymentHistoryResponse is the response body for a paginated list of

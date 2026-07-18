@@ -437,3 +437,46 @@ func TestBillingHandlerStripeWebhookIdempotentReplayReturns200(t *testing.T) {
 		t.Fatalf("expected the balance credited exactly once (50000) despite two deliveries, got %d", bal.Balance)
 	}
 }
+
+// TestBillingHandlerListPaymentsIncludesStripeReferenceID asserts that a
+// token-purchase payment credited via checkout.session.completed surfaces
+// its Stripe Checkout Session ID as "stripe_reference_id" in
+// GET /billing/payments — the web checkout success page matches this
+// against the "session_id" query parameter Stripe's redirect carries, so
+// omitting it would leave that page unable to confirm a purchase.
+func TestBillingHandlerListPaymentsIncludesStripeReferenceID(t *testing.T) {
+	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
+		ID:   "evt_ref_1",
+		Type: domainbilling.EventTypeCheckoutSessionCompleted,
+		CheckoutSession: &domainbilling.CheckoutSessionData{
+			SessionID: "cs_ref_test", Mode: domainbilling.CheckoutModePayment, Kind: "token_purchase",
+			UserID: "user-1", PackageCode: "topup_small", AmountTotal: 300, Currency: "usd",
+		},
+	}}
+	e, h, _, _ := setupStripeBillingTest(gw)
+
+	webhookReq := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", bytes.NewReader([]byte(`{}`)))
+	webhookReq.Header.Set("Stripe-Signature", "t=1,v1=validsig")
+	webhookRec := httptest.NewRecorder()
+	webhookCtx := e.NewContext(webhookReq, webhookRec)
+	if err := h.HandleStripeWebhook(webhookCtx); err != nil {
+		t.Fatalf("HandleStripeWebhook error: %v", err)
+	}
+	if webhookRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from webhook delivery, got %d: %s", webhookRec.Code, webhookRec.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/billing/payments", nil)
+	listRec := httptest.NewRecorder()
+	listCtx := e.NewContext(listReq, listRec)
+	listCtx.Set("user_id", "user-1")
+	if err := h.ListPayments(listCtx); err != nil {
+		t.Fatalf("ListPayments error: %v", err)
+	}
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	if !strings.Contains(listRec.Body.String(), `"stripe_reference_id":"cs_ref_test"`) {
+		t.Fatalf("expected stripe_reference_id in response, got %s", listRec.Body.String())
+	}
+}

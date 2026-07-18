@@ -142,27 +142,38 @@ func (f *ForkJobRepo) MarkFailed(_ context.Context, id string, errMsg string) er
 	return nil
 }
 
-// CompleteAndUnarchive clears newRoomID's IsArchived flag via Rooms (if
-// set — see the type doc comment) and transitions jobID to the terminal
-// StatusCompleted state, mirroring
-// postgres.RoomForkRepository.CompleteAndUnarchive's combined write. Returns
-// domain.ErrNotFound if jobID does not exist, or whatever error Rooms.
-// SetArchived returns if Rooms is set and newRoomID does not exist there.
+// CompleteAndUnarchive validates jobID exists, is linked to newRoomID (its
+// NewRoomID matches), and is currently StatusRunning — all before mutating
+// either store — then transitions it to the terminal StatusCompleted state
+// and clears newRoomID's IsArchived flag via Rooms (if set — see the type
+// doc comment), mirroring
+// postgres.RoomForkRepository.CompleteAndUnarchive's tightened WHERE clause
+// and job-before-room ordering. Returns domain.ErrNotFound if jobID does
+// not exist, is not linked to newRoomID, or is not StatusRunning — none of
+// those cases mutates Jobs or Rooms. If Rooms.SetArchived then fails (e.g.
+// newRoomID does not exist there), the job-side write is rolled back to
+// StatusRunning before returning that error, so a room-side failure never
+// leaves the job completed while the room stays archived — approximating
+// the postgres implementation's single-transaction atomicity across the
+// two separate in-memory stores.
 func (f *ForkJobRepo) CompleteAndUnarchive(ctx context.Context, jobID, newRoomID string) error {
-	if f.Rooms != nil {
-		if err := f.Rooms.SetArchived(ctx, newRoomID, false); err != nil {
-			return err
-		}
-	}
-
 	f.mu.Lock()
-	defer f.mu.Unlock()
-
 	job, ok := f.Jobs[jobID]
-	if !ok {
+	if !ok || job.NewRoomID != newRoomID || job.Status != roomfork.StatusRunning {
+		f.mu.Unlock()
 		return domain.ErrNotFound
 	}
 	job.Status = roomfork.StatusCompleted
 	job.UpdatedAt = time.Now()
+	f.mu.Unlock()
+
+	if f.Rooms != nil {
+		if err := f.Rooms.SetArchived(ctx, newRoomID, false); err != nil {
+			f.mu.Lock()
+			job.Status = roomfork.StatusRunning
+			f.mu.Unlock()
+			return err
+		}
+	}
 	return nil
 }

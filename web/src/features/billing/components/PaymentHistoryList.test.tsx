@@ -75,6 +75,7 @@ describe("PaymentHistoryList", () => {
       currency: "jpy",
       tokens_credited: 50_000,
       status: "succeeded",
+      stripe_reference_id: "cs_test_jpy",
       created_at: "2026-01-05T00:00:00Z",
     }
     const kwdPayment: Payment = {
@@ -84,6 +85,7 @@ describe("PaymentHistoryList", () => {
       currency: "kwd",
       tokens_credited: 150_000,
       status: "succeeded",
+      stripe_reference_id: "cs_test_kwd",
       created_at: "2026-01-04T00:00:00Z",
     }
 

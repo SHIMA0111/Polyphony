@@ -85,9 +85,19 @@ describe("PlanList", () => {
   })
 
   it("disables every card's CTA while any card's checkout session is pending", async () => {
+    // A controlled promise, not a fixed timeout: the mocked POST handler
+    // blocks on it until the test explicitly resolves it below, so the
+    // disabled-state assertions run while the request is *provably* still
+    // pending, rather than racing an arbitrary delay that could resolve
+    // before (or long after) those assertions run.
+    let resolveCheckoutSession = () => {}
+    const checkoutSessionGate = new Promise<void>((resolve) => {
+      resolveCheckoutSession = resolve
+    })
+
     server.use(
       http.post("/api/proxy/billing/checkout-session", async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50))
+        await checkoutSessionGate
         return HttpResponse.json(
           { checkout_url: "https://checkout.stripe.com/c/pay/cs_test_fixture" },
           { status: 201 },
@@ -114,9 +124,15 @@ describe("PlanList", () => {
     await user.click(subscribeButton)
 
     // Both cards' CTAs disable while the shared mutation is pending — not
-    // just the one that was clicked.
+    // just the one that was clicked. The mocked request is still blocked on
+    // checkoutSessionGate here, so this cannot pass merely by having
+    // outrun an already-resolved request.
     await waitFor(() => expect(subscribeButton).toBeDisabled())
     expect(buyTokensButton).toBeDisabled()
+
+    // Only now let the mocked request resolve, and confirm the redirect
+    // follows.
+    resolveCheckoutSession()
 
     await waitFor(() =>
       expect(window.location.href).toBe("https://checkout.stripe.com/c/pay/cs_test_fixture"),

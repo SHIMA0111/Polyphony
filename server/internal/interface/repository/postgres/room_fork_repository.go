@@ -133,6 +133,16 @@ func (r *RoomForkRepository) MarkFailed(ctx context.Context, id string, errMsg s
 // writes must land atomically. Either update affecting zero rows returns
 // domain.ErrNotFound and rolls back the transaction, so a nonexistent job or
 // room never leaves the other write applied on its own.
+//
+// The job update is the first write and is scoped by
+// `id = $jobID AND new_room_id = $newRoomID AND status = 'running'`: it only
+// ever performs the running->completed transition, and only for the job
+// actually linked to newRoomID, rather than any job row matching id alone.
+// This closes a caller/job mismatch (or a job already completed/failed)
+// silently unarchiving a room it has no claim over. Validating/updating the
+// job before touching the room also means a validation failure here leaves
+// the room's is_archived flag untouched — the room write only runs once the
+// job write is known to have succeeded.
 func (r *RoomForkRepository) CompleteAndUnarchive(ctx context.Context, jobID, newRoomID string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -142,8 +152,9 @@ func (r *RoomForkRepository) CompleteAndUnarchive(ctx context.Context, jobID, ne
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	tag, err := tx.Exec(ctx,
-		`UPDATE rooms SET is_archived = false, updated_at = NOW() WHERE id = $1`,
-		newRoomID,
+		`UPDATE room_fork_jobs SET status = $1, updated_at = NOW()
+		 WHERE id = $2 AND new_room_id = $3 AND status = $4`,
+		string(roomfork.StatusCompleted), jobID, newRoomID, string(roomfork.StatusRunning),
 	)
 	if err != nil {
 		return err
@@ -153,8 +164,8 @@ func (r *RoomForkRepository) CompleteAndUnarchive(ctx context.Context, jobID, ne
 	}
 
 	tag, err = tx.Exec(ctx,
-		`UPDATE room_fork_jobs SET status = $1, updated_at = NOW() WHERE id = $2`,
-		string(roomfork.StatusCompleted), jobID,
+		`UPDATE rooms SET is_archived = false, updated_at = NOW() WHERE id = $1`,
+		newRoomID,
 	)
 	if err != nil {
 		return err
