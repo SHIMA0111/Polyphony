@@ -436,6 +436,76 @@ services:
       start_period: 5s
     profiles: ["test"]
 
+  # A dedicated e2e-only Hydra, distinct from the dev `hydra`/`hydra-db`/
+  # `hydra-migrate` services above (Step 55 never added Hydra to the E2E
+  # profile at all -- see the wave-7 planning note in
+  # docs/tasks/step56.md's "Implementation notes" for why one is needed
+  # here). Same reasoning as `dex-e2e`/`kratos-e2e` above: published on its
+  # own dedicated host ports (8096 public, 8097 admin) so this stack can run
+  # fully alongside a running dev stack without colliding on 4444/4445, and
+  # `urls.login`/`urls.consent` point at `web-e2e`'s host-published port
+  # (3001) rather than the dev `web` service's 3000.
+  hydra-db-e2e:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: hydra
+      POSTGRES_PASSWORD: hydra
+      POSTGRES_DB: hydra
+    volumes:
+      - hydra_pgdata-e2e:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hydra"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["test"]
+
+  hydra-e2e:
+    image: oryd/hydra:v2.2.0
+    environment:
+      DSN: postgres://hydra:hydra@hydra-db-e2e:5432/hydra?sslmode=disable
+      SECRETS_SYSTEM: e2e-32-byte-hydra-system-secret-x
+      # Browser-facing: `oauth-hydra.spec.ts` (and Playwright's `request`
+      # fixture) reach this directly on the host, not through a proxy, so
+      # the issuer must be the host-published URL, not a container-internal
+      # one -- mirrors the dev `hydra` service's `URLS_SELF_ISSUER`
+      # convention (see that block above).
+      URLS_SELF_ISSUER: http://localhost:8096/
+      # 127.0.0.1, not localhost: same IPv6-localhost-shadowing rationale as
+      # the dev `hydra` service (see ory/README.md's "IPv6 localhost
+      # shadowing" note) -- points at `web-e2e`'s host-published port
+      # (3001), not the dev `web` service's 3000.
+      URLS_LOGIN: http://127.0.0.1:3001/oauth/login
+      URLS_CONSENT: http://127.0.0.1:3001/oauth/consent
+    command: serve all -c /etc/config/hydra/hydra.yml --dev
+    volumes:
+      - ./ory/hydra:/etc/config/hydra:ro
+    ports:
+      - "8096:4444"
+      - "8097:4445"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4445/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    profiles: ["test"]
+    depends_on:
+      hydra-migrate-e2e:
+        condition: service_completed_successfully
+
+  hydra-migrate-e2e:
+    image: oryd/hydra:v2.2.0
+    environment:
+      DSN: postgres://hydra:hydra@hydra-db-e2e:5432/hydra?sslmode=disable
+    command: ["migrate", "sql", "-e", "--yes"]
+    volumes:
+      - ./ory/hydra:/etc/config/hydra:ro
+    profiles: ["test"]
+    depends_on:
+      hydra-db-e2e:
+        condition: service_healthy
+
   kratos-db-e2e:
     image: postgres:17-alpine
     environment:
@@ -651,6 +721,10 @@ services:
     environment:
       API_URL: http://api-e2e:8080
       KRATOS_PUBLIC_URL: http://kratos-e2e:4433
+      # Step 56: needed by `app/(auth)/oauth/{login,consent}/route.ts` (see
+      # `web/src/lib/hydra-admin.ts`) so those routes can call the e2e-only
+      # `hydra-e2e` service's admin API instead of the dev `hydra` service.
+      HYDRA_ADMIN_URL: http://hydra-e2e:4445
     ports:
       - "3001:3000"
     profiles: ["test"]
@@ -662,6 +736,7 @@ volumes:
   pgdata:
   pgdata-e2e:
   hydra_pgdata:
+  hydra_pgdata-e2e:
   kratos_pgdata:
   kratos_pgdata-e2e:
   miniodata:

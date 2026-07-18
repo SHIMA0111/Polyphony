@@ -1,4 +1,4 @@
-import { FIXTURE_ROOM_NAME, FIXTURE_USER } from "../support/fixtures"
+import { FIXTURE_ROOM_NAME, FIXTURE_USER, HYDRA_DEMO_FIXTURE_USER } from "../support/fixtures"
 
 /** Base URL of the test-profile Go API, reachable from the host. */
 const E2E_API_URL = process.env.E2E_API_URL ?? "http://localhost:8090"
@@ -102,6 +102,45 @@ async function ensureFixtureUser(): Promise<string> {
 }
 
 /**
+ * Registers `HYDRA_DEMO_FIXTURE_USER`, falling back to login if the account
+ * already exists -- same idempotency pattern as {@link ensureFixtureUser},
+ * for `oauth-hydra.spec.ts` (Step 56). No access token is needed by that
+ * spec (it logs in through the rendered UI to establish a real Kratos
+ * browser session), so unlike {@link ensureFixtureUser} this helper does not
+ * return one.
+ */
+async function ensureHydraDemoFixtureUser(): Promise<void> {
+  const registerRes = await fetch(`${E2E_API_URL}/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: HYDRA_DEMO_FIXTURE_USER.email,
+      username: HYDRA_DEMO_FIXTURE_USER.username,
+      password: HYDRA_DEMO_FIXTURE_USER.password,
+    }),
+  })
+
+  if (registerRes.ok) {
+    return
+  }
+
+  const loginRes = await fetch(`${E2E_API_URL}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: HYDRA_DEMO_FIXTURE_USER.email,
+      password: HYDRA_DEMO_FIXTURE_USER.password,
+    }),
+  })
+
+  if (!loginRes.ok) {
+    throw new Error(
+      `failed to register or log in Hydra demo fixture user (register: ${registerRes.status}, login: ${loginRes.status})`,
+    )
+  }
+}
+
+/**
  * Ensures the fixture room exists for the fixture user, creating it only if
  * a room with `FIXTURE_ROOM_NAME` is not already present in the user's room
  * list — this is what makes re-running the seed against an already-seeded
@@ -140,8 +179,9 @@ async function ensureFixtureRoom(accessToken: string): Promise<void> {
 
 /**
  * Idempotent E2E seed routine: waits for the test-profile API to be healthy,
- * then ensures the fixture user and fixture room exist. Safe to run
- * repeatedly (e.g. `task test:e2e:seed` run twice, or Playwright's
+ * then ensures the fixture user, fixture room, and Hydra demo fixture user
+ * (`HYDRA_DEMO_FIXTURE_USER`, Step 56) exist. Safe to run repeatedly (e.g.
+ * `task test:e2e:seed` run twice, or Playwright's
  * `globalSetup` running on every `task test:e2e` invocation without a
  * teardown in between).
  *
@@ -158,4 +198,5 @@ export default async function globalSetup(): Promise<void> {
   await waitForHealth()
   const accessToken = await ensureFixtureUser()
   await ensureFixtureRoom(accessToken)
+  await ensureHydraDemoFixtureUser()
 }
