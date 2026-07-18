@@ -4,6 +4,20 @@ import { Badge, Button, Card, Flex, Text } from "@chakra-ui/react"
 import type { BillingPlan } from "../types"
 
 /**
+ * Currencies where Stripe's own minor-unit convention disagrees with
+ * `Intl`'s: ISO 4217 (and therefore `Intl`) treats ISK and UGX as
+ * zero-decimal, but Stripe always represents `price_cents` for these two
+ * with 2 decimal digits regardless
+ * (https://docs.stripe.com/currencies#special-cases). Checked before the
+ * `Intl`-derived exponent below, since `price_cents` was minted using
+ * Stripe's convention, not `Intl`'s.
+ */
+const STRIPE_EXPONENT_OVERRIDES: Record<string, number> = {
+  isk: 2,
+  ugx: 2,
+}
+
+/**
  * Formats `price_cents` (an integer minor-currency-unit amount, per Stripe
  * convention) as a localized currency string — never render the raw cents
  * value or a hand-rolled `/ 100` division without a formatter.
@@ -11,7 +25,9 @@ import type { BillingPlan } from "../types"
  * The minor-unit exponent (number of digits after the decimal point) is
  * currency-dependent — most currencies use 2 (cents), but e.g. JPY uses 0
  * and KWD uses 3 — so it's read from the formatter's own
- * `resolvedOptions().maximumFractionDigits` rather than hardcoding `/ 100`.
+ * `resolvedOptions().maximumFractionDigits` rather than hardcoding `/ 100`,
+ * except for {@link STRIPE_EXPONENT_OVERRIDES}'s entries, where `Intl`'s
+ * answer would be wrong for Stripe's own amount.
  */
 function formatPrice(plan: BillingPlan): string {
   const formatter = new Intl.NumberFormat(undefined, {
@@ -21,7 +37,10 @@ function formatPrice(plan: BillingPlan): string {
   // `maximumFractionDigits` is typed as possibly `undefined` even though
   // `resolvedOptions()` always populates it for `style: "currency"`; `?? 2`
   // matches `Intl`'s own currency-formatting default.
-  const exponent = formatter.resolvedOptions().maximumFractionDigits ?? 2
+  const exponent =
+    STRIPE_EXPONENT_OVERRIDES[plan.currency.toLowerCase()] ??
+    formatter.resolvedOptions().maximumFractionDigits ??
+    2
   return formatter.format(plan.price_cents / 10 ** exponent)
 }
 

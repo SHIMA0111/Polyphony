@@ -11,11 +11,21 @@ import { PaymentHistoryList } from "./PaymentHistoryList"
  * don't hardcode locale output — reads the minor-unit exponent from the
  * formatter's own `resolvedOptions()` rather than assuming `/ 100`, since
  * that's not true for every currency (e.g. JPY has 0 decimal digits, KWD
- * has 3).
+ * has 3), except for the Stripe special cases below (ISK, UGX): ISO 4217
+ * treats them as zero-decimal, but Stripe always represents amounts in
+ * these two currencies with 2 decimal digits regardless.
  */
+const STRIPE_EXPONENT_OVERRIDES: Record<string, number> = {
+  isk: 2,
+  ugx: 2,
+}
+
 function formatAmount(amountCents: number, currency: string): string {
   const formatter = new Intl.NumberFormat(undefined, { style: "currency", currency })
-  const exponent = formatter.resolvedOptions().maximumFractionDigits ?? 2
+  const exponent =
+    STRIPE_EXPONENT_OVERRIDES[currency.toLowerCase()] ??
+    formatter.resolvedOptions().maximumFractionDigits ??
+    2
   // `getByText`'s whitespace-collapsing normalizer only runs on the DOM's
   // own text, not on this expected string (see `matches.js`'s
   // `getDefaultNormalizer`) — some currency formats (e.g. KWD) separate the
@@ -109,6 +119,52 @@ describe("PaymentHistoryList", () => {
     // KWD uses 3 decimal digits: 1500 minor units is KD 1.500, not KD 15.00.
     expect(
       screen.getByText(formatAmount(kwdPayment.amount_cents, kwdPayment.currency)),
+    ).toBeInTheDocument()
+  })
+
+  it("formats Stripe's ISK/UGX special cases as 2-decimal despite Intl treating them as zero-decimal", async () => {
+    const iskPayment: Payment = {
+      id: "pay-isk",
+      kind: "token_purchase",
+      amount_cents: 500,
+      currency: "isk",
+      tokens_credited: 50_000,
+      status: "succeeded",
+      stripe_reference_id: "cs_test_isk",
+      created_at: "2026-01-07T00:00:00Z",
+    }
+    const ugxPayment: Payment = {
+      id: "pay-ugx",
+      kind: "token_purchase",
+      amount_cents: 1_500,
+      currency: "ugx",
+      tokens_credited: 150_000,
+      status: "succeeded",
+      stripe_reference_id: "cs_test_ugx",
+      created_at: "2026-01-06T00:00:00Z",
+    }
+
+    server.use(
+      http.get("/api/proxy/billing/payments", () => {
+        return HttpResponse.json<PaymentHistoryPage>({
+          payments: [iskPayment, ugxPayment],
+          next_cursor: null,
+        })
+      }),
+    )
+
+    render(<PaymentHistoryList />)
+
+    await waitFor(() => expect(screen.getAllByText(/Token top-up/)).toHaveLength(2))
+
+    // Without the override, `Intl` would treat ISK as zero-decimal and
+    // render 500 minor units as ISK 500 -- 100x the correct amount. Stripe's
+    // own convention divides by 100 regardless, same as USD.
+    expect(
+      screen.getByText(formatAmount(iskPayment.amount_cents, iskPayment.currency)),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(formatAmount(ugxPayment.amount_cents, ugxPayment.currency)),
     ).toBeInTheDocument()
   })
 

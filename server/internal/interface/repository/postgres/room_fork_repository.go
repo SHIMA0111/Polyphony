@@ -63,12 +63,15 @@ func (r *RoomForkRepository) GetByID(ctx context.Context, id string) (*roomfork.
 	return job, nil
 }
 
-// MarkRunning transitions a Job to StatusRunning and records
-// totalMessages. It returns domain.ErrNotFound if the job does not exist.
+// MarkRunning transitions a Job from StatusPending to StatusRunning and
+// records totalMessages. The UPDATE is scoped to status = 'pending', so a
+// job that is not currently pending (already running, or terminal) is left
+// untouched. It returns domain.ErrNotFound if the job does not exist or is
+// not currently StatusPending.
 func (r *RoomForkRepository) MarkRunning(ctx context.Context, id string, totalMessages int64) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE room_fork_jobs SET status = $1, total_messages = $2, updated_at = NOW() WHERE id = $3`,
-		string(roomfork.StatusRunning), totalMessages, id,
+		`UPDATE room_fork_jobs SET status = $1, total_messages = $2, updated_at = NOW() WHERE id = $3 AND status = $4`,
+		string(roomfork.StatusRunning), totalMessages, id, string(roomfork.StatusPending),
 	)
 	if err != nil {
 		return err
@@ -79,28 +82,15 @@ func (r *RoomForkRepository) MarkRunning(ctx context.Context, id string, totalMe
 	return nil
 }
 
-// UpdateProgress sets copiedMessages on a Job. It returns
-// domain.ErrNotFound if the job does not exist.
+// UpdateProgress sets copiedMessages on a Job. The UPDATE is scoped to
+// status = 'running', so a job that is not currently running (still
+// pending, or already terminal) is left untouched. It returns
+// domain.ErrNotFound if the job does not exist or is not currently
+// StatusRunning.
 func (r *RoomForkRepository) UpdateProgress(ctx context.Context, id string, copiedMessages int64) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE room_fork_jobs SET copied_messages = $1, updated_at = NOW() WHERE id = $2`,
-		copiedMessages, id,
-	)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return domain.ErrNotFound
-	}
-	return nil
-}
-
-// MarkCompleted transitions a Job to the terminal StatusCompleted state.
-// It returns domain.ErrNotFound if the job does not exist.
-func (r *RoomForkRepository) MarkCompleted(ctx context.Context, id string) error {
-	tag, err := r.pool.Exec(ctx,
-		`UPDATE room_fork_jobs SET status = $1, updated_at = NOW() WHERE id = $2`,
-		string(roomfork.StatusCompleted), id,
+		`UPDATE room_fork_jobs SET copied_messages = $1, updated_at = NOW() WHERE id = $2 AND status = $3`,
+		copiedMessages, id, string(roomfork.StatusRunning),
 	)
 	if err != nil {
 		return err
@@ -112,11 +102,15 @@ func (r *RoomForkRepository) MarkCompleted(ctx context.Context, id string) error
 }
 
 // MarkFailed transitions a Job to the terminal StatusFailed state and
-// records errMsg. It returns domain.ErrNotFound if the job does not exist.
+// records errMsg. The UPDATE is scoped to status IN ('pending', 'running')
+// — the only two non-terminal states a Job can fail from — so a job that
+// has already reached a terminal state is left untouched. It returns
+// domain.ErrNotFound if the job does not exist or has already reached a
+// terminal state.
 func (r *RoomForkRepository) MarkFailed(ctx context.Context, id string, errMsg string) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE room_fork_jobs SET status = $1, error_message = $2, updated_at = NOW() WHERE id = $3`,
-		string(roomfork.StatusFailed), errMsg, id,
+		`UPDATE room_fork_jobs SET status = $1, error_message = $2, updated_at = NOW() WHERE id = $3 AND status IN ($4, $5)`,
+		string(roomfork.StatusFailed), errMsg, id, string(roomfork.StatusPending), string(roomfork.StatusRunning),
 	)
 	if err != nil {
 		return err

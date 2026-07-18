@@ -21,7 +21,13 @@ import { expect, test } from "@playwright/test"
  * runnable (and green) in environments without Stripe configured, and only
  * exercising the full flow where an operator has manually run
  * `stripe login` + `stripe listen` per this file's own doc comment above.
+ *
+ * Set `STRIPE_E2E=1` to turn both probe checks into hard assertions instead
+ * of a graceful skip -- for an operator who has deliberately configured
+ * Stripe test-mode credentials and wants a probe failure caught as a real
+ * test failure (e.g. in CI) rather than silently skipped.
  */
+const STRIPE_E2E = process.env.STRIPE_E2E === "1"
 test("plan selection through Stripe test Checkout to a webhook-driven subscription update", async ({
   page,
 }) => {
@@ -49,7 +55,12 @@ test("plan selection through Stripe test Checkout to a webhook-driven subscripti
   // so this authenticated call succeeds the same way the app's own
   // `apiRequest` calls do.
   const plansRes = await page.request.get("/api/proxy/billing/plans")
-  if (!plansRes.ok()) {
+  if (STRIPE_E2E) {
+    expect(
+      plansRes.ok(),
+      `GET /billing/plans returned HTTP ${plansRes.status()} -- STRIPE_E2E=1 requires Stripe test-mode credentials to be configured`,
+    ).toBeTruthy()
+  } else if (!plansRes.ok()) {
     test.skip(true, `GET /billing/plans returned HTTP ${plansRes.status()} — skipping (Stripe test-mode plan catalog is not configured on this stack)`)
     return
   }
@@ -71,7 +82,12 @@ test("plan selection through Stripe test Checkout to a webhook-driven subscripti
   const probeRes = await page.request.post("/api/proxy/billing/checkout-session", {
     data: { type: "subscription", plan_code: monthlyPlan.code },
   })
-  if (!probeRes.ok()) {
+  if (STRIPE_E2E) {
+    expect(
+      probeRes.ok(),
+      `POST /billing/checkout-session returned HTTP ${probeRes.status()} -- STRIPE_E2E=1 requires Stripe test-mode credentials to be configured`,
+    ).toBeTruthy()
+  } else if (!probeRes.ok()) {
     test.skip(
       true,
       `POST /billing/checkout-session returned HTTP ${probeRes.status()} — skipping (Stripe test-mode keys are not configured on this stack)`,
@@ -84,13 +100,20 @@ test("plan selection through Stripe test Checkout to a webhook-driven subscripti
     return
   }
 
-  // 3. The real flow: navigate to /billing/plans, click "Subscribe" on the
-  // first monthly plan's card, and confirm the browser actually reaches
-  // Stripe's hosted test-mode Checkout page.
+  // 3. The real flow: navigate to /billing/plans, click "Subscribe" on
+  // *this* monthly plan's own card -- scoped by `monthlyPlan.name` rather
+  // than `.first()`, since the catalog can list more than one monthly plan
+  // and `.first()` would silently click whichever card happens to render
+  // first instead of the one this spec actually probed above -- and confirm
+  // the browser actually reaches Stripe's hosted test-mode Checkout page.
   await page.goto("/billing/plans")
   await expect(page.getByRole("heading", { name: "Plans & Token Packs" })).toBeVisible()
 
-  await page.getByRole("button", { name: "Subscribe" }).first().click()
+  const monthlyPlanCard = page
+    .locator("div", { hasText: monthlyPlan.name })
+    .filter({ has: page.getByRole("button", { name: "Subscribe" }) })
+    .last()
+  await monthlyPlanCard.getByRole("button", { name: "Subscribe" }).click()
   await page.waitForURL(/^https:\/\/checkout\.stripe\.com\//)
 
   // 4. Fill Stripe's hosted test-mode Checkout form with the documented

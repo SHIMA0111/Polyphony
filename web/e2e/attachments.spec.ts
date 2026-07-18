@@ -62,7 +62,16 @@ function creditTokenBalance(email: string, amount: number): void {
  *   for every request regardless of content) eventually appears, proving
  *   the documented `sendAIMessage` -> `attachToMessage` ->
  *   `regenerateAIMessage` sequence round-trips end to end against the real
- *   (isolated) compose test stack.
+ *   (isolated) compose test stack;
+ * - the initial (text-only) pass and the Vision-aware regenerate pass carry
+ *   *distinct* `llm-stub` responses -- both draw from the same
+ *   `default.json` fixture (there is no `[[fixture:NAME]]` marker in either
+ *   request), so the stub tags every response with a per-request,
+ *   monotonically increasing `[[seq:N]]` marker (see `llm-stub/server.ts`'s
+ *   `nextRequestSequence`) precisely so a broken regenerate that silently
+ *   no-ops (reusing the first pass's reply instead of actually re-invoking
+ *   the LLM Gateway with the now-attached image) cannot pass this
+ *   assertion merely by producing byte-identical final text.
  */
 test("attach an image and send it with AI", async ({ page }) => {
   const runId = `${Date.now()}_${Math.floor(Math.random() * 100_000)}`
@@ -112,7 +121,30 @@ test("attach an image and send it with AI", async ({ page }) => {
   await page.getByPlaceholder("Ask me anything...").fill(messageContent)
   await expect(sendWithAIButton).toBeEnabled()
 
+  // Set up both response listeners *before* the click that triggers them:
+  // `handleSendWithAI` fires the initial `POST .../messages/ai` call, then
+  // -- once the attachment is linked -- the Vision-aware
+  // `POST .../messages/:messageId/regenerate` call, all within the single
+  // click handler below. Each response's own JSON body (not the final DOM
+  // state, which only ever shows the *last* write) is what proves the two
+  // passes are genuinely distinct round-trips against the LLM stub.
+  const sendAIResponsePromise = page.waitForResponse(
+    (res) =>
+      res.request().method() === "POST" &&
+      new URL(res.url()).pathname.endsWith("/messages/ai"),
+  )
+  const regenerateResponsePromise = page.waitForResponse(
+    (res) =>
+      res.request().method() === "POST" &&
+      new URL(res.url()).pathname.endsWith("/regenerate"),
+  )
+
   await sendWithAIButton.click()
+
+  const [sendAIResponse, regenerateResponse] = await Promise.all([
+    sendAIResponsePromise,
+    regenerateResponsePromise,
+  ])
 
   // Staging is reset() on a successful send, so the chip disappears.
   await expect(removeAttachmentButton).toHaveCount(0)
@@ -126,9 +158,35 @@ test("attach an image and send it with AI", async ({ page }) => {
 
   // The AI's reply appears -- the initial pass and the Vision-aware
   // regenerate both draw from the same canned stub fixture
-  // (`llm-stub/fixtures/default.json`), so this asserts the final reply
-  // text is present rather than distinguishing the two passes textually.
+  // (`llm-stub/fixtures/default.json`), so this only proves *a* reply
+  // landed; the sequence-marker assertion below is what proves the
+  // regenerate pass actually ran.
   await expect(
     page.getByText("This is a canned E2E stub response for testing purposes."),
   ).toBeVisible()
+
+  // Distinguishability: extract each pass's own `[[seq:N]]` marker (see
+  // this spec's own doc comment) from the two captured responses' bodies,
+  // and assert they differ -- a broken regenerate that no-ops would instead
+  // leave the AI message's content (and therefore its marker) unchanged
+  // from the initial pass.
+  const SEQ_MARKER = /\[\[seq:(\d+)]]/
+  function extractSeqMarker(content: string): number {
+    const match = content.match(SEQ_MARKER)
+    expect(match, `expected a [[seq:N]] marker in llm-stub content: ${content}`).not.toBeNull()
+    return Number(match![1])
+  }
+
+  const sendAIBody = (await sendAIResponse.json()) as {
+    ai_message: { content: string }
+  }
+  const regenerateBody = (await regenerateResponse.json()) as { content: string }
+
+  const firstPassSeq = extractSeqMarker(sendAIBody.ai_message.content)
+  const secondPassSeq = extractSeqMarker(regenerateBody.content)
+
+  expect(
+    secondPassSeq,
+    "the Vision-aware regenerate pass must produce a genuinely new llm-stub response rather than silently reusing the initial pass's reply",
+  ).not.toBe(firstPassSeq)
 })

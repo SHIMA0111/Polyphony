@@ -12,11 +12,22 @@ import { PlanList } from "./PlanList"
  * Mirrors `PlanCard.tsx`'s own price formatting so assertions don't hardcode
  * locale output — reads the minor-unit exponent from the formatter's own
  * `resolvedOptions()` rather than assuming `/ 100`, since that's not true
- * for every currency (e.g. JPY has 0 decimal digits, KWD has 3).
+ * for every currency (e.g. JPY has 0 decimal digits, KWD has 3), except for
+ * the Stripe special cases below (ISK, UGX): ISO 4217 treats them as
+ * zero-decimal, but Stripe always represents amounts in these two
+ * currencies with 2 decimal digits regardless.
  */
+const STRIPE_EXPONENT_OVERRIDES: Record<string, number> = {
+  isk: 2,
+  ugx: 2,
+}
+
 function formatPrice(priceCents: number, currency: string): string {
   const formatter = new Intl.NumberFormat(undefined, { style: "currency", currency })
-  const exponent = formatter.resolvedOptions().maximumFractionDigits ?? 2
+  const exponent =
+    STRIPE_EXPONENT_OVERRIDES[currency.toLowerCase()] ??
+    formatter.resolvedOptions().maximumFractionDigits ??
+    2
   // `getByText`'s whitespace-collapsing normalizer only runs on the DOM's
   // own text, not on this expected string (see `matches.js`'s
   // `getDefaultNormalizer`) — some currency formats (e.g. KWD) separate the
@@ -176,6 +187,47 @@ describe("PlanList", () => {
     // KWD uses 3 decimal digits: 1500 minor units is KD 1.500, not KD 15.00.
     expect(
       screen.getByText(formatPrice(kwdPlan.price_cents, kwdPlan.currency), { exact: false }),
+    ).toBeInTheDocument()
+  })
+
+  it("formats Stripe's ISK/UGX special cases as 2-decimal despite Intl treating them as zero-decimal", async () => {
+    const iskPlan: BillingPlan = {
+      code: "isk-pack",
+      name: "ISK Pack",
+      description: "A krona-denominated token pack.",
+      price_cents: 500,
+      currency: "isk",
+      interval: "one_time",
+      token_allowance: 50_000,
+    }
+    const ugxPlan: BillingPlan = {
+      code: "ugx-pack",
+      name: "UGX Pack",
+      description: "A shilling-denominated token pack.",
+      price_cents: 1_500,
+      currency: "ugx",
+      interval: "one_time",
+      token_allowance: 150_000,
+    }
+
+    server.use(
+      http.get("/api/proxy/billing/plans", () => {
+        return HttpResponse.json<{ plans: BillingPlan[] }>({ plans: [iskPlan, ugxPlan] })
+      }),
+    )
+
+    render(<PlanList />)
+
+    await waitFor(() => expect(screen.getByText(iskPlan.name)).toBeInTheDocument())
+
+    // Without the override, `Intl` would treat ISK as zero-decimal and
+    // render 500 minor units as ISK 500 -- 100x the correct amount. Stripe's
+    // own convention divides by 100 regardless, same as USD.
+    expect(
+      screen.getByText(formatPrice(iskPlan.price_cents, iskPlan.currency), { exact: false }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(formatPrice(ugxPlan.price_cents, ugxPlan.currency), { exact: false }),
     ).toBeInTheDocument()
   })
 })

@@ -542,6 +542,15 @@ func TestAssembleAIContextIncludeImagesResolvedFromModelMetadata(t *testing.T) {
 	})
 }
 
+// TestAssembleAIContextSummarizationFailureDegradesGracefully proves that
+// when the summarization Complete call fails, assembleAIContext's fallback
+// to verbatim() actually sends the older-public bucket (msg-1/msg-2, which
+// would otherwise have been replaced by a summary) and the recent tail
+// (msg-3..msg-12) to the final answer-generating Complete call unchanged --
+// not a truncated or partially-summarized context, and critically, without
+// injecting a system-role "Summary of earlier conversation:" message, which
+// would otherwise silently fabricate summary content that was never
+// actually produced.
 func TestAssembleAIContextSummarizationFailureDegradesGracefully(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -550,6 +559,7 @@ func TestAssembleAIContextSummarizationFailureDegradesGracefully(t *testing.T) {
 	summaryRepo := &mocks.ContextSummaryRepo{}
 
 	callIndex := 0
+	var secondCallMessages []ai.ChatMessage
 	gw := &mocks.LLMGateway{
 		Models:                []ai.ModelInfo{{ID: "gpt-5-mini", ContextWindow: 8000, SupportsImageInput: true}},
 		TokenEstimateResponse: &ai.TokenEstimateResponse{EstimatedTokens: 999_999},
@@ -558,6 +568,7 @@ func TestAssembleAIContextSummarizationFailureDegradesGracefully(t *testing.T) {
 			if callIndex == 1 {
 				return nil, fmt.Errorf("summarization backend unavailable")
 			}
+			secondCallMessages = req.Messages
 			return &ai.CompletionResponse{Content: "Final answer despite summarization failure."}, nil
 		},
 	}
@@ -586,5 +597,93 @@ func TestAssembleAIContextSummarizationFailureDegradesGracefully(t *testing.T) {
 	}
 	if summaryRepo.UpsertCallCount != 0 {
 		t.Fatalf("expected no cache write after a summarization failure, got %d Upsert calls", summaryRepo.UpsertCallCount)
+	}
+
+	// The final answer-generating call must have received the full,
+	// un-summarized history: msg-1..msg-11 (the seeded messages -- including
+	// msg-1/msg-2, the would-be-summarized older-public bucket) followed by
+	// msg-12 (this call's own human message, always part of the verbatim
+	// recent tail), in chronological order, none of them dropped or altered.
+	for i := 1; i <= 11; i++ {
+		want := fmt.Sprintf("msg-%d", i)
+		found := false
+		for _, m := range secondCallMessages {
+			if m.Content == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected the final Complete call's messages to contain seeded message %q verbatim, got %+v", want, secondCallMessages)
+		}
+	}
+	// No summary was ever produced (the one summarization attempt failed),
+	// so no system-role message -- which is exclusively how a cached/fresh
+	// summary is injected (see assembleAIContext's "Summary of earlier
+	// conversation:" system message) -- must appear anywhere in the
+	// fallback context.
+	for _, m := range secondCallMessages {
+		if m.Role == "system" {
+			t.Errorf("expected no system-role (summary) message in the degraded-fallback context, got %+v", m)
+		}
+	}
+}
+
+// TestAssembleAIContextEmptySummaryContentDegradesGracefully proves that a
+// summarization Complete call which succeeds but returns only whitespace
+// content is treated the same as an outright Complete failure: it degrades
+// to the un-summarized context (never a system message carrying an empty
+// "Summary of earlier conversation:\n" body) and, critically, is never
+// cached -- an empty cached summary would otherwise keep silently discarding
+// the older-public bucket for every subsequent call that hits it.
+func TestAssembleAIContextEmptySummaryContentDegradesGracefully(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	summaryRepo := &mocks.ContextSummaryRepo{}
+
+	callIndex := 0
+	gw := &mocks.LLMGateway{
+		Models:                []ai.ModelInfo{{ID: "gpt-5-mini", ContextWindow: 8000, SupportsImageInput: true}},
+		TokenEstimateResponse: &ai.TokenEstimateResponse{EstimatedTokens: 999_999},
+		CompleteFunc: func(_ context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+			callIndex++
+			if callIndex == 1 {
+				// A "successful" completion carrying only whitespace --
+				// not a Complete error, but not a usable summary either.
+				return &ai.CompletionResponse{Content: "   \n\t  "}, nil
+			}
+			return &ai.CompletionResponse{Content: "Final answer despite empty summary."}, nil
+		},
+	}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, summaryRepo, "gpt-5-mini")
+	ctx := context.Background()
+
+	for i := 1; i <= 11; i++ {
+		if _, err := uc.SendMessage(ctx, "user-1", "room-1", fmt.Sprintf("msg-%d", i)); err != nil {
+			t.Fatalf("seed message %d: %v", i, err)
+		}
+	}
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "msg-12", "gpt-5-mini", false)
+	if err != nil {
+		t.Fatalf("expected SendAIMessage to succeed despite the empty summary content, got error: %v", err)
+	}
+	if result.UsedContextSummary {
+		t.Fatal("expected UsedContextSummary=false when the summarization completion returned empty content")
+	}
+	if result.AIMessage.Content != "Final answer despite empty summary." {
+		t.Fatalf("expected the un-summarized context to still produce an answer, got %q", result.AIMessage.Content)
+	}
+	if callIndex != 2 {
+		t.Fatalf("expected exactly one summarization attempt (no retry) plus the final answer call, got %d total Complete calls", callIndex)
+	}
+	if summaryRepo.UpsertCallCount != 0 {
+		t.Fatalf("expected no cache write for an empty summary, got %d Upsert calls", summaryRepo.UpsertCallCount)
+	}
+	if _, err := summaryRepo.Get(ctx, "room-1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected no cached summary to exist for room-1, got err=%v", err)
 	}
 }

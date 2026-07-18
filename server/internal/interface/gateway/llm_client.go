@@ -466,8 +466,18 @@ func readSSEStream(body io.ReadCloser, out chan<- ai.StreamResult) {
 		if err != nil {
 			if err == io.EOF {
 				// Flush any final frame that wasn't terminated by a trailing
-				// blank line before ending cleanly.
-				flush()
+				// blank line before ending cleanly. If that final frame was
+				// itself terminal -- an `event: error` frame or one with
+				// malformed JSON -- flush already sent its own Err-carrying
+				// result and returned false, so this must return immediately
+				// rather than falling through to the sawDone check below:
+				// sawDone is still false in that case (it is only ever set
+				// by the [DONE] sentinel branch), and without this early
+				// return the code would send a second, spurious "stream
+				// ended before [DONE] sentinel" error after the real one.
+				if !flush() {
+					return
+				}
 				if !sawDone {
 					// The connection closed without ever delivering the
 					// [DONE] sentinel: from here this is indistinguishable

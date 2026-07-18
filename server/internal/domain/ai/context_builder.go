@@ -22,6 +22,10 @@ import (
 //   - m.Status == message.MessageStatusFailed (an AI placeholder from a
 //     failed completion; sending it back would confuse the LLM with an
 //     empty assistant turn)
+//   - m.Status == message.MessageStatusStreaming (an in-flight AI
+//     placeholder, including the sender's own still-empty one; its
+//     Content is not yet finished, so including it would inject an empty
+//     or truncated assistant turn)
 //   - cutoff != nil && m.CreatedAt.Before(*cutoff) (the room's AI context
 //     cutoff excludes anything created before it)
 //
@@ -74,7 +78,8 @@ func (b *DefaultContextBuilder) Build(msgs []*message.Message, cutoff *time.Time
 
 // IsEligibleForContext reports whether m passes ContextBuilder's exclusion rules (see
 // the ContextBuilder doc comment for the exact list): not soft-deleted, not
-// exclude_from_ai, not a failed AI placeholder, and not before cutoff.
+// exclude_from_ai, not a failed AI placeholder, not an in-flight streaming AI
+// placeholder, and not before cutoff.
 //
 // It is exported so callers that need to correlate DefaultContextBuilder.Build's
 // output back to its source messages can reproduce the exact same filter without
@@ -92,6 +97,17 @@ func IsEligibleForContext(m *message.Message, cutoff *time.Time) bool {
 		return false
 	}
 	if m.Status == message.MessageStatusFailed {
+		return false
+	}
+	if m.Status == message.MessageStatusStreaming {
+		// An in-flight streaming AI placeholder -- including the sender's
+		// own still-empty one for the response currently being assembled
+		// -- has no finished Content yet (or only a partial prefix of it).
+		// Feeding either into a later AI context build would inject an
+		// empty or truncated assistant turn into the conversation the
+		// model sees, so it is excluded the same as a failed placeholder
+		// until UpdateAIResponse transitions it to
+		// MessageStatusCompleted/MessageStatusFailed.
 		return false
 	}
 	if cutoff != nil && m.CreatedAt.Before(*cutoff) {

@@ -1,14 +1,16 @@
 import { renderHook, waitFor } from "@testing-library/react"
 import { http, HttpResponse } from "msw"
 import { describe, expect, it, vi } from "vitest"
+import { toaster } from "@/components/ui/toaster"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import {
   fixtureAiMessage,
   fixtureAiMessageResponse,
+  fixtureAttachmentResponse,
   fixtureHumanMessage,
 } from "@/features/messages/api/handlers"
-import type { Message, MessagePage } from "@/features/messages/types"
+import type { AttachmentResponse, Message, MessagePage } from "@/features/messages/types"
 import { useChatRoom } from "./use-chat-room"
 
 /**
@@ -369,5 +371,143 @@ describe("useChatRoom handleSendWithAI", () => {
     ).rejects.toThrow()
 
     expect(result.current.aiError).toBeNull()
+  })
+})
+
+/**
+ * Regression tests for item [37]: `linkAttachments` previously swallowed
+ * every `attachToMessage` failure silently (`console.error` only) and the
+ * send still resolved, so staged files could vanish with no feedback and
+ * regenerate would still fire against a message with zero attached images.
+ * `linkAttachments` now reports `failedCount` back to its caller, which
+ * must surface a toaster error and only skip the Vision-aware regenerate
+ * call when *every* attachment failed to link -- a partial failure still
+ * regenerates, since the model can still see whichever attachments did
+ * link.
+ */
+describe("useChatRoom handleSendWithAI attachment linking", () => {
+  it("shows a toaster error but still regenerates when only some attachment links fail", async () => {
+    const toasterCreateSpy = vi.spyOn(toaster, "create").mockClear()
+    let regenerateCallCount = 0
+
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/attachments",
+        async ({ request, params }) => {
+          const body = (await request.json()) as { attachment_id: string }
+          if (body.attachment_id === "attachment-fail") {
+            return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+          }
+          return HttpResponse.json<AttachmentResponse>({
+            ...fixtureAttachmentResponse,
+            message_id: String(params.messageId),
+          })
+        },
+      ),
+      http.post("/api/proxy/rooms/:roomId/messages/:messageId/regenerate", () => {
+        regenerateCallCount += 1
+        return HttpResponse.json<Message>(fixtureAiMessage)
+      }),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini", [
+      "attachment-ok",
+      "attachment-fail",
+    ])
+
+    await waitFor(() => expect(regenerateCallCount).toBe(1))
+    expect(toasterCreateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "error",
+        description: "1 attachment(s) could not be attached.",
+      }),
+    )
+  })
+
+  it("shows a toaster error and skips the regenerate call when every attachment link fails", async () => {
+    const toasterCreateSpy = vi.spyOn(toaster, "create").mockClear()
+    let regenerateCallCount = 0
+
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/attachments",
+        () => HttpResponse.json({ message: "Internal Server Error" }, { status: 500 }),
+      ),
+      http.post("/api/proxy/rooms/:roomId/messages/:messageId/regenerate", () => {
+        regenerateCallCount += 1
+        return HttpResponse.json<Message>(fixtureAiMessage)
+      }),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini", ["attachment-fail"])
+
+    await waitFor(() =>
+      expect(toasterCreateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          description: "1 attachment(s) could not be attached.",
+        }),
+      ),
+    )
+    expect(regenerateCallCount).toBe(0)
+  })
+
+  it("does not show a toaster error when every attachment links successfully", async () => {
+    const toasterCreateSpy = vi.spyOn(toaster, "create").mockClear()
+    let regenerateCallCount = 0
+
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/:messageId/regenerate", () => {
+        regenerateCallCount += 1
+        return HttpResponse.json<Message>(fixtureAiMessage)
+      }),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini", ["attachment-ok"])
+
+    await waitFor(() => expect(regenerateCallCount).toBe(1))
+    expect(toasterCreateSpy).not.toHaveBeenCalled()
+  })
+
+  it("surfaces a toaster error for a plain (non-AI) send's failed attachment link too", async () => {
+    const toasterCreateSpy = vi.spyOn(toaster, "create").mockClear()
+
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/attachments",
+        () => HttpResponse.json({ message: "Internal Server Error" }, { status: 500 }),
+      ),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await result.current.handleSend("Hello", ["attachment-fail"])
+
+    await waitFor(() =>
+      expect(toasterCreateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          description: "1 attachment(s) could not be attached.",
+        }),
+      ),
+    )
   })
 })

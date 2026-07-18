@@ -150,4 +150,122 @@ describe("InviteDialog - Invite a group section", () => {
     ).toBeInTheDocument()
     expect(called).toBe(false)
   })
+
+  /**
+   * Regression tests for item [5]: without a `batchInviteByGroupMutation
+   * .reset()` call in each of the group-select/role/expiration change
+   * handlers, a previous batch's success summary stayed on screen while the
+   * caller composed the *next* batch invite -- misleadingly implying the
+   * (not-yet-submitted) new selection had already been invited.
+   */
+  it("clears the stale success summary when the group selection changes", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/invitations/batch-by-group", () => {
+        return HttpResponse.json<BatchInviteByGroupResult>({
+          invited: [
+            {
+              id: "invitation-1",
+              room_id: "room-1",
+              inviter_id: "user-1",
+              invitee_id: "user-3",
+              invite_code: "code-1",
+              role: "member",
+              status: "pending",
+              expires_at: "2026-02-01T00:00:00Z",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          skipped: [],
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<InviteDialog roomId="room-1" />)
+
+    await user.click(screen.getByRole("button", { name: "Invite" }))
+    await user.click(screen.getByRole("button", { name: "Select Team A (stub)" }))
+    await user.click(screen.getByRole("button", { name: "Invite group" }))
+
+    expect(await screen.findByText("Invited 1 member(s).")).toBeInTheDocument()
+
+    // Re-selecting a group (even the same one -- `GroupPicker` is stubbed to
+    // a single fixture) must clear the previous batch's stale summary.
+    await user.click(screen.getByRole("button", { name: "Select Team A (stub)" }))
+
+    expect(screen.queryByText("Invited 1 member(s).")).not.toBeInTheDocument()
+  })
+
+  it("clears the stale success summary when the role changes", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/invitations/batch-by-group", () => {
+        return HttpResponse.json<BatchInviteByGroupResult>({
+          invited: [
+            {
+              id: "invitation-1",
+              room_id: "room-1",
+              inviter_id: "user-1",
+              invitee_id: "user-3",
+              invite_code: "code-1",
+              role: "member",
+              status: "pending",
+              expires_at: "2026-02-01T00:00:00Z",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          skipped: [],
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<InviteDialog roomId="room-1" />)
+
+    await user.click(screen.getByRole("button", { name: "Invite" }))
+    await user.click(screen.getByRole("button", { name: "Select Team A (stub)" }))
+    await user.click(screen.getByRole("button", { name: "Invite group" }))
+
+    expect(await screen.findByText("Invited 1 member(s).")).toBeInTheDocument()
+
+    const roleSelects = screen.getAllByRole("combobox")
+    await user.selectOptions(roleSelects[roleSelects.length - 1], "admin")
+
+    expect(screen.queryByText("Invited 1 member(s).")).not.toBeInTheDocument()
+  })
+
+  it("clears the stale success summary when the expiration input changes", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/invitations/batch-by-group", () => {
+        return HttpResponse.json<BatchInviteByGroupResult>({
+          invited: [
+            {
+              id: "invitation-1",
+              room_id: "room-1",
+              inviter_id: "user-1",
+              invitee_id: "user-3",
+              invite_code: "code-1",
+              role: "member",
+              status: "pending",
+              expires_at: "2026-02-01T00:00:00Z",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          skipped: [],
+        })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<InviteDialog roomId="room-1" />)
+
+    await user.click(screen.getByRole("button", { name: "Invite" }))
+    await user.click(screen.getByRole("button", { name: "Select Team A (stub)" }))
+    await user.click(screen.getByRole("button", { name: "Invite group" }))
+
+    expect(await screen.findByText("Invited 1 member(s).")).toBeInTheDocument()
+
+    await user.type(screen.getByPlaceholderText("e.g., 168"), "24")
+
+    expect(screen.queryByText("Invited 1 member(s).")).not.toBeInTheDocument()
+  })
 })

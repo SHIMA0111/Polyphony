@@ -52,6 +52,18 @@ func (r *ContextSummaryRepo) ensureInit() {
 	}
 }
 
+// cloneContextSummary returns a shallow copy of summary. ContextSummary has
+// no pointer/slice fields, so a plain `cp := *summary` copy is a complete,
+// independent clone. Used by both Get and Upsert so neither hands out --
+// nor stores -- the caller's own *ai.ContextSummary pointer: without this, a
+// caller retaining the pointer it passed to Upsert (or received from Get)
+// could mutate it later and silently corrupt the mock's stored state (or a
+// previously-returned Get result) without going through the mutex at all.
+func cloneContextSummary(summary *ai.ContextSummary) *ai.ContextSummary {
+	cp := *summary
+	return &cp
+}
+
 // Get returns the cached ContextSummary for roomID, or domain.ErrNotFound
 // if none is cached.
 func (r *ContextSummaryRepo) Get(_ context.Context, roomID string) (*ai.ContextSummary, error) {
@@ -64,13 +76,16 @@ func (r *ContextSummaryRepo) Get(_ context.Context, roomID string) (*ai.ContextS
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	return s, nil
+	return cloneContextSummary(s), nil
 }
 
 // Upsert creates or replaces the cached summary for summary.RoomID, but
 // only if roomID's current revision equals expectedRevision -- mirroring
 // postgres.ContextSummaryRepository's revision-guarded Upsert. A mismatch
-// increments UpsertNoopCount and returns nil (no-op, not an error).
+// increments UpsertNoopCount and returns nil (no-op, not an error). The
+// stored copy is cloned from the caller's summary (see cloneContextSummary),
+// so a later caller-side mutation of *summary cannot bleed into the mock's
+// stored state.
 func (r *ContextSummaryRepo) Upsert(_ context.Context, summary *ai.ContextSummary, expectedRevision int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -82,7 +97,7 @@ func (r *ContextSummaryRepo) Upsert(_ context.Context, summary *ai.ContextSummar
 		return nil
 	}
 
-	r.Summaries[summary.RoomID] = summary
+	r.Summaries[summary.RoomID] = cloneContextSummary(summary)
 	return nil
 }
 

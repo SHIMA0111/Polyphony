@@ -16,6 +16,7 @@ import {
 import { Copy, Link2, UserPlus } from "lucide-react"
 import { toaster } from "@/components/ui/toaster"
 import { GroupPicker } from "@/features/groups/components/GroupPicker"
+import type { InvitationRole } from "@/features/groups/api/batch-invite-by-group"
 import { useBatchInviteByGroup } from "@/features/groups/hooks/use-batch-invite-by-group"
 import type { BatchInviteByGroupResult, Group } from "@/features/groups/types"
 import { useCreateInvitation } from "../hooks/use-create-invitation"
@@ -28,7 +29,7 @@ const COPY_FEEDBACK_MS = 2000
 type PendingAction = "username" | "link" | null
 
 /** Roles an inviter may offer — never `master` (see `RolePicker`'s same restriction). */
-const INVITABLE_ROLES: RoomRole[] = ["reader", "guest", "member", "admin"]
+const INVITABLE_ROLES: InvitationRole[] = ["reader", "guest", "member", "admin"]
 
 interface InviteDialogProps {
   roomId: string
@@ -80,7 +81,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
   const [copied, setCopied] = useState(false)
   const [pendingAction, setPendingAction] = useState<PendingAction>(null)
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null)
-  const [groupRole, setGroupRole] = useState<RoomRole>("member")
+  const [groupRole, setGroupRole] = useState<InvitationRole>("member")
   const [groupExpiresInHours, setGroupExpiresInHours] = useState("")
   const [groupExpiresError, setGroupExpiresError] = useState<string | null>(null)
 
@@ -317,16 +318,25 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                   </Text>
                   <Field.Root>
                     <Field.Label>Group</Field.Label>
-                    <GroupPicker selectedGroup={selectedGroup} onSelect={setSelectedGroup} />
+                    <GroupPicker
+                      selectedGroup={selectedGroup}
+                      onSelect={(group) => {
+                        setSelectedGroup(group)
+                        // Composing the next batch invite must not carry
+                        // forward the previous group's success summary.
+                        batchInviteByGroupMutation.reset()
+                      }}
+                    />
                   </Field.Root>
                   <Field.Root>
                     <Field.Label>Role</Field.Label>
                     <NativeSelect.Root size="sm">
                       <NativeSelect.Field
                         value={groupRole}
-                        onChange={(e) =>
-                          setGroupRole(e.currentTarget.value as RoomRole)
-                        }
+                        onChange={(e) => {
+                          setGroupRole(e.currentTarget.value as InvitationRole)
+                          batchInviteByGroupMutation.reset()
+                        }}
                       >
                         {INVITABLE_ROLES.map((role) => (
                           <option key={role} value={role}>
@@ -349,6 +359,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                       onChange={(e) => {
                         setGroupExpiresInHours(e.target.value)
                         setGroupExpiresError(null)
+                        batchInviteByGroupMutation.reset()
                       }}
                     />
                   </Field.Root>

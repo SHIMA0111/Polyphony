@@ -67,7 +67,10 @@ func TestRoomForkRepository_CreateAndGetByID(t *testing.T) {
 
 // TestRoomForkRepository_StateTransitions proves the full
 // pending -> running -> completed lifecycle round-trips through
-// MarkRunning/UpdateProgress/MarkCompleted.
+// MarkRunning/UpdateProgress/CompleteAndUnarchive, and that MarkRunning and
+// UpdateProgress each reject a job that isn't currently in the source
+// status their guard requires (StatusPending and StatusRunning,
+// respectively) without mutating it.
 func TestRoomForkRepository_StateTransitions(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -77,6 +80,9 @@ func TestRoomForkRepository_StateTransitions(t *testing.T) {
 	forkRepo := NewRoomForkRepository(pool)
 
 	source, dest := seedForkRoomPair(ctx, t, userRepo, roomRepo, "fork-repo-lifecycle")
+	if err := roomRepo.SetArchived(ctx, dest.ID, true); err != nil {
+		t.Fatalf("archive dest room: %v", err)
+	}
 
 	now := time.Now()
 	job := &roomfork.Job{
@@ -85,6 +91,12 @@ func TestRoomForkRepository_StateTransitions(t *testing.T) {
 	}
 	if err := forkRepo.Create(ctx, job); err != nil {
 		t.Fatalf("Create failed: %v", err)
+	}
+
+	// UpdateProgress before MarkRunning: the job is still StatusPending, not
+	// StatusRunning, so the guarded UPDATE must affect zero rows.
+	if err := forkRepo.UpdateProgress(ctx, job.ID, 10); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for UpdateProgress on a still-pending job, got %v", err)
 	}
 
 	if err := forkRepo.MarkRunning(ctx, job.ID, 42); err != nil {
@@ -98,6 +110,19 @@ func TestRoomForkRepository_StateTransitions(t *testing.T) {
 		t.Fatalf("expected running/42, got %s/%d", got.Status, got.TotalMessages)
 	}
 
+	// MarkRunning again: the job is now StatusRunning, not StatusPending, so
+	// the guarded UPDATE must affect zero rows and leave it untouched.
+	if err := forkRepo.MarkRunning(ctx, job.ID, 99); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for MarkRunning on an already-running job, got %v", err)
+	}
+	got, err = forkRepo.GetByID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.TotalMessages != 42 {
+		t.Fatalf("expected total_messages to remain 42 after a rejected re-MarkRunning, got %d", got.TotalMessages)
+	}
+
 	if err := forkRepo.UpdateProgress(ctx, job.ID, 10); err != nil {
 		t.Fatalf("UpdateProgress failed: %v", err)
 	}
@@ -109,8 +134,8 @@ func TestRoomForkRepository_StateTransitions(t *testing.T) {
 		t.Fatalf("expected copied_messages 10, got %d", got.CopiedMessages)
 	}
 
-	if err := forkRepo.MarkCompleted(ctx, job.ID); err != nil {
-		t.Fatalf("MarkCompleted failed: %v", err)
+	if err := forkRepo.CompleteAndUnarchive(ctx, job.ID, dest.ID); err != nil {
+		t.Fatalf("CompleteAndUnarchive failed: %v", err)
 	}
 	got, err = forkRepo.GetByID(ctx, job.ID)
 	if err != nil {
@@ -122,7 +147,9 @@ func TestRoomForkRepository_StateTransitions(t *testing.T) {
 }
 
 // TestRoomForkRepository_MarkFailed proves MarkFailed transitions a job to
-// StatusFailed and persists the error message.
+// StatusFailed and persists the error message, and that a second MarkFailed
+// call against the now-terminal job is rejected without overwriting the
+// already-recorded error message.
 func TestRoomForkRepository_MarkFailed(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -154,6 +181,19 @@ func TestRoomForkRepository_MarkFailed(t *testing.T) {
 	}
 	if got.ErrorMessage == nil || *got.ErrorMessage != "boom" {
 		t.Fatalf("expected error_message 'boom', got %v", got.ErrorMessage)
+	}
+
+	// The job is now StatusFailed, a terminal state — a second MarkFailed
+	// must be rejected and must not overwrite the recorded error message.
+	if err := forkRepo.MarkFailed(ctx, job.ID, "second boom"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for MarkFailed on an already-terminal job, got %v", err)
+	}
+	got, err = forkRepo.GetByID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.ErrorMessage == nil || *got.ErrorMessage != "boom" {
+		t.Fatalf("expected error_message to remain 'boom' after a rejected re-MarkFailed, got %v", got.ErrorMessage)
 	}
 
 	if err := forkRepo.MarkRunning(ctx, uuid.New().String(), 1); !errors.Is(err, domain.ErrNotFound) {

@@ -28,7 +28,13 @@ const forkBatchSize = 1000
 // same admin/master-only rule UpdateRoom/UpdateSettings already enforce for
 // room-settings changes) — it returns domain.ErrForbidden if the caller
 // lacks that role or is not a member of sourceRoomID, and domain.ErrNotFound
-// if sourceRoomID does not exist.
+// if sourceRoomID does not exist. It also returns domain.ErrArchivedRoom if
+// sourceRoomID itself is still archived: an archived room is either an
+// in-progress fork destination (runForkJob has not yet called
+// CompleteAndUnarchive) or some other room deliberately archived, and
+// forking from either — copying a possibly-incomplete or intentionally
+// frozen message history — would silently produce a fork of a fork with no
+// clear provenance.
 //
 // On success, it synchronously:
 //  1. creates a new room owned by userID, named "<source name> (Fork)",
@@ -67,6 +73,9 @@ func (u *RoomUsecase) ForkRoom(ctx context.Context, userID, sourceRoomID string)
 	src, err := u.roomRepo.GetByID(ctx, sourceRoomID)
 	if err != nil {
 		return nil, nil, err
+	}
+	if src.IsArchived {
+		return nil, nil, domain.ErrArchivedRoom
 	}
 
 	now := time.Now()
@@ -208,11 +217,12 @@ func (u *RoomUsecase) GetForkJobStatus(ctx context.Context, userID, jobID string
 // newRoomID's IsArchived — it stays archived. On successful completion of
 // the loop, newRoomID's IsArchived is cleared and the job is marked
 // roomfork.StatusCompleted in one call (forkJobRepo.CompleteAndUnarchive),
-// rather than as two independent writes: the previous SetArchived-then-
-// MarkCompleted sequence left a window where, if MarkCompleted failed after
-// SetArchived had already succeeded, the room would be live (accepting
-// posts) while its Job stayed stuck in StatusRunning forever, with no
-// poller ever able to observe completion. StatusCompleted therefore implies
+// rather than as two independent writes: a previous SetArchived-then-
+// MarkCompleted sequence (MarkCompleted has since been removed) left a
+// window where, if the second write failed after SetArchived had already
+// succeeded, the room would be live (accepting posts) while its Job stayed
+// stuck in StatusRunning forever, with no poller ever able to observe
+// completion. StatusCompleted therefore implies
 // the room accepts posts, and the room accepting posts implies
 // StatusCompleted — the two facts can no longer disagree.
 func (u *RoomUsecase) runForkJob(ctx context.Context, jobID, sourceRoomID, newRoomID string) {

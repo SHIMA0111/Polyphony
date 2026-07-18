@@ -23,7 +23,7 @@ import { toaster } from "@/components/ui/toaster"
 import { formatModelMeta } from "@/features/messages/components/ModelSelector"
 import { useModels } from "@/features/messages/hooks/use-models"
 import { isOwnerRole, roleAtLeast } from "@/features/members/lib/roles"
-import { formatDateTimeLocal } from "@/lib/format"
+import { formatDateTimeUtc } from "@/lib/format"
 import type { RoomRole } from "@/features/members/types"
 import { useDeleteRoom } from "../hooks/use-delete-room"
 import { useUpdateAIContextCutoff } from "../hooks/use-update-ai-context-cutoff"
@@ -46,14 +46,14 @@ interface RoomSettingsDrawerProps {
 /**
  * Formats an ISO cutoff timestamp for display, or a fallback when unset.
  *
- * Uses the shared, UTC-pinned `formatDateTimeLocal` (`@/lib/format`) rather
+ * Uses the shared, UTC-pinned `formatDateTimeUtc` (`@/lib/format`) rather
  * than a bare `Date.prototype.toLocaleString()`: the latter reads the
  * runtime's own locale/timezone and so can render a different string on the
  * server than in the browser -- a latent React hydration mismatch.
  */
 function formatCutoff(cutoffAt: string | null): string {
   if (!cutoffAt) return "No cutoff set"
-  return formatDateTimeLocal(cutoffAt)
+  return formatDateTimeUtc(cutoffAt)
 }
 
 /**

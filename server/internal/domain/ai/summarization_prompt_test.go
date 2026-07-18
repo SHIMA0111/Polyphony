@@ -5,6 +5,11 @@ import (
 	"testing"
 )
 
+// TestBuildSummarizationPrompt_PlainTextTranscript verifies that a
+// plain-text-only history is rendered as a two-message prompt (a
+// system-role instruction followed by a single user-role transcript
+// message), the transcript contains every source message's "role: content"
+// line, and the user message carries no Parts.
 func TestBuildSummarizationPrompt_PlainTextTranscript(t *testing.T) {
 	history := []ChatMessage{
 		{Role: "user", Content: "What is Go?"},
@@ -33,6 +38,12 @@ func TestBuildSummarizationPrompt_PlainTextTranscript(t *testing.T) {
 	}
 }
 
+// TestBuildSummarizationPrompt_IncludeImagesTrue verifies that with
+// includeImages=true, a message with image Parts is rendered as
+// role-prefixed text plus an attribution line plus the passed-through
+// image part, the plain-text Content fallback never leaks the raw image
+// URL (using imageAttachmentPlaceholder instead), and the system
+// instruction mentions describing images.
 func TestBuildSummarizationPrompt_IncludeImagesTrue(t *testing.T) {
 	history := []ChatMessage{
 		{
@@ -73,6 +84,11 @@ func TestBuildSummarizationPrompt_IncludeImagesTrue(t *testing.T) {
 	}
 }
 
+// TestBuildSummarizationPrompt_IncludeImagesFalse verifies that with
+// includeImages=false, a message with image Parts is flattened to
+// Parts-less plain text containing imageAttachmentPlaceholder (never the
+// raw image URL), and the system instruction omits the image-description
+// sentence.
 func TestBuildSummarizationPrompt_IncludeImagesFalse(t *testing.T) {
 	history := []ChatMessage{
 		{

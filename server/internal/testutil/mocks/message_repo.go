@@ -247,30 +247,32 @@ func (m *MessageRepo) UpdateExcludeFromAI(_ context.Context, id string, exclude 
 // to actually invalidate roomID's cached summary; a failure there rolls
 // back the flag toggle and returns that error, so a caller observing this
 // fake sees the same all-or-nothing outcome the real transaction gives.
+// m.mu is held across the entire operation, including the
+// SummaryRepo.DeleteByRoom call -- SummaryRepo guards its own state with a
+// separate mutex, so this cannot deadlock, and holding m.mu throughout
+// prevents a concurrent reader from observing the flag toggled before its
+// paired summary invalidation has actually landed (or failed and been
+// rolled back).
 func (m *MessageRepo) UpdateExcludeFromAIAndInvalidateSummary(ctx context.Context, id string, exclude bool, roomID string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	msg, ok := m.Messages[id]
 	if !ok || msg.RoomID != roomID {
-		m.mu.Unlock()
 		return domain.ErrNotFound
 	}
 	if m.UpdateExcludeFromAIAndInvalidateSummaryErr != nil {
-		m.mu.Unlock()
 		return m.UpdateExcludeFromAIAndInvalidateSummaryErr
 	}
 	prevExclude, prevUpdatedAt := msg.ExcludeFromAI, msg.UpdatedAt
 	msg.ExcludeFromAI = exclude
 	msg.UpdatedAt = time.Now()
-	summaryRepo := m.SummaryRepo
-	m.mu.Unlock()
 
-	if summaryRepo == nil {
+	if m.SummaryRepo == nil {
 		return nil
 	}
-	if err := summaryRepo.DeleteByRoom(ctx, roomID); err != nil {
-		m.mu.Lock()
+	if err := m.SummaryRepo.DeleteByRoom(ctx, roomID); err != nil {
 		msg.ExcludeFromAI, msg.UpdatedAt = prevExclude, prevUpdatedAt
-		m.mu.Unlock()
 		return err
 	}
 	return nil
@@ -296,37 +298,34 @@ func (m *MessageRepo) Delete(_ context.Context, id string) error {
 // DeleteAndInvalidateSummary is Delete's all-or-nothing counterpart,
 // mirroring postgres.MessageRepository.DeleteAndInvalidateSummary: see
 // UpdateExcludeFromAIAndInvalidateSummary's doc comment for the SummaryRepo
-// wiring this uses to invalidate roomID's cached summary. Existence is
-// checked before DeleteAndInvalidateSummaryErr so a not-found message never
-// masks (or is masked by) an injected invalidation failure. If
-// DeleteAndInvalidateSummaryErr is set, it is returned and the message is
-// left NOT deleted. Otherwise, if SummaryRepo.DeleteByRoom fails, the soft
-// delete is rolled back and that error is returned, preserving the
-// all-or-nothing contract.
+// wiring this uses to invalidate roomID's cached summary, and for why m.mu
+// is held across the entire operation including the SummaryRepo.
+// DeleteByRoom call. Existence is checked before DeleteAndInvalidateSummaryErr
+// so a not-found message never masks (or is masked by) an injected
+// invalidation failure. If DeleteAndInvalidateSummaryErr is set, it is
+// returned and the message is left NOT deleted. Otherwise, if
+// SummaryRepo.DeleteByRoom fails, the soft delete is rolled back and that
+// error is returned, preserving the all-or-nothing contract.
 func (m *MessageRepo) DeleteAndInvalidateSummary(ctx context.Context, id string, roomID string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	msg, ok := m.Messages[id]
 	if !ok || msg.IsDeleted || msg.RoomID != roomID {
-		m.mu.Unlock()
 		return domain.ErrNotFound
 	}
 	if m.DeleteAndInvalidateSummaryErr != nil {
-		m.mu.Unlock()
 		return m.DeleteAndInvalidateSummaryErr
 	}
 	prevDeleted, prevUpdatedAt := msg.IsDeleted, msg.UpdatedAt
 	msg.IsDeleted = true
 	msg.UpdatedAt = time.Now()
-	summaryRepo := m.SummaryRepo
-	m.mu.Unlock()
 
-	if summaryRepo == nil {
+	if m.SummaryRepo == nil {
 		return nil
 	}
-	if err := summaryRepo.DeleteByRoom(ctx, roomID); err != nil {
-		m.mu.Lock()
+	if err := m.SummaryRepo.DeleteByRoom(ctx, roomID); err != nil {
 		msg.IsDeleted, msg.UpdatedAt = prevDeleted, prevUpdatedAt
-		m.mu.Unlock()
 		return err
 	}
 	return nil

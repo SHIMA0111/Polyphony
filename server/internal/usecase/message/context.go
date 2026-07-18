@@ -2,9 +2,12 @@ package message
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
@@ -332,8 +335,14 @@ func (u *MessageUsecase) buildAndEnrichContextBucket(
 // ai.LLMGateway.Complete, and -- on success -- caches the result via
 // u.summaryRepo.Upsert before returning it.
 //
-// Only a Complete failure is returned to the caller (assembleAIContext logs
-// it and degrades to the un-summarized context). A GetRevision failure
+// A Complete failure, or a Complete success whose Content trims to empty
+// (a summarization model that returns nothing usable -- e.g. an
+// over-aggressive content filter, or a model that emits only whitespace),
+// is returned to the caller (assembleAIContext logs it and degrades to the
+// un-summarized context) -- the empty-content case is checked and rejected
+// before any cache write, so an unusable "summary" never replaces the
+// older-public bucket with silence and never gets cached for a later call
+// to reuse. A GetRevision failure
 // degrades to skipping the cache write entirely (logged, not returned): the
 // freshly computed summary is still returned for this one call, but without
 // a verified revision there is no safe value to pass Upsert, so writing
@@ -370,7 +379,16 @@ func (u *MessageUsecase) summaryOrCompute(
 	if err != nil {
 		return "", err
 	}
-	summaryText := completion.Content
+	summaryText := strings.TrimSpace(completion.Content)
+	if summaryText == "" {
+		// A "successful" completion that returns no usable content is not
+		// a valid summary: caching it would replace the older-public
+		// bucket with silence (and keep doing so for every future call
+		// that hits this cache entry), which is strictly worse than
+		// falling back to the un-summarized context this error triggers in
+		// assembleAIContext.
+		return "", fmt.Errorf("%w: summarization completion returned empty content", domain.ErrLLMGateway)
+	}
 
 	tokenCount := 0
 	if estimate, err := u.llmGateway.EstimateTokens(ctx, &ai.TokenEstimateRequest{

@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react"
 import { useQueryClient, type QueryClient } from "@tanstack/react-query"
+import { toaster } from "@/components/ui/toaster"
 import { ApiRequestError } from "@/lib/http-client"
 import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useMessages } from "@/features/messages/hooks/use-messages"
@@ -17,6 +18,12 @@ import { removeFromNewestPage, type MessagesInfiniteData } from "@/features/mess
 import type { Message, ModelInfo } from "@/features/messages/types"
 import type { Room } from "@/features/rooms/types"
 
+/** Return value of {@link linkAttachments} -- see its docstring. */
+interface LinkAttachmentsResult {
+  /** Number of `attachmentIds` that failed to link (out of the total attempted). */
+  failedCount: number
+}
+
 /**
  * Links each of `attachmentIds` (staged, uploaded, and resolved to a real
  * `attachment_id` by `use-attachment-staging.ts`) to `messageId` via
@@ -27,27 +34,37 @@ import type { Room } from "@/features/rooms/types"
  * instant it mounts, rather than waiting on that hook's own independent
  * fetch to kick off and resolve.
  *
- * A failure linking any individual attachment (or refreshing the list
- * afterward) is logged and swallowed rather than failing the whole send:
- * by the time this runs, the message's text content has already been sent
- * successfully, so surfacing a hard error here would misleadingly suggest
- * the entire send failed.
+ * A failure linking any individual attachment is logged (never thrown) and
+ * counted in the returned {@link LinkAttachmentsResult.failedCount}: by the
+ * time this runs, the message's text content has already been sent
+ * successfully, so this function itself must not reject and fail the whole
+ * send -- callers are responsible for surfacing `failedCount > 0` to the
+ * user (e.g. a toaster error) and, for an AI send, deciding whether a
+ * partial failure still warrants a Vision-aware regenerate. A failure
+ * refreshing the attachment list afterward is logged and swallowed the same
+ * way, but does not count toward `failedCount` -- the attachments *did*
+ * link successfully; only this function's own cache-priming fetch failed,
+ * and `useMessageAttachments`'s independent fetch still picks them up.
  */
 async function linkAttachments(
   queryClient: QueryClient,
   roomId: string,
   messageId: string,
   attachmentIds: string[],
-): Promise<void> {
-  if (attachmentIds.length === 0) return
+): Promise<LinkAttachmentsResult> {
+  if (attachmentIds.length === 0) return { failedCount: 0 }
 
-  await Promise.all(
+  const results = await Promise.all(
     attachmentIds.map((attachmentId) =>
-      attachToMessage(roomId, messageId, attachmentId).catch((err: unknown) => {
-        console.error("Failed to link attachment to message", err)
-      }),
+      attachToMessage(roomId, messageId, attachmentId)
+        .then(() => true)
+        .catch((err: unknown) => {
+          console.error("Failed to link attachment to message", err)
+          return false
+        }),
     ),
   )
+  const failedCount = results.filter((ok) => !ok).length
 
   try {
     const res = await listAttachments(roomId, messageId)
@@ -58,6 +75,22 @@ async function linkAttachments(
   } catch (err) {
     console.error("Failed to refresh attachments after linking", err)
   }
+
+  return { failedCount }
+}
+
+/**
+ * Shows a toaster error for a `linkAttachments` result with `failedCount >
+ * 0`. Shared by `handleSend` and `handleSendWithAI` so both surface the
+ * same copy rather than drifting independently.
+ */
+function notifyAttachmentLinkFailures(failedCount: number): void {
+  if (failedCount === 0) return
+  toaster.create({
+    type: "error",
+    title: "Attachment error",
+    description: `${failedCount} attachment(s) could not be attached.`,
+  })
 }
 
 /**
@@ -233,7 +266,8 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
   const handleSend = useCallback(
     async (content: string, attachmentIds: string[] = []) => {
       const message = await sendMessageMutation.mutateAsync(content)
-      await linkAttachments(queryClient, roomId, message.id, attachmentIds)
+      const { failedCount } = await linkAttachments(queryClient, roomId, message.id, attachmentIds)
+      notifyAttachmentLinkFailures(failedCount)
     },
     [sendMessageMutation, queryClient, roomId],
   )
@@ -260,18 +294,34 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
           // gets the attachments in front of the model: no existing endpoint
           // both creates a message and includes attachments linked to that
           // same message in the same outbound completion request.
-          await linkAttachments(queryClient, roomId, res.user_message.id, attachmentIds)
-          try {
-            await regenerateMutation.mutateAsync({
-              aiMessageId: res.ai_message.id,
-              humanMessageId: res.user_message.id,
-              model,
-            })
-          } catch {
-            // Mirrors `handleRegenerate`'s own swallow below: the mutation's
-            // rejection already reflects as a persisted `status: "failed"`
-            // AI message via `MessageBubble`'s own styling, so there is
-            // nothing further to do here.
+          const { failedCount } = await linkAttachments(
+            queryClient,
+            roomId,
+            res.user_message.id,
+            attachmentIds,
+          )
+          notifyAttachmentLinkFailures(failedCount)
+
+          // Regenerating against a model that still can't see any of the
+          // attachments the user just staged would only reproduce the exact
+          // same (already-persisted) text-only reply for a second time --
+          // pure wasted cost with no chance of a different, Vision-aware
+          // outcome, so skip it when every link failed. A *partial* failure
+          // still regenerates: the model sees whichever attachments did
+          // link.
+          if (failedCount < attachmentIds.length) {
+            try {
+              await regenerateMutation.mutateAsync({
+                aiMessageId: res.ai_message.id,
+                humanMessageId: res.user_message.id,
+                model,
+              })
+            } catch {
+              // Mirrors `handleRegenerate`'s own swallow below: the mutation's
+              // rejection already reflects as a persisted `status: "failed"`
+              // AI message via `MessageBubble`'s own styling, so there is
+              // nothing further to do here.
+            }
           }
         }
       } catch (error) {

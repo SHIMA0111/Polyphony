@@ -3,6 +3,13 @@ import type { RoomRole } from "@/features/members/types"
 import type { BatchInviteByGroupResult } from "../types"
 
 /**
+ * Roles a batch invite may target -- never `master` (the server 400s
+ * otherwise). Narrower than `CreateInvitationInput.role`, which is still
+ * typed as the full `RoomRole` for the single-username/link invite flows.
+ */
+export type InvitationRole = Exclude<RoomRole, "master">
+
+/**
  * Request body for `POST /rooms/:roomId/invitations/batch-by-group`.
  * `role` must be one of the four non-`master` `RoomRole` values; the server
  * 400s otherwise. `expires_in_hours` is optional and follows the same
@@ -10,7 +17,7 @@ import type { BatchInviteByGroupResult } from "../types"
  */
 export interface BatchInviteByGroupInput {
   group_id: string
-  role: RoomRole
+  role: InvitationRole
   expires_in_hours?: number
 }
 

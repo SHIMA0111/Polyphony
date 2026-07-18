@@ -519,6 +519,54 @@ func TestLLMClient_StreamMidStreamError(t *testing.T) {
 	}
 }
 
+// TestLLMClient_StreamErrorEventFrameEndsExactlyAtEOF is a regression test
+// for a double-error bug: when an `event: error` frame's final "data:" line
+// is not followed by a trailing blank line before the connection closes
+// (the frame's terminal read returns its data alongside io.EOF, rather than
+// a separate later read returning io.EOF against an already-empty frame),
+// readSSEStream's EOF branch used to ignore flush()'s return value and always
+// fall through to its own "stream ended before [DONE] sentinel" check --
+// sending a second, spurious error after the one flush() had already sent
+// for the `event: error` frame itself. Exactly one Err-carrying StreamResult
+// must be sent.
+func TestLLMClient_StreamErrorEventFrameEndsExactlyAtEOF(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		// Deliberately no trailing "\n\n" frame terminator: the handler
+		// returns (closing the connection) immediately after the data
+		// line, so the reader's read of this line itself returns io.EOF
+		// rather than a clean line read followed by a separate EOF read.
+		_, _ = w.Write([]byte("event: error\ndata: provider exploded"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+
+	results := drainStream(t, ch)
+	if len(results) != 1 {
+		t.Fatalf("expected exactly 1 stream result (no spurious second error), got %d: %+v", len(results), results)
+	}
+	if results[0].Chunk != nil {
+		t.Fatalf("expected the single result to carry no chunk, got %+v", results[0].Chunk)
+	}
+	if results[0].Err == nil || !domain.IsLLMGatewayError(results[0].Err) {
+		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", results[0].Err)
+	}
+}
+
 // TestLLMClient_StreamNonOKStatusSynchronousError asserts a non-2xx status
 // with no SSE body at all yields a non-nil synchronous error and a nil
 // channel, with no goroutine started (verified implicitly by the test
