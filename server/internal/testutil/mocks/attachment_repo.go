@@ -18,9 +18,9 @@ type AttachmentRepo struct {
 	mu          sync.Mutex
 	Attachments map[string]*attachment.Attachment
 
-	// ListByMessageIDErr, if non-nil, makes ListByMessageID return it
-	// instead of a result — for tests exercising a caller's handling of an
-	// attachment-enrichment failure (e.g.
+	// ListByMessageIDErr, if non-nil, makes both ListByMessageID and
+	// ListByMessageIDs return it instead of a result — for tests exercising
+	// a caller's handling of an attachment-enrichment failure (e.g.
 	// MessageUsecase.enrichWithAttachments, reached via
 	// buildAndEnrichContextBucket/assembleAIContext), without needing a
 	// real error condition inside this fake.
@@ -117,5 +117,36 @@ func (r *AttachmentRepo) ListByMessageID(_ context.Context, messageID string) ([
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].CreatedAt.Before(result[j].CreatedAt)
 	})
+	return result, nil
+}
+
+// ListByMessageIDs returns every attachment linked to any of the given
+// messages, grouped by message ID, with each group ordered by creation time
+// ascending -- mirroring the real postgres.AttachmentRepository's batched
+// query. A message ID with no attachments is absent from the returned map.
+func (r *AttachmentRepo) ListByMessageIDs(_ context.Context, messageIDs []string) (map[string][]*attachment.Attachment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.ListByMessageIDErr != nil {
+		return nil, r.ListByMessageIDErr
+	}
+
+	want := make(map[string]bool, len(messageIDs))
+	for _, id := range messageIDs {
+		want[id] = true
+	}
+
+	result := make(map[string][]*attachment.Attachment)
+	for _, a := range r.Attachments {
+		if a.MessageID != nil && want[*a.MessageID] {
+			result[*a.MessageID] = append(result[*a.MessageID], cloneAttachment(a))
+		}
+	}
+	for id := range result {
+		sort.Slice(result[id], func(i, j int) bool {
+			return result[id][i].CreatedAt.Before(result[id][j].CreatedAt)
+		})
+	}
 	return result, nil
 }

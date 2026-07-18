@@ -33,7 +33,7 @@ describe("GroupPicker", () => {
 
     const onSelect = vi.fn()
     const user = userEvent.setup()
-    render(<GroupPicker onSelect={onSelect} />)
+    render(<GroupPicker selectedGroup={null} onSelect={onSelect} />)
 
     await user.click(await screen.findByRole("button", { name: /select a group/i }))
     // `waitFor` (rather than a bare `await user.click(await screen.findByRole(...))`)
@@ -54,7 +54,7 @@ describe("GroupPicker", () => {
       }),
     )
 
-    render(<GroupPicker onSelect={vi.fn()} />)
+    render(<GroupPicker selectedGroup={null} onSelect={vi.fn()} />)
 
     await waitFor(() =>
       expect(screen.getByText("create one")).toBeInTheDocument(),
@@ -63,5 +63,41 @@ describe("GroupPicker", () => {
       "href",
       "/groups",
     )
+  })
+
+  it("renders an inline error (before the empty-state check) when GET /api/proxy/groups fails", async () => {
+    server.use(
+      http.get("/api/proxy/groups", () => {
+        return new HttpResponse(null, { status: 500 })
+      }),
+    )
+
+    render(<GroupPicker selectedGroup={null} onSelect={vi.fn()} />)
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toBeInTheDocument(),
+    )
+    expect(screen.queryByText("No groups yet")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument()
+  })
+
+  it("reflects the selectedGroup prop in the trigger label instead of owning that state itself", async () => {
+    server.use(
+      http.get("/api/proxy/groups", () => {
+        return HttpResponse.json<GroupListResponse>({ groups: fixtureGroups })
+      }),
+    )
+
+    // The trigger button reflects the caller-owned `selectedGroup` prop
+    // directly on first render — not a menu selection made through this
+    // component's own (now-removed) internal state.
+    render(<GroupPicker selectedGroup={fixtureGroups[0]} onSelect={vi.fn()} />)
+
+    expect(
+      await screen.findByRole("button", { name: /Team A/ }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: /select a group/i }),
+    ).not.toBeInTheDocument()
   })
 })

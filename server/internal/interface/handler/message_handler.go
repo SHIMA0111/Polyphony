@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -39,7 +40,7 @@ func (h *MessageHandler) Send(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
 	}
 
-	if req.Content == "" {
+	if strings.TrimSpace(req.Content) == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "content is required"})
 	}
 
@@ -106,7 +107,7 @@ func (h *MessageHandler) SendAI(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
 	}
 
-	if req.Content == "" {
+	if strings.TrimSpace(req.Content) == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "content is required"})
 	}
 
@@ -152,7 +153,7 @@ func (h *MessageHandler) StreamAI(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
 	}
 
-	if req.Content == "" {
+	if strings.TrimSpace(req.Content) == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "content is required"})
 	}
 	if req.Private {
@@ -164,9 +165,12 @@ func (h *MessageHandler) StreamAI(c echo.Context) error {
 		return handleMessageError(c, err)
 	}
 
+	aiResp := toMessageResponse(result.AIMessage)
+	aiResp.UsedContextSummary = result.UsedContextSummary
+
 	return c.JSON(http.StatusAccepted, SendAIMessageResponse{
 		UserMessage: toMessageResponse(result.HumanMessage),
-		AIMessage:   toMessageResponse(result.AIMessage),
+		AIMessage:   aiResp,
 	})
 }
 

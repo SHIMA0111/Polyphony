@@ -50,7 +50,7 @@ func TestContextSummaryRepository_UpsertAndGet(t *testing.T) {
 		SummaryText:         "The conversation covered onboarding steps.",
 		TokenCount:          123,
 	}
-	if err := summaryRepo.Upsert(ctx, summary); err != nil {
+	if err := summaryRepo.Upsert(ctx, summary, 0); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestContextSummaryRepository_UpsertReplacesExistingRow(t *testing.T) {
 		SummaryText:         "first summary",
 		TokenCount:          50,
 	}
-	if err := summaryRepo.Upsert(ctx, first); err != nil {
+	if err := summaryRepo.Upsert(ctx, first, 0); err != nil {
 		t.Fatalf("first Upsert: %v", err)
 	}
 
@@ -112,7 +112,7 @@ func TestContextSummaryRepository_UpsertReplacesExistingRow(t *testing.T) {
 		SummaryText:         "second, replacing summary",
 		TokenCount:          200,
 	}
-	if err := summaryRepo.Upsert(ctx, second); err != nil {
+	if err := summaryRepo.Upsert(ctx, second, 0); err != nil {
 		t.Fatalf("second Upsert: %v", err)
 	}
 
@@ -153,7 +153,7 @@ func TestContextSummaryRepository_DeleteByRoom(t *testing.T) {
 		CoveredUpToSequence: 5,
 		SummaryText:         "to be deleted",
 		TokenCount:          10,
-	}); err != nil {
+	}, 0); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 
@@ -168,5 +168,136 @@ func TestContextSummaryRepository_DeleteByRoom(t *testing.T) {
 	// Deleting again (no row exists) must not be an error.
 	if err := summaryRepo.DeleteByRoom(ctx, rm.ID); err != nil {
 		t.Fatalf("expected DeleteByRoom on an already-empty room to succeed, got %v", err)
+	}
+}
+
+// TestContextSummaryRepository_GetRevisionDefaultsToZero proves that a room
+// with no DeleteByRoom history reports revision 0 (see
+// ai.ContextSummaryRepository.GetRevision).
+func TestContextSummaryRepository_GetRevisionDefaultsToZero(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "summary-revision-default-owner")
+
+	revision, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision: %v", err)
+	}
+	if revision != 0 {
+		t.Errorf("revision = %d, want 0 for a room with no DeleteByRoom history", revision)
+	}
+}
+
+// TestContextSummaryRepository_DeleteByRoomIncrementsRevision proves that
+// each DeleteByRoom call advances the room's revision by exactly 1,
+// regardless of whether a cached summary existed to delete.
+func TestContextSummaryRepository_DeleteByRoomIncrementsRevision(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "summary-revision-increment-owner")
+
+	if err := summaryRepo.DeleteByRoom(ctx, rm.ID); err != nil {
+		t.Fatalf("first DeleteByRoom: %v", err)
+	}
+	revision, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision: %v", err)
+	}
+	if revision != 1 {
+		t.Fatalf("revision = %d, want 1 after the first DeleteByRoom", revision)
+	}
+
+	if err := summaryRepo.DeleteByRoom(ctx, rm.ID); err != nil {
+		t.Fatalf("second DeleteByRoom: %v", err)
+	}
+	revision, err = summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision: %v", err)
+	}
+	if revision != 2 {
+		t.Fatalf("revision = %d, want 2 after the second DeleteByRoom", revision)
+	}
+}
+
+// TestContextSummaryRepository_UpsertNoopsOnRevisionMismatch proves the core
+// revision-fencing behavior (see ai.ContextSummaryRepository's "Revision
+// fencing" doc comment): an Upsert whose expectedRevision no longer matches
+// the room's current revision -- because a DeleteByRoom landed after the
+// caller captured it, simulating a concurrent invalidation racing an
+// in-flight summarization -- writes nothing and returns no error, and a
+// subsequent Upsert using the now-current revision succeeds normally.
+func TestContextSummaryRepository_UpsertNoopsOnRevisionMismatch(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "summary-revision-mismatch-owner")
+
+	// Capture the room's revision (0, since DeleteByRoom has never been
+	// called for it) as summaryOrCompute would before starting
+	// summarization.
+	capturedRevision, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision: %v", err)
+	}
+
+	// A concurrent delete/exclude-toggle lands and invalidates the room
+	// while the (simulated) summarization above is still in flight.
+	if err := summaryRepo.DeleteByRoom(ctx, rm.ID); err != nil {
+		t.Fatalf("DeleteByRoom: %v", err)
+	}
+
+	// The in-flight summarization now finishes and tries to cache its
+	// result against the stale, pre-invalidation revision it captured.
+	// This must no-op rather than persist the stale summary.
+	if err := summaryRepo.Upsert(ctx, &ai.ContextSummary{
+		RoomID:              rm.ID,
+		Model:               "gpt-5-mini",
+		CoveredUpToSequence: 7,
+		SummaryText:         "stale summary that should never be persisted",
+		TokenCount:          10,
+	}, capturedRevision); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	if _, err := summaryRepo.Get(ctx, rm.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected the stale Upsert to have no-op'd (still no cached summary), got err=%v", err)
+	}
+
+	// A subsequent Upsert using the now-current revision must succeed
+	// normally.
+	currentRevision, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision: %v", err)
+	}
+	if err := summaryRepo.Upsert(ctx, &ai.ContextSummary{
+		RoomID:              rm.ID,
+		Model:               "gpt-5-mini",
+		CoveredUpToSequence: 7,
+		SummaryText:         "fresh summary computed after the invalidation",
+		TokenCount:          10,
+	}, currentRevision); err != nil {
+		t.Fatalf("Upsert with current revision: %v", err)
+	}
+
+	got, err := summaryRepo.Get(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.SummaryText != "fresh summary computed after the invalidation" {
+		t.Errorf("SummaryText = %q, want the fresh summary to have been persisted", got.SummaryText)
 	}
 }

@@ -1133,6 +1133,41 @@ func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 	}
 }
 
+// TestDeleteMessagePropagatesSummaryInvalidationFailure proves that
+// DeleteMessage now surfaces a summaryRepo.DeleteByRoom failure to the
+// caller (item 18) instead of only logging it, even though the underlying
+// soft delete has already durably succeeded by that point.
+func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	invalidationErr := errors.New("boom: summary invalidation failed")
+	summaryRepo := &mocks.ContextSummaryRepo{DeleteByRoomErr: invalidationErr}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, summaryRepo, "gpt-5-mini")
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if err := uc.DeleteMessage(ctx, "user-1", "room-1", sent.ID); !errors.Is(err, invalidationErr) {
+		t.Fatalf("expected DeleteMessage to propagate the summary invalidation error, got %v", err)
+	}
+
+	// The soft delete itself must still have gone through despite the
+	// propagated error.
+	deleted, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID after DeleteMessage: %v", err)
+	}
+	if !deleted.IsDeleted {
+		t.Fatal("expected the message to still be soft-deleted despite the propagated invalidation error")
+	}
+}
+
 // --- SetExcludeFromAI ---
 
 func TestSetExcludeFromAIMemberAllowed(t *testing.T) {
@@ -1230,6 +1265,41 @@ func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
 
 	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", "msg-1", true); err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden for reader, got %v", err)
+	}
+}
+
+// TestSetExcludeFromAIPropagatesSummaryInvalidationFailure proves that
+// SetExcludeFromAI now surfaces a summaryRepo.DeleteByRoom failure to the
+// caller (item 18) instead of only logging it, even though
+// msgRepo.UpdateExcludeFromAI has already durably succeeded by that point.
+func TestSetExcludeFromAIPropagatesSummaryInvalidationFailure(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	invalidationErr := errors.New("boom: summary invalidation failed")
+	summaryRepo := &mocks.ContextSummaryRepo{DeleteByRoomErr: invalidationErr}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, summaryRepo, "gpt-5-mini")
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", sent.ID, true); !errors.Is(err, invalidationErr) {
+		t.Fatalf("expected SetExcludeFromAI to propagate the summary invalidation error, got %v", err)
+	}
+
+	// The underlying toggle must still have gone through despite the
+	// propagated error.
+	updated, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID after SetExcludeFromAI: %v", err)
+	}
+	if !updated.ExcludeFromAI {
+		t.Fatal("expected ExcludeFromAI to still be true despite the propagated invalidation error")
 	}
 }
 
@@ -1682,6 +1752,34 @@ func TestSendAIMessageStreamArchivedRoom(t *testing.T) {
 	}
 }
 
+// TestRegenerateAIMessageRejectsArchivedRoom asserts that RegenerateAIMessage
+// rejects a regeneration request against an archived room with
+// domain.ErrArchivedRoom, mirroring Send/SendAIMessage/SendAIMessageStream's
+// identical guard -- checked right after loading the room, before the
+// target message is even looked up.
+func TestRegenerateAIMessageRejectsArchivedRoom(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	// Send human message + AI response via SendAIMessage while the room is
+	// still active, then archive it before attempting to regenerate.
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
+	if err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+	roomRepo.Rooms["room-1"].IsArchived = true
+
+	_, _, err = uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
+	if err != domain.ErrArchivedRoom {
+		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+}
+
 // --- SendAIMessageStream tests (Step 51) ---
 
 // collectUntilMessageUpdated drains sub, collecting every EventTokenChunk
@@ -1788,6 +1886,118 @@ func TestSendAIMessageStreamSuccess(t *testing.T) {
 	}
 	if persisted.Content != "Go is a language" || persisted.Status != domainmessage.MessageStatusCompleted {
 		t.Fatalf("expected persisted message to match final event, got %+v", persisted)
+	}
+}
+
+// TestSendAIMessageStreamFinalizesPlaceholderOnListByRoomError asserts that,
+// when SendAIMessageStream's context-fetch ListByRoom call fails after the
+// AI placeholder has already been created and broadcast
+// (Status = MessageStatusStreaming), the placeholder is finalized to
+// Status = MessageStatusFailed and a terminating EventMessageUpdated is
+// published, rather than left visibly stuck at "streaming" forever while the
+// original ListByRoom error is simply returned bare.
+func TestSendAIMessageStreamFinalizesPlaceholderOnListByRoomError(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	wantErr := errors.New("list by room boom")
+	msgRepo.ListByRoomErr = wantErr
+
+	_, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected the original ListByRoom error to be returned, got %v", err)
+	}
+
+	var aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		if m.Type == domainmessage.MessageTypeAI {
+			aiMsg = m
+		}
+	}
+	if aiMsg == nil {
+		t.Fatal("expected an AI placeholder message to have been created")
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected AI placeholder finalized to failed, got %s", aiMsg.Status)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == aiMsg.ID {
+				if evt.Message.Status != domainmessage.MessageStatusFailed {
+					t.Fatalf("expected published event status failed, got %s", evt.Message.Status)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the finalizing EventMessageUpdated")
+		}
+	}
+}
+
+// TestSendAIMessageStreamFinalizesPlaceholderOnAssembleContextError asserts
+// that, when SendAIMessageStream's assembleAIContext call fails (here, via a
+// mocked attachment-lookup failure) after the AI placeholder has already
+// been created and broadcast, the placeholder is finalized to
+// Status = MessageStatusFailed and a terminating EventMessageUpdated is
+// published, exactly like the ListByRoom error path above.
+func TestSendAIMessageStreamFinalizesPlaceholderOnAssembleContextError(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	wantErr := errors.New("attachment lookup boom")
+	attachmentRepo := &mocks.AttachmentRepo{ListByMessageIDErr: wantErr}
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, attachmentRepo, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	_, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected the original assembleAIContext error to be returned, got %v", err)
+	}
+
+	var aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		if m.Type == domainmessage.MessageTypeAI {
+			aiMsg = m
+		}
+	}
+	if aiMsg == nil {
+		t.Fatal("expected an AI placeholder message to have been created")
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected AI placeholder finalized to failed, got %s", aiMsg.Status)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == aiMsg.ID {
+				if evt.Message.Status != domainmessage.MessageStatusFailed {
+					t.Fatalf("expected published event status failed, got %s", evt.Message.Status)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the finalizing EventMessageUpdated")
+		}
 	}
 }
 

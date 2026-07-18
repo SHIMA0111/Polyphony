@@ -1,8 +1,9 @@
 "use client"
 
 import Link from "next/link"
-import { Box, Card, Flex, Heading, SimpleGrid, Text } from "@chakra-ui/react"
-import { Users } from "lucide-react"
+import { Box, Button, Card, Flex, Heading, SimpleGrid, Text } from "@chakra-ui/react"
+import { AlertTriangle, Users } from "lucide-react"
+import { getErrorMessage } from "@/lib/get-error-message"
 import { useGroups } from "../hooks/use-groups"
 import { GroupFormDialog } from "./GroupFormDialog"
 
@@ -10,9 +11,12 @@ import { GroupFormDialog } from "./GroupFormDialog"
  * Content-pane role only, mirroring `RoomList`: the "Groups" heading, the
  * create-group entry point (`GroupFormDialog` in create mode), and the
  * group grid sourced from `useGroups()` — this is `/groups`'s page content.
+ * The error state (checked before the empty-state check, so a failed load
+ * can't render "No groups yet" instead) mirrors `RoomList`'s own dashed
+ * `Card.Root` + retry-button empty/error-state styling.
  */
 export function GroupList() {
-  const { data, isPending } = useGroups()
+  const { data, isPending, isError, error, refetch } = useGroups()
   const groups = data?.groups ?? []
 
   return (
@@ -38,6 +42,39 @@ export function GroupList() {
               </Card.Root>
             ))}
           </SimpleGrid>
+        ) : isError ? (
+          <Card.Root borderStyle="dashed" borderColor="border.error">
+            <Card.Body>
+              <Flex
+                direction="column"
+                align="center"
+                justify="center"
+                py={16}
+                textAlign="center"
+              >
+                <Flex
+                  h={16}
+                  w={16}
+                  rounded="full"
+                  bg="bg.subtle"
+                  align="center"
+                  justify="center"
+                  mb={4}
+                >
+                  <AlertTriangle size={32} color="var(--chakra-colors-fg-error)" />
+                </Flex>
+                <Heading size="md" mb={2}>
+                  Failed to load groups
+                </Heading>
+                <Text color="fg.muted" mb={6} maxW="sm">
+                  {getErrorMessage(error, "Something went wrong while loading your groups.")}
+                </Text>
+                <Button variant="outline" onClick={() => refetch()}>
+                  Try again
+                </Button>
+              </Flex>
+            </Card.Body>
+          </Card.Root>
         ) : groups.length > 0 ? (
           <SimpleGrid columns={{ base: 1, md: 2, lg: 3 }} gap={4}>
             {groups.map((group) => (

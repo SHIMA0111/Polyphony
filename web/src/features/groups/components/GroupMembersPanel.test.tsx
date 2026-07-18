@@ -46,6 +46,20 @@ describe("GroupMembersPanel", () => {
     expect(screen.getByText("carol")).toBeInTheDocument()
   })
 
+  it("shows a retryable error instead of the empty state when the members query fails", async () => {
+    server.use(
+      http.get("/api/proxy/groups/:groupId/members", () => {
+        return new HttpResponse(null, { status: 500 })
+      }),
+    )
+
+    render(<GroupMembersPanel groupId="group-1" />)
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument()
+    expect(screen.queryByText("No members yet.")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument()
+  })
+
   it("shows an empty state when the group has no members", async () => {
     server.use(
       http.get("/api/proxy/groups/:groupId/members", () => {
@@ -114,5 +128,29 @@ describe("GroupMembersPanel", () => {
     await user.click(within(bobRow).getByRole("button", { name: "Remove" }))
 
     await waitFor(() => expect(removedUserId).toBe("user-3"))
+  })
+
+  it("shows an inline error near Remove when removal fails", async () => {
+    server.use(
+      http.get("/api/proxy/groups/:groupId/members", () => {
+        return HttpResponse.json<GroupMemberListResponse>({
+          members: fixtureGroupMembers,
+        })
+      }),
+      http.delete("/api/proxy/groups/:groupId/members/:userId", () => {
+        return HttpResponse.json({ message: "Cannot remove the group owner" }, { status: 409 })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<GroupMembersPanel groupId="group-1" />)
+
+    await screen.findByText("bob")
+    const bobRow = screen.getByTestId("group-member-row-user-3")
+    await user.click(within(bobRow).getByRole("button", { name: "Remove" }))
+
+    expect(await within(bobRow).findByRole("alert")).toHaveTextContent(
+      "Cannot remove the group owner",
+    )
   })
 })

@@ -136,7 +136,7 @@ func TestRoomForkIntegration_MultiBatchEndToEnd(t *testing.T) {
 		t.Fatalf("expected %d messages in the new room, got %d", totalMessages, newCount)
 	}
 
-	newMsgs, err := msgRepo.ListByRoomAfter(ctx, newRoom.ID, 0, totalMessages+10)
+	newMsgs, err := msgRepo.ListByRoomAfter(ctx, newRoom.ID, 0, int64(totalMessages+10), totalMessages+10)
 	if err != nil {
 		t.Fatalf("ListByRoomAfter (new room) failed: %v", err)
 	}

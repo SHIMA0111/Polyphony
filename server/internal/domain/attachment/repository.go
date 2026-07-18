@@ -25,4 +25,16 @@ type AttachmentRepository interface {
 	// ListByMessageID returns every attachment linked to the given message,
 	// ordered by creation time ascending.
 	ListByMessageID(ctx context.Context, messageID string) ([]*Attachment, error)
+
+	// ListByMessageIDs is ListByMessageID's batch counterpart: it returns
+	// every attachment linked to any of messageIDs in a single query,
+	// grouped by message ID, with each group's slice ordered by creation
+	// time ascending (matching ListByMessageID's per-message order). A
+	// message ID with no attachments is simply absent from the returned map
+	// rather than mapped to an empty/nil slice. Callers with N messages to
+	// enrich should prefer this over N calls to ListByMessageID -- see
+	// usecase/message.MessageUsecase.enrichWithAttachments, the motivating
+	// caller, which previously issued one ListByMessageID call per message
+	// in a context bucket.
+	ListByMessageIDs(ctx context.Context, messageIDs []string) (map[string][]*Attachment, error)
 }

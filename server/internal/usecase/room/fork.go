@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -45,6 +46,20 @@ const forkBatchSize = 1000
 // IsArchived == true (rejecting new posts with domain.ErrArchivedRoom via
 // usecase/message.MessageUsecase.SendMessage/SendAIMessage) until
 // runForkJob reaches roomfork.StatusCompleted.
+//
+// The copy is best-effort and does not survive a process restart: the
+// background goroutine runForkJob launches holds the only record of an
+// in-flight copy's progress beyond what it has already persisted to
+// room_fork_jobs, so a crash (or deploy/restart) while a Job is
+// StatusPending or StatusRunning orphans it — the row stays in that
+// non-terminal state forever, and the destination room stays permanently
+// archived, with no automatic retry or resumption. Recovering an orphaned
+// job today requires manual intervention (e.g. deleting the half-copied
+// destination room and re-forking). Making this durable across restarts —
+// a proper job queue/worker that can resume or safely retry — is out of
+// this repo's current scope (see phases.md Phase 21+); a crash-recovery
+// follow-up would need to land before this feature could be relied upon at
+// a scale where worker restarts are routine.
 func (u *RoomUsecase) ForkRoom(ctx context.Context, userID, sourceRoomID string) (*domainroomfork.Job, *domainroom.Room, error) {
 	member, err := u.getMember(ctx, sourceRoomID, userID)
 	if err != nil {
@@ -85,6 +100,18 @@ func (u *RoomUsecase) ForkRoom(ctx context.Context, userID, sourceRoomID string)
 		UpdatedAt:    now,
 	}
 	if err := u.forkJobRepo.Create(ctx, job); err != nil {
+		// newRoom was already committed by roomRepo.Create above, but with
+		// no Job row to ever drive it out of IsArchived == true, it would
+		// otherwise be permanently archived and jobless — neither usable
+		// nor forkable again under the same name. Best-effort clean it up
+		// before returning; if the compensating delete itself fails, log it
+		// (there is nothing else to do about it here) but still return the
+		// original forkJobRepo.Create error, since that is the failure the
+		// caller actually needs to see.
+		if delErr := u.roomRepo.Delete(ctx, newRoom.ID); delErr != nil {
+			slog.Error("failed to clean up orphaned fork room after forkJobRepo.Create failure",
+				"room_id", newRoom.ID, "source_room_id", sourceRoomID, "create_error", err, "delete_error", delErr)
+		}
 		return nil, nil, err
 	}
 
@@ -100,6 +127,15 @@ func (u *RoomUsecase) ForkRoom(ctx context.Context, userID, sourceRoomID string)
 // (source membership is checked first, falling back to new-room
 // membership) — it returns domain.ErrForbidden if userID belongs to
 // neither, and domain.ErrNotFound if jobID does not exist.
+//
+// Each membership lookup is inspected for more than a plain nil check: a
+// GetMember error that is not domain.ErrNotFound (a genuine failure, e.g. a
+// DB/connection error) is propagated as-is rather than being silently
+// folded into domain.ErrForbidden — doing otherwise would misreport a
+// backend outage as "you don't have access to this job" to the caller.
+// domain.ErrForbidden is returned only once *both* lookups have
+// conclusively resolved to domain.ErrNotFound (userID is not a member of
+// either room).
 func (u *RoomUsecase) GetForkJobStatus(ctx context.Context, userID, jobID string) (*domainroomfork.Job, error) {
 	job, err := u.forkJobRepo.GetByID(ctx, jobID)
 	if err != nil {
@@ -108,10 +144,16 @@ func (u *RoomUsecase) GetForkJobStatus(ctx context.Context, userID, jobID string
 
 	if _, err := u.roomRepo.GetMember(ctx, job.SourceRoomID, userID); err == nil {
 		return job, nil
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return nil, err
 	}
+
 	if _, err := u.roomRepo.GetMember(ctx, job.NewRoomID, userID); err == nil {
 		return job, nil
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return nil, err
 	}
+
 	return nil, domain.ErrForbidden
 }
 
@@ -120,35 +162,57 @@ func (u *RoomUsecase) GetForkJobStatus(ctx context.Context, userID, jobID string
 // ascending-sequence batches of up to forkBatchSize, then flips newRoomID's
 // IsArchived flag off.
 //
-// Algorithm: it counts sourceRoomID's messages (msgRepo.CountByRoom) and
-// marks the job roomfork.StatusRunning with that total. It then loops:
-// read up to forkBatchSize messages with sequence > afterSeq
-// (msgRepo.ListByRoomAfter, ascending order) — an empty result ends the
-// loop. For a non-empty batch, it reserves a contiguous sequence range in
-// newRoomID sized to the batch (msgRepo.ReserveSequenceRange) and builds one
-// copied *domainmessage.Message per source message: a new ID, RoomID
-// rewritten to newRoomID, Sequence = reserved-range-start + index, every
-// other field (SenderID/Content/Type/Status/CreatedAt/UpdatedAt) copied
-// verbatim. InResponseToMessageID is remapped through idMap, an
-// in-memory map[oldID]newID built incrementally across the *whole* job
-// (never reset per batch): because ReserveSequenceRange(ctx, roomID, 2)
-// always allocates a human message's sequence strictly before its AI
-// response's (see usecase/message.SendAIMessage), and ListByRoomAfter reads
-// strictly ascending by sequence, idMap is guaranteed to already hold a
-// human message's new ID by the time its AI reply is visited — even when
-// the human message was copied in an earlier batch. If
-// InResponseToMessageID is set but (contrary to that invariant) not yet in
-// idMap, the copied field is left nil rather than failing the whole job.
-// The batch is persisted via msgRepo.CreateBatch (all-or-nothing), afterSeq
-// advances to the batch's last source sequence, and the job's progress is
-// updated (forkJobRepo.UpdateProgress) with the running copied count.
+// The copy is best-effort and does not survive a process restart: see
+// ForkRoom's doc comment for the crash-recovery caveat (an orphaned
+// Pending/Running Job stays archived and requires manual intervention until
+// a future crash-recovery follow-up lands) — that caveat applies to this
+// function specifically, since it is the goroutine that would be killed
+// mid-copy by a crash or restart.
+//
+// Algorithm: it reads sourceRoomID's message count and highest sequence
+// number as one atomic snapshot (msgRepo.CountAndMaxSequence) and marks the
+// job roomfork.StatusRunning with that count. The returned maxSeq is then
+// frozen for the rest of this call: it is passed unchanged into every
+// ListByRoomAfter call below, so a message sent to sourceRoomID after this
+// snapshot was taken (concurrently with the copy) is excluded from the
+// copy entirely, exactly as if it didn't exist yet when the fork started.
+// This is what keeps TotalMessages an accurate prediction of what actually
+// gets copied, and — under sustained concurrent writes to a busy source
+// room — is what guarantees the loop below is bounded and always
+// terminates: without a frozen upper bound, sequence > afterSeq could keep
+// finding new messages indefinitely.
+//
+// It then loops: read up to forkBatchSize messages with
+// afterSeq < sequence <= maxSeq (msgRepo.ListByRoomAfter, ascending order)
+// — an empty result ends the loop. For a non-empty batch, it reserves a
+// contiguous sequence range in newRoomID sized to the batch
+// (msgRepo.ReserveSequenceRange) and builds one copied
+// *domainmessage.Message per source message: a new ID, RoomID rewritten to
+// newRoomID, Sequence = reserved-range-start + index, every other field
+// (SenderID/Content/Type/Status/CreatedAt/UpdatedAt) copied verbatim.
+// InResponseToMessageID is remapped through idMap, an in-memory
+// map[oldID]newID built incrementally across the *whole* job (never reset
+// per batch): because ReserveSequenceRange(ctx, roomID, 2) always allocates
+// a human message's sequence strictly before its AI response's (see
+// usecase/message.SendAIMessage), and ListByRoomAfter reads strictly
+// ascending by sequence, idMap is guaranteed to already hold a human
+// message's new ID by the time its AI reply is visited — even when the
+// human message was copied in an earlier batch. If InResponseToMessageID is
+// set but (contrary to that invariant) not yet in idMap, the copied field
+// is left nil rather than failing the whole job. The batch is persisted via
+// msgRepo.CreateBatch (all-or-nothing), afterSeq advances to the batch's
+// last source sequence, and the job's progress is updated
+// (forkJobRepo.UpdateProgress) with the running copied count.
 //
 // On any error at any step, the job is marked roomfork.StatusFailed with
 // the error's message and the function returns without touching
 // newRoomID's IsArchived — it stays archived. On successful completion of
-// the loop, newRoomID's IsArchived is cleared (roomRepo.SetArchived) before
-// the job is marked roomfork.StatusCompleted, so a poller that observes
-// StatusCompleted can immediately rely on the room accepting new posts.
+// the loop, newRoomID's IsArchived is cleared and the job is marked
+// roomfork.StatusCompleted together, as a single atomic operation
+// (forkJobRepo.CompleteAndUnarchive), so a poller that observes
+// StatusCompleted can immediately rely on the room accepting new posts —
+// see CompleteAndUnarchive's doc comment for why this must not be two
+// separate calls.
 func (u *RoomUsecase) runForkJob(ctx context.Context, jobID, sourceRoomID, newRoomID string) {
 	logger := slog.With("job_id", jobID, "source_room_id", sourceRoomID, "new_room_id", newRoomID)
 	logger.Info("room fork job started")
@@ -160,7 +224,7 @@ func (u *RoomUsecase) runForkJob(ctx context.Context, jobID, sourceRoomID, newRo
 		}
 	}
 
-	total, err := u.msgRepo.CountByRoom(ctx, sourceRoomID)
+	total, maxSeq, err := u.msgRepo.CountAndMaxSequence(ctx, sourceRoomID)
 	if err != nil {
 		fail(err)
 		return
@@ -175,7 +239,7 @@ func (u *RoomUsecase) runForkJob(ctx context.Context, jobID, sourceRoomID, newRo
 	var afterSeq int64
 
 	for {
-		batch, err := u.msgRepo.ListByRoomAfter(ctx, sourceRoomID, afterSeq, forkBatchSize)
+		batch, err := u.msgRepo.ListByRoomAfter(ctx, sourceRoomID, afterSeq, maxSeq, forkBatchSize)
 		if err != nil {
 			fail(err)
 			return
@@ -236,12 +300,8 @@ func (u *RoomUsecase) runForkJob(ctx context.Context, jobID, sourceRoomID, newRo
 		logger.Info("room fork batch copied", "batch_size", len(batch), "copied_messages", copied, "total_messages", total)
 	}
 
-	if err := u.roomRepo.SetArchived(ctx, newRoomID, false); err != nil {
-		fail(err)
-		return
-	}
-	if err := u.forkJobRepo.MarkCompleted(ctx, jobID); err != nil {
-		logger.Error("failed to mark room fork job completed", "error", err)
+	if err := u.forkJobRepo.CompleteAndUnarchive(ctx, jobID, newRoomID); err != nil {
+		logger.Error("failed to complete room fork job and unarchive new room", "error", err)
 		return
 	}
 	logger.Info("room fork job completed", "copied_messages", copied, "total_messages", total)

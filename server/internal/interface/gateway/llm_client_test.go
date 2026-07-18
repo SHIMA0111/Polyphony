@@ -519,6 +519,50 @@ func TestLLMClient_StreamMidStreamError(t *testing.T) {
 	}
 }
 
+// TestLLMClient_StreamTruncatedBeforeDoneSentinel asserts that a connection
+// which delivers one data frame and then ends (EOF) without ever sending the
+// sseDoneSentinel yields the preceding chunk followed by exactly one
+// Err-carrying StreamResult wrapping domain.ErrLLMGateway, rather than
+// silently completing as if the stream had ended cleanly.
+func TestLLMClient_StreamTruncatedBeforeDoneSentinel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		_, _ = w.Write([]byte(`data: {"id":"c1","model":"gpt-5.2","delta":"partial"}` + "\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// Handler returns here without ever writing the [DONE] sentinel,
+		// simulating a connection that drops mid-stream.
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+
+	results := drainStream(t, ch)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 stream results (1 chunk + 1 error), got %d: %+v", len(results), results)
+	}
+	if results[0].Err != nil || results[0].Chunk == nil || results[0].Chunk.Delta != "partial" {
+		t.Fatalf("unexpected first result: %+v", results[0])
+	}
+	if results[1].Chunk != nil {
+		t.Fatalf("expected second result to carry no chunk, got %+v", results[1].Chunk)
+	}
+	if results[1].Err == nil || !errors.Is(results[1].Err, domain.ErrLLMGateway) {
+		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", results[1].Err)
+	}
+}
+
 // TestLLMClient_StreamNonOKStatusSynchronousError asserts a non-2xx status
 // with no SSE body at all yields a non-nil synchronous error and a nil
 // channel, with no goroutine started (verified implicitly by the test

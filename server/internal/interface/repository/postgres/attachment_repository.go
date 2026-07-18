@@ -121,3 +121,39 @@ func (r *AttachmentRepository) ListByMessageID(ctx context.Context, messageID st
 	}
 	return attachments, nil
 }
+
+// ListByMessageIDs returns every attachment linked to any of the given
+// messages, grouped by message ID, in a single query -- avoiding the N+1
+// query pattern of calling ListByMessageID once per message. Each group is
+// ordered by creation time ascending, matching ListByMessageID's per-message
+// order; a message ID with no attachments is simply absent from the returned
+// map.
+func (r *AttachmentRepository) ListByMessageIDs(ctx context.Context, messageIDs []string) (map[string][]*attachment.Attachment, error) {
+	result := make(map[string][]*attachment.Attachment)
+	if len(messageIDs) == 0 {
+		return result, nil
+	}
+
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+attachmentColumns+` FROM message_attachments WHERE message_id = ANY($1) ORDER BY message_id, created_at ASC`,
+		messageIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		a, err := scanAttachment(rows)
+		if err != nil {
+			return nil, err
+		}
+		// a.MessageID is guaranteed non-nil here: the WHERE clause only
+		// matches rows whose message_id equals one of messageIDs.
+		result[*a.MessageID] = append(result[*a.MessageID], a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}

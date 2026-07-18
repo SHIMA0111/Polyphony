@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useParams } from "next/navigation"
+import { useParams, usePathname } from "next/navigation"
 import { Avatar, Box, Button, Flex, Heading, Menu, Portal } from "@chakra-ui/react"
 import { LogOut, Pen, Users } from "lucide-react"
 import { useLogout } from "@/features/auth/hooks/use-logout"
@@ -24,18 +24,34 @@ import { BalanceBadge } from "@/features/billing/components/BalanceBadge"
  * `useRooms()` query never remount or refetch.
  *
  * Below the `md` breakpoint the rail and the content pane collapse into a
- * single visible region driven purely by whether a `roomId` route param is
- * present (read via `useParams()`, which reflects whichever `(main)` page is
- * rendered beneath this layout) — the same component tree renders both
- * breakpoints, there is no separate mobile-only branch.
+ * single visible region — the same component tree renders both breakpoints,
+ * there is no separate mobile-only branch. That single region is driven by
+ * route, not just by whether a `roomId` param is present: `hasActiveRoom`
+ * (read via `useParams()`) only distinguishes `/rooms` from `/rooms/[roomId]`,
+ * so gating the content pane on it alone made every non-room `(main)` route
+ * (`/groups`, `/billing/*`, `/invite/*` — none of which have a `roomId`
+ * param) collapse to `display: none` at the base breakpoint, since
+ * `hasActiveRoom` is `false` there just as it is at the bare room list.
+ * `isRoomRoute` (derived from `usePathname()`) distinguishes the two cases:
+ * on a room route, the existing rail-vs-content toggle applies; on every
+ * other route, the content pane always renders at base and the rail is
+ * hidden there (it has nothing to toggle against).
  */
 export default function MainLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
+  const pathname = usePathname()
   const params = useParams<{ roomId?: string }>()
   const hasActiveRoom = typeof params.roomId === "string"
+  const isRoomRoute = pathname === "/rooms" || pathname.startsWith("/rooms/")
+  // At the base breakpoint: a room route toggles between the rail
+  // (`/rooms`) and the content pane (`/rooms/[roomId]`) exactly as before;
+  // any other route always shows the content pane, with the rail hidden
+  // (there's no room list/room-detail distinction to toggle for it there).
+  const railBaseDisplay = isRoomRoute ? (hasActiveRoom ? "none" : "flex") : "none"
+  const contentBaseDisplay = isRoomRoute ? (hasActiveRoom ? "flex" : "none") : "flex"
   const logoutMutation = useLogout()
 
   return (
@@ -117,16 +133,15 @@ export default function MainLayout({
       </Box>
 
       {/* Rail + content pane row: collapses to a single visible region
-          below `md`, driven by `hasActiveRoom`. */}
+          below `md`, driven by `isRoomRoute`/`hasActiveRoom` (see this
+          component's docstring). */}
       <Flex flex={1} minH={0}>
-        <RoomRail
-          display={{ base: hasActiveRoom ? "none" : "flex", md: "flex" }}
-        />
+        <RoomRail display={{ base: railBaseDisplay, md: "flex" }} />
         <Box
           flex={1}
           minW={0}
           overflowY="auto"
-          display={{ base: hasActiveRoom ? "flex" : "none", md: "flex" }}
+          display={{ base: contentBaseDisplay, md: "flex" }}
         >
           {children}
         </Box>

@@ -3,13 +3,15 @@ import { render, screen, waitFor } from "@/test/render"
 import { fixtureRooms } from "@/features/rooms/api/handlers"
 import MainLayout from "./layout"
 
-const { useParamsMock, useRouterMock } = vi.hoisted(() => ({
+const { useParamsMock, usePathnameMock, useRouterMock } = vi.hoisted(() => ({
   useParamsMock: vi.fn(),
+  usePathnameMock: vi.fn(),
   useRouterMock: vi.fn(() => ({ push: vi.fn() })),
 }))
 
 vi.mock("next/navigation", () => ({
   useParams: useParamsMock,
+  usePathname: usePathnameMock,
   useRouter: useRouterMock,
   // `Provider` (via `src/test/render.tsx`) now wraps every test in
   // `EmotionRegistry`, which calls this Next.js hook to flush Emotion's
@@ -27,6 +29,7 @@ vi.mock("next/navigation", () => ({
 describe("(main)/layout", () => {
   it("shows the rail and hides the content pane at `base` when there is no active room", async () => {
     useParamsMock.mockReturnValue({})
+    usePathnameMock.mockReturnValue("/rooms")
 
     render(
       <MainLayout>
@@ -47,6 +50,7 @@ describe("(main)/layout", () => {
 
   it("hides the rail and shows the content pane at `base` when a room is active", async () => {
     useParamsMock.mockReturnValue({ roomId: fixtureRooms[0].id })
+    usePathnameMock.mockReturnValue(`/rooms/${fixtureRooms[0].id}`)
 
     render(
       <MainLayout>
@@ -74,6 +78,7 @@ describe("(main)/layout", () => {
 
   it("renders a single persistent top bar, regardless of the active room", () => {
     useParamsMock.mockReturnValue({})
+    usePathnameMock.mockReturnValue("/rooms")
 
     render(
       <MainLayout>
@@ -84,5 +89,31 @@ describe("(main)/layout", () => {
     // Exactly one "Polyphony" heading — the top bar the layout owns, not a
     // second copy re-rendered by the page underneath it.
     expect(screen.getAllByText("Polyphony")).toHaveLength(1)
+  })
+
+  it("always shows the content pane and hides the rail at `base` on a non-room route, even with no `roomId` param", async () => {
+    // A route like `/groups` or `/billing/plans` has no `roomId` route
+    // param, so `hasActiveRoom` alone is indistinguishable from the bare
+    // `/rooms` list -- this is the post-review fix asserting `isRoomRoute`
+    // (derived from `usePathname()`) is what actually decides this, not
+    // `hasActiveRoom` alone.
+    useParamsMock.mockReturnValue({})
+    usePathnameMock.mockReturnValue("/groups")
+
+    render(
+      <MainLayout>
+        <div data-testid="page-content">groups page</div>
+      </MainLayout>,
+    )
+
+    await waitFor(() =>
+      expect(screen.getByText(fixtureRooms[0].name)).toBeInTheDocument(),
+    )
+
+    const rail = screen.getByRole("navigation", { hidden: true })
+    const contentPane = screen.getByTestId("page-content").parentElement
+
+    expect(rail).toHaveStyle({ display: "none" })
+    expect(contentPane).toHaveStyle({ display: "flex" })
   })
 })

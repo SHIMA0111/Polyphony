@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -693,6 +694,77 @@ func TestSendAIHandlerInsufficientBalance402(t *testing.T) {
 	}
 }
 
+// TestMessageHandlerWhitespaceOnlyContent400 asserts that Send, SendAI, and
+// StreamAI all reject whitespace-only content (spaces, tabs, newlines, or a
+// mix) with HTTP 400, exactly like genuinely empty content -- otherwise a
+// message that renders visually empty would still persist, and for the two
+// AI endpoints would still invoke the LLM Gateway over nothing.
+func TestMessageHandlerWhitespaceOnlyContent400(t *testing.T) {
+	whitespaceContents := []string{" ", "   ", "\t", "\n", " \t\n "}
+
+	for _, content := range whitespaceContents {
+		bodyBytes, err := json.Marshal(map[string]string{"content": content})
+		if err != nil {
+			t.Fatalf("marshal request body for %q: %v", content, err)
+		}
+		body := string(bodyBytes)
+
+		t.Run(fmt.Sprintf("Send/%q", content), func(t *testing.T) {
+			e, h := setupMessageTest(true)
+			req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages", strings.NewReader(body))
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+			c.SetParamNames("roomId")
+			c.SetParamValues("room-1")
+			c.Set("user_id", "user-1")
+
+			if err := h.Send(c); err != nil {
+				t.Fatalf("Send error: %v", err)
+			}
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for content %q, got %d", content, rec.Code)
+			}
+		})
+
+		t.Run(fmt.Sprintf("SendAI/%q", content), func(t *testing.T) {
+			e, h := setupMessageTest(true)
+			req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai", strings.NewReader(body))
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+			c.SetParamNames("roomId")
+			c.SetParamValues("room-1")
+			c.Set("user_id", "user-1")
+
+			if err := h.SendAI(c); err != nil {
+				t.Fatalf("SendAI error: %v", err)
+			}
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for content %q, got %d", content, rec.Code)
+			}
+		})
+
+		t.Run(fmt.Sprintf("StreamAI/%q", content), func(t *testing.T) {
+			e, h := setupMessageTest(true)
+			req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai/stream", strings.NewReader(body))
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+			c.SetParamNames("roomId")
+			c.SetParamValues("room-1")
+			c.Set("user_id", "user-1")
+
+			if err := h.StreamAI(c); err != nil {
+				t.Fatalf("StreamAI error: %v", err)
+			}
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for content %q, got %d", content, rec.Code)
+			}
+		})
+	}
+}
+
 // --- StreamAI tests (Step 51) ---
 
 // TestMessageHandlerStreamAI202 asserts StreamAI returns HTTP 202 with
@@ -735,6 +807,62 @@ func TestMessageHandlerStreamAI202(t *testing.T) {
 	}
 	if resp.AIMessage.Status != "streaming" {
 		t.Fatalf("expected ai_message.status streaming, got %s", resp.AIMessage.Status)
+	}
+}
+
+// TestMessageHandlerStreamAIUsedContextSummaryTrue asserts that a StreamAI
+// call whose context overflows the model's resolved context window (forced
+// here via newOverflowGateway, exactly like
+// TestSendAIHandlerUsedContextSummaryTrue) reports used_context_summary:
+// true on the immediately-returned ai_message -- assembleAIContext runs
+// synchronously before the background stream goroutine is started, so this
+// does not race that goroutine.
+func TestMessageHandlerStreamAIUsedContextSummaryTrue(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	e := echo.New()
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, newOverflowGateway(), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	h := NewMessageHandler(uc)
+
+	for i := 1; i <= 11; i++ {
+		sendReq := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages",
+			strings.NewReader(`{"content":"seed message"}`))
+		sendReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		sendRec := httptest.NewRecorder()
+		sendCtx := e.NewContext(sendReq, sendRec)
+		sendCtx.SetParamNames("roomId")
+		sendCtx.SetParamValues("room-1")
+		sendCtx.Set("user_id", "user-1")
+		if err := h.Send(sendCtx); err != nil {
+			t.Fatalf("seed message %d: %v", i, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai/stream",
+		strings.NewReader(`{"content":"trigger overflow","model":"gpt-5-mini"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.StreamAI(c); err != nil {
+		t.Fatalf("StreamAI error: %v", err)
+	}
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+
+	var resp SendAIMessageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if !resp.AIMessage.UsedContextSummary {
+		t.Fatal("expected ai_message.used_context_summary to be true for an overflowing context")
 	}
 }
 

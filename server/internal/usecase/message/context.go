@@ -65,16 +65,24 @@ func filterEligibleMessages(msgs []*domainmessage.Message, cutoff *time.Time) []
 // so it still serializes via the plain-Content path). A message with one or more
 // image attachments has Parts set to: a text part carrying its original Content (only
 // if Content is non-empty), followed by one image part per attachment in
-// attachmentRepo.ListByMessageID order, each built from a freshly presigned view URL
-// (u.objStorage.PresignView -- the same helper usecase/attachment.AttachmentUsecase's
-// ListAttachments uses, reused here rather than re-deriving S3 URLs).
+// attachmentRepo.ListByMessageIDs' per-message order (creation-time ascending, same
+// order ListByMessageID would return for that message alone), each built from a
+// freshly presigned view URL (u.objStorage.PresignView -- the same helper
+// usecase/attachment.AttachmentUsecase's ListAttachments uses, reused here rather than
+// re-deriving S3 URLs).
+//
+// Every message in sourceMsgs is looked up in a single batched
+// attachmentRepo.ListByMessageIDs call rather than one attachmentRepo.ListByMessageID
+// call per message, so a context bucket of N messages costs one query instead of N
+// (the N+1 pattern this replaced).
 //
 // It is a no-op (returns chatMsgs unchanged) if this usecase was constructed with a
 // nil attachmentRepo or objStorage, so callers/tests that don't care about Vision
-// attachments don't need to wire either dependency.
+// attachments don't need to wire either dependency. It is likewise a no-op (skipping
+// the batch query entirely) when sourceMsgs is empty.
 //
 // # Errors
-// Returns the first error encountered from attachmentRepo.ListByMessageID or
+// Returns the first error encountered from attachmentRepo.ListByMessageIDs or
 // objStorage.PresignView: a context-assembly call cannot silently omit an attachment
 // the sender attached, so any lookup/presign failure aborts the whole enrichment
 // rather than falling back to the plain-Content path for that message.
@@ -86,12 +94,21 @@ func (u *MessageUsecase) enrichWithAttachments(
 	if u.attachmentRepo == nil || u.objStorage == nil {
 		return chatMsgs, nil
 	}
+	if len(sourceMsgs) == 0 {
+		return chatMsgs, nil
+	}
+
+	messageIDs := make([]string, len(sourceMsgs))
+	for i, m := range sourceMsgs {
+		messageIDs[i] = m.ID
+	}
+	attachmentsByMessageID, err := u.attachmentRepo.ListByMessageIDs(ctx, messageIDs)
+	if err != nil {
+		return nil, err
+	}
 
 	for i := range chatMsgs {
-		attachments, err := u.attachmentRepo.ListByMessageID(ctx, sourceMsgs[i].ID)
-		if err != nil {
-			return nil, err
-		}
+		attachments := attachmentsByMessageID[sourceMsgs[i].ID]
 		if len(attachments) == 0 {
 			continue
 		}
@@ -252,10 +269,18 @@ func (u *MessageUsecase) assembleAIContext(
 		return verbatim(), false, nil
 	}
 
-	// Overflow: the oldest message still included in olderPublicRaw (its
-	// last element, since olderPublicRaw is itself sequence-descending)
+	// Overflow: the newest message still included in olderPublicRaw (its
+	// first element, since olderPublicRaw is itself sequence-descending)
 	// marks the boundary a cached summary must match exactly to be reused.
-	boundarySeq := olderPublicRaw[len(olderPublicRaw)-1].Sequence
+	// This must be the newest, not the oldest, summarized sequence: the
+	// oldest surviving message in a room never changes once summarized, so
+	// keying the cache on it would let the cache silently go stale forever
+	// as new messages age out of the recent tail into the older-public
+	// bucket without ever invalidating the cached summary that omits them.
+	// Using the newest summarized sequence instead means the boundary
+	// advances -- and the cache correctly misses -- every time there is new
+	// older-public history to fold in.
+	boundarySeq := olderPublicRaw[0].Sequence
 
 	summaryText, cacheErr := u.summaryOrCompute(ctx, rm.ID, model, boundarySeq, olderPublicChat, models)
 	if cacheErr != nil {
@@ -293,22 +318,34 @@ func (u *MessageUsecase) buildAndEnrichContextBucket(
 // u.summaryRepo.Get returns one whose Model and CoveredUpToSequence match
 // exactly, or a freshly computed one otherwise.
 //
-// On a cache miss, it resolves includeImages from the same models slice
-// already fetched by assembleAIContext for the context-window resolution (no
-// second ListModels call), builds the summarization prompt over
-// olderPublicChat (already attachment-enriched -- so a Vision-capable model
-// receives the real image parts when includeImages is true), calls
+// On a cache miss, it first captures u.summaryRepo.GetRevision(roomID) --
+// before calling the (potentially slow) ai.LLMGateway.Complete below -- so
+// that its later Upsert can detect a concurrent DeleteByRoom (triggered by a
+// message delete or exclude_from_ai toggle landing on this room while
+// Complete is in flight) and no-op instead of resurrecting a summary that
+// predates it; see ai.ContextSummaryRepository's "Revision fencing" doc
+// comment. It then resolves includeImages from the same models slice already
+// fetched by assembleAIContext for the context-window resolution (no second
+// ListModels call), builds the summarization prompt over olderPublicChat
+// (already attachment-enriched -- so a Vision-capable model receives the
+// real image parts when includeImages is true), calls
 // ai.LLMGateway.Complete, and -- on success -- caches the result via
-// u.summaryRepo.Upsert before returning it. Only a Complete failure is
-// returned to the caller (assembleAIContext logs it and degrades to the
-// un-summarized context); an EstimateTokens failure is swallowed instead
-// (tokenCount is left at 0, since it is only ever used for the cached
-// ai.ContextSummary.TokenCount metadata field, not to gate anything), and a
-// successful Complete whose subsequent Upsert cache-write fails is logged
-// but otherwise ignored -- either way this call still returns the freshly
-// computed summary text, since the summary itself is still valid for this
-// one call even though a failed Upsert means it won't be reused by a later
-// one.
+// u.summaryRepo.Upsert before returning it.
+//
+// Only a Complete failure is returned to the caller (assembleAIContext logs
+// it and degrades to the un-summarized context). A GetRevision failure
+// degrades to skipping the cache write entirely (logged, not returned): the
+// freshly computed summary is still returned for this one call, but without
+// a verified revision there is no safe value to pass Upsert, so writing
+// anyway could reintroduce exactly the race this mechanism exists to close.
+// An EstimateTokens failure is swallowed instead (tokenCount is left at 0,
+// since it is only ever used for the cached ai.ContextSummary.TokenCount
+// metadata field, not to gate anything), and a successful Complete whose
+// subsequent Upsert fails (a genuine error, not a revision-mismatch no-op --
+// see Upsert's doc comment) is logged but otherwise ignored -- either way
+// this call still returns the freshly computed summary text, since the
+// summary itself is still valid for this one call even though a failed or
+// no-op'd Upsert means it won't be reused by a later one.
 func (u *MessageUsecase) summaryOrCompute(
 	ctx context.Context,
 	roomID, model string,
@@ -320,6 +357,11 @@ func (u *MessageUsecase) summaryOrCompute(
 		cached.Model == model && cached.CoveredUpToSequence == boundarySeq {
 		return cached.SummaryText, nil
 	}
+
+	// Captured before Complete below so a concurrent DeleteByRoom landing
+	// during summarization is detected by the Upsert call at the bottom of
+	// this function rather than silently overwritten.
+	revision, revErr := u.summaryRepo.GetRevision(ctx, roomID)
 
 	includeImages := ai.ResolveSupportsImageInput(models, model)
 	prompt := ai.BuildSummarizationPrompt(olderPublicChat, includeImages)
@@ -338,13 +380,15 @@ func (u *MessageUsecase) summaryOrCompute(
 		tokenCount = estimate.EstimatedTokens
 	}
 
-	if err := u.summaryRepo.Upsert(ctx, &ai.ContextSummary{
+	if revErr != nil {
+		slog.Error("failed to read context summary revision; skipping cache write", "error", revErr, "room_id", roomID)
+	} else if err := u.summaryRepo.Upsert(ctx, &ai.ContextSummary{
 		RoomID:              roomID,
 		Model:               model,
 		CoveredUpToSequence: boundarySeq,
 		SummaryText:         summaryText,
 		TokenCount:          tokenCount,
-	}); err != nil {
+	}, revision); err != nil {
 		slog.Error("failed to cache context summary", "error", err, "room_id", roomID)
 	}
 

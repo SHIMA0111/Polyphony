@@ -50,8 +50,8 @@ func TestBuildSummarizationPrompt_IncludeImagesTrue(t *testing.T) {
 	if len(userMsg.Parts) != 3 {
 		t.Fatalf("expected 3 parts (text + attribution + image), got %d: %+v", len(userMsg.Parts), userMsg.Parts)
 	}
-	if userMsg.Parts[0].Type != ContentPartTypeText || userMsg.Parts[0].Text != "check this out" {
-		t.Errorf("expected first part to be the verbatim text, got %+v", userMsg.Parts[0])
+	if userMsg.Parts[0].Type != ContentPartTypeText || userMsg.Parts[0].Text != "user: check this out" {
+		t.Errorf("expected first part to be the role-prefixed text (mirroring the no-Parts \"role: content\" shape), got %+v", userMsg.Parts[0])
 	}
 	if userMsg.Parts[1].Type != ContentPartTypeText || userMsg.Parts[1].Text != "user sent the following image:" {
 		t.Errorf("expected second part to be the image attribution text, got %+v", userMsg.Parts[1])

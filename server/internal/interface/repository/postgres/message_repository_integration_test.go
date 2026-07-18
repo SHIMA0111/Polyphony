@@ -395,8 +395,9 @@ func TestMessageRepository_ListByRoomAfter(t *testing.T) {
 		ids = append(ids, msg.ID)
 	}
 
-	// afterSequence=2, limit=2 should return sequences 3 and 4, ascending.
-	page, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 2, 2)
+	// afterSequence=2, maxSequence=100 (unbounded relative to this room's 5
+	// messages), limit=2 should return sequences 3 and 4, ascending.
+	page, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 2, 100, 2)
 	if err != nil {
 		t.Fatalf("ListByRoomAfter failed: %v", err)
 	}
@@ -412,7 +413,7 @@ func TestMessageRepository_ListByRoomAfter(t *testing.T) {
 
 	// afterSequence=0 with a limit larger than the room's message count
 	// returns everything, still ascending.
-	all, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 0, 100)
+	all, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 0, 100, 100)
 	if err != nil {
 		t.Fatalf("ListByRoomAfter (all) failed: %v", err)
 	}
@@ -427,12 +428,100 @@ func TestMessageRepository_ListByRoomAfter(t *testing.T) {
 
 	// afterSequence beyond the last message returns an empty slice (the
 	// fork worker's loop-termination condition).
-	empty, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 5, 100)
+	empty, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 5, 100, 100)
 	if err != nil {
 		t.Fatalf("ListByRoomAfter (beyond end) failed: %v", err)
 	}
 	if len(empty) != 0 {
 		t.Fatalf("expected 0 messages after the last sequence, got %d", len(empty))
+	}
+
+	// maxSequence caps the result even when limit alone would return more —
+	// this is the frozen upper bound a room-fork job passes to every
+	// ListByRoomAfter call across its copy (see
+	// usecase/room.RoomUsecase.runForkJob), so a message inserted after the
+	// job's initial CountAndMaxSequence snapshot is excluded from the copy
+	// entirely.
+	capped, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 0, 3, 100)
+	if err != nil {
+		t.Fatalf("ListByRoomAfter (maxSequence-capped) failed: %v", err)
+	}
+	if len(capped) != 3 {
+		t.Fatalf("expected 3 messages capped at maxSequence=3, got %d", len(capped))
+	}
+	for i, m := range capped {
+		if m.Sequence != int64(i+1) {
+			t.Fatalf("expected ascending sequence %d at index %d, got %d", i+1, i, m.Sequence)
+		}
+	}
+}
+
+// TestMessageRepository_CountAndMaxSequence proves CountAndMaxSequence
+// returns the total message count and the highest sequence value in a
+// single atomic read, ignoring soft-delete/visibility (mirroring
+// CountByRoom's structural-count semantics), and reports (0, 0) for a
+// room with no messages.
+func TestMessageRepository_CountAndMaxSequence(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "count-and-max-seq-owner")
+
+	total, maxSeq, err := msgRepo.CountAndMaxSequence(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("CountAndMaxSequence (empty room) failed: %v", err)
+	}
+	if total != 0 || maxSeq != 0 {
+		t.Fatalf("expected (0, 0) for a fresh room, got (%d, %d)", total, maxSeq)
+	}
+
+	now := time.Now()
+	for i := int64(1); i <= 3; i++ {
+		msg := &domainmessage.Message{
+			ID:         uuid.New().String(),
+			RoomID:     rm.ID,
+			SenderID:   &rm.OwnerID,
+			Content:    "msg",
+			Type:       domainmessage.MessageTypeHuman,
+			Status:     domainmessage.MessageStatusCompleted,
+			Sequence:   i,
+			Visibility: domainmessage.MessageVisibilityPublic,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if err := msgRepo.Create(ctx, msg); err != nil {
+			t.Fatalf("create message %d: %v", i, err)
+		}
+	}
+
+	total, maxSeq, err = msgRepo.CountAndMaxSequence(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("CountAndMaxSequence failed: %v", err)
+	}
+	if total != 3 || maxSeq != 3 {
+		t.Fatalf("expected (3, 3), got (%d, %d)", total, maxSeq)
+	}
+
+	// Soft-deleting the highest-sequence message must not change either
+	// value (CountAndMaxSequence is a structural read, unlike
+	// ListByRoom/ListByRoomUpTo).
+	var lastID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM messages WHERE room_id = $1 AND sequence = 3`, rm.ID).Scan(&lastID); err != nil {
+		t.Fatalf("query last message id: %v", err)
+	}
+	if err := msgRepo.Delete(ctx, lastID); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	total, maxSeq, err = msgRepo.CountAndMaxSequence(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("CountAndMaxSequence after delete failed: %v", err)
+	}
+	if total != 3 || maxSeq != 3 {
+		t.Fatalf("expected CountAndMaxSequence to still be (3, 3) after a soft-delete, got (%d, %d)", total, maxSeq)
 	}
 }
 

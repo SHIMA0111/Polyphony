@@ -26,7 +26,7 @@ type RoomUsecase struct {
 // NewRoomUsecase creates a new RoomUsecase. msgRepo and forkJobRepo are used
 // only by the room-fork feature (see fork.go's ForkRoom/GetForkJobStatus/
 // runForkJob): msgRepo drives the fork worker's message-copy loop
-// (CountByRoom/ListByRoomAfter/CreateBatch/ReserveSequenceRange) and
+// (CountAndMaxSequence/ListByRoomAfter/CreateBatch/ReserveSequenceRange) and
 // forkJobRepo persists roomfork.Job progress/state transitions. hub is used
 // only by LeaveRoom, to revoke the departing member's live WebSocket
 // subscription on the room (see LeaveRoom's doc comment) — every other

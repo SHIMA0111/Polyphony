@@ -25,6 +25,10 @@ import type { Invitation, RoomRole } from "../types"
 /** Roles an inviter may offer — never `master` (see `RolePicker`'s same restriction). */
 const INVITABLE_ROLES: RoomRole[] = ["reader", "guest", "member", "admin"]
 
+/** Bounds for the group-invite flow's optional `expires_in_hours`, mirroring the server's own validation. */
+const GROUP_EXPIRES_MIN_HOURS = 1
+const GROUP_EXPIRES_MAX_HOURS = 720
+
 interface InviteDialogProps {
   roomId: string
 }
@@ -76,6 +80,15 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null)
   const [groupRole, setGroupRole] = useState<RoomRole>("member")
   const [groupExpiresInHours, setGroupExpiresInHours] = useState("")
+  /**
+   * Client-side validation error for `groupExpiresInHours`, checked before
+   * `handleBatchInviteByGroup` ever calls the mutation: an out-of-range or
+   * fractional value used to reach the server as-is, surfacing as an opaque
+   * generic decode error, and `Number("")`/a non-numeric string coerced to
+   * `NaN` silently fell back to the server's default expiry instead of
+   * failing loudly.
+   */
+  const [groupExpiresError, setGroupExpiresError] = useState<string | null>(null)
   // The username and link flows below share `createInvitationMutation`
   // (one `POST /invitations` endpoint for both), so `isPending` alone can't
   // tell which flow's button should show a spinner — without this, sending
@@ -95,6 +108,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
     setSelectedGroup(null)
     setGroupRole("member")
     setGroupExpiresInHours("")
+    setGroupExpiresError(null)
     setPendingAction(null)
     createInvitationMutation.reset()
     batchInviteByGroupMutation.reset()
@@ -151,9 +165,21 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
 
   const handleBatchInviteByGroup = async () => {
     if (!selectedGroup) return
-    const expiresInHours = groupExpiresInHours.trim()
-      ? Number(groupExpiresInHours)
-      : undefined
+
+    const trimmed = groupExpiresInHours.trim()
+    let expiresInHours: number | undefined
+    if (trimmed) {
+      const parsed = Number(trimmed)
+      if (!Number.isInteger(parsed) || parsed < GROUP_EXPIRES_MIN_HOURS || parsed > GROUP_EXPIRES_MAX_HOURS) {
+        setGroupExpiresError(
+          `Expiry must be a whole number of hours between ${GROUP_EXPIRES_MIN_HOURS} and ${GROUP_EXPIRES_MAX_HOURS}.`,
+        )
+        return
+      }
+      expiresInHours = parsed
+    }
+    setGroupExpiresError(null)
+
     try {
       await batchInviteByGroupMutation.mutateAsync({
         group_id: selectedGroup.id,
@@ -299,7 +325,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                   </Text>
                   <Field.Root>
                     <Field.Label>Group</Field.Label>
-                    <GroupPicker onSelect={setSelectedGroup} />
+                    <GroupPicker selectedGroup={selectedGroup} onSelect={setSelectedGroup} />
                   </Field.Root>
                   <Field.Root>
                     <Field.Label>Role</Field.Label>
@@ -324,10 +350,21 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                     <Input
                       type="number"
                       placeholder="e.g., 168"
+                      min={GROUP_EXPIRES_MIN_HOURS}
+                      max={GROUP_EXPIRES_MAX_HOURS}
+                      step={1}
                       value={groupExpiresInHours}
-                      onChange={(e) => setGroupExpiresInHours(e.target.value)}
+                      onChange={(e) => {
+                        setGroupExpiresInHours(e.target.value)
+                        setGroupExpiresError(null)
+                      }}
                     />
                   </Field.Root>
+                  {groupExpiresError && (
+                    <Box fontSize="sm" color="fg.error" role="alert">
+                      {groupExpiresError}
+                    </Box>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"

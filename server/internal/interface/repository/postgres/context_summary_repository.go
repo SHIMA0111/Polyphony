@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -48,25 +49,72 @@ func (r *ContextSummaryRepository) Get(ctx context.Context, roomID string) (*ai.
 }
 
 // Upsert creates or replaces the single cached row for summary.RoomID, via
-// INSERT ... ON CONFLICT (room_id) DO UPDATE, so a room's previous summary
-// (if any) is always fully replaced rather than accumulating extra rows.
-func (r *ContextSummaryRepository) Upsert(ctx context.Context, summary *ai.ContextSummary) error {
-	_, err := r.pool.Exec(ctx,
+// INSERT ... ON CONFLICT (room_id) DO UPDATE, but only when roomID's current
+// invalidation revision (context_summary_revisions, defaulting to 0 when no
+// row exists yet) still equals expectedRevision -- see
+// ai.ContextSummaryRepository's "Revision fencing" doc comment. The INSERT's
+// source is a SELECT gated on that revision match, so a mismatch makes the
+// whole statement affect zero rows (ON CONFLICT never triggers, since
+// nothing was proposed for insertion) rather than writing a stale summary.
+// A zero-rows-affected outcome is logged at Warn (an expected outcome of a
+// detected race, not a failure) and reported to the caller as a nil error,
+// per the port's no-op contract; only a genuine query failure returns an
+// error.
+func (r *ContextSummaryRepository) Upsert(ctx context.Context, summary *ai.ContextSummary, expectedRevision int64) error {
+	tag, err := r.pool.Exec(ctx,
 		`INSERT INTO message_context_summaries (room_id, model, covered_up_to_sequence, summary_text, token_count, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+		 SELECT $1, $2, $3, $4, $5, NOW(), NOW()
+		 WHERE COALESCE((SELECT revision FROM context_summary_revisions WHERE room_id = $1), 0) = $6
 		 ON CONFLICT (room_id) DO UPDATE
 		 SET model = $2, covered_up_to_sequence = $3, summary_text = $4, token_count = $5, updated_at = NOW()`,
-		summary.RoomID, summary.Model, summary.CoveredUpToSequence, summary.SummaryText, summary.TokenCount,
+		summary.RoomID, summary.Model, summary.CoveredUpToSequence, summary.SummaryText, summary.TokenCount, expectedRevision,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		slog.Warn("context summary upsert skipped: room's invalidation revision moved during summarization",
+			"room_id", summary.RoomID, "expected_revision", expectedRevision)
+	}
+	return nil
 }
 
-// DeleteByRoom invalidates (deletes) the cached summary for roomID, if any.
-// It treats zero rows affected (no cached summary existed) as success, not
-// an error, since MessageUsecase.DeleteMessage/SetExcludeFromAI call this
-// unconditionally on every mutation regardless of whether a summary was
-// ever computed for the room.
+// GetRevision returns roomID's current context-summary invalidation
+// revision, or 0 if DeleteByRoom has never been called for this room (no
+// row exists yet in context_summary_revisions).
+func (r *ContextSummaryRepository) GetRevision(ctx context.Context, roomID string) (int64, error) {
+	var revision int64
+	err := r.pool.QueryRow(ctx,
+		`SELECT revision FROM context_summary_revisions WHERE room_id = $1`, roomID,
+	).Scan(&revision)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return revision, nil
+}
+
+// DeleteByRoom invalidates (deletes) the cached summary for roomID, if any,
+// and atomically increments roomID's invalidation revision in the same
+// statement: the DELETE runs as a data-modifying CTE feeding the following
+// INSERT ... ON CONFLICT, which Postgres executes as a single atomic
+// operation, so no concurrent Upsert can observe the DELETE without also
+// observing the revision bump (or vice versa). It treats zero rows deleted
+// (no cached summary existed) as success, not an error -- the revision is
+// still bumped unconditionally -- since
+// MessageUsecase.DeleteMessage/SetExcludeFromAI call this unconditionally on
+// every mutation regardless of whether a summary was ever computed for the
+// room.
 func (r *ContextSummaryRepository) DeleteByRoom(ctx context.Context, roomID string) error {
-	_, err := r.pool.Exec(ctx, `DELETE FROM message_context_summaries WHERE room_id = $1`, roomID)
+	_, err := r.pool.Exec(ctx,
+		`WITH deleted AS (
+		     DELETE FROM message_context_summaries WHERE room_id = $1
+		 )
+		 INSERT INTO context_summary_revisions (room_id, revision) VALUES ($1, 1)
+		 ON CONFLICT (room_id) DO UPDATE SET revision = context_summary_revisions.revision + 1`,
+		roomID,
+	)
 	return err
 }

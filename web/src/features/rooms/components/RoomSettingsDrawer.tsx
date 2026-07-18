@@ -196,7 +196,20 @@ function RoomSettingsDrawerBody({
     }
   }
 
+  // Guards against silently clearing the room's AI default: while
+  // `useModels()` is still loading (or has loaded but doesn't include the
+  // room's currently-configured model), `models.find` below would resolve to
+  // `undefined` and submit `ai_provider: "" / ai_model: ""` -- indistinguishable
+  // from the user deliberately picking "Use global default" -- even though
+  // `selectedModelId` still names a real model. Saving is only safe once
+  // either the global-default option is explicitly selected, or the
+  // selected id is confirmed present in the loaded catalog.
+  const canSaveAISettings =
+    selectedModelId === GLOBAL_DEFAULT_VALUE ||
+    models.some((model) => model.id === selectedModelId)
+
   const handleSaveAISettings = async () => {
+    if (!canSaveAISettings) return
     const selectedModel = models.find((model) => model.id === selectedModelId)
     try {
       await updateSettingsMutation.mutateAsync({
@@ -327,6 +340,7 @@ function RoomSettingsDrawerBody({
                         size="sm"
                         colorPalette="blue"
                         alignSelf="flex-start"
+                        disabled={!canSaveAISettings}
                         loading={updateSettingsMutation.isPending}
                         onClick={handleSaveAISettings}
                       >

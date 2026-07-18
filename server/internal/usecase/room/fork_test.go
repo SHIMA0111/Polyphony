@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -14,19 +15,20 @@ import (
 
 // --- ForkRoom ---
 
-// gatedMessageRepo wraps *mocks.MessageRepo, blocking CountByRoom (runForkJob's
-// very first call) until proceed is closed. This lets TestForkRoomSuccess
-// assert on ForkRoom's synchronously-returned Job/Room before the detached
-// background goroutine it launches can mutate either one, without an actual
-// (non-deterministic) data race between the test goroutine and the worker.
+// gatedMessageRepo wraps *mocks.MessageRepo, blocking CountAndMaxSequence
+// (runForkJob's very first call) until proceed is closed. This lets
+// TestForkRoomSuccess assert on ForkRoom's synchronously-returned Job/Room
+// before the detached background goroutine it launches can mutate either
+// one, without an actual (non-deterministic) data race between the test
+// goroutine and the worker.
 type gatedMessageRepo struct {
 	*mocks.MessageRepo
 	proceed chan struct{}
 }
 
-func (g *gatedMessageRepo) CountByRoom(ctx context.Context, roomID string) (int64, error) {
+func (g *gatedMessageRepo) CountAndMaxSequence(ctx context.Context, roomID string) (int64, int64, error) {
 	<-g.proceed
-	return g.MessageRepo.CountByRoom(ctx, roomID)
+	return g.MessageRepo.CountAndMaxSequence(ctx, roomID)
 }
 
 // gatedForkJobRepo wraps *mocks.ForkJobRepo, closing done once the job
@@ -37,8 +39,8 @@ type gatedForkJobRepo struct {
 	done chan struct{}
 }
 
-func (g *gatedForkJobRepo) MarkCompleted(ctx context.Context, id string) error {
-	err := g.ForkJobRepo.MarkCompleted(ctx, id)
+func (g *gatedForkJobRepo) CompleteAndUnarchive(ctx context.Context, id, newRoomID string) error {
+	err := g.ForkJobRepo.CompleteAndUnarchive(ctx, id, newRoomID)
 	close(g.done)
 	return err
 }
@@ -75,7 +77,7 @@ func TestForkRoomSuccess(t *testing.T) {
 	done := make(chan struct{})
 	msgRepo := &gatedMessageRepo{MessageRepo: &mocks.MessageRepo{}, proceed: gate}
 	roomRepo := &mocks.RoomRepo{}
-	forkJobRepo := &gatedForkJobRepo{ForkJobRepo: &mocks.ForkJobRepo{}, done: done}
+	forkJobRepo := &gatedForkJobRepo{ForkJobRepo: &mocks.ForkJobRepo{Rooms: roomRepo}, done: done}
 
 	uc := NewRoomUsecase(roomRepo, msgRepo, forkJobRepo, nil)
 	ctx := context.Background()
@@ -192,22 +194,68 @@ func TestGetForkJobStatusNotFound(t *testing.T) {
 	}
 }
 
+// errGetMemberRoomRepo wraps *mocks.RoomRepo, making GetMember return a
+// fixed non-domain.ErrNotFound error for one specific roomID (simulating a
+// genuine repository failure, e.g. a DB outage), while every other roomID
+// falls through to the embedded fake's normal behavior.
+type errGetMemberRoomRepo struct {
+	*mocks.RoomRepo
+	errRoomID string
+	err       error
+}
+
+func (r *errGetMemberRoomRepo) GetMember(ctx context.Context, roomID, userID string) (*domainroom.RoomMember, error) {
+	if roomID == r.errRoomID {
+		return nil, r.err
+	}
+	return r.RoomRepo.GetMember(ctx, roomID, userID)
+}
+
+// TestGetForkJobStatusPropagatesNonNotFoundError (Step's review fix) proves
+// that GetForkJobStatus never folds a genuine (non-domain.ErrNotFound)
+// GetMember failure into domain.ErrForbidden: a source-room GetMember call
+// that fails with an arbitrary repository error must propagate that exact
+// error to the caller, rather than being treated the same as "not a
+// member" and falling through to the new-room check.
+func TestGetForkJobStatusPropagatesNonNotFoundError(t *testing.T) {
+	boom := errors.New("boom: db unavailable")
+	roomRepo := &errGetMemberRoomRepo{RoomRepo: &mocks.RoomRepo{}, errRoomID: "source-room", err: boom}
+	forkJobRepo := &mocks.ForkJobRepo{}
+	uc := NewRoomUsecase(roomRepo, &mocks.MessageRepo{}, forkJobRepo, nil)
+	ctx := context.Background()
+
+	now := time.Now()
+	job := &domainroomfork.Job{
+		ID: "job-1", SourceRoomID: "source-room", NewRoomID: "new-room",
+		Status: domainroomfork.StatusRunning, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := forkJobRepo.Create(ctx, job); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err := uc.GetForkJobStatus(ctx, "someone", "job-1")
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected the stubbed source-room GetMember error to propagate, got %v", err)
+	}
+}
+
 // --- runForkJob (synchronous, direct call — no goroutine) ---
 
 // batchedMessageRepo wraps *mocks.MessageRepo, overriding only
 // ListByRoomAfter to return a fixed sequence of pre-built batches
-// regardless of afterSequence/limit, so a multi-batch copy can be exercised
-// deterministically without needing forkBatchSize-many (1000) messages.
-// CountByRoom/ReserveSequenceRange/CreateBatch are inherited unmodified
-// from the embedded mock, so the batches are actually persisted into
-// Messages via the real (fake) CreateBatch/ReserveSequenceRange logic.
+// regardless of afterSequence/maxSequence/limit, so a multi-batch copy can
+// be exercised deterministically without needing forkBatchSize-many (1000)
+// messages. CountAndMaxSequence/ReserveSequenceRange/CreateBatch are
+// inherited unmodified from the embedded mock, so the batches are actually
+// persisted into Messages via the real (fake) CreateBatch/
+// ReserveSequenceRange logic.
 type batchedMessageRepo struct {
 	*mocks.MessageRepo
 	batches [][]*domainmessage.Message
 	calls   int
 }
 
-func (b *batchedMessageRepo) ListByRoomAfter(_ context.Context, _ string, _ int64, _ int) ([]*domainmessage.Message, error) {
+func (b *batchedMessageRepo) ListByRoomAfter(_ context.Context, _ string, _ int64, _ int64, _ int) ([]*domainmessage.Message, error) {
 	if b.calls >= len(b.batches) {
 		return nil, nil
 	}
@@ -256,7 +304,7 @@ func TestRunForkJobMultiBatchBoundaryRemap(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedRoom(newRoomID, nil)
 
-	forkJobRepo := &mocks.ForkJobRepo{}
+	forkJobRepo := &mocks.ForkJobRepo{Rooms: roomRepo}
 	job := &domainroomfork.Job{
 		ID: "job-1", SourceRoomID: sourceRoomID, NewRoomID: newRoomID,
 		Status: domainroomfork.StatusPending, CreatedAt: now, UpdatedAt: now,
@@ -352,7 +400,7 @@ func TestRunForkJobDefensiveNilRemap(t *testing.T) {
 	roomRepo := &mocks.RoomRepo{}
 	roomRepo.SeedRoom(newRoomID, nil)
 
-	forkJobRepo := &mocks.ForkJobRepo{}
+	forkJobRepo := &mocks.ForkJobRepo{Rooms: roomRepo}
 	job := &domainroomfork.Job{
 		ID: "job-1", SourceRoomID: sourceRoomID, NewRoomID: newRoomID,
 		Status: domainroomfork.StatusPending, CreatedAt: now, UpdatedAt: now,

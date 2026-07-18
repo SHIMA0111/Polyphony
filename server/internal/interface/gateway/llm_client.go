@@ -372,6 +372,13 @@ type sseFrame struct {
 // stream, sending one ai.StreamResult on out per completed frame per the
 // contract documented on Stream, and closing out exactly once as its last
 // action.
+//
+// It tracks whether the sseDoneSentinel frame was ever seen (sawDone): a
+// transport-level EOF that arrives without one first is a truncated stream,
+// not a clean end (the gateway always sends the sentinel as its final frame
+// on success), and would otherwise be indistinguishable from one -- silently
+// completing the caller's accumulated content as if nothing were missing. In
+// that case a final Err-carrying result is sent before closing out.
 func readSSEStream(body io.ReadCloser, out chan<- ai.StreamResult) {
 	defer close(out)
 	defer func() { _ = body.Close() }()
@@ -379,6 +386,7 @@ func readSSEStream(body io.ReadCloser, out chan<- ai.StreamResult) {
 	reader := bufio.NewReader(body)
 	var frame sseFrame
 	var dataLines []string
+	sawDone := false
 
 	flush := func() bool {
 		// Continues the loop when true (nothing to flush), stops it (returns
@@ -400,6 +408,7 @@ func readSSEStream(body io.ReadCloser, out chan<- ai.StreamResult) {
 
 		// Default/unnamed frame.
 		if data == sseDoneSentinel {
+			sawDone = true
 			return false
 		}
 
@@ -458,6 +467,9 @@ func readSSEStream(body io.ReadCloser, out chan<- ai.StreamResult) {
 				// Flush any final frame that wasn't terminated by a trailing
 				// blank line before ending cleanly.
 				flush()
+				if !sawDone {
+					out <- ai.StreamResult{Err: fmt.Errorf("%w: stream ended before [DONE] sentinel", domain.ErrLLMGateway)}
+				}
 				return
 			}
 			out <- ai.StreamResult{Err: fmt.Errorf("%w: stream transport error: %v", domain.ErrLLMGateway, err)}

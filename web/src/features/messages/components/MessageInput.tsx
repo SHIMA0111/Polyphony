@@ -320,12 +320,19 @@ export function MessageInput({
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     setIsDropActive(false)
+    // Mirrors the file-input/attach-button gating below: while a send is in
+    // flight, `handleSend`/`handleSendWithAI`'s `resetAttachments()` on
+    // success can wipe out files staged mid-send with no error surfaced --
+    // silent loss. `disabled` is included too since every other staging
+    // entry point (the attach button, the hidden file input) is inert then.
+    if (disabled || isSending) return
     const files = Array.from(e.dataTransfer.files)
     if (files.length > 0) addFiles(files)
   }
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
+    // See `handleDrop`'s comment above -- same guard, same reason.
+    if (e.target.files && !disabled && !isSending) {
       addFiles(Array.from(e.target.files))
     }
     // Reset so selecting the exact same file again still fires onChange.
@@ -354,6 +361,9 @@ export function MessageInput({
           overflow="hidden"
           onDragOver={(e) => {
             e.preventDefault()
+            // Same gating as `handleDrop`: don't even flash the drop-active
+            // highlight when a drop here would be silently dropped anyway.
+            if (disabled || isSending) return
             setIsDropActive(true)
           }}
           onDragLeave={() => setIsDropActive(false)}
@@ -471,7 +481,11 @@ export function MessageInput({
             </Button>
             {canInvokeAI && (
               <Tooltip content={VISION_UNSUPPORTED_MESSAGE} disabled={!visionGated}>
-                <Box as="span" display="inline-flex" tabIndex={0}>
+                <Box
+                  as="span"
+                  display="inline-flex"
+                  tabIndex={visionGated ? 0 : -1}
+                >
                   <Button
                     size="sm"
                     onClick={handleSendWithAI}

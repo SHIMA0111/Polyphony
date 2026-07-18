@@ -898,6 +898,18 @@ func TestRoomRepositorySetArchived(t *testing.T) {
 	}
 }
 
+// forkedFromRoomIDOf locates roomID within rooms and returns its
+// ForkedFromRoomID, or nil with found == false if roomID is absent from the
+// slice.
+func forkedFromRoomIDOf(rooms []*domainroom.Room, roomID string) (id *string, found bool) {
+	for _, rm := range rooms {
+		if rm.ID == roomID {
+			return rm.ForkedFromRoomID, true
+		}
+	}
+	return nil, false
+}
+
 // TestRoomRepositoryForkedFromRoomIDRoundTrip proves that
 // forked_from_room_id is persisted at Create time, read back by GetByID/
 // ListByUserID/ListByUserIDWithRole, and left untouched by Update (it is
@@ -956,6 +968,38 @@ func TestRoomRepositoryForkedFromRoomIDRoundTrip(t *testing.T) {
 	}
 	if !got.IsArchived {
 		t.Fatal("expected is_archived true")
+	}
+
+	// ListByUserID and ListByUserIDWithRole must each surface the same
+	// forked_from_room_id GetByID just proved — the doc comment above
+	// claims coverage of all three read paths, so all three must actually
+	// be exercised here.
+	listed, err := roomRepo.ListByUserID(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("ListByUserID failed: %v", err)
+	}
+	listedForkedFrom, found := forkedFromRoomIDOf(listed, fork.ID)
+	if !found {
+		t.Fatalf("expected ListByUserID to include fork room %s", fork.ID)
+	}
+	if listedForkedFrom == nil || *listedForkedFrom != source.ID {
+		t.Fatalf("expected ListByUserID's forked_from_room_id %s, got %v", source.ID, listedForkedFrom)
+	}
+
+	listedWithRole, err := roomRepo.ListByUserIDWithRole(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("ListByUserIDWithRole failed: %v", err)
+	}
+	var listedWithRoleRooms []*domainroom.Room
+	for _, rwr := range listedWithRole {
+		listedWithRoleRooms = append(listedWithRoleRooms, rwr.Room)
+	}
+	listedWithRoleForkedFrom, found := forkedFromRoomIDOf(listedWithRoleRooms, fork.ID)
+	if !found {
+		t.Fatalf("expected ListByUserIDWithRole to include fork room %s", fork.ID)
+	}
+	if listedWithRoleForkedFrom == nil || *listedWithRoleForkedFrom != source.ID {
+		t.Fatalf("expected ListByUserIDWithRole's forked_from_room_id %s, got %v", source.ID, listedWithRoleForkedFrom)
 	}
 
 	// UpdateDetails never touches forked_from_room_id (it only ever issues

@@ -2,11 +2,13 @@ package message
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainattachment "github.com/SHIMA0111/multi-user-ai/server/internal/domain/attachment"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
@@ -122,11 +124,29 @@ func TestAssembleAIContextSummarizesOnOverflowAndCaches(t *testing.T) {
 	if cached.SummaryText != "This is the summary." {
 		t.Errorf("cached.SummaryText = %q, want %q", cached.SummaryText, "This is the summary.")
 	}
-	if cached.CoveredUpToSequence != 1 {
-		t.Errorf("cached.CoveredUpToSequence = %d, want 1 (the sequence of msg-1)", cached.CoveredUpToSequence)
+	if cached.CoveredUpToSequence != 2 {
+		t.Errorf("cached.CoveredUpToSequence = %d, want 2 (the sequence of msg-2, the newest older-public message)", cached.CoveredUpToSequence)
 	}
 }
 
+// TestAssembleAIContextCacheHitOnMatchingBoundary proves two things about
+// the (fixed) newest-sequence boundary (see context.go's boundarySeq
+// comment and ContextSummary.CoveredUpToSequence's doc comment):
+//
+//  1. A call that re-derives the exact same older-public bucket -- because
+//     it fetches the exact same underlying messages, not because no new
+//     messages exist in the room -- genuinely hits the cache.
+//     RegenerateAIMessage on the same human message is the natural way to
+//     trigger this: it fetches context via ListByRoomUpTo(targetMsg.Sequence),
+//     bounded to the same messages the original SendAIMessage call saw,
+//     so it resolves to the identical boundary sequence.
+//  2. A subsequent call that legitimately sees new older-public history
+//     (a message aging out of the recent tail because new messages were
+//     sent) computes a different, larger boundary sequence and correctly
+//     forces a fresh summarization -- this is the behavior item 13's fix
+//     restores; the pre-fix (oldest-sequence) boundary would have kept
+//     hitting the stale cache here and silently dropped the newly bucketed
+//     message from the AI's context.
 func TestAssembleAIContextCacheHitOnMatchingBoundary(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -148,9 +168,10 @@ func TestAssembleAIContextCacheHitOnMatchingBoundary(t *testing.T) {
 		}
 	}
 
-	// First overflowing call: seq 1 is (and remains) the oldest surviving
-	// message, so this and the next call both resolve to
-	// CoveredUpToSequence == 1 -- the second call must hit the cache.
+	// First overflowing call: seq 1..11 seeded, msg-12 reserves seq 12
+	// (human) and seq 13 (AI). The 10 newest (seq 3..12) form the recent
+	// tail, leaving seq 1/2 as the older-public bucket -- boundary sequence
+	// 2 (seq 2, the newest of the two).
 	first, err := uc.SendAIMessage(ctx, "user-1", "room-1", "msg-12", "gpt-5-mini", false)
 	if err != nil {
 		t.Fatalf("first SendAIMessage failed: %v", err)
@@ -163,18 +184,55 @@ func TestAssembleAIContextCacheHitOnMatchingBoundary(t *testing.T) {
 	}
 	upsertsAfterFirst := summaryRepo.UpsertCallCount
 
-	second, err := uc.SendAIMessage(ctx, "user-1", "room-1", "msg-13", "gpt-5-mini", false)
+	// Regenerating the same human message's AI response fetches context via
+	// ListByRoomUpTo(targetMsg.Sequence), bounded to the exact same seq
+	// 1..12 messages the first call saw -- the boundary is genuinely
+	// unchanged (still 2), so this must hit the cache: exactly one more
+	// Complete call (the regenerated answer, no re-summarization) and no
+	// additional cache write.
+	regenerated, usedSummary, err := uc.RegenerateAIMessage(ctx, "user-1", "room-1", first.HumanMessage.ID, "gpt-5-mini")
 	if err != nil {
-		t.Fatalf("second SendAIMessage failed: %v", err)
+		t.Fatalf("RegenerateAIMessage failed: %v", err)
 	}
-	if !second.UsedContextSummary {
-		t.Fatal("expected second call to also report UsedContextSummary=true (served from cache)")
+	if regenerated == nil {
+		t.Fatal("expected a non-nil regenerated AI message")
+	}
+	if !usedSummary {
+		t.Fatal("expected the regenerated call to also report usedSummary=true (served from cache)")
 	}
 	if gw.CompleteCallCount != 3 {
-		t.Fatalf("expected exactly 1 additional Complete call (the answer only, cache hit) after the second send, got total %d", gw.CompleteCallCount)
+		t.Fatalf("expected exactly 1 additional Complete call (the answer only, cache hit) after regenerating, got total %d", gw.CompleteCallCount)
 	}
 	if summaryRepo.UpsertCallCount != upsertsAfterFirst {
-		t.Fatalf("expected no additional cache write on a cache hit, Upsert count went from %d to %d", upsertsAfterFirst, summaryRepo.UpsertCallCount)
+		t.Fatalf("expected no additional cache write on a genuine cache hit, Upsert count went from %d to %d", upsertsAfterFirst, summaryRepo.UpsertCallCount)
+	}
+
+	// Sending a new message (msg-14) grows the room to seq 1..14: the 10
+	// newest (seq 5..14) now form the recent tail, so seq 1/2/3/4 are the
+	// older-public bucket -- boundary sequence 4, genuinely different from
+	// the cached 2. This must miss the cache and force a fresh
+	// summarization, proving the newly bucketed seq-3/seq-4 messages are
+	// not silently dropped from the AI's context.
+	third, err := uc.SendAIMessage(ctx, "user-1", "room-1", "msg-14", "gpt-5-mini", false)
+	if err != nil {
+		t.Fatalf("third SendAIMessage failed: %v", err)
+	}
+	if !third.UsedContextSummary {
+		t.Fatal("expected the third call to also use summarization")
+	}
+	if gw.CompleteCallCount != 5 {
+		t.Fatalf("expected 2 additional Complete calls (fresh summarize + answer) after the boundary changed, got total %d", gw.CompleteCallCount)
+	}
+	if summaryRepo.UpsertCallCount != upsertsAfterFirst+1 {
+		t.Fatalf("expected exactly 1 additional cache write once the boundary changed, Upsert count went from %d to %d", upsertsAfterFirst, summaryRepo.UpsertCallCount)
+	}
+
+	cached, err := summaryRepo.Get(ctx, "room-1")
+	if err != nil {
+		t.Fatalf("expected a cached summary after the boundary-changing call, got error: %v", err)
+	}
+	if cached.CoveredUpToSequence != 4 {
+		t.Fatalf("cached.CoveredUpToSequence = %d, want 4 (the sequence of msg-4, the newest older-public message after the third call)", cached.CoveredUpToSequence)
 	}
 }
 
@@ -315,6 +373,68 @@ func TestAssembleAIContextInvalidationForcesFreshSummary(t *testing.T) {
 // assertion in TestAssembleAIContextInvalidationForcesFreshSummary.
 type messageResult struct {
 	id string
+}
+
+// TestAssembleAIContextSkipsStaleUpsertOnConcurrentInvalidation proves the
+// revision-fencing mechanism (item 18, see
+// ai.ContextSummaryRepository's "Revision fencing" doc comment): a
+// DeleteByRoom landing while summarization is in flight -- simulated here
+// via CompleteFunc, which runs after summaryOrCompute has already captured
+// the pre-delete revision via GetRevision but before it calls Upsert --
+// makes the subsequent Upsert a no-op instead of resurrecting a summary
+// that predates the invalidation.
+func TestAssembleAIContextSkipsStaleUpsertOnConcurrentInvalidation(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	summaryRepo := &mocks.ContextSummaryRepo{}
+
+	callIndex := 0
+	gw := &mocks.LLMGateway{
+		Models:                []ai.ModelInfo{{ID: "gpt-5-mini", ContextWindow: 8000, SupportsImageInput: true}},
+		TokenEstimateResponse: &ai.TokenEstimateResponse{EstimatedTokens: 999_999},
+		CompleteFunc: func(_ context.Context, _ *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+			callIndex++
+			if callIndex == 1 {
+				// Simulate a concurrent DeleteMessage/SetExcludeFromAI
+				// landing on this room while this (the summarization)
+				// Complete call is still in flight.
+				if err := summaryRepo.DeleteByRoom(context.Background(), "room-1"); err != nil {
+					t.Fatalf("simulated concurrent DeleteByRoom failed: %v", err)
+				}
+				return &ai.CompletionResponse{Content: "This is the summary."}, nil
+			}
+			return &ai.CompletionResponse{Content: "Final answer."}, nil
+		},
+	}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, summaryRepo, "gpt-5-mini")
+	ctx := context.Background()
+
+	for i := 1; i <= 11; i++ {
+		if _, err := uc.SendMessage(ctx, "user-1", "room-1", fmt.Sprintf("msg-%d", i)); err != nil {
+			t.Fatalf("seed message %d: %v", i, err)
+		}
+	}
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "msg-12", "gpt-5-mini", false)
+	if err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+	if !result.UsedContextSummary {
+		t.Fatal("expected UsedContextSummary=true for this call even though the cache write itself was skipped")
+	}
+	if result.AIMessage.Content != "Final answer." {
+		t.Fatalf("expected the answer call to still succeed despite the no-op'd cache write, got %q", result.AIMessage.Content)
+	}
+
+	if summaryRepo.UpsertNoopCount != 1 {
+		t.Fatalf("expected exactly 1 no-op'd Upsert (stale revision), got %d", summaryRepo.UpsertNoopCount)
+	}
+	if _, err := summaryRepo.Get(ctx, "room-1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected no cached summary after the stale Upsert no-op'd (the concurrent DeleteByRoom's delete must not have been undone), got err=%v", err)
+	}
 }
 
 func TestAssembleAIContextIncludeImagesResolvedFromModelMetadata(t *testing.T) {

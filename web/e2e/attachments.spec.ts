@@ -41,6 +41,12 @@ function creditTokenBalance(email: string, amount: number): void {
       cwd: SERVER_DIR,
       env: { ...process.env, DATABASE_URL: databaseUrl },
       stdio: "pipe",
+      // Without this, a hung seed command (e.g. the DB never becoming
+      // reachable) blocks Node's event loop indefinitely -- Playwright's own
+      // test timeout can't interrupt a synchronous `execFileSync` call, so
+      // the run would hang forever instead of failing with a clear timeout
+      // error.
+      timeout: 30_000,
     },
   )
 }
@@ -114,9 +120,12 @@ test("attach an image and send it with AI", async ({ page }) => {
 
   await expect(page.getByText(messageContent).first()).toBeVisible()
 
-  // The thumbnail renders inside the sent message bubble.
+  // The thumbnail renders inside the sent message bubble. The clickable
+  // element is a `Button` (keyboard-accessible; the `Image` inside it is
+  // decorative with an empty `alt`), so its accessible name comes from
+  // `aria-label`, not the image.
   await expect(
-    page.getByRole("img", { name: "Message attachment" }),
+    page.getByRole("button", { name: "Open message attachment" }),
   ).toBeVisible()
 
   // The AI's reply appears -- the initial pass and the Vision-aware

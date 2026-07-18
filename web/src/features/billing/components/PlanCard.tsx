@@ -2,7 +2,6 @@
 
 import { Badge, Button, Card, Flex, Text } from "@chakra-ui/react"
 import { formatCurrency } from "@/lib/format"
-import { useCreateCheckoutSession } from "../hooks/use-create-checkout-session"
 import type { BillingPlan } from "../types"
 
 /**
@@ -10,13 +9,22 @@ import type { BillingPlan } from "../types"
  * pack), rendered by `PlanList`'s `SimpleGrid`.
  *
  * The CTA reads "Subscribe" for a recurring (`interval === "month"`) plan or
- * "Buy tokens" for a one-time token pack, and is wired directly to
- * `useCreateCheckoutSession()` — clicking it starts a Stripe Checkout
- * Session for this exact plan and, on success, navigates the browser to the
- * hosted Checkout page.
+ * "Buy tokens" for a one-time token pack. The checkout mutation itself is
+ * owned by `PlanList` (not this component) and reached only through
+ * `onSelect` — every card in the grid shares that one mutation instance, so
+ * `pending` reflects whether *any* card's checkout is in flight, not just
+ * this one. That keeps a second card from starting a second, concurrent
+ * Checkout Session while the first is still being created.
  */
-export function PlanCard({ plan }: { plan: BillingPlan }) {
-  const checkoutMutation = useCreateCheckoutSession()
+export function PlanCard({
+  plan,
+  pending,
+  onSelect,
+}: {
+  plan: BillingPlan
+  pending: boolean
+  onSelect: (plan: BillingPlan) => void
+}) {
   const ctaLabel = plan.interval === "month" ? "Subscribe" : "Buy tokens"
 
   return (
@@ -50,9 +58,9 @@ export function PlanCard({ plan }: { plan: BillingPlan }) {
         <Button
           mt="auto"
           colorPalette="blue"
-          loading={checkoutMutation.isPending}
+          loading={pending}
           loadingText="Redirecting..."
-          onClick={() => checkoutMutation.mutate(plan)}
+          onClick={() => onSelect(plan)}
         >
           {ctaLabel}
         </Button>

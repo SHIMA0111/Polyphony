@@ -60,16 +60,31 @@ export function formatDateTimeLocal(iso: string): string {
 }
 
 /**
- * Formats an integer minor-currency-unit amount (Stripe convention -- cents,
- * not major units) as a localized currency string. Never render a raw cents
- * value or a hand-rolled `/ 100` division without this.
+ * Formats an integer minor-currency-unit amount (Stripe convention) as a
+ * localized currency string. Never render a raw minor-unit value or a
+ * hand-rolled `/ 100` division without this.
  *
- * @param cents - The amount in minor currency units (e.g. US cents).
+ * The minor-unit exponent is NOT hardcoded to 2 (cents): most currencies use
+ * 2 decimal places, but Stripe (and ISO 4217) also has zero-decimal
+ * currencies like `"jpy"` (minor unit === major unit) and three-decimal
+ * currencies like `"kwd"`. The exponent is instead read back from
+ * `Intl.NumberFormat`'s own `resolvedOptions().maximumFractionDigits`, so it
+ * always agrees with the `style: "currency"` formatting below.
+ *
+ * @param amountMinorUnits - The amount in minor currency units (e.g. cents
+ *   for `"usd"`, whole yen for `"jpy"`, fils for `"kwd"`).
  * @param currency - ISO 4217 currency code (e.g. "usd").
  */
-export function formatCurrency(cents: number, currency: string): string {
-  return new Intl.NumberFormat(undefined, {
+export function formatCurrency(amountMinorUnits: number, currency: string): string {
+  const formatter = new Intl.NumberFormat(undefined, {
     style: "currency",
     currency,
-  }).format(cents / 100)
+  })
+  // `style: "currency"` always populates `maximumFractionDigits` at runtime;
+  // the `| undefined` in its type is inherited from the shared
+  // `Intl.ResolvedNumberFormatOptions` shape (other `style`s can omit it).
+  // The `?? 2` fallback matches this codebase's pre-existing (cents)
+  // assumption and only matters if that invariant is ever violated.
+  const exponent = formatter.resolvedOptions().maximumFractionDigits ?? 2
+  return formatter.format(amountMinorUnits / 10 ** exponent)
 }

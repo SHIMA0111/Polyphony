@@ -1,4 +1,4 @@
-h1:a0OkylZQ5D1Qb5C1Y5lGdYUkr210e4uz8YcdSojIktk=
+h1:B59Lq3YgQbeAjP5hgPX6uqaWQ5rUqi2y7D88lTPDLD0=
 20260220060722_initial.sql h1:VwlMvt76BnxphdtJZdLQHauB2X/CNIgQYsp6h0ToCUo=
 20260715164341_add_message_response_link_and_sequence_unique.sql h1:Ricf+Izs1ckG+t5ojMYi1HsEz7rUghfjndWEG6VhB+g=
 20260715180129_add_message_attachments.sql h1:WBsRwVPneHgPuwh+a+PYUNbdx46YPF+Uc+et/9JTaYk=
@@ -14,3 +14,4 @@ h1:a0OkylZQ5D1Qb5C1Y5lGdYUkr210e4uz8YcdSojIktk=
 20260716022957_add_message_context_summaries.sql h1:X8vuhUMps8FNt4mkWfAlwEHZhmxbfRtQ3xcx9ErKLLg=
 20260716023744_add_room_fork.sql h1:224LC6/K9+B5kq1VFkszCkqSS2GVtRIa8nFbAcdvHQQ=
 20260718035411_add_room_invitations_checks.sql h1:BM1tRvrGEOWhf0nnL9q/NDwwOOczam1zS5GcJlab1HI=
+20260718150335_add_context_summary_revisions.sql h1:sPevf7sKdeeeXA2YozU22fzcPJ2RT0HRKoB1bcSjNDM=
