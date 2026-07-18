@@ -321,6 +321,13 @@ func TestAssembleAIContextInvalidationForcesFreshSummary(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.SeedRoom("room-1", nil)
 	summaryRepo := &mocks.ContextSummaryRepo{}
+	// SetExcludeFromAI below now invalidates the cache via msgRepo's own
+	// combined UpdateExcludeFromAIAndInvalidateSummary rather than calling
+	// summaryRepo.DeleteByRoom directly (see MessageUsecase.SetExcludeFromAI's
+	// doc comment); wiring this hook keeps this fake internally consistent
+	// with that, the way a single PostgreSQL transaction would be (see
+	// mocks.MessageRepo.InvalidateSummary's doc comment).
+	msgRepo.InvalidateSummary = summaryRepo.DeleteByRoom
 
 	gw := &mocks.LLMGateway{
 		Models:                []ai.ModelInfo{{ID: "gpt-5-mini", ContextWindow: 8000, SupportsImageInput: true}},

@@ -103,6 +103,31 @@ func TestCreateSubscriptionCheckoutSessionSuccessURLPreservesExistingQueryString
 	}
 }
 
+// TestCreateSubscriptionCheckoutSessionSuccessURLPreservesFragment proves
+// withCheckoutSessionIDParam splits off a "#fragment" before deciding
+// between "?" and "&", and reattaches it after the query parameter — so a
+// configured checkoutSuccessURL like ".../success#receipt" ends up with
+// session_id in the query string (where the success page's
+// useSearchParams() can read it) rather than appended past the fragment,
+// where it would be invisible to the client entirely.
+func TestCreateSubscriptionCheckoutSessionSuccessURLPreservesFragment(t *testing.T) {
+	gw := &mocks.StripeGateway{CheckoutURL: "https://checkout.stripe.com/session-1"}
+	balanceRepo := &mocks.BalanceRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	subRepo := &mocks.SubscriptionRepo{}
+	paymentRepo := &mocks.PaymentRepo{BalanceRepo: balanceRepo}
+	uc := NewBillingUsecase(balanceRepo, roomRepo, subRepo, paymentRepo, gw,
+		testPlans(), testPackages(), "https://example.com/success#receipt", "https://example.com/cancel")
+
+	if _, err := uc.CreateSubscriptionCheckoutSession(context.Background(), "user-1", "starter"); err != nil {
+		t.Fatalf("CreateSubscriptionCheckoutSession failed: %v", err)
+	}
+	wantSuccessURL := "https://example.com/success?session_id={CHECKOUT_SESSION_ID}#receipt"
+	if gw.LastSubscriptionCheckoutParams.SuccessURL != wantSuccessURL {
+		t.Fatalf("expected success url %q, got %q", wantSuccessURL, gw.LastSubscriptionCheckoutParams.SuccessURL)
+	}
+}
+
 func TestCreateSubscriptionCheckoutSessionStripeNotConfigured(t *testing.T) {
 	uc, _, _, _ := newStripeTestUsecase(nil)
 	_, err := uc.CreateSubscriptionCheckoutSession(context.Background(), "user-1", "starter")
@@ -361,6 +386,62 @@ func TestHandleWebhookEventReplayIsIdempotentNoOp(t *testing.T) {
 	}
 	if len(page.Payments) != 1 {
 		t.Fatalf("expected exactly 1 payment_history row despite the replay, got %d", len(page.Payments))
+	}
+}
+
+// TestHandleWebhookEventCheckoutSessionCompletedSubscriptionPersistsSessionID
+// proves that a subscription-mode checkout.session.completed event stamps
+// the resulting Subscription row's StripeCheckoutSessionID with the
+// Checkout Session's own ID, on both the create path (a brand new
+// subscription) and the update path (a later checkout for the same
+// underlying Stripe subscription) — see upsertSubscriptionFromCheckout's
+// doc comment for why this must happen on both paths: the post-Checkout
+// success page matches this field against its own session_id query
+// parameter to confirm which specific Checkout Session the caller just
+// completed.
+func TestHandleWebhookEventCheckoutSessionCompletedSubscriptionPersistsSessionID(t *testing.T) {
+	gw := &mocks.StripeGateway{WebhookEvent: domainbilling.WebhookEvent{
+		ID:   "evt_checkout_sub_1",
+		Type: domainbilling.EventTypeCheckoutSessionCompleted,
+		CheckoutSession: &domainbilling.CheckoutSessionData{
+			SessionID: "cs_first", Mode: domainbilling.CheckoutModeSubscription,
+			UserID: "user-1", PlanCode: "starter", StripeSubscriptionID: "sub_1", StripeCustomerID: "cus_1",
+		},
+	}}
+	uc, _, subRepo, _ := newStripeTestUsecase(gw)
+
+	if err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig"); err != nil {
+		t.Fatalf("first HandleWebhookEvent (create) failed: %v", err)
+	}
+
+	sub, err := subRepo.GetByStripeSubscriptionID(context.Background(), "sub_1")
+	if err != nil {
+		t.Fatalf("GetByStripeSubscriptionID: %v", err)
+	}
+	if sub.StripeCheckoutSessionID != "cs_first" {
+		t.Fatalf("expected StripeCheckoutSessionID %q after create, got %q", "cs_first", sub.StripeCheckoutSessionID)
+	}
+
+	// A second checkout for the same underlying Stripe subscription (the
+	// update path) must overwrite it with the new session's ID.
+	gw.WebhookEvent = domainbilling.WebhookEvent{
+		ID:   "evt_checkout_sub_2",
+		Type: domainbilling.EventTypeCheckoutSessionCompleted,
+		CheckoutSession: &domainbilling.CheckoutSessionData{
+			SessionID: "cs_second", Mode: domainbilling.CheckoutModeSubscription,
+			UserID: "user-1", PlanCode: "starter", StripeSubscriptionID: "sub_1", StripeCustomerID: "cus_1",
+		},
+	}
+	if err := uc.HandleWebhookEvent(context.Background(), []byte("{}"), "sig"); err != nil {
+		t.Fatalf("second HandleWebhookEvent (update) failed: %v", err)
+	}
+
+	sub, err = subRepo.GetByStripeSubscriptionID(context.Background(), "sub_1")
+	if err != nil {
+		t.Fatalf("GetByStripeSubscriptionID after update: %v", err)
+	}
+	if sub.StripeCheckoutSessionID != "cs_second" {
+		t.Fatalf("expected StripeCheckoutSessionID %q after update, got %q", "cs_second", sub.StripeCheckoutSessionID)
 	}
 }
 

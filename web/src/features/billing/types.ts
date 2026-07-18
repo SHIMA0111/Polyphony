@@ -88,7 +88,8 @@ export type SubscriptionStatus = "active" | "trialing" | "past_due" | "canceled"
  * fields besides `status`/`cancel_at_period_end` are `null` only in this
  * client-side `"none"` mapping — the server's own `200` response always
  * populates `plan_code`/`monthly_token_allocation`/`current_period_start`/
- * `current_period_end` (only `canceled_at` is nullable server-side).
+ * `current_period_end`/`stripe_checkout_session_id` (only `canceled_at` is
+ * nullable server-side).
  */
 export interface Subscription {
   status: SubscriptionStatus
@@ -98,6 +99,17 @@ export interface Subscription {
   current_period_end: string | null
   cancel_at_period_end: boolean
   canceled_at: string | null
+  /**
+   * The Stripe Checkout Session ID that created or most recently updated
+   * this subscription. `""` (never `null` server-side) for a subscription
+   * created before this field existed. The post-Checkout success page
+   * (`app/(main)/billing/checkout/success/page.tsx`) compares this against
+   * its own `session_id` query parameter to confirm a subscription-mode
+   * purchase resolved from that specific Checkout Session, rather than
+   * treating any pre-existing active subscription as confirmation of a
+   * brand new one.
+   */
+  stripe_checkout_session_id: string | null
 }
 
 /** Response body for `POST /billing/checkout-session`. */

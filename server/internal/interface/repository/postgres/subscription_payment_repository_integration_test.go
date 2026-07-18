@@ -142,6 +142,43 @@ func TestSubscriptionRepositoryUpdate(t *testing.T) {
 	}
 }
 
+// TestSubscriptionRepositoryStripeCheckoutSessionIDRoundTrip proves that
+// stripe_checkout_session_id defaults to "" for a Subscription created
+// without it (a row predating the field, per its NOT NULL DEFAULT ''
+// schema.sql column), and that Update persists a new value for it —
+// mirroring BillingUsecase.upsertSubscriptionFromCheckout stamping this
+// field on both its create and update paths.
+func TestSubscriptionRepositoryStripeCheckoutSessionIDRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+	userRepo := NewUserRepository(pool)
+	subRepo := NewSubscriptionRepository(pool)
+
+	userID := seedBillingUser(ctx, t, userRepo, "sub-checkout-session-id")
+	sub := seedSubscription(ctx, t, subRepo, userID, "sub_checkout_session_1", 100000)
+
+	got, err := subRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetByUserID failed: %v", err)
+	}
+	if got.StripeCheckoutSessionID != "" {
+		t.Fatalf("expected stripe_checkout_session_id to default to \"\", got %q", got.StripeCheckoutSessionID)
+	}
+
+	sub.StripeCheckoutSessionID = "cs_round_trip"
+	if err := subRepo.Update(ctx, sub); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	got, err = subRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetByUserID after update failed: %v", err)
+	}
+	if got.StripeCheckoutSessionID != "cs_round_trip" {
+		t.Fatalf("expected stripe_checkout_session_id %q, got %q", "cs_round_trip", got.StripeCheckoutSessionID)
+	}
+}
+
 // TestSubscriptionRepositoryUpdateNotFound proves Update returns
 // domain.ErrNotFound for an ID with no matching row.
 func TestSubscriptionRepositoryUpdateNotFound(t *testing.T) {

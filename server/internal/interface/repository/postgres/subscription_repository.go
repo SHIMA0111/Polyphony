@@ -15,7 +15,7 @@ import (
 
 const subscriptionColumns = `id, user_id, stripe_customer_id, stripe_subscription_id, stripe_price_id, plan_code,
 	status, monthly_token_allocation, current_period_start, current_period_end, cancel_at_period_end,
-	canceled_at, created_at, updated_at`
+	canceled_at, stripe_checkout_session_id, created_at, updated_at`
 
 // SubscriptionRepository implements the billing.SubscriptionRepository
 // interface using PostgreSQL. It is a separate type from BillingRepository
@@ -39,11 +39,11 @@ func (r *SubscriptionRepository) Create(ctx context.Context, sub *billing.Subscr
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO subscriptions (id, user_id, stripe_customer_id, stripe_subscription_id, stripe_price_id, plan_code,
 		 status, monthly_token_allocation, current_period_start, current_period_end, cancel_at_period_end,
-		 canceled_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		 canceled_at, stripe_checkout_session_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		sub.ID, sub.UserID, sub.StripeCustomerID, sub.StripeSubscriptionID, sub.StripePriceID, sub.PlanCode,
 		sub.Status, sub.MonthlyTokenAllocation, sub.CurrentPeriodStart, sub.CurrentPeriodEnd, sub.CancelAtPeriodEnd,
-		sub.CanceledAt, sub.CreatedAt, sub.UpdatedAt,
+		sub.CanceledAt, sub.StripeCheckoutSessionID, sub.CreatedAt, sub.UpdatedAt,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -78,11 +78,11 @@ func (r *SubscriptionRepository) Update(ctx context.Context, sub *billing.Subscr
 		`UPDATE subscriptions SET
 		 stripe_customer_id = $1, stripe_subscription_id = $2, stripe_price_id = $3, plan_code = $4,
 		 status = $5, monthly_token_allocation = $6, current_period_start = $7, current_period_end = $8,
-		 cancel_at_period_end = $9, canceled_at = $10, updated_at = NOW()
-		 WHERE id = $11`,
+		 cancel_at_period_end = $9, canceled_at = $10, stripe_checkout_session_id = $11, updated_at = NOW()
+		 WHERE id = $12`,
 		sub.StripeCustomerID, sub.StripeSubscriptionID, sub.StripePriceID, sub.PlanCode,
 		sub.Status, sub.MonthlyTokenAllocation, sub.CurrentPeriodStart, sub.CurrentPeriodEnd,
-		sub.CancelAtPeriodEnd, sub.CanceledAt, sub.ID,
+		sub.CancelAtPeriodEnd, sub.CanceledAt, sub.StripeCheckoutSessionID, sub.ID,
 	)
 	if err != nil {
 		return err
@@ -98,7 +98,7 @@ func (r *SubscriptionRepository) scanSubscription(row pgx.Row) (*billing.Subscri
 	err := row.Scan(
 		&sub.ID, &sub.UserID, &sub.StripeCustomerID, &sub.StripeSubscriptionID, &sub.StripePriceID, &sub.PlanCode,
 		&sub.Status, &sub.MonthlyTokenAllocation, &sub.CurrentPeriodStart, &sub.CurrentPeriodEnd, &sub.CancelAtPeriodEnd,
-		&sub.CanceledAt, &sub.CreatedAt, &sub.UpdatedAt,
+		&sub.CanceledAt, &sub.StripeCheckoutSessionID, &sub.CreatedAt, &sub.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

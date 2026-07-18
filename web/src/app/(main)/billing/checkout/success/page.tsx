@@ -33,11 +33,15 @@ const MAX_POLL_ATTEMPTS = 8
  * visit) — it dual-polls two independent, server-verified signals until one
  * resolves:
  *
- * - the subscription (`useSubscription`) leaving status `"none"` — a
- *   subscription-mode Checkout Session upserts the local `Subscription` row
- *   directly (no `payment_history` row carries its session ID — see
- *   `BillingUsecase.handleCheckoutSessionCompleted`'s doc comment), so this
- *   is the only signal available for that purchase kind;
+ * - the subscription (`useSubscription`) whose `stripe_checkout_session_id`
+ *   equals this page's `session_id` — a subscription-mode Checkout Session
+ *   upserts the local `Subscription` row with that field set to the
+ *   session's own ID (see `BillingUsecase.upsertSubscriptionFromCheckout`'s
+ *   doc comment), so this is a precise match against *this* purchase, not
+ *   "any subscription happens to be active" (which would also — wrongly —
+ *   resolve immediately for a returning subscriber whose existing
+ *   subscription has nothing to do with the Checkout Session they just
+ *   completed);
  * - a `payment_history` entry (`usePaymentHistory`) whose
  *   `stripe_reference_id` equals this page's `session_id` — the exact
  *   transaction identity for a token-purchase Checkout Session, which
@@ -46,15 +50,18 @@ const MAX_POLL_ATTEMPTS = 8
  *   delta: a token purchase's exact `tokens_credited` comes straight from
  *   that row.
  *
- * No `session_id` (e.g. a direct/bookmarked visit) renders a neutral
- * success message with links to `/billing` instead (`NeutralSuccess`).
- * Either query erroring renders its own distinct retryable error state
- * (`ErrorFallback`) rather than a single generic one, and exhausting
- * {@link MAX_POLL_ATTEMPTS} without a match renders `ProcessingFallback`.
+ * No `session_id` — a direct/bookmarked visit, or a present-but-empty
+ * `?session_id=` (trimmed and normalized to `null` below, since an empty
+ * string would otherwise never match either signal above and poll forever)
+ * — renders a neutral success message with links to `/billing` instead
+ * (`NeutralSuccess`). Either query erroring renders its own distinct
+ * retryable error state (`ErrorFallback`) rather than a single generic one,
+ * and exhausting {@link MAX_POLL_ATTEMPTS} without a match renders
+ * `ProcessingFallback`.
  */
 function CheckoutSuccessContent() {
   const searchParams = useSearchParams()
-  const sessionId = searchParams.get("session_id")
+  const sessionId = searchParams.get("session_id")?.trim() || null
 
   if (sessionId === null) {
     return <NeutralSuccess sessionId={null} />
@@ -227,7 +234,9 @@ function TokenPurchaseSuccess({ sessionId, payment }: { sessionId: string; payme
  * resolves this Checkout Session, or gives up after {@link
  * MAX_POLL_ATTEMPTS} — see `CheckoutSuccessContent`'s doc comment for why
  * both are needed and how each identifies "this specific session"
- * (subscription: any non-`"none"` status; payment history: a
+ * (subscription: a `stripe_checkout_session_id` match, not merely any
+ * non-`"none"` status — a pre-existing subscription unrelated to this
+ * Checkout Session must never resolve it; payment history: a
  * `stripe_reference_id` match). Resolution is checked before either query's
  * error state, so a transient failure on one side never masks a genuine
  * success already visible on the other.
@@ -248,7 +257,8 @@ function DualPolling({ sessionId }: { sessionId: string }) {
     (payment) => payment.stripe_reference_id === sessionId,
   )
   const subscriptionResolved =
-    subscriptionQuery.data !== undefined && subscriptionQuery.data.status !== "none"
+    subscriptionQuery.data !== undefined &&
+    subscriptionQuery.data.stripe_checkout_session_id === sessionId
   const resolved = subscriptionResolved || matchedPayment !== undefined
   const exhausted = !resolved && attempts >= MAX_POLL_ATTEMPTS
   const stillLoading = subscriptionQuery.isPending || paymentHistoryQuery.isPending

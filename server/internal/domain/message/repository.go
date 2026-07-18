@@ -48,12 +48,60 @@ type MessageRepository interface {
 	// Returns ErrNotFound if the message does not exist.
 	UpdateExcludeFromAI(ctx context.Context, id string, exclude bool, updatedAt time.Time) error
 
+	// UpdateExcludeFromAIAndInvalidateSummary atomically toggles the
+	// exclude_from_ai flag of the message identified by messageID (the same
+	// mutation UpdateExcludeFromAI performs) and invalidates roomID's
+	// cached AI context summary (the same DELETE + revision bump
+	// ai.ContextSummaryRepository.DeleteByRoom performs), as a single
+	// all-or-nothing operation. Returns ErrNotFound if the message does not
+	// exist; in that case the summary invalidation is not attempted at
+	// all. See DeleteAndInvalidateSummary's doc comment ("Why one call, not
+	// two") for why this must be a single atomic operation rather than two
+	// separate calls to UpdateExcludeFromAI and DeleteByRoom -- the same
+	// reasoning applies verbatim to this method.
+	UpdateExcludeFromAIAndInvalidateSummary(ctx context.Context, messageID string, roomID string, exclude bool, updatedAt time.Time) error
+
 	// Delete soft-deletes a message by ID: it sets is_deleted = true (and
 	// updates updated_at) rather than physically removing the row. A
 	// soft-deleted message is excluded from ListByRoom, ListByRoomUpTo, and
 	// AI context assembly, but remains fetchable via GetByID. Returns
 	// ErrNotFound if the message does not exist or is already deleted.
 	Delete(ctx context.Context, id string) error
+
+	// DeleteAndInvalidateSummary atomically soft-deletes the message
+	// identified by messageID (the same mutation Delete performs) and
+	// invalidates roomID's cached AI context summary (the same DELETE +
+	// revision bump ai.ContextSummaryRepository.DeleteByRoom performs), as a
+	// single all-or-nothing operation. Returns ErrNotFound if the message
+	// does not exist or is already deleted; in that case the summary
+	// invalidation is not attempted at all.
+	//
+	// # Why one call, not two
+	//
+	// MessageUsecase.DeleteMessage used to call
+	// ai.ContextSummaryRepository.DeleteByRoom and this repository's plain
+	// Delete as two separate calls. Deleting a message is very often a
+	// privacy action -- the sender or a moderator deciding the AI should
+	// never have seen its content -- so the two steps must always land
+	// together. But no ordering of two independent calls can guarantee
+	// that: mutate-then-invalidate can commit the soft delete and then fail
+	// before the invalidation runs, leaving a summary that already baked
+	// the (now supposedly deleted) content into its prose still cached and
+	// servable to the AI -- a privacy gap with no error return able to
+	// signal or undo it. Invalidate-then-mutate avoids that specific gap by
+	// aborting before the message is touched on an invalidation failure,
+	// but it trades it for a subtler one: nothing stops a concurrent
+	// summarization (ai.ContextSummaryRepository.Upsert) from reading the
+	// still-undeleted message and committing a fresh summary built from its
+	// content after this call's invalidation already ran but before its
+	// mutation commits, resurrecting the removed content into a summary
+	// that postdates the delete. Wrapping both steps in a single
+	// transaction, serialized against any concurrent Upsert/DeleteByRoom by
+	// the same room-scoped pg_advisory_xact_lock those methods take,
+	// removes both failure modes at once: a caller that gets a nil error
+	// back knows both the soft delete and the invalidation committed
+	// together, and a caller that gets an error back knows neither did.
+	DeleteAndInvalidateSummary(ctx context.Context, messageID string, roomID string) error
 
 	// ReserveSequenceRange atomically reserves count contiguous sequence
 	// numbers for the given room and returns the first one; the caller owns

@@ -254,6 +254,105 @@ func (r *MessageRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteAndInvalidateSummary atomically soft-deletes messageID and
+// invalidates roomID's cached AI context summary in a single transaction —
+// see message.MessageRepository.DeleteAndInvalidateSummary's doc comment for
+// why this must be one atomic operation rather than a separate
+// ContextSummaryRepository.DeleteByRoom call plus this repository's own
+// Delete.
+//
+// The transaction: (1) acquires the same room-scoped
+// pg_advisory_xact_lock(hashtext(room_id)) that
+// ContextSummaryRepository.Upsert/DeleteByRoom take, so this can never
+// interleave with a concurrent summarization's cache write for the same
+// room; (2) runs the identical soft-delete UPDATE Delete uses, returning
+// domain.ErrNotFound (and rolling back without touching the summary tables
+// at all) if it affects zero rows; (3) runs the identical
+// DELETE-then-upsert-revision statement
+// ContextSummaryRepository.DeleteByRoom uses against
+// message_context_summaries/context_summary_revisions. Only once all three
+// steps succeed is the transaction committed, so a failure at any point
+// leaves every table exactly as it was before this call.
+func (r *MessageRepository) DeleteAndInvalidateSummary(ctx context.Context, messageID string, roomID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, roomID); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE messages SET is_deleted = true, updated_at = NOW() WHERE id = $1 AND is_deleted = false`, messageID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	if _, err := tx.Exec(ctx,
+		`WITH deleted AS (
+		     DELETE FROM message_context_summaries WHERE room_id = $1
+		 )
+		 INSERT INTO context_summary_revisions (room_id, revision) VALUES ($1, 1)
+		 ON CONFLICT (room_id) DO UPDATE SET revision = context_summary_revisions.revision + 1`,
+		roomID,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// UpdateExcludeFromAIAndInvalidateSummary atomically toggles messageID's
+// exclude_from_ai flag and invalidates roomID's cached AI context summary in
+// a single transaction — see
+// message.MessageRepository.UpdateExcludeFromAIAndInvalidateSummary's doc
+// comment for why this must be one atomic operation rather than a separate
+// ContextSummaryRepository.DeleteByRoom call plus this repository's own
+// UpdateExcludeFromAI. Structurally identical to DeleteAndInvalidateSummary
+// (see its doc comment for the full three-step transaction breakdown), with
+// the exclude_from_ai UPDATE in place of the soft-delete one.
+func (r *MessageRepository) UpdateExcludeFromAIAndInvalidateSummary(ctx context.Context, messageID string, roomID string, exclude bool, updatedAt time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, roomID); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE messages SET exclude_from_ai = $1, updated_at = $2 WHERE id = $3`,
+		exclude, updatedAt, messageID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	if _, err := tx.Exec(ctx,
+		`WITH deleted AS (
+		     DELETE FROM message_context_summaries WHERE room_id = $1
+		 )
+		 INSERT INTO context_summary_revisions (room_id, revision) VALUES ($1, 1)
+		 ON CONFLICT (room_id) DO UPDATE SET revision = context_summary_revisions.revision + 1`,
+		roomID,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
 // CountAndMaxSequence returns, in a single query, the total number of
 // messages in roomID (including soft-deleted and private ones — a
 // structural count, not a visibility-filtered read) and the highest

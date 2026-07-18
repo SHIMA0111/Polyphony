@@ -92,8 +92,21 @@ type Subscription struct {
 	CurrentPeriodEnd       time.Time
 	CancelAtPeriodEnd      bool
 	CanceledAt             *time.Time
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	// StripeCheckoutSessionID is the Stripe Checkout Session ID
+	// (CheckoutSessionData.SessionID) of the checkout.session.completed
+	// event that most recently created or updated this row (see
+	// BillingUsecase.upsertSubscriptionFromCheckout). It defaults to "" for
+	// a subscription row that predates this field (backfilled by the
+	// stripe_checkout_session_id migration, not retroactively populated).
+	// The post-Checkout success page
+	// (app/(main)/billing/checkout/success/page.tsx) compares this against
+	// its own "session_id" query parameter to confirm a subscription-mode
+	// purchase resolved from that specific Checkout Session, rather than
+	// treating any pre-existing active subscription as confirmation of a
+	// brand new one.
+	StripeCheckoutSessionID string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 // PaymentKind identifies what a PaymentRecord paid for.

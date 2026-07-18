@@ -21,8 +21,9 @@ type ContextSummaryRepo struct {
 
 	// GetCallCount/UpsertCallCount/DeleteCallCount let tests assert how
 	// many times each method was invoked (e.g. to prove a cache hit avoided
-	// a redundant Upsert, or that DeleteByRoom was actually called by
-	// MessageUsecase.DeleteMessage/SetExcludeFromAI).
+	// a redundant Upsert, or — wired via mocks.MessageRepo.InvalidateSummary
+	// — that a MessageUsecase.DeleteMessage/SetExcludeFromAI call actually
+	// invalidated the cache).
 	GetCallCount    int
 	UpsertCallCount int
 	DeleteCallCount int
@@ -38,8 +39,13 @@ type ContextSummaryRepo struct {
 	// DeleteByRoomErr, if non-nil, makes DeleteByRoom return it instead of
 	// succeeding (without deleting the cached summary or bumping the
 	// revision) -- for tests exercising callers' handling of an
-	// invalidation failure (MessageUsecase.DeleteMessage/SetExcludeFromAI
-	// now propagate this error; see their doc comments).
+	// invalidation failure. Wiring `msgRepo.InvalidateSummary =
+	// summaryRepo.DeleteByRoom` (see mocks.MessageRepo.InvalidateSummary)
+	// makes MessageUsecase.DeleteMessage/SetExcludeFromAI propagate this
+	// error through their own combined
+	// DeleteAndInvalidateSummary/UpdateExcludeFromAIAndInvalidateSummary
+	// call, exactly as postgres would if the invalidation step of that
+	// single transaction failed.
 	DeleteByRoomErr error
 }
 

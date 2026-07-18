@@ -558,14 +558,21 @@ type BillingPortalResponse struct {
 // POST /billing/subscription/cancel. Field names match Step 53's web
 // contract exactly. CanceledAt is nil until the subscription has actually
 // ended (see billing.Subscription's CancelAtPeriodEnd/CanceledAt doc).
+// StripeCheckoutSessionID is "" for a subscription created before that field
+// existed (see billing.Subscription.StripeCheckoutSessionID's doc comment)
+// and is otherwise always populated — the post-Checkout success page
+// (app/(main)/billing/checkout/success/page.tsx) compares it against its
+// own "session_id" query parameter to confirm this specific Checkout
+// Session is what created/renewed the subscription.
 type SubscriptionResponse struct {
-	Status                 string     `json:"status"`
-	PlanCode               string     `json:"plan_code"`
-	MonthlyTokenAllocation int64      `json:"monthly_token_allocation"`
-	CurrentPeriodStart     time.Time  `json:"current_period_start"`
-	CurrentPeriodEnd       time.Time  `json:"current_period_end"`
-	CancelAtPeriodEnd      bool       `json:"cancel_at_period_end"`
-	CanceledAt             *time.Time `json:"canceled_at"`
+	Status                  string     `json:"status"`
+	PlanCode                string     `json:"plan_code"`
+	MonthlyTokenAllocation  int64      `json:"monthly_token_allocation"`
+	CurrentPeriodStart      time.Time  `json:"current_period_start"`
+	CurrentPeriodEnd        time.Time  `json:"current_period_end"`
+	CancelAtPeriodEnd       bool       `json:"cancel_at_period_end"`
+	CanceledAt              *time.Time `json:"canceled_at"`
+	StripeCheckoutSessionID string     `json:"stripe_checkout_session_id"`
 }
 
 // PaymentRecordResponse is the JSON response representation of a single

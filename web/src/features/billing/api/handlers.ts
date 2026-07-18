@@ -101,6 +101,9 @@ export const fixtureSubscription: Subscription = {
   current_period_end: "2026-02-01T00:00:00Z",
   cancel_at_period_end: false,
   canceled_at: null,
+  // Matches the checkout-session fixture's `checkout_url` session id below,
+  // so tests can exercise the success page's session_id-based match.
+  stripe_checkout_session_id: "cs_test_fixture",
 }
 
 export const fixturePaymentPage1: Payment[] = [

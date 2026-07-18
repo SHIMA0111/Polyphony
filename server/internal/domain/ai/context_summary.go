@@ -68,17 +68,27 @@ type ContextSummary struct {
 // Upsert/GetRevision/DeleteByRoom together fence a race that would otherwise
 // let a stale summary resurrect itself: MessageUsecase.summaryOrCompute calls
 // ai.LLMGateway.Complete to produce a new summary, which can take long enough
-// for a concurrent DeleteByRoom (triggered by a message delete or
-// exclude_from_ai toggle landing on the same room mid-summarization) to
-// invalidate the cache before that Complete call returns. Without a fencing
-// mechanism, the in-flight summarization's own Upsert would land after
-// DeleteByRoom and silently put the stale, pre-delete summary right back --
-// as if the invalidation had never happened. GetRevision/DeleteByRoom's
-// monotonic per-room counter closes this: a caller captures GetRevision
-// before starting summarization and passes it back to Upsert as
-// expectedRevision, so an Upsert that lands after a concurrent DeleteByRoom
-// (which always advances the revision) can detect the mismatch and no-op
-// instead of overwriting.
+// for a concurrent message delete or exclude_from_ai toggle landing on the
+// same room mid-summarization to invalidate the cache before that Complete
+// call returns. Without a fencing mechanism, the in-flight summarization's
+// own Upsert would land after that invalidation and silently put the stale,
+// pre-invalidation summary right back -- as if it had never happened.
+// GetRevision/DeleteByRoom's monotonic per-room counter closes this: a
+// caller captures GetRevision before starting summarization and passes it
+// back to Upsert as expectedRevision, so an Upsert that lands after a
+// concurrent invalidation (which always advances the revision) can detect
+// the mismatch and no-op instead of overwriting.
+//
+// A message delete/exclude_from_ai toggle no longer invalidates by calling
+// this interface's DeleteByRoom directly: message.MessageRepository's
+// DeleteAndInvalidateSummary/UpdateExcludeFromAIAndInvalidateSummary apply
+// the identical DELETE-then-revision-bump statement against the same
+// message_context_summaries/context_summary_revisions tables, in the same
+// transaction as the message mutation itself and under the same room-scoped
+// advisory lock (see those methods' doc comments for why). The revision
+// this interface's GetRevision reads is the same counter either write path
+// advances, so the fencing described above holds regardless of which one
+// performed the invalidation.
 type ContextSummaryRepository interface {
 	// Get returns the cached ContextSummary for roomID, or
 	// domain.ErrNotFound if no summary has been cached for this room yet
@@ -119,17 +129,18 @@ type ContextSummaryRepository interface {
 	// GetRevision) in the same operation, so any summarization already in
 	// flight when this call lands is guaranteed to observe a moved revision
 	// when it later calls Upsert. It must not return an error when no
-	// cached row exists for roomID -- callers
-	// (MessageUsecase.DeleteMessage/SetExcludeFromAI) invoke this
-	// unconditionally on every mutation regardless of whether a summary was
-	// ever computed for the room, and treating "nothing to delete" as a
-	// failure would turn routine message edits into spurious error paths.
+	// cached row exists for roomID -- message.MessageRepository's
+	// DeleteAndInvalidateSummary/UpdateExcludeFromAIAndInvalidateSummary
+	// apply this same zero-rows-tolerant DELETE unconditionally on every
+	// message mutation regardless of whether a summary was ever computed
+	// for the room (see those methods' doc comments), and treating "nothing
+	// to delete" as a failure would turn routine message edits into
+	// spurious error paths.
 	//
 	// A genuine failure (e.g. a connection error) must still be returned:
-	// callers propagate it rather than only logging it, since the revision
-	// bump is the sole mechanism preventing a stale summary from being
-	// resurrected by a concurrent in-flight Upsert, and silently continuing
-	// past a failed invalidation would leave that summary reachable
-	// indefinitely.
+	// the revision bump is the sole mechanism preventing a stale summary
+	// from being resurrected by a concurrent in-flight Upsert, and silently
+	// continuing past a failed invalidation would leave that summary
+	// reachable indefinitely.
 	DeleteByRoom(ctx context.Context, roomID string) error
 }

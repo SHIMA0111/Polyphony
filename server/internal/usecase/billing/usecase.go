@@ -201,12 +201,27 @@ const checkoutSessionIDQueryParam = "session_id={CHECKOUT_SESSION_ID}"
 // of "?" when rawURL already carries a query string, so an
 // operator-configured STRIPE_CHECKOUT_SUCCESS_URL with its own tracking
 // parameters is not corrupted.
+//
+// Any "#fragment" on rawURL is split off before the "?"/"&" decision and
+// reattached afterward, rather than left in place for the query parameter to
+// be appended after it: a fragment is never sent to the server and is never
+// visible to useSearchParams() (the success page's hook it becomes
+// searchParams on), so appending checkoutSessionIDQueryParam past it would
+// silently bury session_id inside the fragment string instead of the query
+// string, where the success page can actually read it.
 func withCheckoutSessionIDParam(rawURL string) string {
+	path, fragment, hasFragment := strings.Cut(rawURL, "#")
+
 	separator := "?"
-	if strings.Contains(rawURL, "?") {
+	if strings.Contains(path, "?") {
 		separator = "&"
 	}
-	return rawURL + separator + checkoutSessionIDQueryParam
+	withParam := path + separator + checkoutSessionIDQueryParam
+
+	if hasFragment {
+		return withParam + "#" + fragment
+	}
+	return withParam
 }
 
 // CreateSubscriptionCheckoutSession resolves planCode against the
@@ -469,6 +484,14 @@ func (u *BillingUsecase) handleCheckoutSessionCompleted(ctx context.Context, eve
 // upsertSubscriptionFromCheckout creates or updates the local Subscription
 // row for a completed subscription-mode Checkout Session. No token credit
 // happens here — see handleCheckoutSessionCompleted's doc comment.
+//
+// It always stamps StripeCheckoutSessionID with session.SessionID, on both
+// the create and update paths, so the post-Checkout success page
+// (app/(main)/billing/checkout/success/page.tsx) can confirm a
+// subscription-mode purchase resolved from this specific Checkout Session
+// (matching its own "session_id" query parameter against this field)
+// instead of treating any pre-existing active subscription as confirmation
+// — see domainbilling.Subscription.StripeCheckoutSessionID's doc comment.
 func (u *BillingUsecase) upsertSubscriptionFromCheckout(ctx context.Context, session *domainbilling.CheckoutSessionData) error {
 	if session.StripeSubscriptionID == "" || session.UserID == "" {
 		slog.Warn("checkout.session.completed subscription mode missing subscription/user id, ignoring",
@@ -490,18 +513,19 @@ func (u *BillingUsecase) upsertSubscriptionFromCheckout(ctx context.Context, ses
 			return err
 		}
 		sub := &domainbilling.Subscription{
-			ID:                     uuid.New().String(),
-			UserID:                 session.UserID,
-			StripeCustomerID:       session.StripeCustomerID,
-			StripeSubscriptionID:   session.StripeSubscriptionID,
-			StripePriceID:          plan.StripePriceID,
-			PlanCode:               plan.Code,
-			Status:                 "active",
-			MonthlyTokenAllocation: plan.MonthlyTokenAllocation,
-			CurrentPeriodStart:     now,
-			CurrentPeriodEnd:       now,
-			CreatedAt:              now,
-			UpdatedAt:              now,
+			ID:                      uuid.New().String(),
+			UserID:                  session.UserID,
+			StripeCustomerID:        session.StripeCustomerID,
+			StripeSubscriptionID:    session.StripeSubscriptionID,
+			StripePriceID:           plan.StripePriceID,
+			PlanCode:                plan.Code,
+			Status:                  "active",
+			MonthlyTokenAllocation:  plan.MonthlyTokenAllocation,
+			CurrentPeriodStart:      now,
+			CurrentPeriodEnd:        now,
+			StripeCheckoutSessionID: session.SessionID,
+			CreatedAt:               now,
+			UpdatedAt:               now,
 		}
 		return u.subscriptionRepo.Create(ctx, sub)
 	}
@@ -510,6 +534,7 @@ func (u *BillingUsecase) upsertSubscriptionFromCheckout(ctx context.Context, ses
 	existing.StripePriceID = plan.StripePriceID
 	existing.PlanCode = plan.Code
 	existing.MonthlyTokenAllocation = plan.MonthlyTokenAllocation
+	existing.StripeCheckoutSessionID = session.SessionID
 	return u.subscriptionRepo.Update(ctx, existing)
 }
 

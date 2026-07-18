@@ -198,6 +198,7 @@ func TestBillingHandlerGetSubscriptionFound(t *testing.T) {
 	if err := subRepo.Create(context.Background(), &domainbilling.Subscription{
 		ID: "sub-row-1", UserID: "user-1", StripeCustomerID: "cus_1", StripeSubscriptionID: "sub_1",
 		PlanCode: "starter", Status: "active", MonthlyTokenAllocation: 100000,
+		StripeCheckoutSessionID: "cs_test_1",
 	}); err != nil {
 		t.Fatalf("seed subscription: %v", err)
 	}
@@ -215,6 +216,9 @@ func TestBillingHandlerGetSubscriptionFound(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"plan_code":"starter"`) {
 		t.Fatalf("expected plan_code starter in response, got %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"stripe_checkout_session_id":"cs_test_1"`) {
+		t.Fatalf("expected stripe_checkout_session_id cs_test_1 in response, got %s", rec.Body.String())
 	}
 }
 

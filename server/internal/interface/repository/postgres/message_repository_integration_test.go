@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	domainuser "github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
@@ -650,5 +651,235 @@ func TestMessageRepository_ListByRoomCursorVisibility(t *testing.T) {
 	}
 	if len(ownerPage.Messages) != 0 {
 		t.Fatalf("expected no messages older than sequence 1, got %d", len(ownerPage.Messages))
+	}
+}
+
+// TestMessageRepository_DeleteAndInvalidateSummary proves that
+// DeleteAndInvalidateSummary soft-deletes the message and invalidates the
+// room's cached context summary (a subsequent ContextSummaryRepository.Get
+// returns domain.ErrNotFound, and the invalidation revision advances) in one
+// call — see domainmessage.MessageRepository.DeleteAndInvalidateSummary's
+// doc comment for why this must be atomic.
+func TestMessageRepository_DeleteAndInvalidateSummary(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "delete-invalidate-owner")
+
+	now := time.Now()
+	msg := &domainmessage.Message{
+		ID:         uuid.New().String(),
+		RoomID:     rm.ID,
+		SenderID:   &rm.OwnerID,
+		Content:    "to be deleted",
+		Type:       domainmessage.MessageTypeHuman,
+		Status:     domainmessage.MessageStatusCompleted,
+		Sequence:   1,
+		Visibility: domainmessage.MessageVisibilityPublic,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := msgRepo.Create(ctx, msg); err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+	if err := summaryRepo.Upsert(ctx, &ai.ContextSummary{
+		RoomID:              rm.ID,
+		Model:               "gpt-5-mini",
+		CoveredUpToSequence: 1,
+		SummaryText:         "cached summary that should be invalidated",
+		TokenCount:          10,
+	}, 0); err != nil {
+		t.Fatalf("seed cached summary: %v", err)
+	}
+
+	if err := msgRepo.DeleteAndInvalidateSummary(ctx, msg.ID, rm.ID); err != nil {
+		t.Fatalf("DeleteAndInvalidateSummary failed: %v", err)
+	}
+
+	got, err := msgRepo.GetByID(ctx, msg.ID, rm.OwnerID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if !got.IsDeleted {
+		t.Fatal("expected the message to be soft-deleted")
+	}
+
+	if _, err := summaryRepo.Get(ctx, rm.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected the cached summary to be invalidated, got err=%v", err)
+	}
+	revision, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision: %v", err)
+	}
+	if revision != 1 {
+		t.Fatalf("expected the invalidation revision to advance to 1, got %d", revision)
+	}
+}
+
+// TestMessageRepository_DeleteAndInvalidateSummaryNotFound proves that
+// DeleteAndInvalidateSummary returns domain.ErrNotFound for a nonexistent
+// (or already soft-deleted) message without ever attempting the summary
+// invalidation step — a cached summary and its revision are left completely
+// untouched, since the real implementation's mutation statement runs (and
+// is checked for zero rows affected) before the summary step, and the whole
+// transaction rolls back on that ErrNotFound.
+func TestMessageRepository_DeleteAndInvalidateSummaryNotFound(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "delete-invalidate-notfound-owner")
+
+	if err := summaryRepo.Upsert(ctx, &ai.ContextSummary{
+		RoomID:              rm.ID,
+		Model:               "gpt-5-mini",
+		CoveredUpToSequence: 1,
+		SummaryText:         "must survive the failed delete",
+		TokenCount:          10,
+	}, 0); err != nil {
+		t.Fatalf("seed cached summary: %v", err)
+	}
+
+	err := msgRepo.DeleteAndInvalidateSummary(ctx, uuid.New().String(), rm.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound for a nonexistent message, got %v", err)
+	}
+
+	got, err := summaryRepo.Get(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("expected the cached summary to survive a failed delete, got err=%v", err)
+	}
+	if got.SummaryText != "must survive the failed delete" {
+		t.Fatalf("expected the cached summary to be unchanged, got %q", got.SummaryText)
+	}
+	revision, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision: %v", err)
+	}
+	if revision != 0 {
+		t.Fatalf("expected the invalidation revision to remain 0, got %d", revision)
+	}
+}
+
+// TestMessageRepository_UpdateExcludeFromAIAndInvalidateSummary proves that
+// UpdateExcludeFromAIAndInvalidateSummary toggles exclude_from_ai and
+// invalidates the room's cached context summary in one call — the
+// exclude_from_ai counterpart to
+// TestMessageRepository_DeleteAndInvalidateSummary.
+func TestMessageRepository_UpdateExcludeFromAIAndInvalidateSummary(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "exclude-invalidate-owner")
+
+	now := time.Now()
+	msg := &domainmessage.Message{
+		ID:         uuid.New().String(),
+		RoomID:     rm.ID,
+		SenderID:   &rm.OwnerID,
+		Content:    "to be excluded",
+		Type:       domainmessage.MessageTypeHuman,
+		Status:     domainmessage.MessageStatusCompleted,
+		Sequence:   1,
+		Visibility: domainmessage.MessageVisibilityPublic,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := msgRepo.Create(ctx, msg); err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+	if err := summaryRepo.Upsert(ctx, &ai.ContextSummary{
+		RoomID:              rm.ID,
+		Model:               "gpt-5-mini",
+		CoveredUpToSequence: 1,
+		SummaryText:         "cached summary that should be invalidated",
+		TokenCount:          10,
+	}, 0); err != nil {
+		t.Fatalf("seed cached summary: %v", err)
+	}
+
+	updatedAt := now.Add(time.Minute)
+	if err := msgRepo.UpdateExcludeFromAIAndInvalidateSummary(ctx, msg.ID, rm.ID, true, updatedAt); err != nil {
+		t.Fatalf("UpdateExcludeFromAIAndInvalidateSummary failed: %v", err)
+	}
+
+	got, err := msgRepo.GetByID(ctx, msg.ID, rm.OwnerID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if !got.ExcludeFromAI {
+		t.Fatal("expected ExcludeFromAI to be true")
+	}
+
+	if _, err := summaryRepo.Get(ctx, rm.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected the cached summary to be invalidated, got err=%v", err)
+	}
+	revision, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision: %v", err)
+	}
+	if revision != 1 {
+		t.Fatalf("expected the invalidation revision to advance to 1, got %d", revision)
+	}
+}
+
+// TestMessageRepository_UpdateExcludeFromAIAndInvalidateSummaryNotFound
+// proves that UpdateExcludeFromAIAndInvalidateSummary returns
+// domain.ErrNotFound for a nonexistent message without attempting the
+// summary invalidation step, mirroring
+// TestMessageRepository_DeleteAndInvalidateSummaryNotFound.
+func TestMessageRepository_UpdateExcludeFromAIAndInvalidateSummaryNotFound(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	msgRepo := NewMessageRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "exclude-invalidate-notfound-owner")
+
+	if err := summaryRepo.Upsert(ctx, &ai.ContextSummary{
+		RoomID:              rm.ID,
+		Model:               "gpt-5-mini",
+		CoveredUpToSequence: 1,
+		SummaryText:         "must survive the failed update",
+		TokenCount:          10,
+	}, 0); err != nil {
+		t.Fatalf("seed cached summary: %v", err)
+	}
+
+	err := msgRepo.UpdateExcludeFromAIAndInvalidateSummary(ctx, uuid.New().String(), rm.ID, true, time.Now())
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound for a nonexistent message, got %v", err)
+	}
+
+	got, err := summaryRepo.Get(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("expected the cached summary to survive a failed update, got err=%v", err)
+	}
+	if got.SummaryText != "must survive the failed update" {
+		t.Fatalf("expected the cached summary to be unchanged, got %q", got.SummaryText)
+	}
+	revision, err := summaryRepo.GetRevision(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetRevision: %v", err)
+	}
+	if revision != 0 {
+		t.Fatalf("expected the invalidation revision to remain 0, got %d", revision)
 	}
 }
