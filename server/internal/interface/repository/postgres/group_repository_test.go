@@ -223,6 +223,9 @@ func TestGroupRepositoryAddMemberGetMemberRemoveMember(t *testing.T) {
 	}
 }
 
+// TestGroupRepositoryAddMemberDuplicateReturnsErrAlreadyMember verifies that
+// adding the same user to a group twice returns domain.ErrAlreadyMember rather
+// than an unmapped Postgres unique-violation error.
 func TestGroupRepositoryAddMemberDuplicateReturnsErrAlreadyMember(t *testing.T) {
 	ctx := context.Background()
 	repo, owner, member := newGroupTestFixture(ctx, t)
