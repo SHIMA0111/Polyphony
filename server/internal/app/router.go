@@ -45,6 +45,7 @@ func NewRouter(c *Container) *echo.Echo {
 	registerUserRoutes(authGroup, c)
 	registerAttachmentRoutes(authGroup, c)
 	registerInvitationRoutes(authGroup, c)
+	registerGroupRoutes(authGroup, c)
 	registerWebSocketRoutes(e, authGroup, c)
 	registerTokenRoutes(authGroup, c)
 	registerBillingRoutes(authGroup, c)
