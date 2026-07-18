@@ -71,12 +71,30 @@ services:
       timeout: 3s
       retries: 5
 
+  dex:
+    image: dexidp/dex:v2.43.1
+    volumes:
+      - ./ory/dex/config.yaml:/etc/dex/cfg/config.yaml:ro
+    command: dex serve /etc/dex/cfg/config.yaml
+    ports:
+      - "5556:5556"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:5556/dex/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   kratos:
     image: oryd/kratos:v1.3.1
     environment:
       DSN: ${KRATOS_DSN:-postgres://kratos:kratos@kratos-db:5432/kratos?sslmode=disable}
       SECRETS_COOKIE: ${KRATOS_COOKIE_SECRET:-dev-32-byte-kratos-cookie-secret}
       SECRETS_CIPHER: ${KRATOS_CIPHER_SECRET:-dev-32-byte-kratos-cipher-secret}
+      # Step 44: the entire OIDC providers array (dex/google/github, secrets
+      # included) is supplied as a single JSON-string env var so no secret is
+      # ever committed to ory/kratos/kratos.yml — see .env.example.
+      SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS: ${KRATOS_OIDC_PROVIDERS_JSON}
     command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
     volumes:
       - ./ory/kratos:/etc/config/kratos:ro
@@ -92,6 +110,8 @@ services:
     depends_on:
       kratos-migrate:
         condition: service_completed_successfully
+      dex:
+        condition: service_healthy
 
   kratos-db:
     image: postgres:17-alpine
@@ -224,8 +244,8 @@ services:
 
   # ---------------------------------------------------------------------------
   # E2E test profile (docs/tasks/step10.md): an isolated copy of the stack on
-  # alternate host ports (5433, 8090, 8091, 8092, 3001), plus a canned
-  # OpenAI-compatible LLM stub, for Playwright specs. Disabled by default;
+  # alternate host ports (5433, 8090, 8091, 8092, 8093, 8094, 3001), plus a
+  # canned OpenAI-compatible LLM stub, for Playwright specs. Disabled by default;
   # only started with `--profile test` (see the `test:e2e:*` Taskfile tasks).
   # Kept as one contiguous, alphabetized-among-itself group rather than
   # interleaved into the dev-service alphabet above, to keep this step's diff
@@ -313,9 +333,37 @@ services:
       # otherwise.
       SECRETS_COOKIE: e2e-32-byte-kratos-cookie-secret
       SECRETS_CIPHER: e2e-32-byte-kratos-cipher-secret
+      # Step 44: same shared provider config as the dev `kratos` service (see
+      # .env.example) — dex is reachable from this project's own `dex`
+      # container via Docker's internal DNS either way.
+      SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS: ${KRATOS_OIDC_PROVIDERS_JSON}
+      # Step 44: unlike every other e2e-facing endpoint (reached only through
+      # web-e2e's same-origin `/api/kratos/*` proxy), the dex OIDC callback
+      # redirect is issued directly to the browser by dex and must resolve
+      # to *this* Kratos instance, not the dev `kratos` service sharing the
+      # same kratos.yml (whose serve.public.base_url is hardcoded to
+      # http://localhost:4433/). Overriding it here to a dedicated host port
+      # keeps the two instances' callback URLs distinct; see ory/dex/config.yaml
+      # (whose redirectURIs list includes this exact URL) and
+      # docs/tasks/step44.md's Implementation notes for the alternatives
+      # considered (e.g. routing through the web-e2e proxy instead).
+      SERVE_PUBLIC_BASE_URL: http://localhost:8093/
+      # Step 44: kratos.yml's default_browser_return_url/allowed_return_urls
+      # are hardcoded to http://localhost:3000/ (the dev `web` service) —
+      # after a successful OIDC callback, Kratos issues a real browser
+      # redirect straight to this URL (there is no `/api/kratos/*` proxy hop
+      # to rewrite it through), so left unoverridden the E2E browser would
+      # land on the dev app (or nowhere, if it isn't running) instead of
+      # `web-e2e` on :3001. Verified end to end against a standalone
+      # Kratos+dex pair while implementing this step.
+      SELFSERVICE_DEFAULT_BROWSER_RETURN_URL: http://localhost:3001/
+      SELFSERVICE_ALLOWED_RETURN_URLS: '["http://localhost:3001/"]'
     command: serve -c /etc/config/kratos/kratos.yml --dev --watch-courier
     volumes:
       - ./ory/kratos:/etc/config/kratos:ro
+    ports:
+      - "8093:4433"
+      - "8094:4434"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4434/health/ready"]
       interval: 5s
@@ -326,6 +374,8 @@ services:
     depends_on:
       kratos-migrate-e2e:
         condition: service_completed_successfully
+      dex:
+        condition: service_healthy
 
   kratos-migrate-e2e:
     image: oryd/kratos:v1.3.1

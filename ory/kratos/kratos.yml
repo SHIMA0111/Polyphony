@@ -36,12 +36,29 @@ selfservice:
   methods:
     password:
       enabled: true
+    oidc:
+      enabled: true
+      # config.providers is intentionally omitted here — supplied at runtime via the
+      # SELFSERVICE_METHODS_OIDC_CONFIG_PROVIDERS environment variable (see
+      # docker-compose.yml and .env.example) so client secrets never land in
+      # version control. See ory/kratos/oidc/*.jsonnet for the trait mappers and
+      # ory/README.md for the social-login setup.
 
   flows:
     registration:
       ui_url: http://localhost:3000/registration
       after:
         password:
+          hooks:
+            - hook: session
+        oidc:
+          # Without this, a brand-new dex/Google/GitHub sign-up creates the
+          # identity but leaves the browser session-less — the user would
+          # land back in the app with no `ory_kratos_session` cookie at all
+          # and have to log in a second time. `password` already gets this
+          # hook (immediately above); `oidc` needs its own entry because
+          # Kratos's after-registration hooks are keyed per method, not
+          # shared across all of them.
           hooks:
             - hook: session
 

@@ -11,6 +11,7 @@ import { PasswordInput } from "@/components/ui/password-input"
 import { toaster } from "@/components/ui/toaster"
 import { useLogin } from "@/features/auth/hooks/use-login"
 import { getLoginFlow } from "@/features/auth/api/login-flow"
+import { SocialLoginButtons } from "@/features/auth/components/SocialLoginButtons"
 import {
   getFormMessages,
   getNodeMessages,
@@ -165,6 +166,7 @@ export function LoginForm() {
               </Button>
             </Flex>
           </form>
+          {flow && <SocialLoginButtons flow={flow} />}
           <Text mt={6} textAlign="center" fontSize="sm" color="fg.muted">
             Don&apos;t have an account?{" "}
             <Link href="/register">
