@@ -324,12 +324,13 @@ func toSubscriptionResponse(sub *domainbilling.Subscription) SubscriptionRespons
 
 func toPaymentRecordResponse(p *domainbilling.PaymentRecord) PaymentRecordResponse {
 	return PaymentRecordResponse{
-		ID:             p.ID,
-		Kind:           string(p.Kind),
-		AmountCents:    p.AmountCents,
-		Currency:       p.Currency,
-		TokensCredited: p.TokensCredited,
-		Status:         p.Status,
-		CreatedAt:      p.CreatedAt,
+		ID:                p.ID,
+		Kind:              string(p.Kind),
+		AmountCents:       p.AmountCents,
+		Currency:          p.Currency,
+		TokensCredited:    p.TokensCredited,
+		Status:            p.Status,
+		StripeReferenceID: p.StripeReferenceID,
+		CreatedAt:         p.CreatedAt,
 	}
 }

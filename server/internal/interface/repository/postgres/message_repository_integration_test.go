@@ -298,7 +298,13 @@ func TestMessageRepository_PrivateVisibilityFiltering(t *testing.T) {
 
 // TestMessageRepository_ListByRoomAfter proves ListByRoomAfter returns
 // messages strictly after afterSequence, in ascending order, respecting
-// limit — the oldest-first counterpart to ListByRoomUpTo.
+// limit and maxSequence — the oldest-first counterpart to ListByRoomUpTo —
+// and that it is a deliberately unfiltered structural read: soft-deleted,
+// private-visibility, and AI-excluded rows all come back with their flags
+// intact rather than being scrubbed or dropped, since this is exactly what
+// the room-fork copy job (usecase/room.RoomUsecase.runForkJob) relies on to
+// carry every message over verbatim, unlike ListByRoom/ListByRoomUpTo/AI
+// context assembly, which all filter on these same flags.
 func TestMessageRepository_ListByRoomAfter(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -324,14 +330,31 @@ func TestMessageRepository_ListByRoomAfter(t *testing.T) {
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
+		if i == 4 {
+			// Visibility is honored directly by Create (unlike
+			// is_deleted/exclude_from_ai below, which Create always inserts
+			// as false regardless of the struct's field values).
+			msg.Visibility = domainmessage.MessageVisibilityPrivate
+		}
 		if err := msgRepo.Create(ctx, msg); err != nil {
 			t.Fatalf("create message %d: %v", i, err)
 		}
 		ids = append(ids, msg.ID)
 	}
 
+	// Soft-delete sequence 3 and exclude sequence 5 from AI context via
+	// their own dedicated repository calls (Create cannot seed either flag
+	// directly — see above).
+	if err := msgRepo.Delete(ctx, ids[2]); err != nil {
+		t.Fatalf("soft-delete message 3: %v", err)
+	}
+	if err := msgRepo.UpdateExcludeFromAI(ctx, ids[4], true, now); err != nil {
+		t.Fatalf("exclude message 5 from AI: %v", err)
+	}
+
 	// afterSequence=2, maxSequence=100 (unbounded relative to this room's 5
-	// messages), limit=2 should return sequences 3 and 4, ascending.
+	// messages), limit=2 should return sequences 3 and 4, ascending, with
+	// the soft-delete/private flags on those rows intact.
 	page, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 2, 100, 2)
 	if err != nil {
 		t.Fatalf("ListByRoomAfter failed: %v", err)
@@ -345,9 +368,16 @@ func TestMessageRepository_ListByRoomAfter(t *testing.T) {
 	if page[0].ID != ids[2] || page[1].ID != ids[3] {
 		t.Fatal("expected IDs to match the messages created at sequences 3 and 4")
 	}
+	if !page[0].IsDeleted {
+		t.Fatal("expected the soft-deleted message at sequence 3 to remain included with IsDeleted set")
+	}
+	if page[1].Visibility != domainmessage.MessageVisibilityPrivate {
+		t.Fatalf("expected the private message at sequence 4 to remain included with its visibility intact, got %q", page[1].Visibility)
+	}
 
 	// afterSequence=0 with a limit larger than the room's message count
-	// returns everything, still ascending.
+	// returns everything, still ascending, including the AI-excluded
+	// message at sequence 5 with its flag intact.
 	all, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 0, 100, 100)
 	if err != nil {
 		t.Fatalf("ListByRoomAfter (all) failed: %v", err)
@@ -359,6 +389,9 @@ func TestMessageRepository_ListByRoomAfter(t *testing.T) {
 		if m.Sequence != int64(i+1) {
 			t.Fatalf("expected ascending sequence %d at index %d, got %d", i+1, i, m.Sequence)
 		}
+	}
+	if !all[4].ExcludeFromAI {
+		t.Fatal("expected the AI-excluded message at sequence 5 to remain included with ExcludeFromAI set")
 	}
 
 	// afterSequence beyond the last message returns an empty slice (the
@@ -376,7 +409,8 @@ func TestMessageRepository_ListByRoomAfter(t *testing.T) {
 	// ListByRoomAfter call across its copy (see
 	// usecase/room.RoomUsecase.runForkJob), so a message inserted after the
 	// job's initial CountAndMaxSequence snapshot is excluded from the copy
-	// entirely.
+	// entirely. The soft-deleted message at sequence 3 falls within this
+	// bound and must still be included.
 	capped, err := msgRepo.ListByRoomAfter(ctx, rm.ID, 0, 3, 100)
 	if err != nil {
 		t.Fatalf("ListByRoomAfter (maxSequence-capped) failed: %v", err)
@@ -388,6 +422,9 @@ func TestMessageRepository_ListByRoomAfter(t *testing.T) {
 		if m.Sequence != int64(i+1) {
 			t.Fatalf("expected ascending sequence %d at index %d, got %d", i+1, i, m.Sequence)
 		}
+	}
+	if !capped[2].IsDeleted {
+		t.Fatal("expected the soft-deleted message at sequence 3 to remain included within the maxSequence bound")
 	}
 }
 

@@ -8,10 +8,10 @@ import { Box, Button, Flex, Heading, Spinner, Text } from "@chakra-ui/react"
 import { AlertTriangle, CheckCircle2 } from "lucide-react"
 import { usePlans } from "@/features/billing/hooks/use-plans"
 import { useSubscription } from "@/features/billing/hooks/use-subscription"
-import { useBalance } from "@/features/billing/hooks/use-balance"
-import { readAndClearCheckoutMarker, type CheckoutMarker } from "@/features/billing/lib/checkout-marker"
+import { usePaymentHistory } from "@/features/billing/hooks/use-payment-history"
 import { getErrorMessage } from "@/lib/get-error-message"
 import { formatUtcDate } from "@/lib/format"
+import type { Payment, Subscription } from "@/features/billing/types"
 
 /** Interval between polling attempts while waiting for the webhook to land. */
 const POLL_INTERVAL_MS = 2_000
@@ -21,49 +21,46 @@ const MAX_POLL_ATTEMPTS = 8
 /**
  * The post-Checkout redirect target
  * (`/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}`, per Step
- * 49's Stripe configuration).
+ * 49's Stripe configuration — the placeholder is substituted with the real
+ * Checkout Session ID by Stripe itself).
  *
  * Stripe's webhook (processed server-side, asynchronously, possibly seconds
  * after this redirect) is what actually applies a purchase's effect —
  * either the subscription or the token balance, depending on what was
- * bought. This page can't tell which from the URL alone (Stripe's redirect
- * carries only `session_id`), so it reads the `CheckoutMarker` that
- * `useCreateCheckoutSession` wrote to `sessionStorage` right before
- * redirecting here and branches on its `kind`:
+ * bought. This page can't tell which from the URL alone, so — instead of
+ * relying on a client-written marker from before the redirect (lost across
+ * tabs, cleared sessions, or simply never written for a bookmarked/direct
+ * visit) — it dual-polls two independent, server-verified signals until one
+ * resolves:
  *
- * - `"subscription"` — poll `useSubscription()` until its status is no
- *   longer `"none"` (`SubscriptionPolling`).
- * - `"token_purchase"` — a token pack never changes the subscription, only
- *   the balance, so instead poll `useBalance()` until it exceeds the
- *   marker's `priorBalance` snapshot (`TokenPurchasePolling`).
- * - no marker (e.g. a direct/bookmarked visit, or an older tab that started
- *   checkout before this marker existed) — render a neutral success message
- *   with links to `/billing` rather than a false "still processing"
- *   (`NeutralSuccess`).
+ * - the subscription (`useSubscription`) leaving status `"none"` — a
+ *   subscription-mode Checkout Session upserts the local `Subscription` row
+ *   directly (no `payment_history` row carries its session ID — see
+ *   `BillingUsecase.handleCheckoutSessionCompleted`'s doc comment), so this
+ *   is the only signal available for that purchase kind;
+ * - a `payment_history` entry (`usePaymentHistory`) whose
+ *   `stripe_reference_id` equals this page's `session_id` — the exact
+ *   transaction identity for a token-purchase Checkout Session, which
+ *   `handleCheckoutSessionCompleted` records with `StripeReferenceID =
+ *   session.SessionID`. This is a precise match, not an inferred balance
+ *   delta: a token purchase's exact `tokens_credited` comes straight from
+ *   that row.
  *
- * Both polling branches invalidate their respective query on mount (a
- * purchase can change either), cap retries at {@link MAX_POLL_ATTEMPTS}
- * spaced {@link POLL_INTERVAL_MS} apart, and render a distinct retryable
- * error state if the query itself fails rather than silently looping.
+ * No `session_id` (e.g. a direct/bookmarked visit) renders a neutral
+ * success message with links to `/billing` instead (`NeutralSuccess`).
+ * Either query erroring renders its own distinct retryable error state
+ * (`ErrorFallback`) rather than a single generic one, and exhausting
+ * {@link MAX_POLL_ATTEMPTS} without a match renders `ProcessingFallback`.
  */
 function CheckoutSuccessContent() {
   const searchParams = useSearchParams()
   const sessionId = searchParams.get("session_id")
 
-  // Read (and clear) once on mount: the marker is single-use, and re-reading
-  // it on every render would defeat its own "clear on read" staleness
-  // guard.
-  const [marker] = useState<CheckoutMarker | null>(() => readAndClearCheckoutMarker())
-
-  if (marker === null) {
-    return <NeutralSuccess sessionId={sessionId} />
+  if (sessionId === null) {
+    return <NeutralSuccess sessionId={null} />
   }
 
-  if (marker.kind === "subscription") {
-    return <SubscriptionPolling sessionId={sessionId} />
-  }
-
-  return <TokenPurchasePolling sessionId={sessionId} priorBalance={marker.priorBalance} />
+  return <DualPolling sessionId={sessionId} />
 }
 
 /** Shared centered-column shell every branch below renders into. */
@@ -75,7 +72,7 @@ function StatusLayout({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** The "still processing after {@link MAX_POLL_ATTEMPTS} attempts" fallback, shared by both polling branches. */
+/** The "still processing after {@link MAX_POLL_ATTEMPTS} attempts" fallback. */
 function ProcessingFallback({
   billingHref,
   onCheckAgain,
@@ -95,7 +92,7 @@ function ProcessingFallback({
   )
 }
 
-/** The retryable error state, shared by both polling branches when their query fails. */
+/** A retryable error state, rendered distinctly for whichever poll (subscription or payment history) failed. */
 function ErrorFallback({
   message,
   sessionId,
@@ -125,7 +122,7 @@ function ErrorFallback({
   )
 }
 
-/** No marker was found — render a neutral, non-erroring success message rather than guessing what was bought. */
+/** No `session_id` was present in the URL — render a neutral, non-erroring success message rather than guessing what was bought. */
 function NeutralSuccess({ sessionId }: { sessionId: string | null }) {
   return (
     <StatusLayout>
@@ -151,172 +148,157 @@ function NeutralSuccess({ sessionId }: { sessionId: string | null }) {
   )
 }
 
-/** Polls `useSubscription()` until its status is no longer `"none"`, for a `plan.interval === "month"` purchase. */
-function SubscriptionPolling({ sessionId }: { sessionId: string | null }) {
-  const queryClient = useQueryClient()
-  const [attempts, setAttempts] = useState(0)
-
-  useEffect(() => {
-    queryClient.invalidateQueries({ queryKey: ["billing", "subscription"] })
-  }, [queryClient])
-
-  const { data: subscription, isPending, isError, error, refetch } = useSubscription()
+/** The subscription resolved (see `DualPolling`) — mirrors the plan/renewal messaging a subscription purchase should show. */
+function SubscriptionSuccess({
+  sessionId,
+  subscription,
+}: {
+  sessionId: string
+  subscription: Subscription
+}) {
   const { data: plans } = usePlans()
-
-  const resolved = subscription !== undefined && subscription.status !== "none"
-  const exhausted = !resolved && attempts >= MAX_POLL_ATTEMPTS
-
-  useEffect(() => {
-    if (isPending || isError || resolved || exhausted) return
-    const timer = setTimeout(() => {
-      setAttempts((a) => a + 1)
-      refetch()
-    }, POLL_INTERVAL_MS)
-    return () => clearTimeout(timer)
-  }, [isPending, isError, resolved, exhausted, attempts, refetch])
-
-  if (isError) {
-    return (
-      <ErrorFallback
-        message={getErrorMessage(error, "We couldn't confirm your subscription.")}
-        sessionId={sessionId}
-        onRetry={() => refetch()}
-      />
-    )
-  }
-
-  if (resolved) {
-    const planName =
-      plans?.find((plan) => plan.code === subscription.plan_code)?.name ??
-      subscription.plan_code ??
-      "—"
-
-    return (
-      <StatusLayout>
-        <Box color="green.fg">
-          <CheckCircle2 size={48} />
-        </Box>
-        <Heading size="lg">You&apos;re all set</Heading>
-        <Text color="fg.muted">
-          You&apos;re now subscribed to <Text as="span" fontWeight="semibold">{planName}</Text>
-          {subscription.current_period_end && (
-            <>
-              {" "}
-              — renews on {formatUtcDate(subscription.current_period_end)}
-            </>
-          )}
-          .
-        </Text>
-        <Flex gap={3} mt={2}>
-          <Button asChild colorPalette="blue">
-            <Link href="/billing/subscription">View subscription</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link href="/rooms">Back to rooms</Link>
-          </Button>
-        </Flex>
-        {sessionId && (
-          <Text fontSize="xs" color="fg.muted" mt={4}>
-            Order reference: {sessionId}
-          </Text>
-        )}
-      </StatusLayout>
-    )
-  }
-
-  if (exhausted) {
-    return (
-      <ProcessingFallback
-        billingHref="/billing/subscription"
-        onCheckAgain={() => {
-          setAttempts(0)
-          refetch()
-        }}
-      />
-    )
-  }
+  const planName =
+    plans?.find((plan) => plan.code === subscription.plan_code)?.name ??
+    subscription.plan_code ??
+    "—"
 
   return (
     <StatusLayout>
-      <Spinner size="lg" />
-      <Text color="fg.muted">Confirming your payment...</Text>
+      <Box color="green.fg">
+        <CheckCircle2 size={48} />
+      </Box>
+      <Heading size="lg">You&apos;re all set</Heading>
+      <Text color="fg.muted">
+        You&apos;re now subscribed to <Text as="span" fontWeight="semibold">{planName}</Text>
+        {subscription.current_period_end && (
+          <>
+            {" "}
+            — renews on {formatUtcDate(subscription.current_period_end)}
+          </>
+        )}
+        .
+      </Text>
+      <Flex gap={3} mt={2}>
+        <Button asChild colorPalette="blue">
+          <Link href="/billing/subscription">View subscription</Link>
+        </Button>
+        <Button asChild variant="outline">
+          <Link href="/rooms">Back to rooms</Link>
+        </Button>
+      </Flex>
+      <Text fontSize="xs" color="fg.muted" mt={4}>
+        Order reference: {sessionId}
+      </Text>
+    </StatusLayout>
+  )
+}
+
+/** A matching payment_history entry was found (see `DualPolling`) — its own `tokens_credited` is shown directly, not an inferred balance delta. */
+function TokenPurchaseSuccess({ sessionId, payment }: { sessionId: string; payment: Payment }) {
+  return (
+    <StatusLayout>
+      <Box color="green.fg">
+        <CheckCircle2 size={48} />
+      </Box>
+      <Heading size="lg">Tokens added</Heading>
+      <Text color="fg.muted">
+        <Text as="span" fontWeight="semibold">
+          {payment.tokens_credited.toLocaleString("en-US")}
+        </Text>{" "}
+        tokens were added to your balance.
+      </Text>
+      <Flex gap={3} mt={2}>
+        <Button asChild colorPalette="blue">
+          <Link href="/billing">View balance</Link>
+        </Button>
+        <Button asChild variant="outline">
+          <Link href="/rooms">Back to rooms</Link>
+        </Button>
+      </Flex>
+      <Text fontSize="xs" color="fg.muted" mt={4}>
+        Order reference: {sessionId}
+      </Text>
     </StatusLayout>
   )
 }
 
 /**
- * Polls `useBalance()` until it exceeds `priorBalance`, for a
- * `plan.interval === "one_time"` (token pack) purchase — this purchase kind
- * never changes the subscription, so polling that (as the pre-fix version
- * of this page always did) would loop until {@link MAX_POLL_ATTEMPTS} every
- * time.
+ * Dual-polls `useSubscription()` and `usePaymentHistory()` until either
+ * resolves this Checkout Session, or gives up after {@link
+ * MAX_POLL_ATTEMPTS} — see `CheckoutSuccessContent`'s doc comment for why
+ * both are needed and how each identifies "this specific session"
+ * (subscription: any non-`"none"` status; payment history: a
+ * `stripe_reference_id` match). Resolution is checked before either query's
+ * error state, so a transient failure on one side never masks a genuine
+ * success already visible on the other.
  */
-function TokenPurchasePolling({
-  sessionId,
-  priorBalance,
-}: {
-  sessionId: string | null
-  priorBalance: number
-}) {
+function DualPolling({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient()
   const [attempts, setAttempts] = useState(0)
 
   useEffect(() => {
-    queryClient.invalidateQueries({ queryKey: ["billing", "balance"] })
+    queryClient.invalidateQueries({ queryKey: ["billing", "subscription"] })
+    queryClient.invalidateQueries({ queryKey: ["billing", "payment-history"] })
   }, [queryClient])
 
-  const { data: balance, isPending, isError, error, refetch } = useBalance()
+  const subscriptionQuery = useSubscription()
+  const paymentHistoryQuery = usePaymentHistory()
 
-  const resolved = balance !== undefined && balance.balance > priorBalance
+  const matchedPayment = paymentHistoryQuery.data?.pages[0]?.payments.find(
+    (payment) => payment.stripe_reference_id === sessionId,
+  )
+  const subscriptionResolved =
+    subscriptionQuery.data !== undefined && subscriptionQuery.data.status !== "none"
+  const resolved = subscriptionResolved || matchedPayment !== undefined
   const exhausted = !resolved && attempts >= MAX_POLL_ATTEMPTS
+  const stillLoading = subscriptionQuery.isPending || paymentHistoryQuery.isPending
+  const eitherErrored = subscriptionQuery.isError || paymentHistoryQuery.isError
+
+  const { refetch: refetchSubscription } = subscriptionQuery
+  const { refetch: refetchPaymentHistory } = paymentHistoryQuery
 
   useEffect(() => {
-    if (isPending || isError || resolved || exhausted) return
+    if (stillLoading || eitherErrored || resolved || exhausted) return
     const timer = setTimeout(() => {
       setAttempts((a) => a + 1)
-      refetch()
+      refetchSubscription()
+      refetchPaymentHistory()
     }, POLL_INTERVAL_MS)
     return () => clearTimeout(timer)
-  }, [isPending, isError, resolved, exhausted, attempts, refetch])
+  }, [
+    stillLoading,
+    eitherErrored,
+    resolved,
+    exhausted,
+    attempts,
+    refetchSubscription,
+    refetchPaymentHistory,
+  ])
 
-  if (isError) {
+  if (resolved) {
+    if (subscriptionResolved) {
+      return <SubscriptionSuccess sessionId={sessionId} subscription={subscriptionQuery.data!} />
+    }
+    return <TokenPurchaseSuccess sessionId={sessionId} payment={matchedPayment!} />
+  }
+
+  if (subscriptionQuery.isError) {
     return (
       <ErrorFallback
-        message={getErrorMessage(error, "We couldn't confirm your token purchase.")}
+        message={getErrorMessage(subscriptionQuery.error, "We couldn't confirm your subscription.")}
         sessionId={sessionId}
-        onRetry={() => refetch()}
+        onRetry={() => refetchSubscription()}
       />
     )
   }
 
-  if (resolved) {
+  if (paymentHistoryQuery.isError) {
     return (
-      <StatusLayout>
-        <Box color="green.fg">
-          <CheckCircle2 size={48} />
-        </Box>
-        <Heading size="lg">Tokens added</Heading>
-        <Text color="fg.muted">
-          Your balance is now{" "}
-          <Text as="span" fontWeight="semibold">
-            {balance.balance.toLocaleString("en-US")}
-          </Text>{" "}
-          tokens.
-        </Text>
-        <Flex gap={3} mt={2}>
-          <Button asChild colorPalette="blue">
-            <Link href="/billing">View balance</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link href="/rooms">Back to rooms</Link>
-          </Button>
-        </Flex>
-        {sessionId && (
-          <Text fontSize="xs" color="fg.muted" mt={4}>
-            Order reference: {sessionId}
-          </Text>
-        )}
-      </StatusLayout>
+      <ErrorFallback
+        message={getErrorMessage(paymentHistoryQuery.error, "We couldn't confirm your payment.")}
+        sessionId={sessionId}
+        onRetry={() => refetchPaymentHistory()}
+      />
     )
   }
 
@@ -326,7 +308,8 @@ function TokenPurchasePolling({
         billingHref="/billing"
         onCheckAgain={() => {
           setAttempts(0)
-          refetch()
+          refetchSubscription()
+          refetchPaymentHistory()
         }}
       />
     )

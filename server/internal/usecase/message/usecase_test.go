@@ -1135,8 +1135,10 @@ func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 
 // TestDeleteMessagePropagatesSummaryInvalidationFailure proves that
 // DeleteMessage surfaces a summaryRepo.DeleteByRoom failure to the caller
-// instead of only logging it, even though the underlying soft delete has
-// already durably succeeded by that point.
+// and aborts before the soft delete is even attempted — invalidation now
+// runs first (see DeleteMessage's doc comment for why), so a failure there
+// must leave the message untouched rather than soft-deleted with a stale
+// cached summary left behind.
 func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -1157,14 +1159,15 @@ func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
 		t.Fatalf("expected DeleteMessage to propagate the summary invalidation error, got %v", err)
 	}
 
-	// The soft delete itself must still have gone through despite the
-	// propagated error.
-	deleted, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
+	// The soft delete must NOT have gone through: invalidation runs first,
+	// so a failure there aborts the whole call before the message is
+	// touched at all.
+	notDeleted, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
 	if err != nil {
 		t.Fatalf("GetByID after DeleteMessage: %v", err)
 	}
-	if !deleted.IsDeleted {
-		t.Fatal("expected the message to still be soft-deleted despite the propagated invalidation error")
+	if notDeleted.IsDeleted {
+		t.Fatal("expected the message to remain NOT soft-deleted when summary invalidation fails first")
 	}
 }
 
@@ -1270,8 +1273,10 @@ func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
 
 // TestSetExcludeFromAIPropagatesSummaryInvalidationFailure proves that
 // SetExcludeFromAI surfaces a summaryRepo.DeleteByRoom failure to the
-// caller instead of only logging it, even though
-// msgRepo.UpdateExcludeFromAI has already durably succeeded by that point.
+// caller and aborts before msgRepo.UpdateExcludeFromAI is even attempted —
+// invalidation now runs first (see SetExcludeFromAI's doc comment for why),
+// so a failure there must leave the flag untouched rather than toggled with
+// a stale cached summary left behind.
 func TestSetExcludeFromAIPropagatesSummaryInvalidationFailure(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -1292,14 +1297,15 @@ func TestSetExcludeFromAIPropagatesSummaryInvalidationFailure(t *testing.T) {
 		t.Fatalf("expected SetExcludeFromAI to propagate the summary invalidation error, got %v", err)
 	}
 
-	// The underlying toggle must still have gone through despite the
-	// propagated error.
-	updated, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
+	// The underlying toggle must NOT have gone through: invalidation runs
+	// first, so a failure there aborts the whole call before the message is
+	// touched at all.
+	unchanged, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
 	if err != nil {
 		t.Fatalf("GetByID after SetExcludeFromAI: %v", err)
 	}
-	if !updated.ExcludeFromAI {
-		t.Fatal("expected ExcludeFromAI to still be true despite the propagated invalidation error")
+	if unchanged.ExcludeFromAI {
+		t.Fatal("expected ExcludeFromAI to remain false when summary invalidation fails first")
 	}
 }
 

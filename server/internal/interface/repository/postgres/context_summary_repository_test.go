@@ -5,6 +5,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
@@ -299,5 +301,80 @@ func TestContextSummaryRepository_UpsertNoopsOnRevisionMismatch(t *testing.T) {
 	}
 	if got.SummaryText != "fresh summary computed after the invalidation" {
 		t.Errorf("SummaryText = %q, want the fresh summary to have been persisted", got.SummaryText)
+	}
+}
+
+// TestContextSummaryRepository_UpsertDeleteByRoomConcurrentRace proves the
+// pg_advisory_xact_lock serialization added to Upsert/DeleteByRoom closes
+// the READ COMMITTED interleaving race described in both methods' doc
+// comments. Launched concurrently for the same room and revision, the two
+// possible total orderings the lock now enforces (Upsert-then-Delete,
+// Delete-then-Upsert) both converge to the same final state -- no cached
+// summary and an incremented revision -- since DeleteByRoom unconditionally
+// removes whatever Upsert may have just written first. Before the fix, a
+// third interleaving was possible: Upsert's revision check reads a stale
+// (pre-delete) revision, but its write commits after DeleteByRoom's commit,
+// resurrecting the stale summary right after the delete that was supposed
+// to invalidate it -- a state this test catches as Get unexpectedly
+// succeeding instead of returning domain.ErrNotFound. Repeated over several
+// rounds so either of the two now-only-possible orderings is exercised at
+// least once.
+func TestContextSummaryRepository_UpsertDeleteByRoomConcurrentRace(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+	summaryRepo := NewContextSummaryRepository(pool)
+
+	rm := seedUserAndRoom(ctx, t, userRepo, roomRepo, "summary-race-owner")
+
+	const rounds = 20
+	for i := 0; i < rounds; i++ {
+		capturedRevision, err := summaryRepo.GetRevision(ctx, rm.ID)
+		if err != nil {
+			t.Fatalf("round %d: GetRevision: %v", i, err)
+		}
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- summaryRepo.Upsert(ctx, &ai.ContextSummary{
+				RoomID:              rm.ID,
+				Model:               "gpt-5-mini",
+				CoveredUpToSequence: int64(i),
+				SummaryText:         fmt.Sprintf("round %d summary", i),
+				TokenCount:          10,
+			}, capturedRevision)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- summaryRepo.DeleteByRoom(ctx, rm.ID)
+		}()
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: concurrent call failed: %v", i, err)
+			}
+		}
+
+		if _, err := summaryRepo.Get(ctx, rm.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("round %d: expected no cached summary to survive the concurrent Upsert/DeleteByRoom pair (stale-resurrection race), got err=%v", i, err)
+		}
+
+		revision, err := summaryRepo.GetRevision(ctx, rm.ID)
+		if err != nil {
+			t.Fatalf("round %d: GetRevision: %v", i, err)
+		}
+		if revision != capturedRevision+1 {
+			t.Fatalf("round %d: revision = %d, want %d", i, revision, capturedRevision+1)
+		}
 	}
 }

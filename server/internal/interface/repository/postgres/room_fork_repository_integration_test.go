@@ -163,9 +163,12 @@ func TestRoomForkRepository_MarkFailed(t *testing.T) {
 
 // TestRoomForkRepository_CompleteAndUnarchive proves CompleteAndUnarchive's
 // single-transaction contract: it flips the destination room's is_archived
-// to false and transitions the job to StatusCompleted together, and rolls
-// back both writes (leaving the room archived and the job unchanged) when
-// either side of the transaction targets a nonexistent row.
+// to false and transitions the job to StatusCompleted together (job-side
+// first, room-side second — see CompleteAndUnarchive's doc comment), and
+// rejects (leaving both the room and the job untouched) a jobID/newRoomID
+// pair that don't validate together: a nonexistent job, a newRoomID that
+// doesn't match the job's own NewRoomID, or a job that isn't currently
+// StatusRunning.
 func TestRoomForkRepository_CompleteAndUnarchive(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -208,34 +211,66 @@ func TestRoomForkRepository_CompleteAndUnarchive(t *testing.T) {
 		t.Fatal("expected is_archived false after CompleteAndUnarchive")
 	}
 
-	// A nonexistent job ID rolls back the room-side write too: the room
-	// must remain unarchived (it already was, from the successful call
-	// above) and unaffected by the failed attempt below -- this proves the
-	// rooms UPDATE isn't left to commit independently of the job UPDATE.
+	// A nonexistent job ID is rejected by the job-side UPDATE's WHERE
+	// clause before the room-side write is even attempted, so the room
+	// (already unarchived, from the successful call above) is unaffected.
 	if err := forkRepo.CompleteAndUnarchive(ctx, uuid.New().String(), dest.ID); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for a nonexistent job, got %v", err)
 	}
 
-	// A nonexistent room rolls back before the job-side write is even
-	// attempted: the job started this test as StatusRunning was already
-	// moved to StatusCompleted above, so re-verify a *fresh* running job
-	// stays running when paired with a bogus room ID.
-	secondJob := &roomfork.Job{
+	// A newRoomID that doesn't match the job's own NewRoomID is rejected by
+	// the same narrowed WHERE clause (id AND new_room_id AND
+	// status = 'running'), even though both the job and the passed room
+	// genuinely exist: source.ID is a real room, just not this job's
+	// NewRoomID. The job must remain running, untouched by this rejected
+	// attempt.
+	wrongRoomJob := &roomfork.Job{
 		ID: uuid.New().String(), SourceRoomID: source.ID, NewRoomID: dest.ID,
 		Status: roomfork.StatusRunning, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := forkRepo.Create(ctx, secondJob); err != nil {
-		t.Fatalf("Create (second job) failed: %v", err)
+	if err := forkRepo.Create(ctx, wrongRoomJob); err != nil {
+		t.Fatalf("Create (wrong-room job) failed: %v", err)
 	}
-	if err := forkRepo.CompleteAndUnarchive(ctx, secondJob.ID, uuid.New().String()); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound for a nonexistent room, got %v", err)
+	if err := forkRepo.CompleteAndUnarchive(ctx, wrongRoomJob.ID, source.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for a mismatched newRoomID, got %v", err)
 	}
-	gotSecondJob, err := forkRepo.GetByID(ctx, secondJob.ID)
+	gotWrongRoomJob, err := forkRepo.GetByID(ctx, wrongRoomJob.ID)
 	if err != nil {
-		t.Fatalf("GetByID (second job) failed: %v", err)
+		t.Fatalf("GetByID (wrong-room job) failed: %v", err)
 	}
-	if gotSecondJob.Status != roomfork.StatusRunning {
-		t.Fatalf("expected the second job to remain running after a room-side rollback, got %s", gotSecondJob.Status)
+	if gotWrongRoomJob.Status != roomfork.StatusRunning {
+		t.Fatalf("expected the wrong-room job to remain running after a mismatched-newRoomID rejection, got %s", gotWrongRoomJob.Status)
+	}
+
+	// A job that isn't currently StatusRunning (e.g. still StatusPending) is
+	// likewise rejected by the same WHERE clause, leaving both the job and
+	// the room (re-archived here to prove it stays untouched) unchanged.
+	if err := roomRepo.SetArchived(ctx, dest.ID, true); err != nil {
+		t.Fatalf("SetArchived(true) (pending-job case) failed: %v", err)
+	}
+	pendingJob := &roomfork.Job{
+		ID: uuid.New().String(), SourceRoomID: source.ID, NewRoomID: dest.ID,
+		Status: roomfork.StatusPending, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := forkRepo.Create(ctx, pendingJob); err != nil {
+		t.Fatalf("Create (pending job) failed: %v", err)
+	}
+	if err := forkRepo.CompleteAndUnarchive(ctx, pendingJob.ID, dest.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for a non-running job, got %v", err)
+	}
+	gotPendingJob, err := forkRepo.GetByID(ctx, pendingJob.ID)
+	if err != nil {
+		t.Fatalf("GetByID (pending job) failed: %v", err)
+	}
+	if gotPendingJob.Status != roomfork.StatusPending {
+		t.Fatalf("expected the pending job to remain pending after a non-running rejection, got %s", gotPendingJob.Status)
+	}
+	gotRoomAfterPendingRejection, err := roomRepo.GetByID(ctx, dest.ID)
+	if err != nil {
+		t.Fatalf("GetByID (room after pending rejection) failed: %v", err)
+	}
+	if !gotRoomAfterPendingRejection.IsArchived {
+		t.Fatal("expected the room to remain archived after a non-running job's rejected CompleteAndUnarchive")
 	}
 }
 

@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { http, HttpResponse } from "msw"
 import userEvent from "@testing-library/user-event"
 import { render, screen, waitFor } from "@/test/render"
+import { server } from "@/test/msw/server"
 import { mockLocationHref } from "@/test/mock-location"
 import { fixturePlans } from "../api/handlers"
+import type { CheckoutSessionResponse } from "../types"
 import { PlanList } from "./PlanList"
 
 /** Mirrors `PlanCard.tsx`'s own price formatting so assertions don't hardcode locale output. */
@@ -65,6 +68,53 @@ describe("PlanList", () => {
     )
 
     await user.click(screen.getByRole("button", { name: "Subscribe" }))
+
+    await waitFor(() =>
+      expect(window.location.href).toBe("https://checkout.stripe.com/c/pay/cs_test_fixture"),
+    )
+  })
+
+  it("disables every card's CTA while a checkout session is being created", async () => {
+    const user = userEvent.setup()
+
+    // A controlled promise, rather than a fixed `delay()`, so the mocked
+    // response only resolves once both disabled-state assertions below have
+    // already run -- a fixed timeout races the assertions against an
+    // arbitrary wall-clock guess instead of guaranteeing the pending state
+    // is actually observed.
+    let resolveCheckout: () => void
+    const checkoutStarted = new Promise<void>((resolve) => {
+      resolveCheckout = resolve
+    })
+
+    server.use(
+      http.post("/api/proxy/billing/checkout-session", async () => {
+        await checkoutStarted
+        return HttpResponse.json<CheckoutSessionResponse>(
+          { checkout_url: "https://checkout.stripe.com/c/pay/cs_test_fixture" },
+          { status: 201 },
+        )
+      }),
+    )
+
+    render(<PlanList />)
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Subscribe" })).toBeInTheDocument(),
+    )
+
+    // Captured by reference before clicking: once pending, the button's
+    // loadingText ("Redirecting...") replaces "Subscribe" as its accessible
+    // name, so re-querying by that name afterward would no longer find it.
+    const subscribeButton = screen.getByRole("button", { name: "Subscribe" })
+    const buyTokensButton = screen.getByRole("button", { name: "Buy tokens" })
+
+    await user.click(subscribeButton)
+
+    await waitFor(() => expect(subscribeButton).toBeDisabled())
+    expect(buyTokensButton).toBeDisabled()
+
+    resolveCheckout!()
 
     await waitFor(() =>
       expect(window.location.href).toBe("https://checkout.stripe.com/c/pay/cs_test_fixture"),

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -183,6 +184,31 @@ func (u *BillingUsecase) findPlanByStripePriceID(priceID string) *domainbilling.
 	return nil
 }
 
+// checkoutSessionIDQueryParam is Stripe's own template placeholder for a
+// Checkout Session's ID: Stripe substitutes it with the real session ID
+// when redirecting the customer to SuccessURL, and withCheckoutSessionIDParam
+// appends it to every configured success URL (see that function's doc
+// comment for why this happens here rather than requiring operators to
+// include it in STRIPE_CHECKOUT_SUCCESS_URL themselves).
+const checkoutSessionIDQueryParam = "session_id={CHECKOUT_SESSION_ID}"
+
+// withCheckoutSessionIDParam appends checkoutSessionIDQueryParam to rawURL
+// as a query parameter, so the post-Checkout success page
+// (app/(main)/billing/checkout/success/page.tsx) can read the session ID
+// back out of its own URL and use it to identify which purchase just
+// completed — matching it against payment_history.stripe_reference_id
+// rather than inferring success from a balance delta. It uses "&" instead
+// of "?" when rawURL already carries a query string, so an
+// operator-configured STRIPE_CHECKOUT_SUCCESS_URL with its own tracking
+// parameters is not corrupted.
+func withCheckoutSessionIDParam(rawURL string) string {
+	separator := "?"
+	if strings.Contains(rawURL, "?") {
+		separator = "&"
+	}
+	return rawURL + separator + checkoutSessionIDQueryParam
+}
+
 // CreateSubscriptionCheckoutSession resolves planCode against the
 // configured plan catalog and returns a Stripe Checkout Session URL for it.
 // It returns domain.ErrStripeNotConfigured if Stripe is unconfigured, or
@@ -199,7 +225,7 @@ func (u *BillingUsecase) CreateSubscriptionCheckoutSession(ctx context.Context, 
 		UserID:     userID,
 		PlanCode:   plan.Code,
 		PriceID:    plan.StripePriceID,
-		SuccessURL: u.checkoutSuccessURL,
+		SuccessURL: withCheckoutSessionIDParam(u.checkoutSuccessURL),
 		CancelURL:  u.checkoutCancelURL,
 	})
 }
@@ -220,7 +246,7 @@ func (u *BillingUsecase) CreateTokenPurchaseCheckoutSession(ctx context.Context,
 		UserID:      userID,
 		PackageCode: pkg.Code,
 		PriceID:     pkg.StripePriceID,
-		SuccessURL:  u.checkoutSuccessURL,
+		SuccessURL:  withCheckoutSessionIDParam(u.checkoutSuccessURL),
 		CancelURL:   u.checkoutCancelURL,
 	})
 }

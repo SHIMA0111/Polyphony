@@ -134,10 +134,17 @@ func (r *RoomForkRepository) MarkFailed(ctx context.Context, id string, errMsg s
 // holds (RoomForkRepository and RoomRepository share one underlying
 // database, even though they sit behind separate domain repository
 // interfaces), so no cross-repository coordination is needed to make the
-// two writes atomic. It returns domain.ErrNotFound if either the rooms
-// UPDATE or the room_fork_jobs UPDATE affects zero rows, rolling back
-// whichever of the two (if any) had already been applied in this
-// transaction.
+// two writes atomic.
+//
+// The room_fork_jobs UPDATE runs first and is deliberately narrow — it
+// matches on id, new_room_id, AND status = 'running' together, not id
+// alone — so a caller passing a jobID/newRoomID pair that don't actually
+// belong to each other, or a job that has already been completed/failed (or
+// never started running), is rejected before the rooms UPDATE is even
+// attempted, rather than momentarily unarchiving a room for a job that
+// turns out not to validate. It returns domain.ErrNotFound if either UPDATE
+// affects zero rows, rolling back whichever (if any) had already been
+// applied in this transaction.
 func (r *RoomForkRepository) CompleteAndUnarchive(ctx context.Context, jobID, newRoomID string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -146,6 +153,17 @@ func (r *RoomForkRepository) CompleteAndUnarchive(ctx context.Context, jobID, ne
 	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	jobTag, err := tx.Exec(ctx,
+		`UPDATE room_fork_jobs SET status = $1, updated_at = NOW() WHERE id = $2 AND new_room_id = $3 AND status = $4`,
+		string(roomfork.StatusCompleted), jobID, newRoomID, string(roomfork.StatusRunning),
+	)
+	if err != nil {
+		return err
+	}
+	if jobTag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
 	roomTag, err := tx.Exec(ctx,
 		`UPDATE rooms SET is_archived = false, updated_at = NOW() WHERE id = $1`, newRoomID,
 	)
@@ -153,17 +171,6 @@ func (r *RoomForkRepository) CompleteAndUnarchive(ctx context.Context, jobID, ne
 		return err
 	}
 	if roomTag.RowsAffected() == 0 {
-		return domain.ErrNotFound
-	}
-
-	jobTag, err := tx.Exec(ctx,
-		`UPDATE room_fork_jobs SET status = $1, updated_at = NOW() WHERE id = $2`,
-		string(roomfork.StatusCompleted), jobID,
-	)
-	if err != nil {
-		return err
-	}
-	if jobTag.RowsAffected() == 0 {
 		return domain.ErrNotFound
 	}
 

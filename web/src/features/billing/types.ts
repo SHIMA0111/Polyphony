@@ -126,6 +126,14 @@ export type PaymentStatus = "succeeded" | "failed" | "refunded" | "pending"
  * the server contract — `PaymentHistoryList` derives its row label from
  * `kind` + `tokens_credited`, and Stripe-hosted receipts remain reachable
  * via the billing portal instead.
+ *
+ * `stripe_reference_id` is the Stripe object this payment was recorded
+ * against (a Checkout Session ID for a token purchase, an invoice ID for a
+ * subscription renewal). The post-Checkout success page
+ * (`app/(main)/billing/checkout/success/page.tsx`) matches it against its
+ * own `session_id` query parameter to identify which payment resulted from
+ * the Checkout Session the user just completed, rather than inferring
+ * success from a balance delta.
  */
 export interface Payment {
   id: string
@@ -134,6 +142,7 @@ export interface Payment {
   currency: string
   tokens_credited: number
   status: PaymentStatus
+  stripe_reference_id: string
   created_at: string
 }
 

@@ -60,8 +60,34 @@ func (r *ContextSummaryRepository) Get(ctx context.Context, roomID string) (*ai.
 // detected race, not a failure) and reported to the caller as a nil error,
 // per the port's no-op contract; only a genuine query failure returns an
 // error.
+//
+// Invariant: an Upsert can never commit a summary predating a committed
+// revision bump. Reading the revision and writing the summary are two
+// separate statements' worth of work folded into one SQL statement here,
+// but that single-statement atomicity alone does not prevent this Upsert
+// and a concurrent DeleteByRoom (for the same room) from interleaving: this
+// statement's revision check could read a snapshot taken *before*
+// DeleteByRoom's DELETE + revision bump commits, and this statement could
+// then go on to commit its own INSERT *after* that DELETE already ran --
+// resurrecting exactly the stale summary DeleteByRoom was meant to remove,
+// with no subsequent write left to clean it up. pg_advisory_xact_lock,
+// acquired on the same room-scoped key DeleteByRoom acquires below, closes
+// that window: whichever of the two transactions acquires the lock first
+// runs to completion (and releases it) before the other is even allowed to
+// evaluate its revision check, so the two can never interleave.
 func (r *ContextSummaryRepository) Upsert(ctx context.Context, summary *ai.ContextSummary, expectedRevision int64) error {
-	tag, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, summary.RoomID); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx,
 		`INSERT INTO message_context_summaries (room_id, model, covered_up_to_sequence, summary_text, token_count, created_at, updated_at)
 		 SELECT $1, $2, $3, $4, $5, NOW(), NOW()
 		 WHERE COALESCE((SELECT revision FROM context_summary_revisions WHERE room_id = $1), 0) = $6
@@ -76,7 +102,7 @@ func (r *ContextSummaryRepository) Upsert(ctx context.Context, summary *ai.Conte
 		slog.Warn("context summary upsert skipped: room's invalidation revision moved during summarization",
 			"room_id", summary.RoomID, "expected_revision", expectedRevision)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // GetRevision returns roomID's current context-summary invalidation
@@ -107,14 +133,38 @@ func (r *ContextSummaryRepository) GetRevision(ctx context.Context, roomID strin
 // MessageUsecase.DeleteMessage/SetExcludeFromAI call this unconditionally on
 // every mutation regardless of whether a summary was ever computed for the
 // room.
+//
+// This acquires the same room-scoped pg_advisory_xact_lock as Upsert,
+// before running the statement above, for the same reason documented on
+// Upsert: without it, a concurrent Upsert whose revision check was
+// evaluated just before this DELETE commits could still land its INSERT
+// just after, re-creating the very row this call is meant to invalidate.
+// The lock is transaction-scoped (released automatically on commit/
+// rollback, not requiring an explicit unlock call) and keyed by
+// hashtext(roomID), so it only ever contends with another call (Upsert or
+// DeleteByRoom) for this same room.
 func (r *ContextSummaryRepository) DeleteByRoom(ctx context.Context, roomID string) error {
-	_, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, roomID); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx,
 		`WITH deleted AS (
 		     DELETE FROM message_context_summaries WHERE room_id = $1
 		 )
 		 INSERT INTO context_summary_revisions (room_id, revision) VALUES ($1, 1)
 		 ON CONFLICT (room_id) DO UPDATE SET revision = context_summary_revisions.revision + 1`,
 		roomID,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }

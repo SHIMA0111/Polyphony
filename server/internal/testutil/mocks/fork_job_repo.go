@@ -144,12 +144,17 @@ func (f *ForkJobRepo) MarkFailed(_ context.Context, id string, errMsg string) er
 // CompleteAndUnarchive transitions a Job to the terminal StatusCompleted
 // state and, if Rooms is set, clears newRoomID's IsArchived flag —
 // modeling postgres.RoomForkRepository.CompleteAndUnarchive's single-
-// transaction semantics for tests. Returns domain.ErrNotFound if the job
-// does not exist.
+// transaction semantics for tests, including its validation-first ordering:
+// id, newRoomID, and StatusRunning must all match before anything is
+// mutated (mirroring the real repository's narrowed
+// "id AND new_room_id AND status = 'running'" UPDATE), so a mismatched
+// newRoomID or a job that isn't currently running leaves both the job and
+// the room untouched. Returns domain.ErrNotFound if the job does not exist
+// or fails that validation.
 func (f *ForkJobRepo) CompleteAndUnarchive(ctx context.Context, id, newRoomID string) error {
 	f.mu.Lock()
 	job, ok := f.Jobs[id]
-	if !ok {
+	if !ok || job.NewRoomID != newRoomID || job.Status != roomfork.StatusRunning {
 		f.mu.Unlock()
 		return domain.ErrNotFound
 	}

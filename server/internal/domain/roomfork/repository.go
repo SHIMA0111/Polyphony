@@ -54,7 +54,11 @@ type ForkJobRepository interface {
 	// StatusCompleted is meant to imply the room accepts posts: a poller
 	// that observes a Job with Status == StatusCompleted may immediately
 	// rely on newRoomID no longer being archived, without a separate
-	// GetByID(newRoomID) round trip to confirm it. Returns
-	// domain.ErrNotFound if either the job or the room does not exist.
+	// GetByID(newRoomID) round trip to confirm it. The job-side match is
+	// narrow — jobID, newRoomID, AND Status == StatusRunning must all agree
+	// — so a jobID/newRoomID pair that don't belong to each other, or a job
+	// that isn't currently running, is rejected as domain.ErrNotFound
+	// before either write lands, rather than transitioning a job or
+	// unarchiving a room that doesn't match the caller's expectations.
 	CompleteAndUnarchive(ctx context.Context, jobID, newRoomID string) error
 }
