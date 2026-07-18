@@ -37,6 +37,19 @@ const kratosHTTPHeaderSessionToken = "X-Session-Token"
 // See ValidateToken's GoDoc for the full contract.
 const cookieTokenPrefix = "cookie:"
 
+// ensureLocalUserLinkRetries is the number of GetByKratosIdentityID attempts
+// ensureLocalUser makes after losing the Create race described in its
+// GoDoc's "Concurrency" section, before giving up and returning the original
+// conflict error.
+const ensureLocalUserLinkRetries = 20
+
+// ensureLocalUserLinkRetryDelay is the delay between each retry described on
+// ensureLocalUserLinkRetries. Kept short: the winner's SetKratosIdentityID
+// call is expected to land within microseconds of its Create, so this bounds
+// the loser's worst-case extra latency to a few milliseconds while still
+// reliably closing the race window.
+const ensureLocalUserLinkRetryDelay = 1 * time.Millisecond
+
 // KratosAuthService implements domainauth.AuthService using Ory Kratos's
 // self-service registration/login API flows and the /sessions/whoami
 // endpoint, with the caller's local users.id resolved through
@@ -266,6 +279,21 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 // (a Kratos identity with no local link yet), and ValidateToken's self-heal
 // path (see its GoDoc) — the single shared implementation all three rely on
 // so none of them can silently diverge from the others.
+//
+// Concurrency: two callers racing to be the first to resolve the same brand
+// new Kratos identity (e.g. two near-simultaneous requests that both
+// observed GetByKratosIdentityID return domain.ErrNotFound) both reach the
+// Create call below. Only one Create can win the unique constraint on
+// email/username; the loser's Create returns
+// domain.ErrEmailAlreadyExists/domain.ErrUsernameAlreadyExists. Rather than
+// surfacing that as a hard failure to the losing caller, ensureLocalUser
+// re-resolves via GetByKratosIdentityID: the winner has (or is about to have,
+// within ensureLocalUserLinkRetries short retries) also called
+// SetKratosIdentityID, so the loser's retry should find the same linked row
+// and both callers converge on the same single user. If every retry still
+// reports domain.ErrNotFound (a genuine, non-race conflict -- e.g. the
+// email/username collides with an unrelated, already-linked-to-someone-else
+// account), the original Create error is returned unchanged.
 func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, email, username string) (*user.User, error) {
 	existing, err := s.lookupUnlinkedLocalUser(ctx, email, username)
 	if err != nil {
@@ -292,6 +320,26 @@ func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, ema
 		UpdatedAt:        now,
 	}
 	if err := s.userRepo.Create(ctx, u); err != nil {
+		if errors.Is(err, domain.ErrEmailAlreadyExists) || errors.Is(err, domain.ErrUsernameAlreadyExists) {
+			// Likely a concurrent first-login race: another goroutine's
+			// Create won and has (or is imminently about to have) linked
+			// identityID via its own SetKratosIdentityID call. Re-resolve by
+			// identity, briefly retrying to close the tiny window between the
+			// winner's Create and its SetKratosIdentityID, rather than
+			// failing this caller outright.
+			for attempt := 0; attempt < ensureLocalUserLinkRetries; attempt++ {
+				winner, getErr := s.userRepo.GetByKratosIdentityID(ctx, identityID)
+				if getErr == nil {
+					return winner, nil
+				}
+				if !errors.Is(getErr, domain.ErrNotFound) {
+					return nil, getErr
+				}
+				if attempt < ensureLocalUserLinkRetries-1 {
+					time.Sleep(ensureLocalUserLinkRetryDelay)
+				}
+			}
+		}
 		return nil, err
 	}
 	if err := s.userRepo.SetKratosIdentityID(ctx, u.ID, identityID); err != nil {

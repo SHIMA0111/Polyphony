@@ -2,6 +2,7 @@ package event
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -10,11 +11,29 @@ import (
 	domainevent "github.com/SHIMA0111/multi-user-ai/server/internal/domain/event"
 )
 
+// freeTCPAddr grabs an OS-assigned free TCP port by briefly listening on
+// "127.0.0.1:0" and immediately closing the listener, then returns its
+// address as a string. Used instead of a hardcoded port literal so this
+// test's Redis client address can never collide with a port already bound
+// by something else on the machine running the test.
+func freeTCPAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to grab a free TCP port: %v", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("failed to close free-port listener: %v", err)
+	}
+	return addr
+}
+
 // TestNewRedisHubConstruction verifies that NewRedisHub returns a non-nil,
 // ready-to-use RedisHub wrapping the given client, without requiring a real
 // Redis connection (construction alone must not dial).
 func TestNewRedisHubConstruction(t *testing.T) {
-	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	client := redis.NewClient(&redis.Options{Addr: freeTCPAddr(t)})
 	defer func() { _ = client.Close() }()
 
 	hub := NewRedisHub(client)

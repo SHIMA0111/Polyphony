@@ -174,4 +174,40 @@ describe("MessageList", () => {
 
     expect(screen.getByLabelText("AI is thinking")).toBeInTheDocument()
   })
+
+  it("calls fetchNextPage when the first page doesn't fill the scroll container and more history is available", () => {
+    // jsdom never lays out real dimensions, so scrollHeight/clientHeight are
+    // both 0 by default -- i.e. "doesn't fill the container" is always true
+    // here, exercising the same branch a genuinely short page would hit in a
+    // real browser.
+    const fetchNextPage = vi.fn()
+    render(
+      <MessageList
+        messages={messages}
+        onRegenerate={vi.fn()}
+        isRegenerating={null}
+        {...noopPaginationProps}
+        hasNextPage={true}
+        fetchNextPage={fetchNextPage}
+      />,
+    )
+
+    expect(fetchNextPage).toHaveBeenCalled()
+  })
+
+  it("does not call fetchNextPage when there is no next page, even if the container doesn't fill", () => {
+    const fetchNextPage = vi.fn()
+    render(
+      <MessageList
+        messages={messages}
+        onRegenerate={vi.fn()}
+        isRegenerating={null}
+        {...noopPaginationProps}
+        hasNextPage={false}
+        fetchNextPage={fetchNextPage}
+      />,
+    )
+
+    expect(fetchNextPage).not.toHaveBeenCalled()
+  })
 })

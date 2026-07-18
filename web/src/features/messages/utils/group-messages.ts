@@ -27,6 +27,25 @@ function startOfDay(date: Date): number {
 }
 
 /**
+ * Day-grouping key for `date`, in milliseconds since the epoch.
+ *
+ * Uses UTC calendar fields (`Date.UTC(...)`) when `useUtc` is true, and local
+ * calendar fields ({@link startOfDay}) otherwise. This must always agree with
+ * whichever calendar `dayLabel` renders the day separator's *label* from for
+ * the same `now`/`null` case — see `groupMessagesForDisplay`'s call site,
+ * where `now === null` selects the UTC key to match `dayLabel`'s UTC-`timeZone`
+ * fallback. Using the wrong (local) key while the label renders in UTC would
+ * let the key and label disagree near local midnight, splitting or merging
+ * groups differently depending on the runtime's timezone.
+ */
+function dayGroupKey(date: Date, useUtc: boolean): number {
+  if (useUtc) {
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  }
+  return startOfDay(date)
+}
+
+/**
  * Human-readable day label for a day separator: `"Today"`/`"Yesterday"`
  * relative to `now`, otherwise a localized long date (e.g. "July 14, 2026").
  *
@@ -99,7 +118,7 @@ export function groupMessagesForDisplay(
 
   for (const message of messages) {
     const createdAt = new Date(message.created_at)
-    const dayKey = startOfDay(createdAt)
+    const dayKey = dayGroupKey(createdAt, now === null)
 
     if (lastDayKey === null || dayKey !== lastDayKey) {
       items.push({

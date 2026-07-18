@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"errors"
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -57,11 +59,27 @@ func (s *fakeCompletionServer) callCount() int {
 type fakeModelsServer struct {
 	llmgatewaypb.UnimplementedModelsServiceServer
 
-	resp *llmgatewaypb.ListModelsResponse
+	mu        sync.Mutex
+	calls     int
+	failTimes int
+	failCode  codes.Code
+	resp      *llmgatewaypb.ListModelsResponse
 }
 
 func (s *fakeModelsServer) ListModels(_ context.Context, _ *llmgatewaypb.ListModelsRequest) (*llmgatewaypb.ListModelsResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.calls <= s.failTimes {
+		return nil, status.Error(s.failCode, "injected failure")
+	}
 	return s.resp, nil
+}
+
+func (s *fakeModelsServer) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
 }
 
 // fakeHealthServer is a controllable grpc_health_v1.HealthServer that always
@@ -199,6 +217,38 @@ func TestGRPCClientCompleteHappyPath(t *testing.T) {
 	}
 }
 
+// TestGRPCClientCompleteRejectsOutOfRangeMaxTokens asserts that a negative
+// or too-large MaxTokens value is rejected with a domain.ErrInvalidMaxTokens
+// error before it would be cast to the gRPC wire type (uint32), and that no
+// RPC is made.
+func TestGRPCClientCompleteRejectsOutOfRangeMaxTokens(t *testing.T) {
+	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
+	defer stop()
+
+	for name, maxTokens := range map[string]int{
+		"negative":       -1,
+		"aboveUint32Max": math.MaxUint32 + 1,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := &ai.CompletionRequest{
+				Model:     "gpt-5.2",
+				Messages:  []ai.ChatMessage{{Role: "user", Content: "hi"}},
+				MaxTokens: &maxTokens,
+			}
+			_, err := fixture.client.Complete(context.Background(), req)
+			if err == nil {
+				t.Fatal("expected an error for an out-of-range max_tokens value")
+			}
+			if !errors.Is(err, domain.ErrInvalidMaxTokens) {
+				t.Errorf("expected domain.ErrInvalidMaxTokens, got: %v", err)
+			}
+		})
+	}
+	if got := fixture.completion.callCount(); got != 0 {
+		t.Errorf("expected no RPC invocations for rejected requests, got %d", got)
+	}
+}
+
 func TestGRPCClientListModelsHappyPath(t *testing.T) {
 	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
 	defer stop()
@@ -225,11 +275,17 @@ func TestGRPCClientListModelsHappyPath(t *testing.T) {
 	}
 }
 
-func TestGRPCClientCompleteRetriesOnUnavailableThenSucceeds(t *testing.T) {
+// TestGRPCClientCompleteDoesNotRetryOnUnavailable asserts that Complete
+// makes exactly one attempt even for a transient/retryable gRPC status code.
+// Complete is intentionally excluded from callWithRetry because a retried
+// mid-RPC failure could double-invoke (and double-bill) an upstream
+// completion that already succeeded from the provider's perspective; see the
+// GoDoc on GRPCClient.Complete.
+func TestGRPCClientCompleteDoesNotRetryOnUnavailable(t *testing.T) {
 	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
 	defer stop()
 
-	fixture.completion.failTimes = 2
+	fixture.completion.failTimes = 100 // would eventually succeed if retried
 	fixture.completion.failCode = codes.Unavailable
 	fixture.completion.resp = &llmgatewaypb.CompletionResponse{
 		Model: "gpt-5.2",
@@ -240,14 +296,41 @@ func TestGRPCClientCompleteRetriesOnUnavailableThenSucceeds(t *testing.T) {
 	}
 
 	req := &ai.CompletionRequest{Model: "gpt-5.2", Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}}}
-	resp, err := fixture.client.Complete(context.Background(), req)
+	_, err := fixture.client.Complete(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected an error since Complete must not retry a transient failure")
+	}
+	if !domain.IsLLMGatewayError(err) {
+		t.Errorf("expected domain.ErrLLMGateway-wrapped error, got: %v", err)
+	}
+	if got := fixture.completion.callCount(); got != 1 {
+		t.Errorf("expected exactly 1 invocation (no retry on Complete), got %d", got)
+	}
+}
+
+// TestGRPCClientListModelsRetriesOnUnavailableThenSucceeds asserts that the
+// read-only ListModels RPC still goes through callWithRetry (unlike
+// Complete, it is safe/idempotent to retry).
+func TestGRPCClientListModelsRetriesOnUnavailableThenSucceeds(t *testing.T) {
+	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
+	defer stop()
+
+	fixture.models.failTimes = 2
+	fixture.models.failCode = codes.Unavailable
+	fixture.models.resp = &llmgatewaypb.ListModelsResponse{
+		Models: []*llmgatewaypb.ModelInfo{
+			{Id: "gpt-5.2", Name: "GPT-5.2", Provider: "openai"},
+		},
+	}
+
+	models, err := fixture.client.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("expected success after retries, got error: %v", err)
 	}
-	if resp.Content != "recovered" {
-		t.Errorf("expected content %q, got %q", "recovered", resp.Content)
+	if len(models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(models))
 	}
-	if got := fixture.completion.callCount(); got != 3 {
+	if got := fixture.models.callCount(); got != 3 {
 		t.Errorf("expected exactly 3 invocations (2 failures + 1 success), got %d", got)
 	}
 }
@@ -269,26 +352,6 @@ func TestGRPCClientCompleteNonRetryableCodeReturnsImmediately(t *testing.T) {
 	}
 	if got := fixture.completion.callCount(); got != 1 {
 		t.Errorf("expected exactly 1 invocation for a non-retryable code, got %d", got)
-	}
-}
-
-func TestGRPCClientCompleteExhaustsRetriesOnPersistentUnavailable(t *testing.T) {
-	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
-	defer stop()
-
-	fixture.completion.failTimes = 100 // always fails
-	fixture.completion.failCode = codes.Unavailable
-
-	req := &ai.CompletionRequest{Model: "gpt-5.2", Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}}}
-	_, err := fixture.client.Complete(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected an error after exhausting retries")
-	}
-	if !domain.IsLLMGatewayError(err) {
-		t.Errorf("expected domain.ErrLLMGateway-wrapped error, got: %v", err)
-	}
-	if got := fixture.completion.callCount(); got != 3 {
-		t.Errorf("expected exactly 3 invocations (maxRetries), got %d", got)
 	}
 }
 

@@ -46,7 +46,25 @@ type InvitationRepository interface {
 	// targeted at a specific user.
 	ListPendingByInviteeID(ctx context.Context, inviteeID string) ([]*Invitation, error)
 
-	// UpdateStatus updates the status of the invitation identified by id.
-	// Returns domain.ErrNotFound if no invitation with that ID exists.
-	UpdateStatus(ctx context.Context, id string, status Status) error
+	// UpdateStatus performs a compare-and-swap status transition: it updates
+	// the status of the invitation identified by id to newStatus only if its
+	// current status still equals expectedStatus, atomically at the row
+	// level (`WHERE id = ... AND status = ...`).
+	//
+	// This exists so callers can use the CAS itself as the linearization
+	// point for a status transition that must not race with a concurrent
+	// transition on the same invitation (e.g. AcceptInvitation vs
+	// RejectInvitation on the same username-targeted invitation) --
+	// whichever caller's CAS succeeds is the one allowed to proceed with any
+	// side effect that should be atomic with the transition (e.g. adding the
+	// room membership); the loser must not perform that side effect.
+	//
+	// Returns domain.ErrNotFound if no invitation with that ID exists, or
+	// domain.ErrInvitationNotPending if the invitation exists but its
+	// current status does not equal expectedStatus (a transition conflict --
+	// either it was never in expectedStatus, or another caller already
+	// transitioned it). Callers that have just loaded the invitation via
+	// GetByID (and therefore know it exists) can treat any error here as a
+	// transition conflict.
+	UpdateStatus(ctx context.Context, id string, newStatus, expectedStatus Status) error
 }

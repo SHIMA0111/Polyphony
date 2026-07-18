@@ -456,6 +456,23 @@ func TestLoadLLMGatewayGRPCMaxRetriesInvalidFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestLoadLLMGatewayGRPCMaxRetriesNegativeFallsBackToDefault proves that a
+// negative LLM_GATEWAY_GRPC_MAX_RETRIES value -- which strconv.Atoi parses
+// successfully, unlike "not-a-number" -- is still rejected in favor of the
+// default, rather than being passed through to misbehave downstream.
+func TestLoadLLMGatewayGRPCMaxRetriesNegativeFallsBackToDefault(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("LLM_GATEWAY_GRPC_MAX_RETRIES", "-1")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load should not fail on a negative retry count, got: %v", err)
+	}
+	if cfg.LLMGatewayGRPCMaxRetries != 3 {
+		t.Errorf("expected fallback to default LLMGatewayGRPCMaxRetries 3, got %d", cfg.LLMGatewayGRPCMaxRetries)
+	}
+}
+
 func TestLoadLLMGatewayGRPCBaseBackoffInvalidFallsBackToDefault(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("LLM_GATEWAY_GRPC_BASE_BACKOFF", "not-a-duration")

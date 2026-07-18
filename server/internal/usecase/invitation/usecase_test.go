@@ -3,6 +3,7 @@ package invitation
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -318,3 +319,94 @@ func TestRejectInvitationOnLinkInvitationForbidden(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestConcurrentAcceptAndRejectNoMixedFinalState is a regression test for
+// Step 22/23's compare-and-swap fix: AcceptInvitation and RejectInvitation
+// racing on the very same username-targeted invitation must never leave a
+// "mixed" final state -- a room_members row added while the invitation's
+// final status reads StatusRejected, or no room_members row while it reads
+// StatusAccepted. Before the fix (AddMember running unconditionally before
+// the status transition), the loser of the status-update race could still
+// have already added the member, producing exactly that inconsistency.
+//
+// Run with -race to also catch any data race in the CAS path itself.
+func TestConcurrentAcceptAndRejectNoMixedFinalState(t *testing.T) {
+	uc, roomRepo, _, invitationRepo := newTestFixture()
+	ctx := context.Background()
+	username := "bob"
+
+	inv, err := uc.CreateInvitation(ctx, "admin-1", "room-1", &username, domainroom.RoleMember, nil)
+	if err != nil {
+		t.Fatalf("CreateInvitation failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var ready sync.WaitGroup
+	ready.Add(2)
+	start := make(chan struct{})
+
+	var acceptErr, rejectErr error
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-start
+		_, acceptErr = uc.AcceptInvitation(ctx, "bob-1", inv.ID)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-start
+		rejectErr = uc.RejectInvitation(ctx, "bob-1", inv.ID)
+	}()
+
+	ready.Wait()
+	close(start)
+	wg.Wait()
+
+	// Exactly one of the two must have won the CAS; the other must have
+	// observed a transition conflict.
+	acceptWon := acceptErr == nil
+	rejectWon := rejectErr == nil
+	if acceptWon == rejectWon {
+		t.Fatalf("expected exactly one of accept/reject to win, got acceptErr=%v rejectErr=%v", acceptErr, rejectErr)
+	}
+	if acceptWon && !errors.Is(rejectErr, domain.ErrInvitationNotPending) {
+		t.Fatalf("expected the losing reject to fail with ErrInvitationNotPending, got %v", rejectErr)
+	}
+	if rejectWon && !errors.Is(acceptErr, domain.ErrInvitationNotPending) {
+		t.Fatalf("expected the losing accept to fail with ErrInvitationNotPending, got %v", acceptErr)
+	}
+
+	got, err := invitationRepo.GetByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	_, memberErr := roomRepo.GetMember(ctx, "room-1", "bob-1")
+	isMember := memberErr == nil
+
+	// The invariant under test: the final invitation status and whether bob
+	// ended up a room member must agree -- never "rejected but a member was
+	// added" nor "accepted but no member exists".
+	switch got.Status {
+	case domaininvitation.StatusAccepted:
+		if !isMember {
+			t.Fatalf("status is accepted but bob-1 was never added as a room member")
+		}
+		if !acceptWon {
+			t.Fatalf("status is accepted but the accept call did not report success")
+		}
+	case domaininvitation.StatusRejected:
+		if isMember {
+			t.Fatalf("status is rejected but bob-1 was added as a room member (mixed final state)")
+		}
+		if !rejectWon {
+			t.Fatalf("status is rejected but the reject call did not report success")
+		}
+	default:
+		t.Fatalf("expected a terminal status (accepted/rejected), got %s", got.Status)
+	}
+}

@@ -111,20 +111,38 @@ func (r *InvitationRepository) ListPendingByInviteeID(ctx context.Context, invit
 	return scanInvitations(rows)
 }
 
-// UpdateStatus updates the status of the invitation identified by id. It
-// returns domain.ErrNotFound if the invitation does not exist.
-func (r *InvitationRepository) UpdateStatus(ctx context.Context, id string, status invitation.Status) error {
+// UpdateStatus performs a compare-and-swap status transition, per
+// invitation.InvitationRepository's UpdateStatus GoDoc: it only updates the
+// invitation's status if its current status still equals expectedStatus,
+// atomically via `WHERE id = $2 AND status = $3`.
+//
+// If no row is affected, this distinguishes the two possible causes with a
+// follow-up read: domain.ErrNotFound if id does not exist at all, or
+// domain.ErrInvitationNotPending if it exists but its status no longer
+// equals expectedStatus (a transition conflict -- e.g. a concurrent
+// accept/reject already changed it).
+func (r *InvitationRepository) UpdateStatus(ctx context.Context, id string, newStatus, expectedStatus invitation.Status) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE room_invitations SET status = $1 WHERE id = $2`,
-		string(status), id,
+		`UPDATE room_invitations SET status = $1 WHERE id = $2 AND status = $3`,
+		string(newStatus), id, string(expectedStatus),
 	)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+
+	var exists bool
+	if err := r.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM room_invitations WHERE id = $1)`, id,
+	).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
 		return domain.ErrNotFound
 	}
-	return nil
+	return domain.ErrInvitationNotPending
 }
 
 // invitationRow is the minimal interface shared by pgx.Row and pgx.Rows,

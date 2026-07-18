@@ -90,7 +90,7 @@ func (u *RoomUsecase) UpdateRoom(ctx context.Context, userID, roomID, name, desc
 	rm.Description = description
 	rm.UpdatedAt = time.Now()
 
-	if err = u.roomRepo.Update(ctx, rm); err != nil {
+	if err = u.roomRepo.UpdateDetails(ctx, roomID, rm.Name, rm.Description, rm.UpdatedAt); err != nil {
 		return nil, err
 	}
 
@@ -125,7 +125,7 @@ func (u *RoomUsecase) UpdateAIContextCutoff(ctx context.Context, userID, roomID 
 	rm.AIContextCutoffAt = cutoff
 	rm.UpdatedAt = time.Now()
 
-	if err = u.roomRepo.Update(ctx, rm); err != nil {
+	if err = u.roomRepo.UpdateAIContextCutoff(ctx, roomID, rm.AIContextCutoffAt, rm.UpdatedAt); err != nil {
 		return nil, err
 	}
 
@@ -191,9 +191,16 @@ func (u *RoomUsecase) LeaveRoom(ctx context.Context, callerID, roomID, targetUse
 // returns domain.ErrForbidden if the caller lacks that capability. It
 // returns domainroom.ErrOwnerRoleProtected if targetUserID is the room's
 // current owner — the owner's role can only change via TransferOwnership,
-// never directly. It returns domain.ErrNotFound if targetUserID is not a
-// member of roomID. Rejecting newRole == domainroom.RoleMaster is validated
-// at the handler layer, so this method never needs to special-case it.
+// never directly — and also if newRole itself is domainroom.RoleMaster:
+// promoting a non-owner to master would produce a room with two masters,
+// which only TransferOwnership is allowed to establish (and it always
+// demotes the previous owner in the same atomic operation, see its GoDoc).
+// The handler layer already rejects newRole == domainroom.RoleMaster before
+// ever calling this method, but this check is kept here too as defense in
+// depth, consistent with this codebase's pattern of re-validating
+// security-relevant invariants at the usecase layer rather than trusting the
+// handler alone. It returns domain.ErrNotFound if targetUserID is not a
+// member of roomID.
 func (u *RoomUsecase) ChangeMemberRole(ctx context.Context, callerID, roomID, targetUserID string, newRole domainroom.Role) (*domainroom.RoomMember, error) {
 	caller, err := u.getMember(ctx, roomID, callerID)
 	if err != nil {
@@ -201,6 +208,10 @@ func (u *RoomUsecase) ChangeMemberRole(ctx context.Context, callerID, roomID, ta
 	}
 	if !caller.Role.Allows(domainroom.ActionManageMembers) {
 		return nil, domain.ErrForbidden
+	}
+
+	if newRole == domainroom.RoleMaster {
+		return nil, domainroom.ErrOwnerRoleProtected
 	}
 
 	rm, err := u.roomRepo.GetByID(ctx, roomID)

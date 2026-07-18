@@ -20,5 +20,6 @@
 #   docker compose port --index=2 api 8080
 services:
   api:
+    # !override requires Docker Compose v2.24.0 or later.
     ports: !override
       - "8080"

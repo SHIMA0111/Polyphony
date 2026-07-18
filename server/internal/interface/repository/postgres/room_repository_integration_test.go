@@ -195,7 +195,9 @@ func createTestUser(ctx context.Context, t *testing.T, userRepo *UserRepository,
 }
 
 // TestUpdateMemberRolePersists proves that RoomRepository.UpdateMemberRole
-// persists the new role for an existing membership.
+// persists the new role for an existing membership, and that GetMember
+// populates RoomMember.Username via its JOIN against users (Step 42) --
+// not just ListMembers.
 func TestUpdateMemberRolePersists(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -229,6 +231,9 @@ func TestUpdateMemberRolePersists(t *testing.T) {
 	}
 	if got.Role != domainroom.RoleAdmin {
 		t.Fatalf("expected role admin, got %s", got.Role)
+	}
+	if got.Username != member.Username {
+		t.Fatalf("expected GetMember to populate Username %q, got %q", member.Username, got.Username)
 	}
 }
 
@@ -357,5 +362,74 @@ func TestTransferOwnershipRollbackOnMissingNewOwner(t *testing.T) {
 	}
 	if ownerMember.Role != domainroom.RoleMaster {
 		t.Fatalf("expected original owner role to remain master after rollback, got %s", ownerMember.Role)
+	}
+}
+
+// TestTransferOwnershipStaleOwnerCAS proves that
+// RoomRepository.TransferOwnership's owner_id update is a compare-and-swap
+// against the caller-supplied oldOwnerID (Step 27): once ownership has
+// already moved, a second call using the now-stale previous owner ID fails
+// with domain.ErrNotFound and leaves the room's actual current owner/role
+// assignments untouched, rather than blindly overwriting them (regression
+// test for the `UPDATE rooms SET owner_id = ...` previously lacking an
+// `AND owner_id = ...` guard, which let a concurrent/stale transfer race the
+// legitimate one).
+func TestTransferOwnershipStaleOwnerCAS(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "cas-owner")
+	firstNewOwner := createTestUser(ctx, t, userRepo, "cas-first-new-owner")
+	secondNewOwner := createTestUser(ctx, t, userRepo, "cas-second-new-owner")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "CAS Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if err := roomRepo.AddMember(ctx, &domainroom.RoomMember{
+		ID: uuid.New().String(), RoomID: rm.ID, UserID: firstNewOwner.ID, Role: domainroom.RoleMember, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AddMember(firstNewOwner) failed: %v", err)
+	}
+	if err := roomRepo.AddMember(ctx, &domainroom.RoomMember{
+		ID: uuid.New().String(), RoomID: rm.ID, UserID: secondNewOwner.ID, Role: domainroom.RoleMember, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AddMember(secondNewOwner) failed: %v", err)
+	}
+
+	// The legitimate transfer: owner -> firstNewOwner.
+	if err := roomRepo.TransferOwnership(ctx, rm.ID, owner.ID, firstNewOwner.ID); err != nil {
+		t.Fatalf("first TransferOwnership failed: %v", err)
+	}
+
+	// A second call still using the now-stale original owner ID must fail:
+	// owner.ID is no longer rooms.owner_id.
+	err := roomRepo.TransferOwnership(ctx, rm.ID, owner.ID, secondNewOwner.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected domain.ErrNotFound for a stale-owner TransferOwnership, got %v", err)
+	}
+
+	// The room's actual state must reflect only the first, legitimate
+	// transfer -- untouched by the failed stale-owner attempt.
+	updatedRoom, getErr := roomRepo.GetByID(ctx, rm.ID)
+	if getErr != nil {
+		t.Fatalf("GetByID failed: %v", getErr)
+	}
+	if updatedRoom.OwnerID != firstNewOwner.ID {
+		t.Fatalf("expected owner_id to remain %s, got %s", firstNewOwner.ID, updatedRoom.OwnerID)
+	}
+
+	secondNewOwnerMember, getErr := roomRepo.GetMember(ctx, rm.ID, secondNewOwner.ID)
+	if getErr != nil {
+		t.Fatalf("GetMember(secondNewOwner) failed: %v", getErr)
+	}
+	if secondNewOwnerMember.Role != domainroom.RoleMember {
+		t.Fatalf("expected secondNewOwner's role to remain member after the failed stale-owner transfer, got %s", secondNewOwnerMember.Role)
 	}
 }

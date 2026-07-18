@@ -162,9 +162,12 @@ func (h *MessageHandler) Delete(c echo.Context) error {
 // UpdateExclude handles PATCH /rooms/:roomId/messages/:messageId. It toggles
 // whether a message is excluded from future AI context assembly. The caller
 // must be allowed domainroom.ActionInvokeAI (member or above). On success it
-// returns HTTP 200 with the updated MessageResponse. It returns HTTP 400 for
-// invalid input, HTTP 403 if the caller lacks permission, and HTTP 404 if
-// the message does not exist or does not belong to the room.
+// returns HTTP 200 with the updated MessageResponse. It returns HTTP 400 if
+// the request body is malformed or omits exclude_from_ai (see
+// UpdateMessageExcludeRequest's docstring -- a missing field is rejected
+// rather than silently defaulting to false), HTTP 403 if the caller lacks
+// permission, and HTTP 404 if the message does not exist or does not belong
+// to the room.
 func (h *MessageHandler) UpdateExclude(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")
@@ -174,8 +177,11 @@ func (h *MessageHandler) UpdateExclude(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
 	}
+	if req.ExcludeFromAI == nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "exclude_from_ai is required"})
+	}
 
-	msg, err := h.usecase.SetExcludeFromAI(c.Request().Context(), userID, roomID, messageID, req.ExcludeFromAI)
+	msg, err := h.usecase.SetExcludeFromAI(c.Request().Context(), userID, roomID, messageID, *req.ExcludeFromAI)
 	if err != nil {
 		return handleMessageError(c, err)
 	}

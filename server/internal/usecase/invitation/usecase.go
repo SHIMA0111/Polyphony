@@ -197,6 +197,20 @@ func (u *InvitationUsecase) GetInvitationByCode(ctx context.Context, userID, cod
 // (InviteeID == nil) remain domaininvitation.StatusPending — they are
 // reusable by any authenticated user holding the code until expiry or
 // explicit revocation.
+//
+// Concurrency: for a username-targeted invitation, the status CAS
+// (invitationRepo.UpdateStatus's compare-and-swap, see its GoDoc) is
+// performed BEFORE AddMember, not after -- deliberately, so it acts as the
+// linearization point for this invitation. If a concurrent AcceptInvitation
+// or RejectInvitation call on the same invitation has already transitioned
+// its status away from StatusPending, this caller's CAS fails and the
+// function returns without ever calling AddMember. Doing the CAS first (and
+// only proceeding to mutate room membership on success) is what prevents the
+// "mixed final state" this guards against: a room_members row added for an
+// invitation whose status ultimately reads StatusRejected (or vice versa),
+// which the previous AddMember-then-UpdateStatus ordering could produce
+// under a race, since a losing UpdateStatus call left the already-added
+// member in place with no rollback.
 func (u *InvitationUsecase) AcceptInvitation(ctx context.Context, userID, invitationID string) (*domainroom.RoomMember, error) {
 	inv, err := u.invitationRepo.GetByID(ctx, invitationID)
 	if err != nil {
@@ -224,6 +238,16 @@ func (u *InvitationUsecase) AcceptInvitation(ctx context.Context, userID, invita
 		return nil, domain.ErrInvitationExpired
 	}
 
+	// CAS the status transition FIRST for username-targeted invitations: see
+	// the "Concurrency" note above. Link invitations have no status
+	// transition to race on (they never leave StatusPending here), so this
+	// is skipped for them.
+	if inv.InviteeID != nil {
+		if err := u.invitationRepo.UpdateStatus(ctx, inv.ID, domaininvitation.StatusAccepted, domaininvitation.StatusPending); err != nil {
+			return nil, err
+		}
+	}
+
 	member := &domainroom.RoomMember{
 		ID:       uuid.New().String(),
 		RoomID:   inv.RoomID,
@@ -233,12 +257,6 @@ func (u *InvitationUsecase) AcceptInvitation(ctx context.Context, userID, invita
 	}
 	if err := u.roomRepo.AddMember(ctx, member); err != nil {
 		return nil, err
-	}
-
-	if inv.InviteeID != nil {
-		if err := u.invitationRepo.UpdateStatus(ctx, inv.ID, domaininvitation.StatusAccepted); err != nil {
-			return nil, err
-		}
 	}
 
 	return member, nil
@@ -269,7 +287,12 @@ func (u *InvitationUsecase) RejectInvitation(ctx context.Context, userID, invita
 		return domain.ErrInvitationNotPending
 	}
 
-	return u.invitationRepo.UpdateStatus(ctx, inv.ID, domaininvitation.StatusRejected)
+	// CAS the transition (see AcceptInvitation's "Concurrency" note): if a
+	// concurrent AcceptInvitation already transitioned this invitation away
+	// from StatusPending, this fails with domain.ErrInvitationNotPending
+	// instead of silently overwriting a status a member was already added
+	// under.
+	return u.invitationRepo.UpdateStatus(ctx, inv.ID, domaininvitation.StatusRejected, domaininvitation.StatusPending)
 }
 
 // getMember loads the caller's membership in roomID, translating a missing

@@ -75,6 +75,11 @@ var (
 	// or below zero, so an AI invocation was rejected before calling the LLM
 	// Gateway. See usecase/billing.BillingUsecase.CheckBalance.
 	ErrInsufficientBalance = errors.New("insufficient token balance")
+
+	// ErrInvalidMaxTokens indicates a CompletionRequest's MaxTokens value is
+	// out of the range the gRPC wire type (uint32) can represent -- negative,
+	// or greater than math.MaxUint32. See gateway.GRPCClient.Complete.
+	ErrInvalidMaxTokens = errors.New("invalid max_tokens value")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.

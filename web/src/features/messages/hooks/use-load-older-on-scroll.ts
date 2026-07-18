@@ -1,9 +1,47 @@
 "use client"
 
-import { useEffect, useLayoutEffect, useRef } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react"
 
 /** Distance, in pixels, from the top edge that triggers loading older history. */
 const LOAD_THRESHOLD_PX = 100
+
+/** Selector for the per-message DOM node `MessageBubble` renders (`data-message-id`). */
+const MESSAGE_ELEMENT_SELECTOR = "[data-message-id]"
+
+/**
+ * Pure scroll-anchor math for the *element-based* anchoring strategy: given
+ * the container's current `scrollTop` and an anchor element's vertical
+ * offset relative to the container (captured immediately before an older
+ * page of history is prepended, and again after that page's DOM has
+ * landed), returns the `scrollTop` that keeps the anchor element visually in
+ * the same place despite the added height above it.
+ *
+ * This is preferred over the scrollHeight-delta strategy
+ * ({@link computeScrollAnchorAdjustment}) because it stays correct even when
+ * content is *also* appended below the visible area during the same fetch
+ * (e.g. a new message arriving concurrently with an older-page load): the
+ * delta strategy attributes 100% of any `scrollHeight` growth to the
+ * prepended content, over-adjusting when some of that growth happened at
+ * the bottom instead. Anchoring to a specific element's own position is
+ * unaffected by height changes elsewhere in the container.
+ *
+ * @param currentScrollTop - The container's `scrollTop` at the moment the
+ *   new page's DOM has landed (immediately before this adjustment).
+ * @param oldOffsetInContainer - The anchor element's `top` position relative
+ *   to the container's `top`, captured immediately before the fetch.
+ * @param newOffsetInContainer - The anchor element's `top` position relative
+ *   to the container's `top`, captured immediately after the new page
+ *   landed.
+ * @returns The `scrollTop` to apply so the anchor element's on-screen
+ *   position is restored.
+ */
+export function computeElementAnchorScrollTop(
+  currentScrollTop: number,
+  oldOffsetInContainer: number,
+  newOffsetInContainer: number,
+): number {
+  return currentScrollTop + (newOffsetInContainer - oldOffsetInContainer)
+}
 
 /**
  * Pure scroll-anchor math, extracted out of the hook so it is unit-testable
@@ -14,6 +52,14 @@ const LOAD_THRESHOLD_PX = 100
  * `scrollHeight` after that page's DOM has landed, returns the `scrollTop`
  * that keeps the reader's previously-visible content anchored in place
  * (no visible jump) despite the added height above it.
+ *
+ * This is a fallback only, used when the element-based anchor
+ * ({@link computeElementAnchorScrollTop}) can't be used because the anchor
+ * element captured before the fetch is no longer in the DOM. Unlike the
+ * element-based strategy, this attributes *all* `scrollHeight` growth during
+ * the fetch to the prepended older content, so it over-adjusts if content
+ * was also added below the fold in the same window (e.g. a concurrent new
+ * message).
  *
  * @param oldScrollTop - `scrollTop` captured immediately before the fetch.
  * @param oldScrollHeight - `scrollHeight` captured immediately before the fetch.
@@ -26,6 +72,39 @@ export function computeScrollAnchorAdjustment(
   newScrollHeight: number,
 ): number {
   return newScrollHeight - oldScrollHeight + oldScrollTop
+}
+
+/**
+ * Finds the topmost message element (`[data-message-id]`, rendered by
+ * `MessageBubble`) that is at least partially visible within `container`'s
+ * scrolled viewport, i.e. the first one (in DOM order) whose bottom edge is
+ * below the container's top edge.
+ *
+ * @param container - The scrollable message-list container.
+ * @returns The topmost visible message element, or `null` if the container
+ *   has no `[data-message-id]` descendants yet (e.g. an empty room).
+ */
+function findTopmostVisibleMessageElement(container: HTMLElement): HTMLElement | null {
+  const elements = container.querySelectorAll<HTMLElement>(MESSAGE_ELEMENT_SELECTOR)
+  const containerTop = container.getBoundingClientRect().top
+
+  for (const element of elements) {
+    if (element.getBoundingClientRect().bottom > containerTop) {
+      return element
+    }
+  }
+  return null
+}
+
+/** Snapshot captured immediately before an older-page fetch is triggered. */
+interface ScrollAnchor {
+  /** Topmost visible message element at capture time, or `null` if none was found. */
+  element: HTMLElement | null
+  /** `element`'s `top` relative to the container's `top`, at capture time. */
+  offsetInContainer: number
+  /** Fallback-strategy inputs, used only when `element` is no longer in the DOM. */
+  fallbackScrollTop: number
+  fallbackScrollHeight: number
 }
 
 export interface UseLoadOlderOnScrollOptions {
@@ -42,19 +121,47 @@ export interface UseLoadOlderOnScrollOptions {
   pageCount: number
 }
 
+export interface UseLoadOlderOnScrollResult {
+  /**
+   * Captures the current scroll anchor (topmost visible message element, or
+   * the scrollTop/scrollHeight fallback) and calls `fetchNextPage()`,
+   * regardless of the current `scrollTop`.
+   *
+   * Exposed so callers can trigger the exact same anchor-capture-then-fetch
+   * sequence the `scroll` listener below uses from outside a scroll event —
+   * e.g. `MessageList`'s "first page doesn't fill the container" effect,
+   * where there is no scrollable overflow for the user to ever generate a
+   * `scroll` event from in the first place.
+   */
+  triggerLoadOlder: () => void
+}
+
 /**
  * Upward-infinite-scroll: fetches the next (older) page of message history
  * once the transcript is scrolled near its top, and preserves the reader's
  * scroll anchor across the resulting DOM update so nothing visibly jumps.
  *
  * Mechanism: on `scroll`, if the container is within `LOAD_THRESHOLD_PX` of
- * the top and there is more history to load, this captures the container's
- * current `scrollTop`/`scrollHeight` and calls `fetchNextPage()`. Once the
- * fetched page's messages are actually rendered (detected via a `pageCount`
- * change, in a `useLayoutEffect` so the adjustment happens before paint),
- * `scrollTop` is reset to `computeScrollAnchorAdjustment`'s result, which
- * accounts for the height the newly-rendered older messages added above the
- * previously-visible content.
+ * the top and there is more history to load, this captures the topmost
+ * currently-visible message element (`[data-message-id]`) and its offset
+ * within the container, then calls `fetchNextPage()`. Once the fetched
+ * page's messages are actually rendered (detected via a `pageCount` change,
+ * in a `useLayoutEffect` so the adjustment happens before paint), `scrollTop`
+ * is reset via {@link computeElementAnchorScrollTop} so that same element
+ * ends up back at its original on-screen offset — this stays correct even if
+ * content was also appended at the *bottom* of the container during the
+ * fetch (e.g. a new message arriving concurrently), unlike a pure
+ * scrollHeight-delta adjustment.
+ *
+ * If the captured element is no longer present in the DOM by the time the
+ * new page lands (an edge case — message elements are keyed by ID and
+ * shouldn't normally be removed), this falls back to the delta-based
+ * {@link computeScrollAnchorAdjustment} using the `scrollTop`/`scrollHeight`
+ * captured at the same time.
+ *
+ * @returns {@link UseLoadOlderOnScrollResult}, letting callers trigger the
+ *   same anchored fetch outside of a `scroll` event (see
+ *   `triggerLoadOlder`'s docstring).
  */
 export function useLoadOlderOnScroll({
   containerRef,
@@ -62,8 +169,31 @@ export function useLoadOlderOnScroll({
   isFetchingNextPage,
   fetchNextPage,
   pageCount,
-}: UseLoadOlderOnScrollOptions): void {
-  const anchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
+}: UseLoadOlderOnScrollOptions): UseLoadOlderOnScrollResult {
+  const anchorRef = useRef<ScrollAnchor | null>(null)
+
+  // A plain useCallback over the current props: its identity changes
+  // whenever hasNextPage/isFetchingNextPage/fetchNextPage do, which is fine
+  // for both call sites (the scroll listener effect below and MessageList's
+  // "container doesn't fill" effect already list this function itself, or
+  // these same values, as dependencies -- so an identity change here only
+  // ever coincides with a dependency change those effects would react to
+  // anyway).
+  const captureAnchorAndFetch = useCallback(() => {
+    const el = containerRef.current
+    if (!el || !hasNextPage || isFetchingNextPage) return
+
+    const topElement = findTopmostVisibleMessageElement(el)
+    anchorRef.current = {
+      element: topElement,
+      offsetInContainer: topElement
+        ? topElement.getBoundingClientRect().top - el.getBoundingClientRect().top
+        : 0,
+      fallbackScrollTop: el.scrollTop,
+      fallbackScrollHeight: el.scrollHeight,
+    }
+    fetchNextPage()
+  }, [containerRef, hasNextPage, isFetchingNextPage, fetchNextPage])
 
   useEffect(() => {
     const el = containerRef.current
@@ -73,28 +203,39 @@ export function useLoadOlderOnScroll({
       if (!hasNextPage || isFetchingNextPage) return
       if (el.scrollTop > LOAD_THRESHOLD_PX) return
 
-      anchorRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }
-      fetchNextPage()
+      captureAnchorAndFetch()
     }
 
     el.addEventListener("scroll", handleScroll, { passive: true })
     return () => el.removeEventListener("scroll", handleScroll)
-  }, [containerRef, hasNextPage, isFetchingNextPage, fetchNextPage])
+  }, [containerRef, hasNextPage, isFetchingNextPage, captureAnchorAndFetch])
 
   useLayoutEffect(() => {
     const el = containerRef.current
     const anchor = anchorRef.current
     if (!el || !anchor) return
 
-    el.scrollTop = computeScrollAnchorAdjustment(
-      anchor.scrollTop,
-      anchor.scrollHeight,
-      el.scrollHeight,
-    )
+    if (anchor.element && el.contains(anchor.element)) {
+      const newOffsetInContainer =
+        anchor.element.getBoundingClientRect().top - el.getBoundingClientRect().top
+      el.scrollTop = computeElementAnchorScrollTop(
+        el.scrollTop,
+        anchor.offsetInContainer,
+        newOffsetInContainer,
+      )
+    } else {
+      el.scrollTop = computeScrollAnchorAdjustment(
+        anchor.fallbackScrollTop,
+        anchor.fallbackScrollHeight,
+        el.scrollHeight,
+      )
+    }
     anchorRef.current = null
     // Deliberately keyed on `pageCount` (not `containerRef`/other deps) so
     // this only runs once per newly-landed older page, after its messages
     // have actually been committed to the DOM.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageCount])
+
+  return { triggerLoadOlder: captureAnchorAndFetch }
 }

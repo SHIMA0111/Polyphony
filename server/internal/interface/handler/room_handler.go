@@ -288,7 +288,11 @@ func handleRoomError(c echo.Context, err error) error {
 		return c.JSON(http.StatusForbidden, ErrorResponse{Message: "forbidden"})
 	}
 	if errors.Is(err, domainroom.ErrOwnerRoleProtected) {
-		return c.JSON(http.StatusConflict, ErrorResponse{Message: "owner must transfer ownership before leaving"})
+		// Shared by multiple endpoints (Leave and ChangeMemberRole both funnel
+		// through handleRoomError), so this message must stay endpoint-neutral
+		// rather than naming one specific action (e.g. "before leaving") that
+		// isn't what the other caller is doing.
+		return c.JSON(http.StatusConflict, ErrorResponse{Message: "room owner role cannot be changed directly; transfer ownership first"})
 	}
 	middleware.GetLogger(c).Error("unhandled room error", "error", err)
 	return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})

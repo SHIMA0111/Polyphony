@@ -62,6 +62,7 @@ export function MessageBubble({
       align={message.type === "human" ? "flex-end" : "flex-start"}
       gap={1}
       role="group"
+      data-message-id={message.id}
     >
       <Box
         display="inline-block"

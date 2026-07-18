@@ -211,6 +211,7 @@ services:
     environment:
       API_URL: ${API_URL:-http://api:8080}
       KRATOS_PUBLIC_URL: ${KRATOS_PUBLIC_URL:-http://kratos:4433}
+      KRATOS_COOKIE_NAME: ${KRATOS_COOKIE_NAME:-ory_kratos_session}
     ports:
       - "3000:3000"
     depends_on:

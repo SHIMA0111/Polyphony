@@ -59,7 +59,8 @@ func (r *UserRepo) GetByID(_ context.Context, id string) (*user.User, error) {
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	return u, nil
+	stored := *u // clone: never hand out the internally-mutated pointer
+	return &stored, nil
 }
 
 // GetByEmail retrieves a user by email. Returns domain.ErrNotFound if not
@@ -70,7 +71,8 @@ func (r *UserRepo) GetByEmail(_ context.Context, email string) (*user.User, erro
 
 	for _, u := range r.Users {
 		if u.Email == email {
-			return u, nil
+			stored := *u // clone: never hand out the internally-mutated pointer
+			return &stored, nil
 		}
 	}
 	return nil, domain.ErrNotFound
@@ -84,7 +86,8 @@ func (r *UserRepo) GetByUsername(_ context.Context, username string) (*user.User
 
 	for _, u := range r.Users {
 		if u.Username == username {
-			return u, nil
+			stored := *u // clone: never hand out the internally-mutated pointer
+			return &stored, nil
 		}
 	}
 	return nil, domain.ErrNotFound
@@ -99,7 +102,8 @@ func (r *UserRepo) GetByKratosIdentityID(_ context.Context, kratosIdentityID str
 
 	for _, u := range r.Users {
 		if u.KratosIdentityID != nil && *u.KratosIdentityID == kratosIdentityID {
-			return u, nil
+			stored := *u // clone: never hand out the internally-mutated pointer
+			return &stored, nil
 		}
 	}
 	return nil, domain.ErrNotFound

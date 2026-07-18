@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -621,5 +622,72 @@ func TestKratosValidateTokenSelfHeal(t *testing.T) {
 	}
 	if claims.UserID != linkedUser.ID {
 		t.Errorf("expected claims.UserID %q to match self-healed user %q", claims.UserID, linkedUser.ID)
+	}
+}
+
+// TestKratosEnsureLocalUserConcurrentFirstLoginsConverge is a regression
+// test for a race in ensureLocalUser: two callers resolving the very same
+// brand-new Kratos identity for the first time (both observing "no local
+// user linked yet") can both reach the Create call. Only one Create can win
+// the unique email/username constraint; the loser must retry via
+// GetByKratosIdentityID and resolve to the *same* single user rather than
+// failing outright. Run with -race to also catch any data race in the
+// retry path itself.
+func TestKratosEnsureLocalUserConcurrentFirstLoginsConverge(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	identityID := uuid.New().String()
+	userRepo := &mocks.UserRepo{}
+	svc := newTestKratosService(f, userRepo)
+
+	const goroutines = 2
+	var wg sync.WaitGroup
+	results := make([]*domainuser.User, goroutines)
+	errs := make([]error, goroutines)
+
+	// A start barrier maximizes the chance both goroutines are mid-Create at
+	// the same time, rather than serializing behind mocks.UserRepo's mutex
+	// before either has read anything.
+	var ready sync.WaitGroup
+	ready.Add(goroutines)
+	start := make(chan struct{})
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ready.Done()
+			<-start
+			u, err := svc.ensureLocalUser(context.Background(), identityID, "racer@example.com", "racer")
+			results[idx] = u
+			errs[idx] = err
+		}(i)
+	}
+
+	ready.Wait()
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: ensureLocalUser failed: %v", i, err)
+		}
+	}
+	if results[0] == nil || results[1] == nil {
+		t.Fatalf("expected both goroutines to resolve a user, got %+v", results)
+	}
+	if results[0].ID != results[1].ID {
+		t.Fatalf("expected both goroutines to converge on the same user, got %q and %q", results[0].ID, results[1].ID)
+	}
+
+	// Exactly one local user should have been created for this identity, not
+	// two duplicate rows.
+	linked, err := userRepo.GetByKratosIdentityID(context.Background(), identityID)
+	if err != nil {
+		t.Fatalf("expected a linked user, got error: %v", err)
+	}
+	if linked.ID != results[0].ID {
+		t.Fatalf("expected the linked user %q to match the resolved user %q", linked.ID, results[0].ID)
 	}
 }

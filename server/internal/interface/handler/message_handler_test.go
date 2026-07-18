@@ -330,6 +330,37 @@ func TestMessageHandlerUpdateExclude(t *testing.T) {
 			t.Fatalf("expected 400, got %d", rec.Code)
 		}
 	})
+
+	// Regression test: an empty body (or one that simply omits
+	// exclude_from_ai) must be rejected with 400, not silently decoded as
+	// exclude_from_ai=false -- see UpdateMessageExcludeRequest's docstring.
+	t.Run("400 empty body omitting exclude_from_ai", func(t *testing.T) {
+		e, h := setupMessageTest(true)
+
+		req := httptest.NewRequest(http.MethodPatch, "/rooms/room-1/messages/msg-1",
+			strings.NewReader(`{}`))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId", "messageId")
+		c.SetParamValues("room-1", "msg-1")
+		c.Set("user_id", "user-1")
+
+		if err := h.UpdateExclude(c); err != nil {
+			t.Fatalf("UpdateExclude error: %v", err)
+		}
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", rec.Code)
+		}
+
+		var resp ErrorResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.Message == "" {
+			t.Fatal("expected a non-empty error message")
+		}
+	})
 }
 
 // TestSendAIHandlerInsufficientBalance402 asserts that SendAI returns HTTP

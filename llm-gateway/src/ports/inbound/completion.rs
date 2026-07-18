@@ -30,6 +30,11 @@ pub trait CompletionUseCase: Send + Sync {
     ///
     /// # Returns
     /// A future resolving to the aggregated model list.
+    ///
+    /// # Errors
+    /// Never returns an error — the return type is `Vec<ModelInfo>`, not a `Result`, so
+    /// a provider with no models (or that is unreachable) simply contributes nothing to
+    /// the aggregated list rather than failing the call.
     fn list_models(&self) -> BoxFuture<'_, Vec<ModelInfo>>;
 
     /// Executes a streaming chat completion.

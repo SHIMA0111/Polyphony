@@ -100,8 +100,11 @@ struct GeminiErrorDetail {
 ///
 /// This is a temporary text-only simplification: full Gemini function-calling
 /// (`functionCall`/`functionResponse` parts) is out of scope until a future
-/// tool-calling phase, so `Role::Tool` is represented as plain text under Gemini's
-/// `"function"` role.
+/// tool-calling phase. Gemini's documented `Content.role` values are only `"user"` and
+/// `"model"` (no `"function"` role for request content), so `Role::Tool` is sent as
+/// plain text under Gemini's `"user"` role -- mirroring the Anthropic adapter's
+/// documented best-effort fallback (`role_to_anthropic_str`) rather than risking a live
+/// 400 from an undocumented role string.
 ///
 /// # Arguments
 /// * `role` — Domain role to convert. Must not be `Role::System` — system messages are
@@ -111,12 +114,12 @@ struct GeminiErrorDetail {
 /// # Returns
 /// - `User` → `"user"`
 /// - `Assistant` → `"model"`
-/// - `Tool` → `"function"`
+/// - `Tool` → `"user"` (documented best-effort fallback: see above)
 fn role_to_gemini_role(role: &Role) -> &'static str {
     match role {
         Role::User => "user",
         Role::Assistant => "model",
-        Role::Tool => "function",
+        Role::Tool => "user",
         Role::System => {
             debug_assert!(
                 false,
@@ -452,11 +455,17 @@ mod tests {
     fn test_role_to_gemini_role_and_back_round_trip() {
         assert_eq!(role_to_gemini_role(&Role::User), "user");
         assert_eq!(role_to_gemini_role(&Role::Assistant), "model");
-        assert_eq!(role_to_gemini_role(&Role::Tool), "function");
 
         assert_eq!(gemini_role_to_role("user"), Role::User);
         assert_eq!(gemini_role_to_role("model"), Role::Assistant);
-        assert_eq!(gemini_role_to_role("function"), Role::Tool);
+    }
+
+    #[test]
+    fn test_role_to_gemini_role_tool_falls_back_to_user() {
+        // Gemini's documented Content.role values are only "user"/"model" (no
+        // "function" role for request content), so Role::Tool must map to "user"
+        // rather than an undocumented role string that risks a live 400.
+        assert_eq!(role_to_gemini_role(&Role::Tool), "user");
     }
 
     #[test]

@@ -27,11 +27,13 @@ type RoomMember struct {
 	UserID   string
 	Role     Role
 	JoinedAt time.Time
-	// Username is the member's display username. It is populated only by
-	// member-listing queries (RoomRepository.ListMembers, via a JOIN
-	// against the users table); it is left empty ("") on RoomMember values
-	// returned by other lookups (e.g. GetMember, AddMember) that have no
-	// reason to join against users.
+	// Username is the member's display username, populated by
+	// RoomRepository.ListMembers and RoomRepository.GetMember (both JOIN
+	// against the users table). It is left empty ("") only on RoomMember
+	// values that were never round-tripped through the database with a
+	// users JOIN -- e.g. the struct AddMember's caller constructs before
+	// calling it, or values returned by other write-oriented repository
+	// methods that have no reason to look up the username at all.
 	Username string
 }
 

@@ -163,7 +163,7 @@ func TestInvitationRepositoryGetPendingByRoomAndInvitee(t *testing.T) {
 		t.Fatalf("expected invitation %s, got %s", inv.ID, got.ID)
 	}
 
-	if err := repo.UpdateStatus(ctx, inv.ID, invitation.StatusAccepted); err != nil {
+	if err := repo.UpdateStatus(ctx, inv.ID, invitation.StatusAccepted, invitation.StatusPending); err != nil {
 		t.Fatalf("UpdateStatus failed: %v", err)
 	}
 
@@ -227,7 +227,7 @@ func TestInvitationRepositoryUpdateStatus(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	if err := repo.UpdateStatus(ctx, inv.ID, invitation.StatusRejected); err != nil {
+	if err := repo.UpdateStatus(ctx, inv.ID, invitation.StatusRejected, invitation.StatusPending); err != nil {
 		t.Fatalf("UpdateStatus failed: %v", err)
 	}
 
@@ -239,8 +239,21 @@ func TestInvitationRepositoryUpdateStatus(t *testing.T) {
 		t.Fatalf("expected status rejected, got %s", got.Status)
 	}
 
-	if err := repo.UpdateStatus(ctx, uuid.New().String(), invitation.StatusRejected); !errors.Is(err, domain.ErrNotFound) {
+	if err := repo.UpdateStatus(ctx, uuid.New().String(), invitation.StatusRejected, invitation.StatusPending); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound updating a nonexistent invitation, got %v", err)
+	}
+
+	// The invitation is now StatusRejected, so a CAS expecting StatusPending
+	// must fail as a transition conflict rather than silently overwriting it.
+	if err := repo.UpdateStatus(ctx, inv.ID, invitation.StatusAccepted, invitation.StatusPending); !errors.Is(err, domain.ErrInvitationNotPending) {
+		t.Fatalf("expected ErrInvitationNotPending for a CAS against a stale expectedStatus, got %v", err)
+	}
+	got, err = repo.GetByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.Status != invitation.StatusRejected {
+		t.Fatalf("expected status to remain rejected after a failed CAS, got %s", got.Status)
 	}
 }
 

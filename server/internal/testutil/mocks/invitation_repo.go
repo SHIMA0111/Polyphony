@@ -123,9 +123,17 @@ func (r *InvitationRepo) ListPendingByInviteeID(_ context.Context, inviteeID str
 	return result, nil
 }
 
-// UpdateStatus updates the status of the invitation identified by id.
-// Returns domain.ErrNotFound if the invitation does not exist.
-func (r *InvitationRepo) UpdateStatus(_ context.Context, id string, status invitation.Status) error {
+// UpdateStatus performs a compare-and-swap status transition, mirroring
+// postgres.InvitationRepository's UpdateStatus: it only updates the
+// invitation's status if its current status still equals expectedStatus.
+// The whole check-then-set is done while holding r.mu, so this is atomic
+// with respect to other InvitationRepo calls -- the same guarantee the real
+// postgres UPDATE ... WHERE ... provides at the row level.
+//
+// Returns domain.ErrNotFound if the invitation does not exist, or
+// domain.ErrInvitationNotPending if it exists but its current status does
+// not equal expectedStatus.
+func (r *InvitationRepo) UpdateStatus(_ context.Context, id string, newStatus, expectedStatus invitation.Status) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -133,7 +141,10 @@ func (r *InvitationRepo) UpdateStatus(_ context.Context, id string, status invit
 	if !ok {
 		return domain.ErrNotFound
 	}
-	inv.Status = status
+	if inv.Status != expectedStatus {
+		return domain.ErrInvitationNotPending
+	}
+	inv.Status = newStatus
 	return nil
 }
 

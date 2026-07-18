@@ -96,6 +96,15 @@ func (r *RoomRepo) Create(_ context.Context, rm *room.Room) error {
 }
 
 // GetByID retrieves a room by ID. Returns domain.ErrNotFound if not present.
+//
+// Returns a clone, never the internally-stored pointer: usecases routinely
+// load a room via GetByID and then locally mutate fields on the returned
+// struct before persisting a change (e.g. RoomUsecase.UpdateRoom sets
+// rm.Name/rm.Description on its own copy). Handing out the live pointer
+// would let concurrent callers race on those same struct fields with no
+// locking at all -- a real data race, not just a logic bug -- since
+// mutations wouldn't go through r.mu the way UpdateDetails/
+// UpdateAIContextCutoff/etc. do.
 func (r *RoomRepo) GetByID(_ context.Context, id string) (*room.Room, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -104,10 +113,12 @@ func (r *RoomRepo) GetByID(_ context.Context, id string) (*room.Room, error) {
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	return rm, nil
+	cloned := *rm
+	return &cloned, nil
 }
 
-// ListByUserID returns all rooms the given user is a member of.
+// ListByUserID returns all rooms the given user is a member of. Each
+// returned *room.Room is a clone (see GetByID's GoDoc for why).
 func (r *RoomRepo) ListByUserID(_ context.Context, userID string) ([]*room.Room, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -119,14 +130,16 @@ func (r *RoomRepo) ListByUserID(_ context.Context, userID string) ([]*room.Room,
 			continue // orphan membership with no corresponding room
 		}
 		if _, ok := members[userID]; ok {
-			rooms = append(rooms, rm)
+			cloned := *rm
+			rooms = append(rooms, &cloned)
 		}
 	}
 	return rooms, nil
 }
 
 // ListByUserIDWithRole returns all rooms the given user is a member of,
-// paired with the user's role in each room.
+// paired with the user's role in each room. Each returned *room.Room is a
+// clone (see GetByID's GoDoc for why).
 func (r *RoomRepo) ListByUserIDWithRole(_ context.Context, userID string) ([]*room.RoomWithRole, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -141,21 +154,44 @@ func (r *RoomRepo) ListByUserIDWithRole(_ context.Context, userID string) ([]*ro
 		if !ok {
 			continue
 		}
-		result = append(result, &room.RoomWithRole{Room: rm, Role: member.Role})
+		cloned := *rm
+		result = append(result, &room.RoomWithRole{Room: &cloned, Role: member.Role})
 	}
 	return result, nil
 }
 
-// Update updates room fields. Returns domain.ErrNotFound if the room does
-// not exist.
-func (r *RoomRepo) Update(_ context.Context, rm *room.Room) error {
+// UpdateDetails updates only a room's Name, Description, and UpdatedAt
+// fields, mirroring postgres.RoomRepository.UpdateDetails's partial-update
+// shape (AIContextCutoffAt is left untouched). Returns domain.ErrNotFound if
+// the room does not exist.
+func (r *RoomRepo) UpdateDetails(_ context.Context, roomID, name, description string, updatedAt time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, ok := r.Rooms[rm.ID]; !ok {
+	rm, ok := r.Rooms[roomID]
+	if !ok {
 		return domain.ErrNotFound
 	}
-	r.Rooms[rm.ID] = rm
+	rm.Name = name
+	rm.Description = description
+	rm.UpdatedAt = updatedAt
+	return nil
+}
+
+// UpdateAIContextCutoff updates only a room's AIContextCutoffAt and
+// UpdatedAt fields, mirroring postgres.RoomRepository.UpdateAIContextCutoff's
+// partial-update shape (Name/Description are left untouched). Returns
+// domain.ErrNotFound if the room does not exist.
+func (r *RoomRepo) UpdateAIContextCutoff(_ context.Context, roomID string, cutoff *time.Time, updatedAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rm, ok := r.Rooms[roomID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	rm.AIContextCutoffAt = cutoff
+	rm.UpdatedAt = updatedAt
 	return nil
 }
 
@@ -188,6 +224,10 @@ func (r *RoomRepo) AddMember(_ context.Context, member *room.RoomMember) error {
 
 // GetMember retrieves a specific membership. Returns domain.ErrNotFound if
 // not present.
+//
+// Returns a clone, never the internally-stored pointer (see GetByID's
+// GoDoc for why): ChangeMemberRole, for instance, mutates
+// target.Role on its own copy of the value GetMember returns.
 func (r *RoomRepo) GetMember(_ context.Context, roomID, userID string) (*room.RoomMember, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -200,17 +240,20 @@ func (r *RoomRepo) GetMember(_ context.Context, roomID, userID string) (*room.Ro
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	return member, nil
+	cloned := *member
+	return &cloned, nil
 }
 
-// ListMembers returns all members of a room.
+// ListMembers returns all members of a room. Each returned *room.RoomMember
+// is a clone (see GetByID's GoDoc for why).
 func (r *RoomRepo) ListMembers(_ context.Context, roomID string) ([]*room.RoomMember, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	var result []*room.RoomMember
 	for _, member := range r.Members[roomID] {
-		result = append(result, member)
+		cloned := *member
+		result = append(result, &cloned)
 	}
 	return result, nil
 }
@@ -254,12 +297,22 @@ func (r *RoomRepo) UpdateMemberRole(_ context.Context, roomID, userID string, ro
 // memberships' roles (new owner -> master, old owner -> admin), mirroring
 // postgres.RoomRepository.TransferOwnership. Returns domain.ErrNotFound if
 // the room or either membership does not exist.
+// TransferOwnership mirrors postgres.RoomRepository.TransferOwnership,
+// including its compare-and-swap on the room's current owner: it returns
+// domain.ErrNotFound (without mutating anything) if rm.OwnerID no longer
+// equals oldOwnerID, e.g. because a concurrent TransferOwnership call
+// already won. The whole check-then-set runs while holding r.mu, giving the
+// same atomicity guarantee the real `UPDATE ... WHERE owner_id = ...`
+// provides at the row level.
 func (r *RoomRepo) TransferOwnership(_ context.Context, roomID, oldOwnerID, newOwnerID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	rm, ok := r.Rooms[roomID]
 	if !ok {
+		return domain.ErrNotFound
+	}
+	if rm.OwnerID != oldOwnerID {
 		return domain.ErrNotFound
 	}
 	members, ok := r.Members[roomID]
