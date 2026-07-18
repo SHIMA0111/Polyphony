@@ -464,8 +464,8 @@ func TestBatchInviteByGroupHandlerPartialFailure500(t *testing.T) {
 	if err := json.Unmarshal(rec2.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal response: %v", err)
 	}
-	if !resp.Failed || resp.Error == "" {
-		t.Fatalf("expected Failed=true with a non-empty Error, got %+v", resp)
+	if !resp.Failed || resp.Error != "batch invite failed" {
+		t.Fatalf("expected Failed=true with the sanitized message %q, got %+v", "batch invite failed", resp)
 	}
 	if len(resp.Invited) != 1 {
 		t.Fatalf("expected bob's invitation preserved in the partial result, got %+v", resp.Invited)

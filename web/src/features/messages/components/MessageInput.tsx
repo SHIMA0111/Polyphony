@@ -104,12 +104,12 @@ export function MessageInput({
   }, [input])
 
   // Debounced live token estimate: recomputed whenever the draft, selected
-  // model, or visible message list changes. Advisory only — a failed
-  // estimate is logged and swallowed rather than blocking or disabling
-  // send (see `estimateTokens`'s docstring).
+  // model, or visible message list changes. Skipped entirely when
+  // !canInvokeAI, since a viewer who cannot invoke AI has no use for an AI
+  // context-window estimate. Advisory only — a failed estimate is logged
+  // and swallowed rather than blocking or disabling send (see
+  // `estimateTokens`'s docstring).
   useEffect(() => {
-    if (!selectedModel) return
-
     // Invalidate any in-flight estimate immediately (rather than only once
     // the new one resolves) and clear the stale displayed count -- without
     // this, an older, slower response arriving after this effect re-ran but
@@ -117,6 +117,8 @@ export function MessageInput({
     // own request id check and could briefly redisplay a stale estimate.
     estimateRequestIdRef.current++
     setEstimatedTokens(null)
+
+    if (!selectedModel || !canInvokeAI) return
 
     const timeoutId = setTimeout(() => {
       const requestId = ++estimateRequestIdRef.current
@@ -157,7 +159,7 @@ export function MessageInput({
     }, TOKEN_ESTIMATE_DEBOUNCE_MS)
 
     return () => clearTimeout(timeoutId)
-  }, [input, selectedModel, messages])
+  }, [input, selectedModel, messages, canInvokeAI])
 
   const handleSend = useCallback(async () => {
     const content = input.trim()
@@ -338,8 +340,9 @@ export function MessageInput({
         </Text>
 
         {/* Live, debounced token estimate (Step 38) — advisory only, never
-            blocks send. */}
-        {estimatedTokens !== null && (
+            blocks send. Gated on canInvokeAI: a viewer who can't invoke AI
+            has no use for an AI context-window estimate. */}
+        {canInvokeAI && estimatedTokens !== null && (
           <Text textAlign="center" fontSize="2xs" color="fg.muted">
             ~{estimatedTokens} tokens
           </Text>

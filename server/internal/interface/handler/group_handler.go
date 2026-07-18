@@ -235,10 +235,11 @@ func (h *GroupHandler) BatchInviteByGroup(c echo.Context) error {
 			// which returns a nil result and is handled by
 			// handleGroupError below). Render what was accumulated instead
 			// of discarding it behind a bare error response.
-			middleware.GetLogger(c).Error("batch invite aborted partway through", "error", err)
+			middleware.GetLogger(c).Error("batch invite aborted partway through",
+				"error", err, "group_id", req.GroupID, "room_id", roomID)
 			resp := toBatchInviteByGroupResponse(result)
 			resp.Failed = true
-			resp.Error = err.Error()
+			resp.Error = "batch invite failed"
 			return c.JSON(http.StatusInternalServerError, resp)
 		}
 		return handleGroupError(c, err)

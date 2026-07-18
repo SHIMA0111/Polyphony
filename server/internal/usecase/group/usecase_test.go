@@ -445,6 +445,10 @@ func TestBatchInviteToRoomReturnsPartialResultOnMidBatchUnrecognizedError(t *tes
 	}
 }
 
+// TestBatchInviteToRoomShortCircuitsOnRBACFailure verifies the room-RBAC
+// i==0 short-circuit: a group owner who holds only RoleMember (not Admin+)
+// in the target room gets domain.ErrForbidden from the very first
+// CreateInvitation call, with zero invitations created.
 func TestBatchInviteToRoomShortCircuitsOnRBACFailure(t *testing.T) {
 	uc, _, _, _, invitationRepo := newTestFixture()
 	ctx := context.Background()
