@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import { fixtureHumanMessage } from "@/features/messages/api/handlers"
+import { mergeMessageEvent } from "@/features/messages/lib/merge-message-event"
 import type { MessagesInfiniteData } from "@/features/messages/lib/message-cache"
 import { useSendMessage } from "./use-send-message"
 
@@ -44,6 +45,48 @@ describe("useSendMessage", () => {
     })
 
     await result.current.mutateAsync("Hello, AI!")
+
+    const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
+    expect(data?.pages[0]?.messages).toEqual([fixtureHumanMessage])
+  })
+
+  it("drops the optimistic entry instead of duplicating it when the WS echo of the sent message merges into the cache before the POST resolves", async () => {
+    // Regression test (wave-5 review): the WS `message_created` frame for a
+    // just-sent message routinely arrives before this mutation's own HTTP
+    // response locally. `mergeMessageEvent` can't recognize the optimistic
+    // entry as "the same message" (different, client-generated id), so it
+    // prepends the server copy as a second entry; `onSuccess` must then
+    // remove the optimistic entry rather than swap it for a *third* copy.
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages", async () => {
+        await delay(50)
+        return HttpResponse.json(fixtureHumanMessage, { status: 201 })
+      }),
+    )
+
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useSendMessage("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    const mutatePromise = result.current.mutateAsync("Hello, AI!")
+
+    // Wait for the optimistic entry to land, then simulate the WS echo
+    // beating the POST response — exactly like `use-room-socket.ts` would
+    // on `onmessage`.
+    await waitFor(() => {
+      const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
+      expect(data?.pages[0]?.messages[0]?.status).toBe("sending")
+    })
+    queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) =>
+      mergeMessageEvent(old, {
+        type: "message_created",
+        room_id: "room-1",
+        message: fixtureHumanMessage,
+      }),
+    )
+
+    await mutatePromise
 
     const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
     expect(data?.pages[0]?.messages).toEqual([fixtureHumanMessage])
