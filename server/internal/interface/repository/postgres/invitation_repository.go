@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
@@ -229,9 +228,11 @@ func (r *InvitationRepository) AcceptTx(ctx context.Context, invitationID string
 		// revoke or expiry sweep landing after the usecase's own pre-check
 		// read but before this call would still let the accept through.
 		var statusStr string
-		var expiresAt time.Time
-		err := tx.QueryRow(ctx, `SELECT status, expires_at FROM room_invitations WHERE id = $1 FOR UPDATE`, invitationID).
-			Scan(&statusStr, &expiresAt)
+		var expired bool
+		// Compare against the DB clock (NOW()) so this check cannot disagree
+		// with the CAS UPDATE's expires_at predicate under clock skew.
+		err := tx.QueryRow(ctx, `SELECT status, expires_at <= NOW() FROM room_invitations WHERE id = $1 FOR UPDATE`, invitationID).
+			Scan(&statusStr, &expired)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.ErrNotFound
@@ -241,7 +242,7 @@ func (r *InvitationRepository) AcceptTx(ctx context.Context, invitationID string
 		if invitation.Status(statusStr) != invitation.StatusPending {
 			return domain.ErrInvitationNotPending
 		}
-		if expiresAt.Before(time.Now()) {
+		if expired {
 			return domain.ErrInvitationExpired
 		}
 	}
@@ -282,8 +283,10 @@ func acceptStatusCAS(ctx context.Context, tx pgx.Tx, id string, status, expected
 	}
 
 	var statusStr string
-	var expiresAt time.Time
-	err = tx.QueryRow(ctx, `SELECT status, expires_at FROM room_invitations WHERE id = $1`, id).Scan(&statusStr, &expiresAt)
+	var expired bool
+	// Compare against the DB clock (NOW()), matching the gating UPDATE above,
+	// so classification cannot disagree with the update under clock skew.
+	err = tx.QueryRow(ctx, `SELECT status, expires_at <= NOW() FROM room_invitations WHERE id = $1`, id).Scan(&statusStr, &expired)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrNotFound
@@ -293,7 +296,7 @@ func acceptStatusCAS(ctx context.Context, tx pgx.Tx, id string, status, expected
 	if invitation.Status(statusStr) != expectedStatus {
 		return domain.ErrInvitationNotPending
 	}
-	if expiresAt.Before(time.Now()) {
+	if expired {
 		return domain.ErrInvitationExpired
 	}
 	// Status matched expectedStatus and it is not expired, yet the CAS still
