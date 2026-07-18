@@ -21,7 +21,7 @@ pub const DEFAULT_MAX_TOKENS: u32 = 4096;
 // --- Anthropic-specific DTOs ---
 
 #[derive(Serialize)]
-struct AnthropicRequest {
+pub(super) struct AnthropicRequest {
     model: String,
     max_tokens: u32,
     messages: Vec<AnthropicMessage>,
@@ -159,7 +159,9 @@ fn role_to_anthropic_str(role: &Role) -> &'static str {
 /// `messages` array, and a request built from only system messages would
 /// otherwise be sent with `messages: []`, surfacing as an opaque remote HTTP
 /// 400 instead of a clear domain error.
-fn to_anthropic_request(req: &CompletionRequest) -> Result<AnthropicRequest, DomainError> {
+pub(super) fn to_anthropic_request(
+    req: &CompletionRequest,
+) -> Result<AnthropicRequest, DomainError> {
     let mut system_parts = Vec::new();
     let mut messages = Vec::new();
 

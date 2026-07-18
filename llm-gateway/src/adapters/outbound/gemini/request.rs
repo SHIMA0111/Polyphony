@@ -14,7 +14,7 @@ use super::GeminiProvider;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiRequest {
+pub(super) struct GeminiRequest {
     contents: Vec<GeminiRequestContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system_instruction: Option<GeminiRequestContent>,
@@ -268,7 +268,7 @@ fn to_gemini_part(part: &ContentPart) -> GeminiPartDto {
 /// `contents` array, and a request built from only system messages would
 /// otherwise be sent with `contents: []`, surfacing as an opaque remote HTTP
 /// 400 instead of a clear domain error.
-fn to_gemini_request(req: &CompletionRequest) -> Result<GeminiRequest, DomainError> {
+pub(super) fn to_gemini_request(req: &CompletionRequest) -> Result<GeminiRequest, DomainError> {
     let mut system_texts = Vec::new();
     let mut contents = Vec::new();
 

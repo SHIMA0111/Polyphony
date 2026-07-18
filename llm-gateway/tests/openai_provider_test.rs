@@ -14,13 +14,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use llm_gateway::adapters::outbound::openai::OpenAIProvider;
 use llm_gateway::config::{HttpClientConfig, ProviderConfig};
 use llm_gateway::domain::error::DomainError;
 use llm_gateway::domain::model::{ChatMessage, CompletionRequest, Role};
 use llm_gateway::ports::outbound::key_store::KeyStore;
 use llm_gateway::ports::outbound::provider::LLMProvider;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// `KeyStore` stub that always resolves a fixed dummy key.
@@ -295,4 +296,92 @@ async fn test_complete_with_image_content_sends_openai_multimodal_body() {
         .expect("complete should succeed once the mock's exact-body matcher accepts the request");
 
     assert_eq!(resp.choices[0].message.content.as_text(), "It's a cat.");
+}
+
+/// Canned OpenAI streaming Chat Completions SSE body: two content-delta chunks
+/// followed by a final chunk carrying `finish_reason`/`usage`, terminated by the
+/// literal `data: [DONE]` sentinel line.
+const OPENAI_SSE_FIXTURE: &str = concat!(
+    "data: {\"id\":\"chatcmpl-abc123\",\"model\":\"gpt-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-abc123\",\"model\":\"gpt-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" there!\"},\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-abc123\",\"model\":\"gpt-5.2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n",
+    "data: [DONE]\n\n",
+);
+
+#[tokio::test]
+async fn test_stream_success_yields_expected_chunk_sequence() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(serde_json::json!({"stream": true})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(OPENAI_SSE_FIXTURE, "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let chunk_stream = provider
+        .stream(&make_request("gpt-5.2"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let chunks: Vec<_> = chunk_stream
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|c| c.expect("every chunk should parse successfully"))
+        .collect();
+
+    assert_eq!(chunks.len(), 3);
+    let full_text: String = chunks.iter().filter_map(|c| c.delta.clone()).collect();
+    assert_eq!(full_text, "Hi there!");
+    assert_eq!(chunks[2].finish_reason.as_deref(), Some("stop"));
+    let usage = chunks[2]
+        .usage
+        .as_ref()
+        .expect("final chunk should carry usage");
+    assert_eq!(usage.prompt_tokens, 10);
+    assert_eq!(usage.completion_tokens, 2);
+    assert_eq!(usage.total_tokens, 12);
+
+    // Confirm the streaming path actually hit the streaming request shape, not the
+    // non-streaming endpoint's plain-JSON body.
+    let received = mock_server
+        .received_requests()
+        .await
+        .expect("request recording should be enabled by default");
+    assert_eq!(received.len(), 1);
+    let body: serde_json::Value =
+        serde_json::from_slice(&received[0].body).expect("request body should be valid JSON");
+    assert_eq!(body["stream"], serde_json::json!(true));
+}
+
+#[tokio::test]
+async fn test_stream_malformed_event_yields_err_item_without_panicking() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw("data: this is not valid JSON\n\n", "text/event-stream"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let provider = provider_for(&mock_server, fast_http_config());
+    let mut chunk_stream = provider
+        .stream(&make_request("gpt-5.2"))
+        .await
+        .expect("stream should be established on a 200 SSE response");
+
+    let first = chunk_stream
+        .next()
+        .await
+        .expect("stream should yield exactly one item for the malformed event");
+    assert!(matches!(first, Err(DomainError::ProviderError { .. })));
+    assert!(
+        chunk_stream.next().await.is_none(),
+        "stream should end after the malformed event, not continue or panic"
+    );
 }
