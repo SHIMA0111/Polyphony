@@ -33,7 +33,7 @@ describe("GroupPicker", () => {
 
     const onSelect = vi.fn()
     const user = userEvent.setup()
-    render(<GroupPicker onSelect={onSelect} />)
+    render(<GroupPicker selectedGroup={null} onSelect={onSelect} />)
 
     await user.click(await screen.findByRole("button", { name: /select a group/i }))
     // `waitFor` (rather than a bare `await user.click(await screen.findByRole(...))`)
@@ -54,7 +54,7 @@ describe("GroupPicker", () => {
       }),
     )
 
-    render(<GroupPicker onSelect={vi.fn()} />)
+    render(<GroupPicker selectedGroup={null} onSelect={vi.fn()} />)
 
     await waitFor(() =>
       expect(screen.getByText("create one")).toBeInTheDocument(),
@@ -63,5 +63,18 @@ describe("GroupPicker", () => {
       "href",
       "/groups",
     )
+  })
+
+  it("renders an inline error instead of the empty state when the groups query fails", async () => {
+    server.use(
+      http.get("/api/proxy/groups", () => {
+        return HttpResponse.json({ error: "boom" }, { status: 500 })
+      }),
+    )
+
+    render(<GroupPicker selectedGroup={null} onSelect={vi.fn()} />)
+
+    expect(await screen.findByText(/failed to load groups/i)).toBeInTheDocument()
+    expect(screen.queryByText("create one")).not.toBeInTheDocument()
   })
 })

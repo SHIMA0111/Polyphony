@@ -58,6 +58,20 @@ describe("GroupMembersPanel", () => {
     expect(await screen.findByText("No members yet.")).toBeInTheDocument()
   })
 
+  it("shows an error state instead of the empty state when the members query fails", async () => {
+    server.use(
+      http.get("/api/proxy/groups/:groupId/members", () => {
+        return HttpResponse.json({ error: "boom" }, { status: 500 })
+      }),
+    )
+
+    render(<GroupMembersPanel groupId="group-1" />)
+
+    expect(await screen.findByText("Failed to load members.")).toBeInTheDocument()
+    expect(screen.queryByText("No members yet.")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument()
+  })
+
   it("calls add-member with the entered username", async () => {
     server.use(
       http.get("/api/proxy/groups/:groupId/members", () => {

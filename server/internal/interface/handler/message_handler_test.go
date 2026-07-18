@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -794,6 +795,63 @@ func TestMessageHandlerStreamAI400Private(t *testing.T) {
 	}
 }
 
+// TestMessageHandlerStreamAI202UsedContextSummaryTrue asserts that StreamAI's
+// ai_message.used_context_summary reports true when context assembly
+// overflows the model's resolved context window (forced via
+// newOverflowGateway), mirroring TestSendAIHandlerUsedContextSummaryTrue --
+// regression test for StreamAI previously dropping this field entirely (it
+// built ai_message via a bare toMessageResponse call instead of copying
+// result.UsedContextSummary onto it, so it always reported false regardless
+// of the usecase's actual summarization decision).
+func TestMessageHandlerStreamAI202UsedContextSummaryTrue(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	e := echo.New()
+	uc := msgusecase.NewMessageUsecase(msgRepo, roomRepo, newOverflowGateway(), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	h := NewMessageHandler(uc)
+
+	for i := 1; i <= 11; i++ {
+		sendReq := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages",
+			strings.NewReader(`{"content":"seed message"}`))
+		sendReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+		sendRec := httptest.NewRecorder()
+		sendCtx := e.NewContext(sendReq, sendRec)
+		sendCtx.SetParamNames("roomId")
+		sendCtx.SetParamValues("room-1")
+		sendCtx.Set("user_id", "user-1")
+		if err := h.Send(sendCtx); err != nil {
+			t.Fatalf("seed message %d: %v", i, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/rooms/room-1/messages/ai/stream",
+		strings.NewReader(`{"content":"trigger overflow","model":"gpt-5-mini"}`))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("roomId")
+	c.SetParamValues("room-1")
+	c.Set("user_id", "user-1")
+
+	if err := h.StreamAI(c); err != nil {
+		t.Fatalf("StreamAI error: %v", err)
+	}
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+
+	var resp SendAIMessageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if !resp.AIMessage.UsedContextSummary {
+		t.Fatal("expected ai_message.used_context_summary to be true for an overflowing context")
+	}
+}
+
 // TestMessageHandlerStreamAI402InsufficientBalance asserts StreamAI returns
 // HTTP 402 with the same body SendAI returns, when the usecase returns
 // domain.ErrInsufficientBalance.
@@ -823,5 +881,54 @@ func TestMessageHandlerStreamAI402InsufficientBalance(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `{"message":"insufficient token balance"}`) {
 		t.Fatalf("expected insufficient token balance body, got %s", rec.Body.String())
+	}
+}
+
+// TestMessageHandlersRejectWhitespaceOnlyContent asserts that Send, SendAI,
+// and StreamAI all return HTTP 400 for whitespace-only content (spaces,
+// tabs, newlines), not just a completely empty string -- regression test for
+// a bare `req.Content == ""` check letting such content through to persist a
+// visually-empty message and, for SendAI/StreamAI, waste an LLM invocation
+// on it.
+func TestMessageHandlersRejectWhitespaceOnlyContent(t *testing.T) {
+	whitespaceContents := []string{" ", "   ", "\t", "\n", " \t\n "}
+
+	endpoints := []struct {
+		name string
+		path string
+		call func(h *MessageHandler, c echo.Context) error
+	}{
+		{"Send", "/rooms/room-1/messages", func(h *MessageHandler, c echo.Context) error { return h.Send(c) }},
+		{"SendAI", "/rooms/room-1/messages/ai", func(h *MessageHandler, c echo.Context) error { return h.SendAI(c) }},
+		{"StreamAI", "/rooms/room-1/messages/ai/stream", func(h *MessageHandler, c echo.Context) error { return h.StreamAI(c) }},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.name, func(t *testing.T) {
+			for _, content := range whitespaceContents {
+				t.Run(fmt.Sprintf("%q", content), func(t *testing.T) {
+					e, h := setupMessageTest(true)
+
+					body, err := json.Marshal(map[string]string{"content": content})
+					if err != nil {
+						t.Fatalf("marshal request body: %v", err)
+					}
+					req := httptest.NewRequest(http.MethodPost, ep.path, strings.NewReader(string(body)))
+					req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+					rec := httptest.NewRecorder()
+					c := e.NewContext(req, rec)
+					c.SetParamNames("roomId")
+					c.SetParamValues("room-1")
+					c.Set("user_id", "user-1")
+
+					if err := ep.call(h, c); err != nil {
+						t.Fatalf("%s error: %v", ep.name, err)
+					}
+					if rec.Code != http.StatusBadRequest {
+						t.Fatalf("expected 400 for whitespace-only content %q, got %d", content, rec.Code)
+					}
+				})
+			}
+		})
 	}
 }

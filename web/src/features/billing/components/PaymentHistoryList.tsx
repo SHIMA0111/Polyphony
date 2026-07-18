@@ -18,12 +18,22 @@ const SKELETON_ROW_COUNT = 5
 /**
  * Formats `amount_cents` (an integer minor-currency-unit amount, per Stripe
  * convention) as a localized currency string.
+ *
+ * The minor-unit exponent (number of digits after the decimal point) is
+ * currency-dependent — most currencies use 2 (cents), but e.g. JPY uses 0
+ * and KWD uses 3 — so it's read from the formatter's own
+ * `resolvedOptions().maximumFractionDigits` rather than hardcoding `/ 100`.
  */
 function formatAmount(payment: Payment): string {
-  return new Intl.NumberFormat(undefined, {
+  const formatter = new Intl.NumberFormat(undefined, {
     style: "currency",
     currency: payment.currency,
-  }).format(payment.amount_cents / 100)
+  })
+  // `maximumFractionDigits` is typed as possibly `undefined` even though
+  // `resolvedOptions()` always populates it for `style: "currency"`; `?? 2`
+  // matches `Intl`'s own currency-formatting default.
+  const exponent = formatter.resolvedOptions().maximumFractionDigits ?? 2
+  return formatter.format(payment.amount_cents / 10 ** exponent)
 }
 
 /**

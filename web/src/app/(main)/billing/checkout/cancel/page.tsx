@@ -15,9 +15,9 @@ export default function BillingCheckoutCancelPage() {
         <Flex direction="column" align="center" gap={4} py={12} textAlign="center">
           <Heading size="lg">Checkout canceled</Heading>
           <Text color="fg.muted">You have not been charged.</Text>
-          <Link href="/billing/plans">
-            <Button colorPalette="blue">Back to plans</Button>
-          </Link>
+          <Button asChild colorPalette="blue">
+            <Link href="/billing/plans">Back to plans</Link>
+          </Button>
         </Flex>
       </Box>
     </Box>

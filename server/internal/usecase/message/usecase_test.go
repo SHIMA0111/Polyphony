@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -1715,6 +1716,34 @@ func TestSendAIMessageStreamArchivedRoom(t *testing.T) {
 	}
 }
 
+// TestRegenerateAIMessageRejectsArchivedRoom asserts that RegenerateAIMessage
+// rejects a regeneration request against an archived room with
+// domain.ErrArchivedRoom, mirroring Send/SendAIMessage/SendAIMessageStream's
+// identical guard. The human/AI pair is created before the room is marked
+// archived, since SendAIMessage itself would already reject a new send into
+// an archived room.
+func TestRegenerateAIMessageRejectsArchivedRoom(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
+	if err != nil {
+		t.Fatalf("seed SendAIMessage failed: %v", err)
+	}
+
+	roomRepo.Rooms["room-1"].IsArchived = true
+
+	_, _, err = uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
+	if err != domain.ErrArchivedRoom {
+		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+}
+
 // --- SendAIMessageStream tests (Step 51) ---
 
 // collectUntilMessageUpdated drains sub, collecting every EventTokenChunk
@@ -2133,5 +2162,154 @@ func TestSendAIMessageStreamMidStreamFailureNeverRecordsUsage(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if _, ok := guard.LastRecordUsageCall(); ok {
 		t.Fatal("expected RecordUsage never called on a mid-stream failure")
+	}
+}
+
+// TestSendAIMessageStreamListByRoomFailureFinalizesPlaceholder asserts that
+// when the post-placeholder ListByRoom context-fetch call fails,
+// SendAIMessageStream (a) returns the original error, (b) finalizes the
+// streaming placeholder to Status = MessageStatusFailed instead of leaving
+// it stuck at "streaming" forever, and (c) publishes a matching
+// EventMessageUpdated -- regression test for that placeholder previously
+// being abandoned on this error path.
+func TestSendAIMessageStreamListByRoomFailureFinalizesPlaceholder(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	listErr := fmt.Errorf("boom: database unavailable")
+	msgRepo.ListByRoomErr = listErr
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err == nil {
+		t.Fatal("expected SendAIMessageStream to return the ListByRoom error")
+	}
+	if !errors.Is(err, listErr) {
+		t.Fatalf("expected the original ListByRoom error, got %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected a nil result on error, got %+v", result)
+	}
+
+	// Find the streaming placeholder that was created and published before
+	// the ListByRoom call failed.
+	var aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		if m.Type == domainmessage.MessageTypeAI {
+			aiMsg = m
+		}
+	}
+	if aiMsg == nil {
+		t.Fatal("expected an AI placeholder message to have been created before the failure")
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected the placeholder to be finalized as failed, got %s", aiMsg.Status)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == aiMsg.ID {
+				if evt.Message.Status != domainmessage.MessageStatusFailed {
+					t.Fatalf("expected published status failed, got %s", evt.Message.Status)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for EventMessageUpdated after ListByRoom failure")
+		}
+	}
+}
+
+// TestSendAIMessageStreamContextAssemblyFailureFinalizesPlaceholder asserts
+// that when assembleAIContext's attachment-enrichment step fails (forced via
+// a PresignView error on an attachment linked to a message already in the
+// fetched context), SendAIMessageStream (a) returns the original error,
+// (b) finalizes the streaming placeholder to Status = MessageStatusFailed,
+// and (c) publishes a matching EventMessageUpdated -- mirroring
+// TestSendAIMessageStreamListByRoomFailureFinalizesPlaceholder for the later
+// of the two pre-dispatch failure points.
+func TestSendAIMessageStreamContextAssemblyFailureFinalizesPlaceholder(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	attachmentRepo := &mocks.AttachmentRepo{}
+	objStorage := &mocks.ObjectStorage{}
+
+	hub := event.NewInProcessHub()
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, attachmentRepo, objStorage, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	// Seed an earlier message carrying an image attachment, so the streaming
+	// call's context-assembly enrichment step has something to fail on.
+	attachmentBearing, err := uc.SendMessage(ctx, "user-1", "room-1", "check this out")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+	if err := attachmentRepo.Create(ctx, &domainattachment.Attachment{
+		ID:        "att-1",
+		RoomID:    "room-1",
+		S3Key:     "attachments/room-1/att-1",
+		MimeType:  "image/png",
+		SizeBytes: 1024,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+	if _, err := attachmentRepo.AttachToMessage(ctx, "att-1", attachmentBearing.ID, "room-1"); err != nil {
+		t.Fatalf("AttachToMessage failed: %v", err)
+	}
+
+	// Force PresignView to fail for the enrichment step triggered by the
+	// SendAIMessageStream call under test.
+	objStorage.ShouldErr = true
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is it?", "test-model")
+	if err == nil {
+		t.Fatal("expected SendAIMessageStream to return the context-assembly error")
+	}
+	if result != nil {
+		t.Fatalf("expected a nil result on error, got %+v", result)
+	}
+
+	var aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		if m.Type == domainmessage.MessageTypeAI {
+			aiMsg = m
+		}
+	}
+	if aiMsg == nil {
+		t.Fatal("expected an AI placeholder message to have been created before the failure")
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected the placeholder to be finalized as failed, got %s", aiMsg.Status)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == aiMsg.ID {
+				if evt.Message.Status != domainmessage.MessageStatusFailed {
+					t.Fatalf("expected published status failed, got %s", evt.Message.Status)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for EventMessageUpdated after context-assembly failure")
+		}
 	}
 }

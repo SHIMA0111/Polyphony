@@ -125,4 +125,29 @@ describe("InviteDialog - Invite a group section", () => {
     expect(await screen.findByText("Invited 1 member(s).")).toBeInTheDocument()
     expect(screen.getByText("carol: already invited")).toBeInTheDocument()
   })
+
+  it("rejects a fractional expires-in-hours value client-side without calling the server", async () => {
+    let called = false
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/invitations/batch-by-group", () => {
+        called = true
+        return HttpResponse.json<BatchInviteByGroupResult>({ invited: [], skipped: [] })
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<InviteDialog roomId="room-1" />)
+
+    await user.click(screen.getByRole("button", { name: "Invite" }))
+    await user.click(screen.getByRole("button", { name: "Select Team A (stub)" }))
+    await user.type(screen.getByPlaceholderText("e.g., 168"), "1.5")
+    await user.click(screen.getByRole("button", { name: "Invite group" }))
+
+    expect(
+      await screen.findByText(
+        "Expiration must be a whole number of hours between 1 and 720.",
+      ),
+    ).toBeInTheDocument()
+    expect(called).toBe(false)
+  })
 })

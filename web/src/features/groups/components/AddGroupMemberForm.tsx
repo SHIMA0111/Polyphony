@@ -19,6 +19,11 @@ export function AddGroupMemberForm({ groupId }: AddGroupMemberFormProps) {
   const addGroupMemberMutation = useAddGroupMember(groupId)
 
   const handleSubmit = async () => {
+    // The Enter-key path (`onKeyDown` below) bypasses the submit button's
+    // own `disabled`/`loading` gating, so a held-down or repeated Enter can
+    // otherwise fire a duplicate `POST` before the first response returns,
+    // surfacing a misleading `409` for the second request.
+    if (addGroupMemberMutation.isPending) return
     if (!username.trim()) return
     try {
       await addGroupMemberMutation.mutateAsync(username.trim())

@@ -1,6 +1,7 @@
 "use client"
 
 import { Box, Card, SimpleGrid, Text } from "@chakra-ui/react"
+import { useCreateCheckoutSession } from "../hooks/use-create-checkout-session"
 import { usePlans } from "../hooks/use-plans"
 import { PlanCard } from "./PlanCard"
 
@@ -11,9 +12,15 @@ const SKELETON_CARD_COUNT = 3
  * The full purchasable catalog (subscription plans and one-time token
  * packs), sourced from `usePlans()` (`GET /billing/plans`), rendered by
  * `app/(main)/billing/plans/page.tsx`.
+ *
+ * Owns a single `useCreateCheckoutSession()` mutation shared by every
+ * `PlanCard` (rather than each card owning its own), so starting a checkout
+ * from one card disables every other card's CTA too — otherwise a user
+ * could fire off two concurrent Checkout sessions from two different cards.
  */
 export function PlanList() {
   const { data: plans, isPending, isError } = usePlans()
+  const checkoutMutation = useCreateCheckoutSession()
 
   if (isPending) {
     return (
@@ -53,7 +60,12 @@ export function PlanList() {
   return (
     <SimpleGrid columns={{ base: 1, md: 2, lg: 3 }} gap={4}>
       {plans.map((plan) => (
-        <PlanCard key={plan.code} plan={plan} />
+        <PlanCard
+          key={plan.code}
+          plan={plan}
+          pending={checkoutMutation.isPending}
+          onSelect={() => checkoutMutation.mutate(plan)}
+        />
       ))}
     </SimpleGrid>
   )

@@ -126,3 +126,42 @@ func (r *RoomForkRepository) MarkFailed(ctx context.Context, id string, errMsg s
 	}
 	return nil
 }
+
+// CompleteAndUnarchive clears newRoomID's is_archived flag and transitions
+// jobID to StatusCompleted within a single transaction — see
+// roomfork.ForkJobRepository.CompleteAndUnarchive's GoDoc for why the two
+// writes must land atomically. Either update affecting zero rows returns
+// domain.ErrNotFound and rolls back the transaction, so a nonexistent job or
+// room never leaves the other write applied on its own.
+func (r *RoomForkRepository) CompleteAndUnarchive(ctx context.Context, jobID, newRoomID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE rooms SET is_archived = false, updated_at = NOW() WHERE id = $1`,
+		newRoomID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	tag, err = tx.Exec(ctx,
+		`UPDATE room_fork_jobs SET status = $1, updated_at = NOW() WHERE id = $2`,
+		string(roomfork.StatusCompleted), jobID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	return tx.Commit(ctx)
+}

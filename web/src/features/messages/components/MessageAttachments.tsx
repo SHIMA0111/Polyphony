@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Flex, Image } from "@chakra-ui/react"
+import { Button, Flex, Image } from "@chakra-ui/react"
 import { useMessageAttachments } from "@/features/messages/api/use-message-attachments"
 import type { Message } from "@/features/messages/types"
 import { AttachmentLightbox } from "./AttachmentLightbox"
@@ -40,17 +40,25 @@ export function MessageAttachments({ message }: MessageAttachmentsProps) {
     <>
       <Flex gap={2} wrap="wrap" maxW="240px" mt={2}>
         {attachments.map((attachment) => (
-          <Image
+          <Button
             key={attachment.id}
-            src={attachment.view_url}
-            alt="Message attachment"
+            aria-label="Open message attachment"
+            variant="plain"
+            p={0}
             w="24"
             h="24"
-            objectFit="cover"
+            overflow="hidden"
             rounded="lg"
-            cursor="pointer"
             onClick={() => setLightboxUrl(attachment.view_url)}
-          />
+          >
+            <Image
+              src={attachment.view_url}
+              alt=""
+              w="24"
+              h="24"
+              objectFit="cover"
+            />
+          </Button>
         ))}
       </Flex>
       <AttachmentLightbox

@@ -82,6 +82,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null)
   const [groupRole, setGroupRole] = useState<RoomRole>("member")
   const [groupExpiresInHours, setGroupExpiresInHours] = useState("")
+  const [groupExpiresError, setGroupExpiresError] = useState<string | null>(null)
 
   const createInvitationMutation = useCreateInvitation(roomId)
   const batchInviteByGroupMutation = useBatchInviteByGroup(roomId)
@@ -96,6 +97,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
     setSelectedGroup(null)
     setGroupRole("member")
     setGroupExpiresInHours("")
+    setGroupExpiresError(null)
     createInvitationMutation.reset()
     batchInviteByGroupMutation.reset()
   }
@@ -148,9 +150,21 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
 
   const handleBatchInviteByGroup = async () => {
     if (!selectedGroup) return
-    const expiresInHours = groupExpiresInHours.trim()
-      ? Number(groupExpiresInHours)
-      : undefined
+    const trimmedExpiresInHours = groupExpiresInHours.trim()
+    let expiresInHours: number | undefined
+    if (trimmedExpiresInHours) {
+      const parsed = Number(trimmedExpiresInHours)
+      // Reject fractional/out-of-range values client-side: the server
+      // otherwise responds with a generic decode error for fractional
+      // input, and `Number(...)` on garbage silently yields `NaN`, which
+      // `JSON.stringify` drops and the server treats as "use the default".
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 720) {
+        setGroupExpiresError("Expiration must be a whole number of hours between 1 and 720.")
+        return
+      }
+      expiresInHours = parsed
+    }
+    setGroupExpiresError(null)
     try {
       await batchInviteByGroupMutation.mutateAsync({
         group_id: selectedGroup.id,
@@ -303,7 +317,7 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                   </Text>
                   <Field.Root>
                     <Field.Label>Group</Field.Label>
-                    <GroupPicker onSelect={setSelectedGroup} />
+                    <GroupPicker selectedGroup={selectedGroup} onSelect={setSelectedGroup} />
                   </Field.Root>
                   <Field.Root>
                     <Field.Label>Role</Field.Label>
@@ -328,8 +342,14 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                     <Input
                       type="number"
                       placeholder="e.g., 168"
+                      min={1}
+                      max={720}
+                      step={1}
                       value={groupExpiresInHours}
-                      onChange={(e) => setGroupExpiresInHours(e.target.value)}
+                      onChange={(e) => {
+                        setGroupExpiresInHours(e.target.value)
+                        setGroupExpiresError(null)
+                      }}
                     />
                   </Field.Root>
                   <Button
@@ -350,6 +370,11 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
                         <BatchInviteSummary result={batchInviteByGroupMutation.data} />
                       </Box>
                     )}
+                  {groupExpiresError && (
+                    <Box fontSize="sm" color="fg.error" role="alert">
+                      {groupExpiresError}
+                    </Box>
+                  )}
                   {batchInviteByGroupMutation.isError && (
                     <Box fontSize="sm" color="fg.error" role="alert">
                       {batchInviteByGroupMutation.error instanceof Error

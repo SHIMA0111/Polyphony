@@ -56,7 +56,9 @@ describe("MessageAttachments", () => {
     // Give the (empty-resolving) query a chance to settle before asserting
     // no thumbnail ever appears.
     await waitFor(() => expect(fetched).toBe(true))
-    expect(screen.queryAllByRole("img")).toHaveLength(0)
+    expect(
+      screen.queryAllByRole("button", { name: "Open message attachment" }),
+    ).toHaveLength(0)
   })
 
   it("renders a single thumbnail", async () => {
@@ -65,7 +67,9 @@ describe("MessageAttachments", () => {
     render(<MessageAttachments message={baseMessage} />)
 
     await waitFor(() =>
-      expect(screen.getAllByRole("img")).toHaveLength(1),
+      expect(
+        screen.getAllByRole("button", { name: "Open message attachment" }),
+      ).toHaveLength(1),
     )
   })
 
@@ -78,7 +82,9 @@ describe("MessageAttachments", () => {
     render(<MessageAttachments message={baseMessage} />)
 
     await waitFor(() =>
-      expect(screen.getAllByRole("img")).toHaveLength(2),
+      expect(
+        screen.getAllByRole("button", { name: "Open message attachment" }),
+      ).toHaveLength(2),
     )
   })
 
@@ -88,7 +94,9 @@ describe("MessageAttachments", () => {
 
     render(<MessageAttachments message={baseMessage} />)
 
-    const thumbnail = await screen.findByRole("img", { name: "Message attachment" })
+    const thumbnail = await screen.findByRole("button", {
+      name: "Open message attachment",
+    })
     await user.click(thumbnail)
 
     const dialogImages = await screen.findAllByRole("img", {

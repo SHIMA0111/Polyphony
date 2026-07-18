@@ -8,6 +8,13 @@ import { useGroups } from "../hooks/use-groups"
 import type { Group } from "../types"
 
 interface GroupPickerProps {
+  /**
+   * The currently-selected group, owned by the caller (e.g. `InviteDialog`)
+   * rather than this component — lifting the selection up keeps a single
+   * source of truth so the trigger's label never goes stale across the
+   * caller's own open/close or reset cycles.
+   */
+  selectedGroup: Group | null
   /** Called with the selected group when the caller picks one from the menu. */
   onSelect: (group: Group) => void
 }
@@ -19,16 +26,32 @@ interface GroupPickerProps {
  * When the caller has no groups yet, renders an inline empty state linking
  * to `/groups` instead of an unusable empty menu.
  */
-export function GroupPicker({ onSelect }: GroupPickerProps) {
+export function GroupPicker({ selectedGroup, onSelect }: GroupPickerProps) {
   const [open, setOpen] = useState(false)
-  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null)
-  const { data, isPending } = useGroups()
+  const { data, isPending, isError, refetch } = useGroups()
   const groups = data?.groups ?? []
 
   const handleSelect = (group: Group) => {
-    setSelectedGroup(group)
     onSelect(group)
     setOpen(false)
+  }
+
+  if (isError) {
+    return (
+      <Box fontSize="sm" color="fg.error" role="alert">
+        Failed to load groups.{" "}
+        <Text
+          as="span"
+          color="blue.500"
+          fontWeight="medium"
+          cursor="pointer"
+          _hover={{ textDecoration: "underline" }}
+          onClick={() => refetch()}
+        >
+          Retry
+        </Text>
+      </Box>
+    )
   }
 
   if (!isPending && groups.length === 0) {

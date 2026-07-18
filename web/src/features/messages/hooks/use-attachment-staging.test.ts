@@ -88,6 +88,69 @@ describe("useAttachmentStaging", () => {
     expect(result.current.attachments).toHaveLength(0)
   })
 
+  it("retry() re-validates first and leaves a client-side rejection in its error state without a network call", () => {
+    let uploadUrlRequested = false
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/attachments/upload-url", () => {
+        uploadUrlRequested = true
+        return HttpResponse.json({}, { status: 201 })
+      }),
+    )
+
+    const { result } = renderHook(() => useAttachmentStaging("room-1"))
+
+    act(() => {
+      result.current.addFiles([makeFile("document.pdf", "application/pdf", 1024)])
+    })
+    const id = result.current.attachments[0].id
+    expect(result.current.attachments[0].status).toBe("error")
+
+    act(() => {
+      result.current.retry(id)
+    })
+
+    // Still rejected -- the same file fails the same client-side check
+    // every time, so retry() must not flip it to "uploading" and burn a
+    // network round-trip that can only fail identically.
+    expect(result.current.attachments[0].status).toBe("error")
+    expect(result.current.attachments[0].errorMessage).toMatch(/unsupported/i)
+    expect(uploadUrlRequested).toBe(false)
+  })
+
+  it("retry() re-uploads a file that passes validation after a transient upload failure", async () => {
+    let putAttempts = 0
+    server.use(
+      http.put("/test-fixtures/attachment-upload", () => {
+        putAttempts++
+        if (putAttempts === 1) {
+          return new HttpResponse(null, { status: 500 })
+        }
+        return new HttpResponse(null, { status: 200 })
+      }),
+    )
+
+    const { result } = renderHook(() => useAttachmentStaging("room-1"))
+
+    act(() => {
+      result.current.addFiles([makeFile("photo.png", "image/png", 1024)])
+    })
+    const id = result.current.attachments[0].id
+
+    await waitFor(() => expect(result.current.attachments[0].status).toBe("error"))
+    expect(putAttempts).toBe(1)
+
+    act(() => {
+      result.current.retry(id)
+    })
+
+    expect(result.current.attachments[0].status).toBe("uploading")
+
+    await waitFor(() => expect(result.current.attachments[0].status).toBe("done"))
+    expect(putAttempts).toBe(2)
+    expect(result.current.attachments[0].attachmentId).toBe("attachment-1")
+    expect(result.current.attachments[0].progress).toBe(100)
+  })
+
   it("reset() clears every staged entry", () => {
     const { result } = renderHook(() => useAttachmentStaging("room-1"))
 

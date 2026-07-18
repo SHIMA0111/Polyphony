@@ -313,9 +313,13 @@ const sseErrorEventName = "error"
 // streamChunkDTO becomes a Chunk-carrying result; an unnamed frame whose data is
 // the literal sseDoneSentinel ends the stream cleanly with no further item; an
 // `event: error` frame becomes a single Err-carrying result wrapping
-// domain.ErrLLMGateway around its plain-text data; and a transport-level read
+// domain.ErrLLMGateway around its plain-text data; a transport-level read
 // error (anything other than a clean EOF at a frame boundary) becomes a single
-// Err-carrying result wrapping domain.ErrLLMGateway. In every case the
+// Err-carrying result wrapping domain.ErrLLMGateway; and an EOF that is never
+// preceded by the sseDoneSentinel frame (the connection closed early --
+// dropped connection, gateway crash mid-response, etc.) also becomes a single
+// Err-carrying result wrapping domain.ErrLLMGateway, rather than ending
+// silently as if the stream had completed normally. In every case the
 // goroutine closes the output channel exactly once, as its last action, so
 // callers can safely range over it.
 func (c *LLMClient) Stream(ctx context.Context, req *ai.CompletionRequest) (<-chan ai.StreamResult, error) {
@@ -378,6 +382,12 @@ func readSSEStream(body io.ReadCloser, out chan<- ai.StreamResult) {
 	reader := bufio.NewReader(body)
 	var frame sseFrame
 	var dataLines []string
+	// sawDone tracks whether the unnamed frame carrying sseDoneSentinel has
+	// been processed by flush. It is checked only on the EOF path below: a
+	// transport-level read error or an `event: error` frame already emits
+	// its own Err-carrying result and returns immediately, so there is
+	// nothing for sawDone to disambiguate in either of those cases.
+	var sawDone bool
 
 	flush := func() bool {
 		// Continues the loop when true (nothing to flush), stops it (returns
@@ -399,6 +409,7 @@ func readSSEStream(body io.ReadCloser, out chan<- ai.StreamResult) {
 
 		// Default/unnamed frame.
 		if data == sseDoneSentinel {
+			sawDone = true
 			return false
 		}
 
@@ -457,6 +468,15 @@ func readSSEStream(body io.ReadCloser, out chan<- ai.StreamResult) {
 				// Flush any final frame that wasn't terminated by a trailing
 				// blank line before ending cleanly.
 				flush()
+				if !sawDone {
+					// The connection closed without ever delivering the
+					// [DONE] sentinel: from here this is indistinguishable
+					// from a clean end unless flagged explicitly, so a
+					// truncated stream (dropped connection, gateway crash
+					// mid-response, etc.) would otherwise complete silently
+					// with whatever partial content had streamed so far.
+					out <- ai.StreamResult{Err: fmt.Errorf("%w: stream ended before [DONE] sentinel", domain.ErrLLMGateway)}
+				}
 				return
 			}
 			out <- ai.StreamResult{Err: fmt.Errorf("%w: stream transport error: %v", domain.ErrLLMGateway, err)}

@@ -3,14 +3,19 @@ import { render, screen, waitFor } from "@/test/render"
 import { fixtureRooms } from "@/features/rooms/api/handlers"
 import MainLayout from "./layout"
 
-const { useParamsMock, useRouterMock } = vi.hoisted(() => ({
+const { useParamsMock, useRouterMock, usePathnameMock } = vi.hoisted(() => ({
   useParamsMock: vi.fn(),
   useRouterMock: vi.fn(() => ({ push: vi.fn() })),
+  // Defaults to a room route (`/rooms`) so tests that don't care about
+  // `isRoomRoute` (e.g. the persistent-top-bar test) still exercise the
+  // rail/content toggle this layout otherwise gates on `hasActiveRoom`.
+  usePathnameMock: vi.fn(() => "/rooms"),
 }))
 
 vi.mock("next/navigation", () => ({
   useParams: useParamsMock,
   useRouter: useRouterMock,
+  usePathname: usePathnameMock,
   // `Provider` (via `src/test/render.tsx`) now wraps every test in
   // `EmotionRegistry`, which calls this Next.js hook to flush Emotion's
   // SSR styles; jsdom never streams, so a no-op is all component tests need.
@@ -27,6 +32,7 @@ vi.mock("next/navigation", () => ({
 describe("(main)/layout", () => {
   it("shows the rail and hides the content pane at `base` when there is no active room", async () => {
     useParamsMock.mockReturnValue({})
+    usePathnameMock.mockReturnValue("/rooms")
 
     render(
       <MainLayout>
@@ -47,6 +53,7 @@ describe("(main)/layout", () => {
 
   it("hides the rail and shows the content pane at `base` when a room is active", async () => {
     useParamsMock.mockReturnValue({ roomId: fixtureRooms[0].id })
+    usePathnameMock.mockReturnValue(`/rooms/${fixtureRooms[0].id}`)
 
     render(
       <MainLayout>
@@ -74,6 +81,7 @@ describe("(main)/layout", () => {
 
   it("renders a single persistent top bar, regardless of the active room", () => {
     useParamsMock.mockReturnValue({})
+    usePathnameMock.mockReturnValue("/rooms")
 
     render(
       <MainLayout>
@@ -85,4 +93,32 @@ describe("(main)/layout", () => {
     // second copy re-rendered by the page underneath it.
     expect(screen.getAllByText("Polyphony")).toHaveLength(1)
   })
+
+  it.each(["/groups", "/billing/plans"])(
+    "always shows the content pane and hides the rail at `base` on non-room route %s",
+    async (pathname) => {
+      // Non-room routes have no `roomId` param at all -- `useParams()` never
+      // returns one for e.g. `/groups` -- so this must not depend on
+      // `hasActiveRoom` to hide the rail.
+      useParamsMock.mockReturnValue({})
+      usePathnameMock.mockReturnValue(pathname)
+
+      render(
+        <MainLayout>
+          <div data-testid="page-content">non-room page</div>
+        </MainLayout>,
+      )
+
+      await waitFor(() =>
+        expect(screen.getByText(fixtureRooms[0].name)).toBeInTheDocument(),
+      )
+
+      const rail = screen.getByRole("navigation", { hidden: true })
+      const contentPane = screen.getByTestId("page-content").parentElement
+
+      expect(rail).toHaveAttribute("aria-label", "Rooms")
+      expect(rail).toHaveStyle({ display: "none" })
+      expect(contentPane).toHaveStyle({ display: "flex" })
+    },
+  )
 })

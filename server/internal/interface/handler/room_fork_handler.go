@@ -5,6 +5,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 	domainroomfork "github.com/SHIMA0111/multi-user-ai/server/internal/domain/roomfork"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/interface/middleware"
@@ -45,14 +46,23 @@ func (h *RoomHandler) Fork(c echo.Context) error {
 // roomusecase.RoomUsecase.GetForkJobStatus). Any member of either the
 // source or destination room may poll it. On success it returns HTTP 200
 // with a ForkJobResponse. It returns HTTP 403 if the caller belongs to
-// neither room and HTTP 404 if the job does not exist.
+// neither room, and HTTP 404 if the job does not exist or if :roomId names
+// neither the job's source nor its destination room — the latter is REST-
+// contract hygiene (a URL naming an unrelated room should 404, not silently
+// succeed), not a privilege escalation fix: the usecase call above has
+// already authorized userID against the job's *real* rooms regardless of
+// what :roomId says.
 func (h *RoomHandler) GetForkJobStatus(c echo.Context) error {
 	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
 	jobID := c.Param("jobId")
 
 	job, err := h.usecase.GetForkJobStatus(c.Request().Context(), userID, jobID)
 	if err != nil {
 		return handleRoomError(c, err)
+	}
+	if roomID != job.SourceRoomID && roomID != job.NewRoomID {
+		return handleRoomError(c, domain.ErrNotFound)
 	}
 
 	return c.JSON(http.StatusOK, toForkJobResponse(job))

@@ -1,6 +1,6 @@
 "use client"
 
-import { Box, Flex, Skeleton, Text } from "@chakra-ui/react"
+import { Box, Button, Flex, Skeleton, Text } from "@chakra-ui/react"
 import { useGroupMembers } from "../hooks/use-group-members"
 import { AddGroupMemberForm } from "./AddGroupMemberForm"
 import { GroupMemberRow } from "./GroupMemberRow"
@@ -11,8 +11,11 @@ interface GroupMembersPanelProps {
 
 /**
  * Composes `AddGroupMemberForm` above a list of `GroupMemberRow`s sourced
- * from `useGroupMembers(groupId)`, with a loading skeleton and an empty
- * state. Rendered by `GroupDetail`.
+ * from `useGroupMembers(groupId)`, with a loading skeleton, an error state
+ * (with retry), and an empty state — in that order, matching
+ * `InvitationsInbox`'s `isPending` -> `isError` -> empty -> list precedence
+ * so a failed load never also shows "No members yet." underneath the error.
+ * Rendered by `GroupDetail`.
  */
 export function GroupMembersPanel({ groupId }: GroupMembersPanelProps) {
   const membersQuery = useGroupMembers(groupId)
@@ -28,6 +31,15 @@ export function GroupMembersPanel({ groupId }: GroupMembersPanelProps) {
             <Skeleton key={i} h={10} rounded="md" />
           ))}
         </Flex>
+      ) : membersQuery.isError ? (
+        <Flex direction="column" align="flex-start" gap={2}>
+          <Text fontSize="sm" color="fg.error" role="alert">
+            Failed to load members.
+          </Text>
+          <Button size="xs" variant="outline" onClick={() => membersQuery.refetch()}>
+            Retry
+          </Button>
+        </Flex>
       ) : members.length === 0 ? (
         <Box color="fg.muted" fontSize="sm">
           No members yet.
@@ -38,12 +50,6 @@ export function GroupMembersPanel({ groupId }: GroupMembersPanelProps) {
             <GroupMemberRow key={member.id} groupId={groupId} member={member} />
           ))}
         </Flex>
-      )}
-
-      {membersQuery.isError && (
-        <Text fontSize="sm" color="fg.error" role="alert">
-          Failed to load members.
-        </Text>
       )}
     </Flex>
   )

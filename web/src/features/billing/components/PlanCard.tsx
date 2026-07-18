@@ -1,19 +1,28 @@
 "use client"
 
 import { Badge, Button, Card, Flex, Text } from "@chakra-ui/react"
-import { useCreateCheckoutSession } from "../hooks/use-create-checkout-session"
 import type { BillingPlan } from "../types"
 
 /**
  * Formats `price_cents` (an integer minor-currency-unit amount, per Stripe
  * convention) as a localized currency string — never render the raw cents
  * value or a hand-rolled `/ 100` division without a formatter.
+ *
+ * The minor-unit exponent (number of digits after the decimal point) is
+ * currency-dependent — most currencies use 2 (cents), but e.g. JPY uses 0
+ * and KWD uses 3 — so it's read from the formatter's own
+ * `resolvedOptions().maximumFractionDigits` rather than hardcoding `/ 100`.
  */
 function formatPrice(plan: BillingPlan): string {
-  return new Intl.NumberFormat(undefined, {
+  const formatter = new Intl.NumberFormat(undefined, {
     style: "currency",
     currency: plan.currency,
-  }).format(plan.price_cents / 100)
+  })
+  // `maximumFractionDigits` is typed as possibly `undefined` even though
+  // `resolvedOptions()` always populates it for `style: "currency"`; `?? 2`
+  // matches `Intl`'s own currency-formatting default.
+  const exponent = formatter.resolvedOptions().maximumFractionDigits ?? 2
+  return formatter.format(plan.price_cents / 10 ** exponent)
 }
 
 /**
@@ -21,13 +30,22 @@ function formatPrice(plan: BillingPlan): string {
  * pack), rendered by `PlanList`'s `SimpleGrid`.
  *
  * The CTA reads "Subscribe" for a recurring (`interval === "month"`) plan or
- * "Buy tokens" for a one-time token pack, and is wired directly to
- * `useCreateCheckoutSession()` — clicking it starts a Stripe Checkout
- * Session for this exact plan and, on success, navigates the browser to the
- * hosted Checkout page.
+ * "Buy tokens" for a one-time token pack. `PlanList` owns the single
+ * `useCreateCheckoutSession()` mutation shared by every card (so starting a
+ * checkout for one plan disables every other card's CTA too, preventing
+ * concurrent Checkout sessions) and passes it down as `pending`/`onSelect`.
  */
-export function PlanCard({ plan }: { plan: BillingPlan }) {
-  const checkoutMutation = useCreateCheckoutSession()
+export function PlanCard({
+  plan,
+  pending,
+  onSelect,
+}: {
+  plan: BillingPlan
+  /** Whether *any* card's checkout-session mutation is in flight. */
+  pending: boolean
+  /** Starts a Checkout session for this card's plan. */
+  onSelect: () => void
+}) {
   const ctaLabel = plan.interval === "month" ? "Subscribe" : "Buy tokens"
 
   return (
@@ -61,9 +79,9 @@ export function PlanCard({ plan }: { plan: BillingPlan }) {
         <Button
           mt="auto"
           colorPalette="blue"
-          loading={checkoutMutation.isPending}
+          loading={pending}
           loadingText="Redirecting..."
-          onClick={() => checkoutMutation.mutate(plan)}
+          onClick={onSelect}
         >
           {ctaLabel}
         </Button>

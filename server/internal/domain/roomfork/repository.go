@@ -3,9 +3,10 @@ package roomfork
 import "context"
 
 // ForkJobRepository defines persistence operations for room-fork Jobs. Every
-// state-transition method (MarkRunning/MarkCompleted/MarkFailed) also
-// updates UpdatedAt; MarkCompleted and MarkFailed are terminal — no further
-// state transition is ever applied to a Job past either of them.
+// state-transition method (MarkRunning/MarkCompleted/MarkFailed/
+// CompleteAndUnarchive) also updates UpdatedAt; MarkCompleted, MarkFailed,
+// and CompleteAndUnarchive are terminal — no further state transition is
+// ever applied to a Job past any of them.
 type ForkJobRepository interface {
 	// Create persists a new Job. The caller (usecase/room.RoomUsecase.ForkRoom)
 	// always creates it with Status == StatusPending and
@@ -34,4 +35,28 @@ type ForkJobRepository interface {
 	// MarkFailed transitions a Job to the terminal StatusFailed state and
 	// records errMsg. Returns domain.ErrNotFound if the job does not exist.
 	MarkFailed(ctx context.Context, id string, errMsg string) error
+
+	// CompleteAndUnarchive atomically clears newRoomID's is_archived flag
+	// and transitions jobID to the terminal StatusCompleted state within a
+	// single database transaction, so the two updates either both land or
+	// neither does. This replaces the previous two-call sequence
+	// (room.RoomRepository.SetArchived(ctx, newRoomID, false) followed by
+	// MarkCompleted) that a caller (usecase/room.RoomUsecase.runForkJob)
+	// used to perform: if the second of those two calls failed, the room
+	// would be left permanently unarchived (accepting posts) while its Job
+	// stayed stuck in StatusRunning forever, with no way for a poller to
+	// learn the copy had, in fact, finished. Implementations must therefore
+	// reach into both the rooms and room_fork_jobs tables from within this
+	// one method, rather than delegating to two independently-committing
+	// repository calls.
+	//
+	// A caller observing StatusCompleted via GetByID may rely on the
+	// implication holding in both directions: the new room's is_archived is
+	// false if and only if its Job has reached StatusCompleted (barring a
+	// separate, later archival of the room for unrelated reasons).
+	//
+	// Returns domain.ErrNotFound if jobID does not exist or newRoomID does
+	// not exist — either case rolls back the whole transaction, leaving
+	// both rows exactly as they were.
+	CompleteAndUnarchive(ctx context.Context, jobID, newRoomID string) error
 }

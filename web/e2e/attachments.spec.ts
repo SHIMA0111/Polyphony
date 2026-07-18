@@ -41,6 +41,11 @@ function creditTokenBalance(email: string, amount: number): void {
       cwd: SERVER_DIR,
       env: { ...process.env, DATABASE_URL: databaseUrl },
       stdio: "pipe",
+      // Playwright's own test timeout cannot interrupt a blocked Node event
+      // loop (execFileSync is synchronous), so a hung seed command -- e.g.
+      // the e2e Postgres never becoming reachable -- would otherwise stall
+      // this spec forever.
+      timeout: 30_000,
     },
   )
 }

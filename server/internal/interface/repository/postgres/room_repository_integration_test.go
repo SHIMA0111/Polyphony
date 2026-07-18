@@ -944,8 +944,8 @@ func TestRoomRepositorySetArchived(t *testing.T) {
 
 // TestRoomRepositoryForkedFromRoomIDRoundTrip proves that
 // forked_from_room_id is persisted at Create time, read back by GetByID/
-// ListByUserID/ListByUserIDWithRole, and left untouched by Update (it is
-// write-once).
+// ListByUserID/ListByUserIDWithRole, and left untouched by UpdateDetails (it
+// is write-once).
 func TestRoomRepositoryForkedFromRoomIDRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -1002,18 +1002,65 @@ func TestRoomRepositoryForkedFromRoomIDRoundTrip(t *testing.T) {
 		t.Fatal("expected is_archived true")
 	}
 
-	// Update never touches forked_from_room_id, even if the in-memory
-	// struct's field were (incorrectly) cleared before calling it.
+	// ListByUserID and ListByUserIDWithRole must surface forked_from_room_id
+	// identically to GetByID -- both are separate SELECT projections
+	// (ListByUserID plain, ListByUserIDWithRole additionally JOINing role),
+	// so this exercises each query's own column list rather than relying on
+	// GetByID's coverage alone.
+	byUser, err := roomRepo.ListByUserID(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("ListByUserID failed: %v", err)
+	}
+	forkInList := findRoomByID(byUser, fork.ID)
+	if forkInList == nil {
+		t.Fatalf("expected ListByUserID to include the fork room %s", fork.ID)
+	}
+	if forkInList.ForkedFromRoomID == nil || *forkInList.ForkedFromRoomID != source.ID {
+		t.Fatalf("expected ListByUserID's forked_from_room_id %s, got %v", source.ID, forkInList.ForkedFromRoomID)
+	}
+
+	byUserWithRole, err := roomRepo.ListByUserIDWithRole(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("ListByUserIDWithRole failed: %v", err)
+	}
+	var forkWithRole *domainroom.RoomWithRole
+	for _, rw := range byUserWithRole {
+		if rw.Room.ID == fork.ID {
+			forkWithRole = rw
+			break
+		}
+	}
+	if forkWithRole == nil {
+		t.Fatalf("expected ListByUserIDWithRole to include the fork room %s", fork.ID)
+	}
+	if forkWithRole.Room.ForkedFromRoomID == nil || *forkWithRole.Room.ForkedFromRoomID != source.ID {
+		t.Fatalf("expected ListByUserIDWithRole's forked_from_room_id %s, got %v", source.ID, forkWithRole.Room.ForkedFromRoomID)
+	}
+
+	// UpdateDetails never touches forked_from_room_id, even if the
+	// in-memory struct's field were (incorrectly) cleared before calling
+	// it.
 	got.Name = "Renamed Fork"
 	got.ForkedFromRoomID = nil
-	if err := roomRepo.Update(ctx, got); err != nil {
-		t.Fatalf("Update failed: %v", err)
+	if err := roomRepo.UpdateDetails(ctx, got.ID, got.Name, got.Description, time.Now()); err != nil {
+		t.Fatalf("UpdateDetails failed: %v", err)
 	}
 	afterUpdate, err := roomRepo.GetByID(ctx, fork.ID)
 	if err != nil {
 		t.Fatalf("GetByID after update failed: %v", err)
 	}
 	if afterUpdate.ForkedFromRoomID == nil || *afterUpdate.ForkedFromRoomID != source.ID {
-		t.Fatalf("expected forked_from_room_id to remain %s after Update, got %v", source.ID, afterUpdate.ForkedFromRoomID)
+		t.Fatalf("expected forked_from_room_id to remain %s after UpdateDetails, got %v", source.ID, afterUpdate.ForkedFromRoomID)
 	}
+}
+
+// findRoomByID returns the room in rooms whose ID matches id, or nil if
+// none matches.
+func findRoomByID(rooms []*domainroom.Room, id string) *domainroom.Room {
+	for _, r := range rooms {
+		if r.ID == id {
+			return r
+		}
+	}
+	return nil
 }

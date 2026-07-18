@@ -275,16 +275,31 @@ func (r *MessageRepository) CountByRoom(ctx context.Context, roomID string) (int
 	return count, nil
 }
 
+// CountAndMaxSequence returns roomID's total message count and highest
+// sequence number in one query — see
+// message.MessageRepository.CountAndMaxSequence. COALESCE(MAX(sequence), 0)
+// makes an empty room report maxSeq 0 rather than SQL NULL, since MAX() over
+// zero rows is NULL and this method must return a plain int64.
+func (r *MessageRepository) CountAndMaxSequence(ctx context.Context, roomID string) (total int64, maxSeq int64, err error) {
+	err = r.pool.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(MAX(sequence), 0) FROM messages WHERE room_id = $1`, roomID,
+	).Scan(&total, &maxSeq)
+	if err != nil {
+		return 0, 0, err
+	}
+	return total, maxSeq, nil
+}
+
 // ListByRoomAfter returns up to limit messages in roomID with
-// sequence > afterSequence, ordered ascending by sequence (oldest first) —
-// see message.MessageRepository.ListByRoomAfter. Like CountByRoom, it
-// ignores soft-delete/visibility/exclude-from-ai flags: a room fork copies
-// the room's entire, unfiltered history.
-func (r *MessageRepository) ListByRoomAfter(ctx context.Context, roomID string, afterSequence int64, limit int) ([]*message.Message, error) {
+// afterSequence < sequence <= maxSequence, ordered ascending by sequence
+// (oldest first) — see message.MessageRepository.ListByRoomAfter. Like
+// CountByRoom, it ignores soft-delete/visibility/exclude-from-ai flags: a
+// room fork copies the room's entire, unfiltered history.
+func (r *MessageRepository) ListByRoomAfter(ctx context.Context, roomID string, afterSequence int64, maxSequence int64, limit int) ([]*message.Message, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence > $2
-		 ORDER BY sequence ASC LIMIT $3`,
-		roomID, afterSequence, limit,
+		`SELECT `+messageColumns+` FROM messages WHERE room_id = $1 AND sequence > $2 AND sequence <= $3
+		 ORDER BY sequence ASC LIMIT $4`,
+		roomID, afterSequence, maxSequence, limit,
 	)
 	if err != nil {
 		return nil, err

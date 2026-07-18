@@ -594,3 +594,50 @@ func TestLLMClient_StreamSplitFrameAcrossWrites(t *testing.T) {
 		t.Fatalf("expected delta %q, got %+v", "split-safe", results[0].Chunk)
 	}
 }
+
+// TestLLMClient_StreamEOFBeforeDoneSentinel asserts that a connection which
+// closes after delivering one legitimate chunk frame but before the
+// [DONE] sentinel yields that chunk followed by an Err-carrying StreamResult
+// wrapping domain.ErrLLMGateway -- regression test for a truncated stream
+// (dropped connection, gateway crash mid-response) previously being
+// indistinguishable from a clean end and completing silently with only its
+// partial content.
+func TestLLMClient_StreamEOFBeforeDoneSentinel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		_, _ = w.Write([]byte(`data: {"id":"c1","model":"gpt-5.2","delta":"partial"}` + "\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// No [DONE] sentinel: the handler returns here, closing the
+		// connection as if the gateway crashed or the connection dropped
+		// mid-stream.
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+
+	results := drainStream(t, ch)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 stream results (1 chunk + 1 truncation error), got %d: %+v", len(results), results)
+	}
+	if results[0].Err != nil || results[0].Chunk == nil || results[0].Chunk.Delta != "partial" {
+		t.Fatalf("unexpected first result: %+v", results[0])
+	}
+	if results[1].Chunk != nil {
+		t.Fatalf("expected second result to carry no chunk, got %+v", results[1].Chunk)
+	}
+	if results[1].Err == nil || !domain.IsLLMGatewayError(results[1].Err) {
+		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", results[1].Err)
+	}
+}

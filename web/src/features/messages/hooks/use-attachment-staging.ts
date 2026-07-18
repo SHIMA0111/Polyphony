@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { requestUploadUrl } from "../api/request-upload-url"
-import { uploadAttachment } from "../lib/upload-attachment"
+import { UploadAttachmentAbortedError, uploadAttachment } from "../lib/upload-attachment"
 
 /**
  * MIME types Step 12's `AttachmentUsecase.RequestUpload` allow-lists
@@ -53,13 +53,17 @@ export interface UseAttachmentStagingResult {
    * client-side validation is staged with `status: "error"` and never
    * triggers a network call. */
   addFiles: (files: File[]) => void
-  /** Removes a staged entry (of any status) and revokes its preview URL. */
+  /** Removes a staged entry (of any status) and revokes its preview URL.
+   * Aborts its in-flight upload first, if any. */
   remove: (id: string) => void
-  /** Clears every staged entry, revoking all of their preview URLs. */
+  /** Clears every staged entry, revoking all of their preview URLs. Aborts
+   * every in-flight upload first. */
   reset: () => void
-  /** Re-attempts the upload for an `"error"` entry (e.g. a transient network
-   * failure -- not a client-side validation rejection, which would only
-   * fail again identically). */
+  /** Re-attempts the upload for an `"error"` entry. Re-runs client-side
+   * validation first: if the file still fails it (unsupported type,
+   * oversized), the entry is left in its error state -- retrying the
+   * network call would only fail again identically. Only a transient
+   * network/upload failure actually triggers a fresh upload. */
   retry: (id: string) => void
 }
 
@@ -108,6 +112,12 @@ export function useAttachmentStaging(roomId: string): UseAttachmentStagingResult
     attachmentsRef.current = attachments
   }, [attachments])
 
+  // One `AbortController` per in-flight upload, keyed by the staged entry's
+  // client-generated `id`. Consulted (and torn down) by `remove`/`reset`/the
+  // unmount cleanup below so a file staged mid-upload doesn't keep uploading
+  // -- and can't call back into `setAttachments` -- after it's been dropped.
+  const controllersRef = useRef<Map<string, AbortController>>(new Map())
+
   const addFiles = useCallback((files: File[]) => {
     const newEntries: StagedAttachment[] = files.map((file) => {
       const id = crypto.randomUUID()
@@ -130,6 +140,8 @@ export function useAttachmentStaging(roomId: string): UseAttachmentStagingResult
   }, [])
 
   const remove = useCallback((id: string) => {
+    controllersRef.current.get(id)?.abort()
+    controllersRef.current.delete(id)
     setAttachments((prev) => {
       const target = prev.find((a) => a.id === id)
       if (target) URL.revokeObjectURL(target.previewUrl)
@@ -139,6 +151,8 @@ export function useAttachmentStaging(roomId: string): UseAttachmentStagingResult
   }, [])
 
   const reset = useCallback(() => {
+    controllersRef.current.forEach((controller) => controller.abort())
+    controllersRef.current.clear()
     setAttachments((prev) => {
       prev.forEach((a) => URL.revokeObjectURL(a.previewUrl))
       return []
@@ -147,11 +161,32 @@ export function useAttachmentStaging(roomId: string): UseAttachmentStagingResult
   }, [])
 
   const retry = useCallback((id: string) => {
+    const target = attachmentsRef.current.find((a) => a.id === id)
+    if (!target) return
+
+    const validationError = validateFile(target.file)
+    if (validationError) {
+      // Re-validate first: a client-side rejection (unsupported type,
+      // oversized) will fail identically again, so leave the entry in its
+      // error state rather than flipping it to "uploading" and burning a
+      // network round-trip that can only fail the same way.
+      setAttachments((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, errorMessage: validationError } : a)),
+      )
+      return
+    }
+
     startedRef.current.delete(id)
     setAttachments((prev) =>
       prev.map((a) =>
         a.id === id
-          ? { ...a, status: "uploading", progress: 0, errorMessage: undefined }
+          ? {
+              ...a,
+              status: "uploading",
+              progress: 0,
+              attachmentId: undefined,
+              errorMessage: undefined,
+            }
           : a,
       ),
     )
@@ -169,6 +204,11 @@ export function useAttachmentStaging(roomId: string): UseAttachmentStagingResult
 
     for (const item of pending) {
       startedRef.current.add(item.id)
+      // Presigning is cheap and untied to any particular attempt, so only
+      // the actual upload PUT is cancellable -- `requestUploadUrl` below
+      // deliberately doesn't receive this signal.
+      const controller = new AbortController()
+      controllersRef.current.set(item.id, controller)
 
       void (async () => {
         try {
@@ -179,11 +219,16 @@ export function useAttachmentStaging(roomId: string): UseAttachmentStagingResult
             ),
           )
 
-          await uploadAttachment(item.file, ticket.upload_url, (percent) => {
-            setAttachments((prev) =>
-              prev.map((a) => (a.id === item.id ? { ...a, progress: percent } : a)),
-            )
-          })
+          await uploadAttachment(
+            item.file,
+            ticket.upload_url,
+            (percent) => {
+              setAttachments((prev) =>
+                prev.map((a) => (a.id === item.id ? { ...a, progress: percent } : a)),
+              )
+            },
+            controller.signal,
+          )
 
           setAttachments((prev) =>
             prev.map((a) =>
@@ -191,6 +236,12 @@ export function useAttachmentStaging(roomId: string): UseAttachmentStagingResult
             ),
           )
         } catch (err) {
+          if (err instanceof UploadAttachmentAbortedError) {
+            // Deliberate cancellation from remove()/reset()/unmount -- the
+            // entry is already gone (or about to be), so there's no error
+            // state to surface and nothing left to update.
+            return
+          }
           setAttachments((prev) =>
             prev.map((a) =>
               a.id === item.id
@@ -202,15 +253,20 @@ export function useAttachmentStaging(roomId: string): UseAttachmentStagingResult
                 : a,
             ),
           )
+        } finally {
+          controllersRef.current.delete(item.id)
         }
       })()
     }
   }, [attachments, roomId])
 
-  // Revoke every remaining preview URL on unmount (e.g. navigating away
-  // mid-upload) -- `remove`/`reset` already handle the non-unmount cases.
+  // Abort every in-flight upload and revoke every remaining preview URL on
+  // unmount (e.g. navigating away mid-upload) -- `remove`/`reset` already
+  // handle the non-unmount cases.
   useEffect(() => {
+    const controllers = controllersRef.current
     return () => {
+      controllers.forEach((controller) => controller.abort())
       attachmentsRef.current.forEach((a) => URL.revokeObjectURL(a.previewUrl))
     }
   }, [])

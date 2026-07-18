@@ -25,6 +25,19 @@ import (
 // moment the request that kicked it off completes.
 const streamBackgroundTimeout = 5 * time.Minute
 
+// streamFinalizeTimeout bounds the terminal persistence/publish/billing
+// calls consumeAIStream makes once resultCh closes (MessageRepository.
+// UpdateAIResponse, the final EventMessageUpdated publish, and
+// BillingGuard.RecordUsage). These calls deliberately run against their own
+// context derived via context.WithoutCancel(streamCtx) rather than streamCtx
+// itself: streamCtx carries streamBackgroundTimeout's 5-minute deadline
+// starting from when the stream began, so a response that runs close to
+// that ceiling would otherwise leave little or no time -- possibly a
+// deadline already in the past -- for finalization to complete, silently
+// losing a fully-generated response's content at the last step. See
+// consumeAIStream's use of this constant.
+const streamFinalizeTimeout = 10 * time.Second
+
 // SendAIMessageStream sends a human message and streams the AI response
 // token-by-token instead of waiting for the full completion.
 //
@@ -127,8 +140,16 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 	u.publishMessageEvent(ctx, event.EventMessageCreated, roomID, aiMsg, aiNow, false)
 
 	// Fetch context messages, same as SendAIMessage.
+	//
+	// From this point on, the placeholder AI message is already durably
+	// persisted and its EventMessageCreated already published, so any error
+	// path below must finalize it as failed before returning -- see
+	// finalizeFailedStreamPlaceholder -- otherwise it would be stuck at
+	// Status = MessageStatusStreaming forever, visible to every
+	// WebSocket-connected room member as a response that never finishes.
 	contextPage, err := u.msgRepo.ListByRoom(ctx, roomID, "", defaultContextMessages, userID)
 	if err != nil {
+		u.finalizeFailedStreamPlaceholder(ctx, roomID, aiMsg, false, "context fetch", err)
 		return nil, err
 	}
 
@@ -139,6 +160,7 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 	// mirroring SendAIMessage's assembleAIContext call.
 	chatMsgs, summaryUsed, err := u.assembleAIContext(ctx, rm, model, contextPage.Messages)
 	if err != nil {
+		u.finalizeFailedStreamPlaceholder(ctx, roomID, aiMsg, summaryUsed, "context assembly", err)
 		return nil, err
 	}
 
@@ -180,6 +202,38 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 	return &SendAIResult{HumanMessage: humanMsg, AIMessage: &aiMsgForCaller, UsedContextSummary: summaryUsed}, nil
 }
 
+// finalizeFailedStreamPlaceholder marks aiMsg -- the streaming placeholder
+// SendAIMessageStream already created and announced via EventMessageCreated
+// -- as failed, in response to a synchronous error that strikes after the
+// placeholder exists but before the LLM Gateway's Stream call is even
+// attempted (a context-fetch failure via ListByRoom, or a context-assembly
+// failure via assembleAIContext). Without this, such a failure would leave
+// the placeholder at Status = MessageStatusStreaming forever: nothing else
+// ever transitions it out of "streaming", so every WebSocket-connected room
+// member would see a response that never finishes. usedSummary is published
+// verbatim on the resulting EventMessageUpdated (the caller passes false for
+// the context-fetch failure, since assembleAIContext never ran to produce a
+// real value).
+//
+// Unlike the synchronous LLM Gateway dispatch failure branch earlier in
+// SendAIMessageStream (which returns its own UpdateAIResponse failure as
+// SendAIMessageStream's error, since no earlier step failed to report), a
+// failure of the UpdateAIResponse call here is only logged: the caller
+// already has origErr to return, and finalizing the visible row is a
+// best-effort cleanup layered on top of that, not the primary failure being
+// reported.
+func (u *MessageUsecase) finalizeFailedStreamPlaceholder(ctx context.Context, roomID string, aiMsg *domainmessage.Message, usedSummary bool, step string, origErr error) {
+	failedNow := time.Now()
+	if err := u.msgRepo.UpdateAIResponse(ctx, aiMsg.ID, "", domainmessage.MessageStatusFailed, failedNow); err != nil {
+		slog.Error("failed to finalize streaming placeholder after a pre-dispatch error",
+			"step", step, "original_error", origErr, "update_error", err, "room_id", roomID, "message_id", aiMsg.ID)
+		return
+	}
+	aiMsg.Status = domainmessage.MessageStatusFailed
+	aiMsg.UpdatedAt = failedNow
+	u.publishMessageEvent(ctx, event.EventMessageUpdated, roomID, aiMsg, failedNow, usedSummary)
+}
+
 // consumeAIStream is SendAIMessageStream's background completion path. It
 // ranges over resultCh (as returned by ai.LLMGateway.Stream) until the
 // channel closes, publishing an EventTokenChunk RoomEvent for every chunk
@@ -197,7 +251,10 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 // Usage-bearing chunk skips recording and logs at Warn level instead, since
 // BillingGuard.RecordUsage would no-op on a zero total anyway and skipping
 // avoids a pointless lookup. It always calls cancel() before returning, to
-// release streamCtx's resources.
+// release streamCtx's resources. The terminal UpdateAIResponse/publish/
+// RecordUsage calls run against finalizeCtx (see streamFinalizeTimeout), not
+// ctx itself, so they are not starved by however little of streamCtx's own
+// deadline remains by the time the stream ends.
 //
 // aiMsg is a value copy of the AI placeholder message (see
 // SendAIMessageStream's aiMsgForCaller), so mutating its fields here is safe:
@@ -246,13 +303,21 @@ func (u *MessageUsecase) consumeAIStream(
 		}
 	}
 
+	// finalizeCtx gives the terminal calls below their own short deadline,
+	// detached from streamCtx's via context.WithoutCancel -- see
+	// streamFinalizeTimeout's doc comment for why streamCtx itself (whose
+	// remaining budget could be seconds or negative for a near-ceiling
+	// stream) must not also govern finalization.
+	finalizeCtx, finalizeCancel := context.WithTimeout(context.WithoutCancel(ctx), streamFinalizeTimeout)
+	defer finalizeCancel()
+
 	now := time.Now()
 	status := domainmessage.MessageStatusCompleted
 	if streamErr != nil {
 		status = domainmessage.MessageStatusFailed
 	}
 
-	if err := u.msgRepo.UpdateAIResponse(ctx, aiMsg.ID, content.String(), status, now); err != nil {
+	if err := u.msgRepo.UpdateAIResponse(finalizeCtx, aiMsg.ID, content.String(), status, now); err != nil {
 		slog.Error("failed to persist streamed AI response", "error", err, "room_id", roomID, "message_id", aiMsg.ID)
 		return
 	}
@@ -260,7 +325,7 @@ func (u *MessageUsecase) consumeAIStream(
 	aiMsg.Status = status
 	aiMsg.UpdatedAt = now
 
-	u.publishMessageEvent(ctx, event.EventMessageUpdated, roomID, &aiMsg, now, summaryUsed)
+	u.publishMessageEvent(finalizeCtx, event.EventMessageUpdated, roomID, &aiMsg, now, summaryUsed)
 
 	if streamErr != nil {
 		slog.Error("AI stream ended with error", "error", streamErr, "room_id", roomID, "message_id", aiMsg.ID)
@@ -275,7 +340,7 @@ func (u *MessageUsecase) consumeAIStream(
 
 	// Fire-and-forget: the AI message is already durably persisted, so a
 	// usage-recording failure must never affect anything downstream.
-	if err := u.billing.RecordUsage(ctx, roomID, aiMsg.ID, model, usage.PromptTokens, usage.CompletionTokens); err != nil {
+	if err := u.billing.RecordUsage(finalizeCtx, roomID, aiMsg.ID, model, usage.PromptTokens, usage.CompletionTokens); err != nil {
 		slog.Error("failed to record token usage", "error", err, "room_id", roomID, "message_id", aiMsg.ID)
 	}
 }

@@ -31,6 +31,7 @@ export function AttachmentLightbox({ imageUrl, onClose }: AttachmentLightboxProp
         <Dialog.Backdrop bg="blackAlpha.800" />
         <Dialog.Positioner>
           <Dialog.Content
+            aria-label="Attachment preview"
             bg="transparent"
             boxShadow="none"
             display="flex"

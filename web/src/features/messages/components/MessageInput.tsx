@@ -294,12 +294,18 @@ export function MessageInput({
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     setIsDropActive(false)
+    // A send in flight is about to call `resetAttachments()` once it
+    // resolves, silently wiping out anything staged here in the meantime --
+    // reject the drop outright rather than staging files just to lose them.
+    if (disabled || isSending) return
     const files = Array.from(e.dataTransfer.files)
     if (files.length > 0) addFiles(files)
   }
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
+    // See `handleDrop`'s comment above: staging mid-send would only be
+    // wiped by the in-flight send's `resetAttachments()`.
+    if (e.target.files && !disabled && !isSending) {
       addFiles(Array.from(e.target.files))
     }
     // Reset so selecting the exact same file again still fires onChange.
@@ -328,7 +334,9 @@ export function MessageInput({
           overflow="hidden"
           onDragOver={(e) => {
             e.preventDefault()
-            setIsDropActive(true)
+            // Same guard as `handleDrop`: don't even show the drop-active
+            // affordance for a drop that would just be discarded.
+            if (!disabled && !isSending) setIsDropActive(true)
           }}
           onDragLeave={() => setIsDropActive(false)}
           onDrop={handleDrop}
@@ -430,12 +438,16 @@ export function MessageInput({
                   events in most browsers, so a Tooltip wrapping it directly
                   would never trigger — not on mouse hover, and not on
                   keyboard focus (Tab). Wrapping the Button in a focusable
-                  (`tabIndex={0}`) `span` gives the tooltip an always-
-                  interactive element to anchor to, so the vision-unsupported
-                  message is reachable both by hovering and by tabbing to it,
-                  even while the button itself is disabled.
+                  `span` gives the tooltip an always-interactive element to
+                  anchor to, so the vision-unsupported message is reachable
+                  both by hovering and by tabbing to it, even while the
+                  button itself is disabled. Only made a tab stop
+                  (`tabIndex={0}`) while actually gated: the tooltip has
+                  nothing to say otherwise, so leaving it in the tab order
+                  (`tabIndex={-1}`) would add a second, pointless stop right
+                  next to the (enabled, already-focusable) button itself.
                 */}
-                <Box as="span" display="inline-flex" tabIndex={0}>
+                <Box as="span" display="inline-flex" tabIndex={visionGated ? 0 : -1}>
                   <Button
                     size="sm"
                     onClick={handleSendWithAI}

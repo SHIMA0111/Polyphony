@@ -16,18 +16,19 @@ import (
 	roomusecase "github.com/SHIMA0111/multi-user-ai/server/internal/usecase/room"
 )
 
-// gatedMessageRepo wraps *mocks.MessageRepo, blocking CountByRoom (the fork
-// worker's first call) until proceed is closed, so a test can assert on
-// POST /rooms/:roomId/fork's synchronous response before the detached
-// background worker it launches can mutate the same Job/Room objects.
+// gatedMessageRepo wraps *mocks.MessageRepo, blocking CountAndMaxSequence
+// (the fork worker's first call) until proceed is closed, so a test can
+// assert on POST /rooms/:roomId/fork's synchronous response before the
+// detached background worker it launches can mutate the same Job/Room
+// objects.
 type gatedMessageRepo struct {
 	*mocks.MessageRepo
 	proceed chan struct{}
 }
 
-func (g *gatedMessageRepo) CountByRoom(ctx context.Context, roomID string) (int64, error) {
+func (g *gatedMessageRepo) CountAndMaxSequence(ctx context.Context, roomID string) (int64, int64, error) {
 	<-g.proceed
-	return g.MessageRepo.CountByRoom(ctx, roomID)
+	return g.MessageRepo.CountAndMaxSequence(ctx, roomID)
 }
 
 // TestRoomHandlerFork covers POST /rooms/:roomId/fork: 202 for a master
@@ -190,6 +191,28 @@ func TestRoomHandlerGetForkJobStatus(t *testing.T) {
 		}
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("expected 403, got %d", rec.Code)
+		}
+	})
+
+	t.Run("404 mismatched roomId", func(t *testing.T) {
+		// The caller is a genuine member of source-room and is fully
+		// authorized to view job status via GetForkJobStatus -- but the
+		// :roomId path segment names a third, unrelated room, so the
+		// handler must 404 rather than silently serving the job.
+		e, h, _, jobID := setup()
+
+		req := httptest.NewRequest(http.MethodGet, "/rooms/unrelated-room/fork-jobs/"+jobID, nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("roomId", "jobId")
+		c.SetParamValues("unrelated-room", jobID)
+		c.Set("user_id", "source-member")
+
+		if err := h.GetForkJobStatus(c); err != nil {
+			t.Fatalf("GetForkJobStatus error: %v", err)
+		}
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", rec.Code)
 		}
 	})
 }

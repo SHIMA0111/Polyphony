@@ -506,6 +506,12 @@ func (u *MessageUsecase) saveFailedAIPlaceholderOnError(ctx context.Context, roo
 // The second return value reports whether the regenerated response's
 // context included a summary of older history (see assembleAIContext); it
 // is a one-time, request-scoped signal, not a persisted message property.
+//
+// It returns domain.ErrArchivedRoom if the room is archived (see
+// domainroom.Room.IsArchived / SendMessage's matching guard) — checked
+// right after loading rm, mirroring Send/SendAIMessage/SendAIMessageStream's
+// identical guard, so a room mid-fork can never have one of its existing
+// exchanges regenerated either.
 func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID, messageID, model string) (*domainmessage.Message, bool, error) {
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
@@ -521,6 +527,9 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	rm, err := u.roomRepo.GetByID(ctx, roomID)
 	if err != nil {
 		return nil, false, err
+	}
+	if rm.IsArchived {
+		return nil, false, domain.ErrArchivedRoom
 	}
 	model = resolveModel(model, rm, u.defaultAIModel)
 

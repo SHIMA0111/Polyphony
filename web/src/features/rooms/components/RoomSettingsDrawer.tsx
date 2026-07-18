@@ -23,6 +23,7 @@ import { toaster } from "@/components/ui/toaster"
 import { formatModelMeta } from "@/features/messages/components/ModelSelector"
 import { useModels } from "@/features/messages/hooks/use-models"
 import { isOwnerRole, roleAtLeast } from "@/features/members/lib/roles"
+import { formatDateTimeLocal } from "@/lib/format"
 import type { RoomRole } from "@/features/members/types"
 import { useDeleteRoom } from "../hooks/use-delete-room"
 import { useUpdateAIContextCutoff } from "../hooks/use-update-ai-context-cutoff"
@@ -42,10 +43,17 @@ interface RoomSettingsDrawerProps {
   role: RoomRole
 }
 
-/** Formats an ISO cutoff timestamp for display, or a fallback when unset. */
+/**
+ * Formats an ISO cutoff timestamp for display, or a fallback when unset.
+ *
+ * Uses the shared, UTC-pinned `formatDateTimeLocal` (`@/lib/format`) rather
+ * than a bare `Date.prototype.toLocaleString()`: the latter reads the
+ * runtime's own locale/timezone and so can render a different string on the
+ * server than in the browser -- a latent React hydration mismatch.
+ */
 function formatCutoff(cutoffAt: string | null): string {
   if (!cutoffAt) return "No cutoff set"
-  return new Date(cutoffAt).toLocaleString()
+  return formatDateTimeLocal(cutoffAt)
 }
 
 /**
@@ -87,6 +95,15 @@ export function RoomSettingsDrawer({
   const [cutoffInput, setCutoffInput] = useState("")
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
 
+  // Guards `handleSaveAISettings`: `useModels()` is empty until it resolves,
+  // and a previously-saved model can also be absent from the catalog (e.g.
+  // deprecated/removed upstream). Either way `models.find` below would miss
+  // and silently submit `""`/`""` -- clearing the room's AI default instead
+  // of leaving it untouched. "Use global default" is always a valid save.
+  const canSaveAISettings =
+    selectedModelId === GLOBAL_DEFAULT_VALUE ||
+    models.some((model) => model.id === selectedModelId)
+
   // Reconcile local edit state with the latest room data whenever the
   // drawer opens (or the underlying room data changes, e.g. after a save)
   // -- not on every render, so mid-edit keystrokes aren't clobbered by an
@@ -116,6 +133,7 @@ export function RoomSettingsDrawer({
   }
 
   const handleSaveAISettings = async () => {
+    if (!canSaveAISettings) return
     const selectedModel = models.find((model) => model.id === selectedModelId)
     try {
       await updateSettingsMutation.mutateAsync({
@@ -245,6 +263,7 @@ export function RoomSettingsDrawer({
                         size="sm"
                         colorPalette="blue"
                         alignSelf="flex-start"
+                        disabled={!canSaveAISettings}
                         loading={updateSettingsMutation.isPending}
                         onClick={handleSaveAISettings}
                       >

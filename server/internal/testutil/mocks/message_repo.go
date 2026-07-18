@@ -35,6 +35,11 @@ type MessageRepo struct {
 	// CreateFunc, if set, overrides Create entirely. See the type doc
 	// comment above.
 	CreateFunc func(ctx context.Context, msg *message.Message) error
+	// ListByRoomErr, if non-nil, is returned by every ListByRoom call
+	// instead of its default in-memory-store behavior, simulating a
+	// context-fetch failure (e.g. a database error) independent of the
+	// fake's other methods.
+	ListByRoomErr error
 }
 
 func (m *MessageRepo) ensureInit() {
@@ -96,10 +101,16 @@ func visibleTo(msg *message.Message, requestingUserID string) bool {
 // newest N entries as the "recent, always verbatim" tail), truncated to
 // limit entries. Soft-deleted messages (IsDeleted == true) are excluded,
 // mirroring the postgres.MessageRepository behavior. A private message not
-// owned by requestingUserID is also excluded (see visibleTo).
+// owned by requestingUserID is also excluded (see visibleTo). If
+// ListByRoomErr is non-nil, it is returned immediately instead (see the type
+// doc comment).
 func (m *MessageRepo) ListByRoom(_ context.Context, roomID, _ string, limit int, requestingUserID string) (*message.CursorPage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.ListByRoomErr != nil {
+		return nil, m.ListByRoomErr
+	}
 
 	var msgs []*message.Message
 	for _, msg := range m.Messages {
@@ -227,17 +238,37 @@ func (m *MessageRepo) CountByRoom(_ context.Context, roomID string) (int64, erro
 	return count, nil
 }
 
+// CountAndMaxSequence returns roomID's total message count and highest
+// sequence number (0 if the room has no messages) in one pass, mirroring
+// postgres.MessageRepository.CountAndMaxSequence's atomicity guarantee (the
+// mock is single-threaded under mu for the duration of the call, so both
+// values reflect the same snapshot of Messages).
+func (m *MessageRepo) CountAndMaxSequence(_ context.Context, roomID string) (total int64, maxSeq int64, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, msg := range m.Messages {
+		if msg.RoomID == roomID {
+			total++
+			if msg.Sequence > maxSeq {
+				maxSeq = msg.Sequence
+			}
+		}
+	}
+	return total, maxSeq, nil
+}
+
 // ListByRoomAfter returns up to limit messages in roomID with
-// sequence > afterSequence, ordered ascending by sequence, ignoring
-// soft-delete/visibility/exclude-from-ai flags (mirroring the
+// afterSequence < sequence <= maxSequence, ordered ascending by sequence,
+// ignoring soft-delete/visibility/exclude-from-ai flags (mirroring the
 // postgres.MessageRepository behavior this fake models).
-func (m *MessageRepo) ListByRoomAfter(_ context.Context, roomID string, afterSequence int64, limit int) ([]*message.Message, error) {
+func (m *MessageRepo) ListByRoomAfter(_ context.Context, roomID string, afterSequence int64, maxSequence int64, limit int) ([]*message.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var msgs []*message.Message
 	for _, msg := range m.Messages {
-		if msg.RoomID == roomID && msg.Sequence > afterSequence {
+		if msg.RoomID == roomID && msg.Sequence > afterSequence && msg.Sequence <= maxSequence {
 			msgs = append(msgs, msg)
 		}
 	}
