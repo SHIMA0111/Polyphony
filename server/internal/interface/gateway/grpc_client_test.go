@@ -32,11 +32,12 @@ const bufconnSize = 1024 * 1024
 type fakeCompletionServer struct {
 	llmgatewaypb.UnimplementedCompletionServiceServer
 
-	mu        sync.Mutex
-	calls     int
-	failTimes int
-	failCode  codes.Code
-	resp      *llmgatewaypb.CompletionResponse
+	mu           sync.Mutex
+	calls        int
+	failTimes    int
+	failCode     codes.Code
+	resp         *llmgatewaypb.CompletionResponse
+	estimateResp *llmgatewaypb.TokenEstimateResponse
 }
 
 func (s *fakeCompletionServer) Complete(_ context.Context, _ *llmgatewaypb.CompletionRequest) (*llmgatewaypb.CompletionResponse, error) {
@@ -47,6 +48,13 @@ func (s *fakeCompletionServer) Complete(_ context.Context, _ *llmgatewaypb.Compl
 		return nil, status.Error(s.failCode, "injected failure")
 	}
 	return s.resp, nil
+}
+
+// EstimateTokens returns the configured estimateResp, ignoring the
+// failTimes/failCode retry-injection fields Complete uses (no test currently
+// needs EstimateTokens retry coverage).
+func (s *fakeCompletionServer) EstimateTokens(_ context.Context, _ *llmgatewaypb.TokenEstimateRequest) (*llmgatewaypb.TokenEstimateResponse, error) {
+	return s.estimateResp, nil
 }
 
 func (s *fakeCompletionServer) callCount() int {
@@ -253,9 +261,23 @@ func TestGRPCClientListModelsHappyPath(t *testing.T) {
 	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
 	defer stop()
 
+	contextWindow := uint32(272_000)
+	supportsImageInput := true
 	fixture.models.resp = &llmgatewaypb.ListModelsResponse{
 		Models: []*llmgatewaypb.ModelInfo{
-			{Id: "gpt-5.2", Name: "GPT-5.2", Provider: "openai"},
+			{
+				Id:                 "gpt-5.2",
+				Name:               "GPT-5.2",
+				Provider:           "openai",
+				ContextWindow:      &contextWindow,
+				SupportsImageInput: &supportsImageInput,
+				Pricing: &llmgatewaypb.ModelPricing{
+					InputPricePerMillionTokens:  2.5,
+					OutputPricePerMillionTokens: 10.0,
+					Currency:                    "USD",
+				},
+			},
+			// No metadata set -- exercises the nil-pointer-to-zero-value path.
 			{Id: "claude-opus", Name: "Claude Opus", Provider: "anthropic"},
 		},
 	}
@@ -267,11 +289,49 @@ func TestGRPCClientListModelsHappyPath(t *testing.T) {
 	if len(models) != 2 {
 		t.Fatalf("expected 2 models, got %d", len(models))
 	}
-	if models[0] != (ai.ModelInfo{ID: "gpt-5.2", Name: "GPT-5.2", Provider: "openai"}) {
-		t.Errorf("unexpected model[0]: %+v", models[0])
+	want0 := ai.ModelInfo{
+		ID:                          "gpt-5.2",
+		Name:                        "GPT-5.2",
+		Provider:                    "openai",
+		ContextWindow:               272_000,
+		InputPricePerMillionTokens:  2.5,
+		OutputPricePerMillionTokens: 10.0,
+		SupportsImageInput:          true,
 	}
-	if models[1] != (ai.ModelInfo{ID: "claude-opus", Name: "Claude Opus", Provider: "anthropic"}) {
-		t.Errorf("unexpected model[1]: %+v", models[1])
+	if models[0] != want0 {
+		t.Errorf("unexpected model[0]: got %+v, want %+v", models[0], want0)
+	}
+	want1 := ai.ModelInfo{ID: "claude-opus", Name: "Claude Opus", Provider: "anthropic"}
+	if models[1] != want1 {
+		t.Errorf("unexpected model[1]: got %+v, want %+v", models[1], want1)
+	}
+}
+
+// TestGRPCClientEstimateTokensHappyPath exercises GRPCClient.EstimateTokens
+// (Step 34's carryover gRPC support, previously an explicit "not supported"
+// stub) against the fake CompletionService server.
+func TestGRPCClientEstimateTokensHappyPath(t *testing.T) {
+	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
+	defer stop()
+
+	fixture.completion.estimateResp = &llmgatewaypb.TokenEstimateResponse{
+		Model:           "gpt-5.2",
+		EstimatedTokens: 42,
+	}
+
+	req := &ai.TokenEstimateRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hello"}},
+	}
+	resp, err := fixture.client.EstimateTokens(context.Background(), req)
+	if err != nil {
+		t.Fatalf("EstimateTokens failed: %v", err)
+	}
+	if resp.Model != "gpt-5.2" {
+		t.Errorf("expected model %q, got %q", "gpt-5.2", resp.Model)
+	}
+	if resp.EstimatedTokens != 42 {
+		t.Errorf("expected EstimatedTokens 42, got %d", resp.EstimatedTokens)
 	}
 }
 

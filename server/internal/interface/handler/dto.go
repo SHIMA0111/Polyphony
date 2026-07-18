@@ -190,10 +190,20 @@ type MessageListResponse struct {
 // --- Model DTOs ---
 
 // ModelResponse is the JSON response representation of an available LLM model.
+//
+// ContextWindow, InputPricePerMillionTokens, and OutputPricePerMillionTokens
+// are a flat, pure passthrough of ai.ModelInfo's equivalent fields: 0 means
+// "unknown" (the LLM Gateway did not report a value for this model), not
+// "no limit"/"free". SupportsImageInput is false for both "no" and
+// "unknown", per ai.ModelInfo's documented collapsing of Option<bool>/None.
 type ModelResponse struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
+	ID                          string  `json:"id"`
+	Name                        string  `json:"name"`
+	Provider                    string  `json:"provider"`
+	ContextWindow               int     `json:"context_window"`
+	InputPricePerMillionTokens  float64 `json:"input_price_per_million_tokens"`
+	OutputPricePerMillionTokens float64 `json:"output_price_per_million_tokens"`
+	SupportsImageInput          bool    `json:"supports_image_input"`
 }
 
 // ModelListResponse is the response body for GET /models.

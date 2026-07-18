@@ -76,9 +76,38 @@ message CompletionResponse {
   Usage usage = 4;
 }
 
+// Request message for `CompletionService.EstimateTokens`. Mirrors
+// `CompletionRequest`'s shape minus the sampling parameters (`temperature`,
+// `max_tokens`), which are irrelevant to estimation — the gRPC counterpart of
+// the REST `POST /tokens/estimate` endpoint's request body.
+message TokenEstimateRequest {
+  // Model identifier the estimate is computed for (for future model-specific
+  // tokenizer tuning; the current heuristic is model-agnostic).
+  string model = 1;
+  // Conversation history, oldest first.
+  repeated ChatMessage messages = 2;
+}
+
+// Response message for `CompletionService.EstimateTokens`.
+//
+// `estimated_tokens` is an approximation produced by a character-based
+// heuristic, not an exact count from the target model's real tokenizer. It is
+// intended for UI meters and rough context-budget checks, not for precise
+// billing.
+message TokenEstimateResponse {
+  // Model identifier the estimate was computed for, echoed back from the
+  // request.
+  string model = 1;
+  // Approximate token count for the given messages.
+  uint32 estimated_tokens = 2;
+}
+
 // Chat-completion RPC service, backed by the same `CompletionUseCase` domain port the
 // REST `POST /completions` endpoint uses.
 service CompletionService {
   // Executes a single (non-streaming) chat completion.
   rpc Complete(CompletionRequest) returns (CompletionResponse);
+  // Returns an approximate token count for a list of chat messages, the gRPC
+  // counterpart of the REST `POST /tokens/estimate` endpoint.
+  rpc EstimateTokens(TokenEstimateRequest) returns (TokenEstimateResponse);
 }

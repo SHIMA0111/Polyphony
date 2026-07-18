@@ -55,15 +55,28 @@ export interface AIMessageResponse {
 }
 
 /**
- * An available LLM model. Deliberately structurally identical to
- * `ModelSelector`'s local `Model` interface so query data can be passed
- * straight through without a mapping step; token limits/pricing are added in
- * Step 34.
+ * An available LLM model, matching the flat JSON shape the Go API's
+ * `GET /models` serializes (`server/internal/interface/handler/dto.go`'s
+ * `ModelResponse` -- a pure passthrough of `ai.ModelInfo`).
+ *
+ * `context_window`/`input_price_per_million_tokens`/
+ * `output_price_per_million_tokens` are `0` when unknown (not "no limit"/
+ * "free"); `supports_image_input` is `false` for both "no" and "unknown".
+ * `ModelSelector` imports this type directly rather than maintaining a
+ * parallel `Model` type, to avoid drift.
  */
 export interface ModelInfo {
   id: string
   name: string
   provider: string
+  /** Maximum input+output token count the model supports; `0` if unknown. */
+  context_window: number
+  /** USD price per 1,000,000 input (prompt) tokens; `0` if unknown. */
+  input_price_per_million_tokens: number
+  /** USD price per 1,000,000 output (completion) tokens; `0` if unknown. */
+  output_price_per_million_tokens: number
+  /** Whether the model accepts image/Vision content parts. */
+  supports_image_input: boolean
 }
 
 /** Raw response from `GET /models`. */

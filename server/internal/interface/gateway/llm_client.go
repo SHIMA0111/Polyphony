@@ -61,10 +61,27 @@ type usageDTO struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// modelPricingDTO mirrors the LLM Gateway's nested `ModelPricingDto`
+// (`llm-gateway/src/adapters/inbound/rest/response.rs`): per-1M-token USD
+// pricing, present only when `modelDTO.Pricing` is non-nil.
+type modelPricingDTO struct {
+	InputPricePerMillionTokens  float64 `json:"input_price_per_million_tokens"`
+	OutputPricePerMillionTokens float64 `json:"output_price_per_million_tokens"`
+	Currency                    string  `json:"currency"`
+}
+
+// modelDTO mirrors the LLM Gateway's `ModelInfoDto` wire shape. ContextWindow,
+// SupportsImageInput, and Pricing are pointers because the gateway omits them
+// from the JSON body entirely when unknown (`#[serde(skip_serializing_if =
+// "Option::is_none")]`), rather than serializing `null`; ListModels flattens
+// a nil pointer to Go's zero value ("0/false = unknown").
 type modelDTO struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
+	ID                 string           `json:"id"`
+	Name               string           `json:"name"`
+	Provider           string           `json:"provider"`
+	ContextWindow      *int             `json:"context_window"`
+	SupportsImageInput *bool            `json:"supports_image_input"`
+	Pricing            *modelPricingDTO `json:"pricing"`
 }
 
 type modelsRespDTO struct {
@@ -162,7 +179,18 @@ func (c *LLMClient) ListModels(ctx context.Context) ([]ai.ModelInfo, error) {
 
 	models := make([]ai.ModelInfo, len(result.Models))
 	for i, m := range result.Models {
-		models[i] = ai.ModelInfo{ID: m.ID, Name: m.Name, Provider: m.Provider}
+		info := ai.ModelInfo{ID: m.ID, Name: m.Name, Provider: m.Provider}
+		if m.ContextWindow != nil {
+			info.ContextWindow = *m.ContextWindow
+		}
+		if m.SupportsImageInput != nil {
+			info.SupportsImageInput = *m.SupportsImageInput
+		}
+		if m.Pricing != nil {
+			info.InputPricePerMillionTokens = m.Pricing.InputPricePerMillionTokens
+			info.OutputPricePerMillionTokens = m.Pricing.OutputPricePerMillionTokens
+		}
+		models[i] = info
 	}
 	return models, nil
 }

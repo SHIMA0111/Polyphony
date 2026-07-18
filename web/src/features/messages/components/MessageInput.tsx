@@ -4,12 +4,13 @@ import { useState, useRef, useCallback, useEffect } from "react"
 import { Box, Button, Flex, Separator, Spacer, Text } from "@chakra-ui/react"
 import { ArrowUp, Sparkles } from "lucide-react"
 import { Tooltip } from "@/components/ui/tooltip"
-import { ModelSelector, type Model } from "./ModelSelector"
+import type { ModelInfo } from "@/features/messages/types"
+import { ModelSelector } from "./ModelSelector"
 
 interface MessageInputProps {
   onSend: (content: string) => Promise<void>
   onSendWithAI: (content: string, model: string) => Promise<void>
-  models: Model[]
+  models: ModelInfo[]
   disabled?: boolean
 }
 
@@ -21,7 +22,7 @@ export function MessageInput({
 }: MessageInputProps) {
   const [input, setInput] = useState("")
   const [isSending, setIsSending] = useState(false)
-  const [selectedModel, setSelectedModel] = useState<Model | null>(null)
+  const [selectedModel, setSelectedModel] = useState<ModelInfo | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Set default model when models are loaded

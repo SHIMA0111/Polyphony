@@ -10,7 +10,9 @@ use reqwest::Client;
 use crate::adapters::outbound::http_retry::RetryPolicy;
 use crate::config::{HttpClientConfig, ProviderConfig};
 use crate::domain::error::DomainError;
-use crate::domain::model::{CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo};
+use crate::domain::model::{
+    CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, ModelPricing,
+};
 use crate::ports::outbound::key_store::KeyStore;
 use crate::ports::outbound::provider::LLMProvider;
 
@@ -24,6 +26,12 @@ use crate::ports::outbound::provider::LLMProvider;
 static MODELS: OnceLock<Vec<ModelInfo>> = OnceLock::new();
 
 fn models_list() -> &'static Vec<ModelInfo> {
+    // Source: Google's published Gemini API pricing page and model documentation,
+    // as of 2026-07-15. Context windows are the total (input + output) token
+    // limit; pricing is per 1,000,000 tokens in USD for prompts up to 200K
+    // tokens, matching `ModelPricing`'s documented unit. Re-verify against the
+    // current price list before relying on these for real billing (Phase
+    // 16-17).
     MODELS.get_or_init(|| {
         vec![
             ModelInfo {
@@ -31,27 +39,39 @@ fn models_list() -> &'static Vec<ModelInfo> {
                 name: "Gemini 3 Pro".to_string(),
                 provider: "gemini".to_string(),
                 owned_by: "google".to_string(),
-                context_window: None,
-                pricing: None,
-                supports_image_input: None,
+                context_window: Some(1_000_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 1.25,
+                    output_price_per_million_tokens: 10.0,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
             ModelInfo {
                 id: "gemini-3-flash".to_string(),
                 name: "Gemini 3 Flash".to_string(),
                 provider: "gemini".to_string(),
                 owned_by: "google".to_string(),
-                context_window: None,
-                pricing: None,
-                supports_image_input: None,
+                context_window: Some(1_000_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 0.3,
+                    output_price_per_million_tokens: 2.5,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
             ModelInfo {
                 id: "gemini-2.5-flash".to_string(),
                 name: "Gemini 2.5 Flash".to_string(),
                 provider: "gemini".to_string(),
                 owned_by: "google".to_string(),
-                context_window: None,
-                pricing: None,
-                supports_image_input: None,
+                context_window: Some(1_000_000),
+                pricing: Some(ModelPricing {
+                    input_price_per_million_tokens: 0.3,
+                    output_price_per_million_tokens: 2.5,
+                    currency: "USD".to_string(),
+                }),
+                supports_image_input: Some(true),
             },
         ]
     })

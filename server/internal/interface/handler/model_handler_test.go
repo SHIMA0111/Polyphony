@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,61 @@ func TestModelHandlerList(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+// TestModelHandlerListSerializesMetadataFields is a Step 34 regression test:
+// GET /models must serialize context_window/pricing/supports_image_input as
+// a pure passthrough of ai.ModelInfo's equivalent fields, unchanged.
+func TestModelHandlerListSerializesMetadataFields(t *testing.T) {
+	gw := &mocks.LLMGateway{
+		Models: []ai.ModelInfo{
+			{
+				ID:                          "gpt-5",
+				Name:                        "GPT-5",
+				Provider:                    "openai",
+				ContextWindow:               272_000,
+				InputPricePerMillionTokens:  1.25,
+				OutputPricePerMillionTokens: 10.0,
+				SupportsImageInput:          true,
+			},
+		},
+	}
+	uc := modelusecase.NewModelUsecase(gw)
+	h := NewModelHandler(uc)
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/models", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	if err := h.List(c); err != nil {
+		t.Fatalf("List handler error: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var body ModelListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to unmarshal response body: %v", err)
+	}
+	if len(body.Models) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(body.Models))
+	}
+
+	got := body.Models[0]
+	want := ModelResponse{
+		ID:                          "gpt-5",
+		Name:                        "GPT-5",
+		Provider:                    "openai",
+		ContextWindow:               272_000,
+		InputPricePerMillionTokens:  1.25,
+		OutputPricePerMillionTokens: 10.0,
+		SupportsImageInput:          true,
+	}
+	if got != want {
+		t.Errorf("unexpected model response: got %+v, want %+v", got, want)
 	}
 }
 
