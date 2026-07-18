@@ -58,6 +58,16 @@ func (r *ContextSummaryRepo) ensureInit() {
 	}
 }
 
+// cloneContextSummary returns a shallow copy of summary. ai.ContextSummary
+// has no pointer/slice fields, so a value copy is a full copy; taking it
+// means neither Get's caller nor Upsert's caller can mutate this fake's
+// stored state (or a state a concurrent call is also holding) through a
+// pointer they retained, bypassing r.mu.
+func cloneContextSummary(summary *ai.ContextSummary) *ai.ContextSummary {
+	cp := *summary
+	return &cp
+}
+
 // Get returns the cached ContextSummary for roomID, or domain.ErrNotFound
 // if none is cached.
 func (r *ContextSummaryRepo) Get(_ context.Context, roomID string) (*ai.ContextSummary, error) {
@@ -70,7 +80,7 @@ func (r *ContextSummaryRepo) Get(_ context.Context, roomID string) (*ai.ContextS
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	return s, nil
+	return cloneContextSummary(s), nil
 }
 
 // Upsert creates or replaces the cached summary for summary.RoomID, but
@@ -88,7 +98,7 @@ func (r *ContextSummaryRepo) Upsert(_ context.Context, summary *ai.ContextSummar
 		return nil
 	}
 
-	r.Summaries[summary.RoomID] = summary
+	r.Summaries[summary.RoomID] = cloneContextSummary(summary)
 	return nil
 }
 

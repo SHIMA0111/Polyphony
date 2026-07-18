@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -560,6 +561,63 @@ func TestLLMClient_StreamTruncatedBeforeDoneSentinel(t *testing.T) {
 	}
 	if results[1].Err == nil || !errors.Is(results[1].Err, domain.ErrLLMGateway) {
 		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", results[1].Err)
+	}
+}
+
+// TestLLMClient_StreamErrorFrameAtEOF asserts that an event:error frame
+// which is never terminated by a trailing blank line -- so the connection
+// ends (EOF) mid-frame, and the frame is only ever flushed by
+// readSSEStream's EOF branch, not a blank-line frame boundary -- yields
+// exactly one Err-carrying StreamResult, not two. Before this fix,
+// readSSEStream's EOF branch ignored flush()'s return value and
+// unconditionally fell through to the sawDone check afterward; since an
+// error frame never sets sawDone, that produced a spurious second "stream
+// ended before [DONE] sentinel" error alongside the genuine one for the
+// same already-reported failure.
+func TestLLMClient_StreamErrorFrameAtEOF(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		_, _ = w.Write([]byte(`data: {"id":"c1","model":"gpt-5.2","delta":"partial"}` + "\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// No trailing blank line after this frame -- the handler returns
+		// (closing the connection, so the client sees EOF) right after the
+		// "data:" line, before a frame-terminating blank line ever arrives.
+		_, _ = w.Write([]byte("event: error\ndata: provider exploded"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewLLMClient(server.URL)
+	ch, err := client.Stream(context.Background(), &ai.CompletionRequest{
+		Model:    "gpt-5.2",
+		Messages: []ai.ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream returned error: %v", err)
+	}
+
+	results := drainStream(t, ch)
+	if len(results) != 2 {
+		t.Fatalf("expected exactly 2 stream results (1 chunk + 1 error), got %d: %+v", len(results), results)
+	}
+	if results[0].Err != nil || results[0].Chunk == nil || results[0].Chunk.Delta != "partial" {
+		t.Fatalf("unexpected first result: %+v", results[0])
+	}
+	if results[1].Chunk != nil {
+		t.Fatalf("expected second result to carry no chunk, got %+v", results[1].Chunk)
+	}
+	if results[1].Err == nil || !errors.Is(results[1].Err, domain.ErrLLMGateway) {
+		t.Fatalf("expected ErrLLMGateway-wrapped error, got %v", results[1].Err)
+	}
+	if !strings.Contains(results[1].Err.Error(), "provider exploded") {
+		t.Fatalf("expected the error-frame's data in the error message, got %v", results[1].Err)
 	}
 }
 

@@ -5,6 +5,10 @@ import (
 	"testing"
 )
 
+// TestBuildSummarizationPrompt_PlainTextTranscript verifies that a
+// history with no ContentPart entries produces a system message plus a
+// single user message whose Content is a "role: text" transcript and whose
+// Parts is empty.
 func TestBuildSummarizationPrompt_PlainTextTranscript(t *testing.T) {
 	history := []ChatMessage{
 		{Role: "user", Content: "What is Go?"},
@@ -33,6 +37,11 @@ func TestBuildSummarizationPrompt_PlainTextTranscript(t *testing.T) {
 	}
 }
 
+// TestBuildSummarizationPrompt_IncludeImagesTrue verifies that with
+// includeImages=true, an image ContentPart is passed through as its own
+// Parts entry (alongside role-prefixed text and an image-attribution part),
+// the plain-text Content fallback never leaks the raw image URL, and the
+// system instruction tells the model to describe images.
 func TestBuildSummarizationPrompt_IncludeImagesTrue(t *testing.T) {
 	history := []ChatMessage{
 		{
@@ -73,6 +82,11 @@ func TestBuildSummarizationPrompt_IncludeImagesTrue(t *testing.T) {
 	}
 }
 
+// TestBuildSummarizationPrompt_IncludeImagesFalse verifies that with
+// includeImages=false, an image ContentPart is dropped from Parts entirely,
+// replaced in the plain-text Content with imageAttachmentPlaceholder (never
+// the raw URL), and the system instruction omits the image-description
+// sentence.
 func TestBuildSummarizationPrompt_IncludeImagesFalse(t *testing.T) {
 	history := []ChatMessage{
 		{

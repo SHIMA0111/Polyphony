@@ -21,7 +21,15 @@ import { expect, test } from "@playwright/test"
  * runnable (and green) in environments without Stripe configured, and only
  * exercising the full flow where an operator has manually run
  * `stripe login` + `stripe listen` per this file's own doc comment above.
+ *
+ * Setting `STRIPE_E2E=1` opts out of that skip-when-unconfigured leniency:
+ * every probe below that would otherwise call `test.skip()` instead hard-
+ * fails via `expect(...).toBeTruthy()`. Set it on any run where Stripe test-
+ * mode credentials and `stripe listen` are known to be wired up (e.g. a
+ * dedicated CI job), so a real regression in that wiring shows up as a
+ * failure instead of a silently-green skip.
  */
+const STRIPE_E2E_ENABLED = process.env.STRIPE_E2E === "1"
 test("plan selection through Stripe test Checkout to a webhook-driven subscription update", async ({
   page,
 }) => {
@@ -50,7 +58,9 @@ test("plan selection through Stripe test Checkout to a webhook-driven subscripti
   // `apiRequest` calls do.
   const plansRes = await page.request.get("/api/proxy/billing/plans")
   if (!plansRes.ok()) {
-    test.skip(true, `GET /billing/plans returned HTTP ${plansRes.status()} — skipping (Stripe test-mode plan catalog is not configured on this stack)`)
+    const reason = `GET /billing/plans returned HTTP ${plansRes.status()} — skipping (Stripe test-mode plan catalog is not configured on this stack)`
+    if (STRIPE_E2E_ENABLED) expect(plansRes.ok(), reason).toBeTruthy()
+    test.skip(true, reason)
     return
   }
 
@@ -59,7 +69,9 @@ test("plan selection through Stripe test Checkout to a webhook-driven subscripti
   }
   const monthlyPlan = plans.find((plan) => plan.interval === "month")
   if (!monthlyPlan) {
-    test.skip(true, "No monthly subscription plan in the catalog — skipping")
+    const reason = "No monthly subscription plan in the catalog — skipping"
+    if (STRIPE_E2E_ENABLED) expect(Boolean(monthlyPlan), reason).toBeTruthy()
+    test.skip(true, reason)
     return
   }
 
@@ -72,25 +84,32 @@ test("plan selection through Stripe test Checkout to a webhook-driven subscripti
     data: { type: "subscription", plan_code: monthlyPlan.code },
   })
   if (!probeRes.ok()) {
-    test.skip(
-      true,
-      `POST /billing/checkout-session returned HTTP ${probeRes.status()} — skipping (Stripe test-mode keys are not configured on this stack)`,
-    )
+    const reason = `POST /billing/checkout-session returned HTTP ${probeRes.status()} — skipping (Stripe test-mode keys are not configured on this stack)`
+    if (STRIPE_E2E_ENABLED) expect(probeRes.ok(), reason).toBeTruthy()
+    test.skip(true, reason)
     return
   }
   const probeBody = (await probeRes.json()) as { checkout_url?: string }
   if (!probeBody.checkout_url) {
-    test.skip(true, "POST /billing/checkout-session did not return a checkout_url — skipping")
+    const reason = "POST /billing/checkout-session did not return a checkout_url — skipping"
+    if (STRIPE_E2E_ENABLED) expect(Boolean(probeBody.checkout_url), reason).toBeTruthy()
+    test.skip(true, reason)
     return
   }
 
-  // 3. The real flow: navigate to /billing/plans, click "Subscribe" on the
-  // first monthly plan's card, and confirm the browser actually reaches
-  // Stripe's hosted test-mode Checkout page.
+  // 3. The real flow: navigate to /billing/plans, click "Subscribe" on
+  // `monthlyPlan`'s own card, and confirm the browser actually reaches
+  // Stripe's hosted test-mode Checkout page. Scoped to the card carrying
+  // `[data-testid="plan-card-<code>"]` (see `PlanCard.tsx`) rather than
+  // `.first()`-ing every "Subscribe" button on the page: the catalog can
+  // list more than one monthly plan, and `.first()` would silently click
+  // whichever one rendered first instead of the plan this spec actually
+  // probed and asserts on below.
   await page.goto("/billing/plans")
   await expect(page.getByRole("heading", { name: "Plans & Token Packs" })).toBeVisible()
 
-  await page.getByRole("button", { name: "Subscribe" }).first().click()
+  const monthlyPlanCard = page.locator(`[data-testid="plan-card-${monthlyPlan.code}"]`)
+  await monthlyPlanCard.getByRole("button", { name: "Subscribe" }).click()
   await page.waitForURL(/^https:\/\/checkout\.stripe\.com\//)
 
   // 4. Fill Stripe's hosted test-mode Checkout form with the documented

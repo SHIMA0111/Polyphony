@@ -28,7 +28,11 @@ export function PlanCard({
   const ctaLabel = plan.interval === "month" ? "Subscribe" : "Buy tokens"
 
   return (
-    <Card.Root h="full">
+    // `data-testid` (matching this codebase's `[data-testid^="..."]` row-scoping
+    // convention, e.g. `members.spec.ts`'s `member-row-` prefix) lets e2e specs
+    // scope a click to one specific plan's card instead of `.first()`-ing a
+    // button label shared by every card in the grid.
+    <Card.Root h="full" data-testid={`plan-card-${plan.code}`}>
       <Card.Body display="flex" flexDirection="column" gap={4}>
         <Flex align="start" justify="space-between" gap={2}>
           <Card.Title fontSize="lg">{plan.name}</Card.Title>

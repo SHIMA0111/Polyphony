@@ -3,6 +3,7 @@ package room
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,21 +34,24 @@ func (g *gatedMessageRepo) CountAndMaxSequence(ctx context.Context, roomID strin
 
 // gatedForkJobRepo wraps *mocks.ForkJobRepo, closing done once the job
 // reaches a terminal state, so a test can deterministically wait for the
-// background worker to finish before making further assertions.
+// background worker to finish before making further assertions. closeOnce
+// guards done: if CompleteAndUnarchive itself fails, the worker falls back
+// to MarkFailed, which would otherwise close an already-closed channel.
 type gatedForkJobRepo struct {
 	*mocks.ForkJobRepo
-	done chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func (g *gatedForkJobRepo) CompleteAndUnarchive(ctx context.Context, id, newRoomID string) error {
 	err := g.ForkJobRepo.CompleteAndUnarchive(ctx, id, newRoomID)
-	close(g.done)
+	g.closeOnce.Do(func() { close(g.done) })
 	return err
 }
 
 func (g *gatedForkJobRepo) MarkFailed(ctx context.Context, id string, errMsg string) error {
 	err := g.ForkJobRepo.MarkFailed(ctx, id, errMsg)
-	close(g.done)
+	g.closeOnce.Do(func() { close(g.done) })
 	return err
 }
 
@@ -69,6 +73,35 @@ func TestForkRoomForbiddenForMember(t *testing.T) {
 	_, _, err = uc.ForkRoom(ctx, "member-user", created.Room.ID)
 	if err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden for a member caller, got %v", err)
+	}
+}
+
+// TestForkRoomRejectsArchivedSource asserts that ForkRoom rejects forking a
+// source room that is itself archived (e.g. the still-in-progress, or
+// permanently orphaned, destination of another fork) with
+// domain.ErrArchivedRoom, before creating any new room or Job -- forking an
+// incomplete fork destination must not be allowed to compound the problem
+// with a second in-progress copy chained off incomplete history.
+func TestForkRoomRejectsArchivedSource(t *testing.T) {
+	roomRepo := &mocks.RoomRepo{}
+	forkJobRepo := &mocks.ForkJobRepo{Rooms: roomRepo}
+	uc := NewRoomUsecase(roomRepo, &mocks.MessageRepo{}, forkJobRepo, nil)
+	ctx := context.Background()
+
+	created, err := uc.CreateRoom(ctx, "owner", "Source Room", "desc")
+	if err != nil {
+		t.Fatalf("CreateRoom failed: %v", err)
+	}
+	if err := roomRepo.SetArchived(ctx, created.Room.ID, true); err != nil {
+		t.Fatalf("SetArchived failed: %v", err)
+	}
+
+	_, _, err = uc.ForkRoom(ctx, "owner", created.Room.ID)
+	if err != domain.ErrArchivedRoom {
+		t.Fatalf("expected ErrArchivedRoom for an archived source room, got %v", err)
+	}
+	if len(forkJobRepo.Jobs) != 0 {
+		t.Fatalf("expected no fork Job created for a rejected archived-source fork, got %d", len(forkJobRepo.Jobs))
 	}
 }
 

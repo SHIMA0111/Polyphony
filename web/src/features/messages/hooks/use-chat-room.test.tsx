@@ -1,15 +1,22 @@
 import { renderHook, waitFor } from "@testing-library/react"
 import { http, HttpResponse } from "msw"
 import { describe, expect, it, vi } from "vitest"
+import { toaster } from "@/components/ui/toaster"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import {
   fixtureAiMessage,
   fixtureAiMessageResponse,
   fixtureAiStreamResponse,
+  fixtureAttachmentResponse,
   fixtureHumanMessage,
 } from "@/features/messages/api/handlers"
-import type { AIMessageResponse, Message, MessagePage } from "@/features/messages/types"
+import type {
+  AIMessageResponse,
+  AttachmentResponse,
+  Message,
+  MessagePage,
+} from "@/features/messages/types"
 import { useChatRoom } from "./use-chat-room"
 
 /**
@@ -505,5 +512,127 @@ describe("useChatRoom handleRetry", () => {
     expect(streamCallCount).toBe(2)
     expect(capturedModel).toBe("gpt-5-mini")
     expect(plainSendCalled).toBe(false)
+  })
+})
+
+/**
+ * `linkAttachments` no longer silently swallows every attachment-link
+ * failure: it surfaces a toaster error naming the failure count, and
+ * `handleSendWithAI` skips the follow-up Vision regenerate entirely when
+ * *every* attachment failed to link (a partial failure still regenerates,
+ * since the model would see whatever did link).
+ */
+describe("useChatRoom attachment linking", () => {
+  it("surfaces a toaster error but still regenerates when only some attachments fail to link", async () => {
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/attachments",
+        async ({ request, params }) => {
+          const body = (await request.json()) as { attachment_id: string }
+          if (body.attachment_id === "attachment-bad") {
+            return HttpResponse.json({ message: "not found" }, { status: 404 })
+          }
+          return HttpResponse.json<AttachmentResponse>({
+            ...fixtureAttachmentResponse,
+            id: body.attachment_id,
+            message_id: String(params.messageId),
+          })
+        },
+      ),
+    )
+    let regenerateCalled = false
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/regenerate",
+        () => {
+          regenerateCalled = true
+          return HttpResponse.json<Message>(fixtureAiMessage)
+        },
+      ),
+    )
+    const createSpy = vi.spyOn(toaster, "create")
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await result.current.handleSendWithAI("Check this out", "gpt-5-mini", [
+      "attachment-good",
+      "attachment-bad",
+    ])
+
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Attachment error",
+        description: "1 attachment(s) could not be attached.",
+      }),
+    )
+    expect(regenerateCalled).toBe(true)
+    createSpy.mockRestore()
+  })
+
+  it("surfaces a toaster error and skips the regenerate call when every attachment fails to link", async () => {
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/attachments",
+        () => HttpResponse.json({ message: "not found" }, { status: 404 }),
+      ),
+    )
+    let regenerateCalled = false
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/regenerate",
+        () => {
+          regenerateCalled = true
+          return HttpResponse.json<Message>(fixtureAiMessage)
+        },
+      ),
+    )
+    const createSpy = vi.spyOn(toaster, "create")
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await result.current.handleSendWithAI("Check this out", "gpt-5-mini", [
+      "attachment-1",
+      "attachment-2",
+    ])
+
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Attachment error",
+        description: "2 attachment(s) could not be attached.",
+      }),
+    )
+    expect(regenerateCalled).toBe(false)
+    createSpy.mockRestore()
+  })
+
+  it("surfaces a toaster error for a plain (non-AI) send when an attachment fails to link", async () => {
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/attachments",
+        () => HttpResponse.json({ message: "not found" }, { status: 404 }),
+      ),
+    )
+    const createSpy = vi.spyOn(toaster, "create")
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await result.current.handleSend("Here's a file", ["attachment-1"])
+
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Attachment error",
+        description: "1 attachment(s) could not be attached.",
+      }),
+    )
+    createSpy.mockRestore()
   })
 })

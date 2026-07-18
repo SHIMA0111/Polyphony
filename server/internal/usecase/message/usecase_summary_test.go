@@ -549,6 +549,7 @@ func TestAssembleAIContextSummarizationFailureDegradesGracefully(t *testing.T) {
 	summaryRepo := &mocks.ContextSummaryRepo{}
 
 	callIndex := 0
+	var finalRequest *ai.CompletionRequest
 	gw := &mocks.LLMGateway{
 		Models:                []ai.ModelInfo{{ID: "gpt-5-mini", ContextWindow: 8000, SupportsImageInput: true}},
 		TokenEstimateResponse: &ai.TokenEstimateResponse{EstimatedTokens: 999_999},
@@ -557,6 +558,7 @@ func TestAssembleAIContextSummarizationFailureDegradesGracefully(t *testing.T) {
 			if callIndex == 1 {
 				return nil, fmt.Errorf("summarization backend unavailable")
 			}
+			finalRequest = req
 			return &ai.CompletionResponse{Content: "Final answer despite summarization failure."}, nil
 		},
 	}
@@ -585,5 +587,99 @@ func TestAssembleAIContextSummarizationFailureDegradesGracefully(t *testing.T) {
 	}
 	if summaryRepo.UpsertCallCount != 0 {
 		t.Fatalf("expected no cache write after a summarization failure, got %d Upsert calls", summaryRepo.UpsertCallCount)
+	}
+
+	// The degraded fallback must send the raw, un-summarized context: every
+	// older seeded message content should still be present verbatim in the
+	// final-answer request, and no summary system message should have been
+	// injected in its place.
+	if finalRequest == nil {
+		t.Fatal("expected the final-answer Complete call to be captured")
+	}
+	for i := 2; i <= 11; i++ {
+		want := fmt.Sprintf("msg-%d", i)
+		found := false
+		for _, m := range finalRequest.Messages {
+			if m.Content == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected degraded context to include %q verbatim, got messages: %+v", want, finalRequest.Messages)
+		}
+	}
+	for _, m := range finalRequest.Messages {
+		if m.Role == "system" && strings.Contains(m.Content, "Summary of earlier conversation") {
+			t.Errorf("expected no summary system message after a summarization failure, got %+v", m)
+		}
+	}
+}
+
+// TestAssembleAIContextEmptySummaryDegradesGracefully asserts that a
+// summarization Complete call which succeeds but returns empty (or
+// whitespace-only) content is treated the same as a Complete failure:
+// summaryOrCompute must return an error rather than "" so assembleAIContext
+// degrades to the un-summarized context, instead of either replacing the
+// older-public bucket with an empty summary message or caching that empty
+// string via Upsert for reuse by a later call at the same boundary.
+func TestAssembleAIContextEmptySummaryDegradesGracefully(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	summaryRepo := &mocks.ContextSummaryRepo{}
+
+	callIndex := 0
+	var finalRequest *ai.CompletionRequest
+	gw := &mocks.LLMGateway{
+		Models:                []ai.ModelInfo{{ID: "gpt-5-mini", ContextWindow: 8000, SupportsImageInput: true}},
+		TokenEstimateResponse: &ai.TokenEstimateResponse{EstimatedTokens: 999_999},
+		CompleteFunc: func(_ context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+			callIndex++
+			if callIndex == 1 {
+				// Whitespace-only, not a hard error: exercises the
+				// strings.TrimSpace check specifically, not the err != nil
+				// branch already covered above.
+				return &ai.CompletionResponse{Content: "   \n\t  "}, nil
+			}
+			finalRequest = req
+			return &ai.CompletionResponse{Content: "Final answer despite empty summary."}, nil
+		},
+	}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, summaryRepo, "gpt-5-mini")
+	ctx := context.Background()
+
+	for i := 1; i <= 11; i++ {
+		if _, err := uc.SendMessage(ctx, "user-1", "room-1", fmt.Sprintf("msg-%d", i)); err != nil {
+			t.Fatalf("seed message %d: %v", i, err)
+		}
+	}
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "msg-12", "gpt-5-mini", false)
+	if err != nil {
+		t.Fatalf("expected SendAIMessage to succeed despite the empty summary, got error: %v", err)
+	}
+	if result.UsedContextSummary {
+		t.Fatal("expected UsedContextSummary=false when summarization returned empty content")
+	}
+	if result.AIMessage.Content != "Final answer despite empty summary." {
+		t.Fatalf("expected the un-summarized context to still produce an answer, got %q", result.AIMessage.Content)
+	}
+	if callIndex != 2 {
+		t.Fatalf("expected exactly one summarization attempt (no retry) plus the final answer call, got %d total Complete calls", callIndex)
+	}
+	if summaryRepo.UpsertCallCount != 0 {
+		t.Fatalf("expected no cache write for an empty summary, got %d Upsert calls", summaryRepo.UpsertCallCount)
+	}
+
+	if finalRequest == nil {
+		t.Fatal("expected the final-answer Complete call to be captured")
+	}
+	for _, m := range finalRequest.Messages {
+		if m.Role == "system" && strings.Contains(m.Content, "Summary of earlier conversation") {
+			t.Errorf("expected no summary system message for an empty summarization result, got %+v", m)
+		}
 	}
 }

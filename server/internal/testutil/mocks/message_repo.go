@@ -247,51 +247,62 @@ func (m *MessageRepo) Delete(_ context.Context, id string) error {
 // runs), and — if InvalidateSummary is set and returns an error — returns
 // that error with the message left NOT deleted (mirroring the real
 // transaction rolling back both steps together).
+//
+// m.mu is held for the whole operation, including the InvalidateSummary
+// call, so no concurrent caller can observe the message as deleted while
+// the summary invalidation has not (or has failed to) complete, and the
+// rollback on failure happens under the same lock that made the mutation
+// visible in the first place. ContextSummaryRepo guards its own state with
+// a separate mutex, so this does not risk deadlock.
 func (m *MessageRepo) DeleteAndInvalidateSummary(ctx context.Context, messageID string, roomID string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	msg, ok := m.Messages[messageID]
 	if !ok || msg.IsDeleted || msg.RoomID != roomID {
-		m.mu.Unlock()
 		return domain.ErrNotFound
 	}
-	m.mu.Unlock()
+
+	prevUpdatedAt := msg.UpdatedAt
+	msg.IsDeleted = true
+	msg.UpdatedAt = time.Now()
 
 	if m.InvalidateSummary != nil {
 		if err := m.InvalidateSummary(ctx, roomID); err != nil {
+			msg.IsDeleted = false
+			msg.UpdatedAt = prevUpdatedAt
 			return err
 		}
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	msg.IsDeleted = true
-	msg.UpdatedAt = time.Now()
 	return nil
 }
 
 // UpdateExcludeFromAIAndInvalidateSummary sets the ExcludeFromAI flag and
 // invokes InvalidateSummary (if set) for roomID, mirroring the atomic
 // postgres.MessageRepository implementation's all-or-nothing contract — see
-// DeleteAndInvalidateSummary's doc comment for the exact ordering/failure
+// DeleteAndInvalidateSummary's doc comment for the exact locking/rollback
 // semantics this mirrors.
 func (m *MessageRepo) UpdateExcludeFromAIAndInvalidateSummary(ctx context.Context, messageID string, roomID string, exclude bool, updatedAt time.Time) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	msg, ok := m.Messages[messageID]
-	m.mu.Unlock()
 	if !ok || msg.RoomID != roomID {
 		return domain.ErrNotFound
 	}
 
+	prevExclude := msg.ExcludeFromAI
+	prevUpdatedAt := msg.UpdatedAt
+	msg.ExcludeFromAI = exclude
+	msg.UpdatedAt = updatedAt
+
 	if m.InvalidateSummary != nil {
 		if err := m.InvalidateSummary(ctx, roomID); err != nil {
+			msg.ExcludeFromAI = prevExclude
+			msg.UpdatedAt = prevUpdatedAt
 			return err
 		}
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	msg.ExcludeFromAI = exclude
-	msg.UpdatedAt = updatedAt
 	return nil
 }
 

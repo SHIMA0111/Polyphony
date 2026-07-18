@@ -138,6 +138,18 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 		UpdatedAt:             aiNow,
 	}
 	if err := u.msgRepo.Create(ctx, aiMsg); err != nil {
+		// humanMsg is already durably persisted (see the comment below), so
+		// this failure must still go through persistFailedAIPlaceholder --
+		// best-effort, since aiMsg itself could not be created -- to uphold
+		// the same invariant SendAIMessage's completed-AI-message Create
+		// failure upholds: every error path after humanMsg exists leaves a
+		// failed AI placeholder for a client retry to land on via
+		// RegenerateAIMessage's UPDATE-in-place path, rather than returning
+		// bare with humanMsg orphaned and no AI response at all.
+		if _, phErr := u.persistFailedAIPlaceholder(ctx, roomID, userID, humanMsg, aiSeq, domainmessage.MessageVisibilityPublic, false, false); phErr != nil {
+			slog.Error("failed to persist failed AI message placeholder after streaming AI placeholder create error",
+				"error", phErr, "room_id", roomID, "human_message_id", humanMsg.ID)
+		}
 		return nil, err
 	}
 	u.publishMessageEvent(ctx, event.RoomEvent{
@@ -201,13 +213,28 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 
 		cancel()
 
+		// finalizeCtx is detached from ctx's cancellation via
+		// context.WithoutCancel and bounded by its own fresh
+		// streamFinalizeTimeout, exactly like consumeAIStream/
+		// completeAIMessageFallback's terminal writes -- see
+		// finalizeStreamSetupFailure's doc comment for why a synchronous
+		// failure path handled on the original request ctx must not reuse
+		// ctx directly here: ctx can already be cancelled or about to be
+		// (client disconnect, an Echo timeout/deadline) at the very moment
+		// this dispatch failure is being handled, and reusing it would let
+		// that same cancellation silently defeat this write, leaving the
+		// placeholder stuck at "streaming" forever with no terminating
+		// event ever published.
+		finalizeCtx, finalizeCancel := context.WithTimeout(context.WithoutCancel(ctx), streamFinalizeTimeout)
+		defer finalizeCancel()
+
 		failedNow := time.Now()
-		if updateErr := u.msgRepo.UpdateAIResponse(ctx, aiMsg.ID, "", domainmessage.MessageStatusFailed, failedNow); updateErr != nil {
+		if updateErr := u.msgRepo.UpdateAIResponse(finalizeCtx, aiMsg.ID, "", domainmessage.MessageStatusFailed, failedNow); updateErr != nil {
 			return nil, updateErr
 		}
 		aiMsg.Status = domainmessage.MessageStatusFailed
 		aiMsg.UpdatedAt = failedNow
-		u.publishMessageEvent(ctx, event.RoomEvent{
+		u.publishMessageEvent(finalizeCtx, event.RoomEvent{
 			Type:               event.EventMessageUpdated,
 			RoomID:             roomID,
 			Message:            aiMsg,
@@ -250,15 +277,30 @@ func (u *MessageUsecase) SendAIMessageStream(ctx context.Context, userID, roomID
 // only logged, since the caller has an unrelated, already-determined error
 // of its own to return and finalizing the placeholder must never mask or
 // replace that original error.
+//
+// The finalization write runs on finalizeCtx, detached from ctx's
+// cancellation via context.WithoutCancel and bounded by its own fresh
+// streamFinalizeTimeout -- exactly like consumeAIStream/
+// completeAIMessageFallback's own terminal writes. ctx is the original
+// request context.Context passed all the way from SendAIMessageStream's
+// caller: it can already be cancelled, or about to be (a client disconnect,
+// an Echo timeout/deadline), at the very moment one of these synchronous
+// setup errors is being handled, and reusing it directly here would let
+// that same cancellation silently defeat this method's entire stated
+// purpose, leaving the placeholder stuck at "streaming" forever with no
+// terminating event ever published.
 func (u *MessageUsecase) finalizeStreamSetupFailure(ctx context.Context, aiMsg *domainmessage.Message, roomID string, summaryUsed bool) {
+	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), streamFinalizeTimeout)
+	defer cancel()
+
 	failedNow := time.Now()
-	if err := u.msgRepo.UpdateAIResponse(ctx, aiMsg.ID, "", domainmessage.MessageStatusFailed, failedNow); err != nil {
+	if err := u.msgRepo.UpdateAIResponse(finalizeCtx, aiMsg.ID, "", domainmessage.MessageStatusFailed, failedNow); err != nil {
 		slog.Error("failed to mark AI placeholder failed after stream setup error", "error", err, "room_id", roomID, "message_id", aiMsg.ID)
 		return
 	}
 	aiMsg.Status = domainmessage.MessageStatusFailed
 	aiMsg.UpdatedAt = failedNow
-	u.publishMessageEvent(ctx, event.RoomEvent{
+	u.publishMessageEvent(finalizeCtx, event.RoomEvent{
 		Type:               event.EventMessageUpdated,
 		RoomID:             roomID,
 		Message:            aiMsg,

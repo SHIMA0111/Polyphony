@@ -2,6 +2,10 @@ package ai
 
 import "testing"
 
+// TestResolveContextWindow verifies ResolveContextWindow's precedence: a
+// non-zero live-metadata ContextWindow wins, a zero one falls through to
+// fallbackContextWindows, and a model absent from both sources resolves to
+// defaultFallbackContextWindow.
 func TestResolveContextWindow(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -51,6 +55,10 @@ func TestResolveContextWindow(t *testing.T) {
 	}
 }
 
+// TestResolveSupportsImageInput verifies ResolveSupportsImageInput's
+// precedence: live metadata is trusted outright (true or false, never
+// overridden), and only a model absent from live metadata falls through to
+// the fallback table, defaulting to false if it is absent from both.
 func TestResolveSupportsImageInput(t *testing.T) {
 	tests := []struct {
 		name    string

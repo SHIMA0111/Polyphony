@@ -1,7 +1,7 @@
 "use client"
 
 import { Badge, Box, Button, Flex, Skeleton, Table, Text } from "@chakra-ui/react"
-import { formatDateTimeLocal } from "@/lib/format"
+import { formatDateTimeUtc } from "@/lib/format"
 import { useUsageHistory } from "../hooks/use-usage-history"
 import type { TransactionType } from "../types"
 
@@ -100,7 +100,7 @@ export function UsageHistoryList() {
           {transactions.map((txn) => (
             <Table.Row key={txn.id}>
               <Table.Cell color="fg.muted" fontSize="sm">
-                {formatDateTimeLocal(txn.created_at)}
+                {formatDateTimeUtc(txn.created_at)}
               </Table.Cell>
               <Table.Cell>
                 <Badge variant="subtle" colorPalette={TYPE_COLOR_PALETTE[txn.type]}>

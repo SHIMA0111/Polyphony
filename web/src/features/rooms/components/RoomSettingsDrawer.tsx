@@ -26,7 +26,7 @@ import { X } from "lucide-react"
 import { toaster } from "@/components/ui/toaster"
 import { formatModelMeta } from "@/features/messages/components/ModelSelector"
 import { useModels } from "@/features/messages/hooks/use-models"
-import { formatDateTimeLocal } from "@/lib/format"
+import { formatDateTimeUtc } from "@/lib/format"
 import { getErrorMessage } from "@/lib/get-error-message"
 import { isOwnerRole, roleAtLeast } from "@/lib/roles"
 import type { RoomRole } from "@/features/members/types"
@@ -57,12 +57,12 @@ interface RoomSettingsDrawerProps {
  * `Date.prototype.toLocaleString()` (no locale, no `timeZone`), which reads
  * the runtime's own locale/timezone and so could render a different string
  * on the server than in the browser -- a latent React hydration mismatch.
- * Now uses the shared, UTC-pinned `formatDateTimeLocal` (`@/lib/format`),
+ * Now uses the shared, UTC-pinned `formatDateTimeUtc` (`@/lib/format`),
  * like every other timestamp in this codebase.
  */
 function formatCutoff(cutoffAt: string | null): string {
   if (!cutoffAt) return "No cutoff set"
-  return formatDateTimeLocal(cutoffAt)
+  return formatDateTimeUtc(cutoffAt)
 }
 
 /**

@@ -123,7 +123,9 @@ func (g *LLMGateway) EstimateTokens(ctx context.Context, req *ai.TokenEstimateRe
 //     non-nil, one final StreamResult{Err: StreamMidErr}, before closing.
 //     The channel send happens in a background goroutine so callers observe
 //     the same "returns immediately, delivers asynchronously" contract the
-//     real gateway client has.
+//     real gateway client has. Each send is also raced against ctx.Done, so
+//     a test that cancels ctx and stops reading from out does not leak this
+//     goroutine.
 func (g *LLMGateway) Stream(ctx context.Context, req *ai.CompletionRequest) (<-chan ai.StreamResult, error) {
 	if g.StreamFunc != nil {
 		return g.StreamFunc(ctx, req)
@@ -136,10 +138,18 @@ func (g *LLMGateway) Stream(ctx context.Context, req *ai.CompletionRequest) (<-c
 	go func() {
 		defer close(out)
 		for _, chunk := range g.StreamChunks {
-			out <- ai.StreamResult{Chunk: chunk}
+			select {
+			case out <- ai.StreamResult{Chunk: chunk}:
+			case <-ctx.Done():
+				return
+			}
 		}
 		if g.StreamMidErr != nil {
-			out <- ai.StreamResult{Err: g.StreamMidErr}
+			select {
+			case out <- ai.StreamResult{Err: g.StreamMidErr}:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	return out, nil

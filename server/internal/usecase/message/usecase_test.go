@@ -1704,6 +1704,24 @@ func TestSendAIMessagePrivateWSDeliveryTargetsOnlySender(t *testing.T) {
 
 // --- Archived room guard (Step 32: room fork) ---
 
+// noLLMCallGateway returns a *mocks.LLMGateway whose CompleteFunc and
+// StreamFunc both call t.Error, so any of the four archived-room guard
+// tests below fails loudly if the guard is ever bypassed and the usecase
+// reaches an LLM Gateway call it should have rejected before.
+func noLLMCallGateway(t *testing.T) *mocks.LLMGateway {
+	t.Helper()
+	return &mocks.LLMGateway{
+		CompleteFunc: func(_ context.Context, _ *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+			t.Error("unexpected LLM Gateway Complete call for an archived room")
+			return nil, domain.ErrArchivedRoom
+		},
+		StreamFunc: func(_ context.Context, _ *ai.CompletionRequest) (<-chan ai.StreamResult, error) {
+			t.Error("unexpected LLM Gateway Stream call for an archived room")
+			return nil, domain.ErrArchivedRoom
+		},
+	}
+}
+
 // TestSendMessageArchivedRoom asserts that SendMessage rejects a new post
 // into an archived room with domain.ErrArchivedRoom, before reserving any
 // sequence number.
@@ -1713,12 +1731,15 @@ func TestSendMessageArchivedRoom(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.Rooms["room-1"] = &domainroom.Room{ID: "room-1", IsArchived: true}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, noLLMCallGateway(t), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendMessage(ctx, "user-1", "room-1", "Hello")
 	if err != domain.ErrArchivedRoom {
 		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+	if len(msgRepo.Seqs) != 0 {
+		t.Errorf("expected no sequence number reserved for an archived room, got %v", msgRepo.Seqs)
 	}
 }
 
@@ -1731,12 +1752,15 @@ func TestSendAIMessageArchivedRoom(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.Rooms["room-1"] = &domainroom.Room{ID: "room-1", IsArchived: true}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, noLLMCallGateway(t), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
 	if err != domain.ErrArchivedRoom {
 		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+	if len(msgRepo.Seqs) != 0 {
+		t.Errorf("expected no sequence number reserved for an archived room, got %v", msgRepo.Seqs)
 	}
 }
 
@@ -1750,12 +1774,15 @@ func TestSendAIMessageStreamArchivedRoom(t *testing.T) {
 	roomRepo.SeedMember("room-1", "user-1", "member")
 	roomRepo.Rooms["room-1"] = &domainroom.Room{ID: "room-1", IsArchived: true}
 
-	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	uc := NewMessageUsecase(msgRepo, roomRepo, noLLMCallGateway(t), event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
 	ctx := context.Background()
 
 	_, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is Go?", "test-model")
 	if err != domain.ErrArchivedRoom {
 		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+	if len(msgRepo.Seqs) != 0 {
+		t.Errorf("expected no sequence number reserved for an archived room, got %v", msgRepo.Seqs)
 	}
 }
 
@@ -1781,9 +1808,19 @@ func TestRegenerateAIMessageRejectsArchivedRoom(t *testing.T) {
 	}
 	roomRepo.Rooms["room-1"].IsArchived = true
 
+	// Swap in a gateway that fails the test if RegenerateAIMessage reaches
+	// an LLM call, and snapshot the sequence state reserved by the setup
+	// SendAIMessage call above, so a post-call comparison proves the guard
+	// left it untouched.
+	uc.llmGateway = noLLMCallGateway(t)
+	seqsBefore := msgRepo.Seqs["room-1"]
+
 	_, _, err = uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
 	if err != domain.ErrArchivedRoom {
 		t.Fatalf("expected ErrArchivedRoom, got %v", err)
+	}
+	if msgRepo.Seqs["room-1"] != seqsBefore {
+		t.Errorf("expected sequence state untouched by a rejected regeneration, before=%d after=%d", seqsBefore, msgRepo.Seqs["room-1"])
 	}
 }
 
@@ -1896,6 +1933,69 @@ func TestSendAIMessageStreamSuccess(t *testing.T) {
 	}
 }
 
+// TestSendAIMessageStreamPersistsFailedPlaceholderOnCreateError asserts
+// that, when the streaming AI placeholder's own initial Create call fails,
+// SendAIMessageStream still persists and broadcasts a failed-status AI
+// placeholder for humanMsg -- mirroring SendAIMessage's equivalent recovery
+// when its completed-AI-message Create call fails -- rather than returning
+// bare with humanMsg left orphaned and no AI message a client retry via
+// RegenerateAIMessage could land on.
+func TestSendAIMessageStreamPersistsFailedPlaceholderOnCreateError(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	// The 1st Create call persists humanMsg; the 2nd is the streaming AI
+	// placeholder's own Create -- fail exactly that one.
+	wantErr := errors.New("ai placeholder create boom")
+	msgRepo.FailCreateOnCall = 2
+	msgRepo.FailCreateErr = wantErr
+
+	_, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected the original Create error to be returned, got %v", err)
+	}
+
+	var aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		if m.Type == domainmessage.MessageTypeAI {
+			aiMsg = m
+		}
+	}
+	if aiMsg == nil {
+		t.Fatal("expected a failed AI placeholder message to have been persisted despite the Create error")
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected the persisted placeholder status failed, got %s", aiMsg.Status)
+	}
+	if aiMsg.Visibility != domainmessage.MessageVisibilityPublic {
+		t.Fatalf("expected the persisted placeholder visibility public, got %s", aiMsg.Visibility)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventMessageCreated && evt.Message != nil && evt.Message.ID == aiMsg.ID {
+				if evt.Message.Status != domainmessage.MessageStatusFailed {
+					t.Fatalf("expected published event status failed, got %s", evt.Message.Status)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the failed placeholder's EventMessageCreated")
+		}
+	}
+}
+
 // TestSendAIMessageStreamFinalizesPlaceholderOnListByRoomError asserts that,
 // when SendAIMessageStream's context-fetch ListByRoom call fails after the
 // AI placeholder has already been created and broadcast
@@ -1949,6 +2049,96 @@ func TestSendAIMessageStreamFinalizesPlaceholderOnListByRoomError(t *testing.T) 
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for the finalizing EventMessageUpdated")
+		}
+	}
+}
+
+// ctxDoneAwareMessageRepo wraps *mocks.MessageRepo, recording (via
+// updateCtxWasDone) whether the ctx passed to UpdateAIResponse was already
+// Done at call time. TestSendAIMessageStreamFinalizesPlaceholderOnListByRoomErrorDespiteCancelledRequestCtx
+// and TestSendAIMessageStreamSynchronousDispatchFailureDespiteCancelledRequestCtx
+// use this to prove finalizeStreamSetupFailure and SendAIMessageStream's
+// dispatch-failure branch each derive their own finalizeCtx (detached from
+// the request ctx's cancellation via context.WithoutCancel) for their
+// terminal UpdateAIResponse write, rather than reusing a pre-cancelled
+// request ctx directly -- mocks.MessageRepo itself ignores ctx entirely, so
+// it cannot observe this on its own.
+type ctxDoneAwareMessageRepo struct {
+	*mocks.MessageRepo
+	updateCtxWasDone bool
+}
+
+func (r *ctxDoneAwareMessageRepo) UpdateAIResponse(ctx context.Context, id, content string, status domainmessage.MessageStatus, updatedAt time.Time) error {
+	if ctx.Err() != nil {
+		r.updateCtxWasDone = true
+	}
+	return r.MessageRepo.UpdateAIResponse(ctx, id, content, status, updatedAt)
+}
+
+// TestSendAIMessageStreamFinalizesPlaceholderOnListByRoomErrorDespiteCancelledRequestCtx
+// asserts that finalizeStreamSetupFailure still finalizes the AI placeholder
+// to Status = MessageStatusFailed and publishes the terminating
+// EventMessageUpdated even when the request ctx passed into
+// SendAIMessageStream is already cancelled by the time the ListByRoom error
+// is handled -- proving the finalization write runs on an independent
+// context, not the (already-Done) request ctx directly, which would
+// otherwise let the very cancellation that can trigger this error path also
+// silently defeat finalizeStreamSetupFailure's entire purpose.
+func TestSendAIMessageStreamFinalizesPlaceholderOnListByRoomErrorDespiteCancelledRequestCtx(t *testing.T) {
+	msgRepo := &ctxDoneAwareMessageRepo{MessageRepo: &mocks.MessageRepo{}}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	wantErr := errors.New("list by room boom")
+	msgRepo.ListByRoomErr = wantErr
+
+	// Cancel the request ctx before SendAIMessageStream even starts: every
+	// downstream mock ignores ctx for its own reads/writes, so this only
+	// exercises whether finalizeStreamSetupFailure's own write is affected.
+	cancel()
+
+	_, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "What is Go?", "test-model")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected the original ListByRoom error to be returned, got %v", err)
+	}
+
+	if msgRepo.updateCtxWasDone {
+		t.Fatal("expected UpdateAIResponse's finalization write to run on an independent, non-cancelled context, not the cancelled request ctx")
+	}
+
+	var aiMsg *domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		if m.Type == domainmessage.MessageTypeAI {
+			aiMsg = m
+		}
+	}
+	if aiMsg == nil {
+		t.Fatal("expected an AI placeholder message to have been created")
+	}
+	if aiMsg.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected AI placeholder finalized to failed despite the cancelled request ctx, got %s", aiMsg.Status)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == aiMsg.ID {
+				if evt.Message.Status != domainmessage.MessageStatusFailed {
+					t.Fatalf("expected published event status failed, got %s", evt.Message.Status)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the finalizing EventMessageUpdated despite the cancelled request ctx")
 		}
 	}
 }
@@ -2104,6 +2294,60 @@ func TestSendAIMessageStreamSynchronousDispatchFailure(t *testing.T) {
 			}
 		case <-deadline:
 			return
+		}
+	}
+}
+
+// TestSendAIMessageStreamSynchronousDispatchFailureDespiteCancelledRequestCtx
+// asserts that SendAIMessageStream's dispatch-failure branch (llmGateway.Stream
+// itself fails synchronously) still finalizes the AI placeholder to
+// Status = MessageStatusFailed and publishes the terminating
+// EventMessageUpdated even when the request ctx is already cancelled by the
+// time the failure is handled -- proving that write also runs on an
+// independent context, not the (already-Done) request ctx directly.
+func TestSendAIMessageStreamSynchronousDispatchFailureDespiteCancelledRequestCtx(t *testing.T) {
+	msgRepo := &ctxDoneAwareMessageRepo{MessageRepo: &mocks.MessageRepo{}}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	hub := event.NewInProcessHub()
+	gw := &mocks.LLMGateway{StreamErr: fmt.Errorf("bad model")}
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, hub, &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sub, unsubscribe := hub.Subscribe(ctx, "room-1", "user-1")
+	defer unsubscribe()
+
+	// Cancel the request ctx before SendAIMessageStream even starts: every
+	// downstream mock ignores ctx for its own reads/writes, so this only
+	// exercises whether the dispatch-failure branch's own finalization
+	// write is affected.
+	cancel()
+
+	result, err := uc.SendAIMessageStream(ctx, "user-1", "room-1", "Hello", "test-model")
+	if err != nil {
+		t.Fatalf("expected no Go error on a synchronous dispatch failure, got %v", err)
+	}
+	if result.AIMessage.Status != domainmessage.MessageStatusFailed {
+		t.Fatalf("expected failed status immediately despite the cancelled request ctx, got %s", result.AIMessage.Status)
+	}
+	if msgRepo.updateCtxWasDone {
+		t.Fatal("expected UpdateAIResponse's finalization write to run on an independent, non-cancelled context, not the cancelled request ctx")
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-sub:
+			if evt.Type == event.EventMessageUpdated && evt.Message != nil && evt.Message.ID == result.AIMessage.ID {
+				if evt.Message.Status != domainmessage.MessageStatusFailed {
+					t.Fatalf("expected published event status failed, got %s", evt.Message.Status)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the finalizing EventMessageUpdated despite the cancelled request ctx")
 		}
 	}
 }

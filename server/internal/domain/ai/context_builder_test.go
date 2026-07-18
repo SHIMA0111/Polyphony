@@ -59,6 +59,15 @@ func TestDefaultContextBuilderBuild(t *testing.T) {
 			wantText: []string{"question"},
 		},
 		{
+			name: "excludes status=streaming message",
+			msgs: []*message.Message{
+				msg("2", message.MessageTypeAI, message.MessageStatusStreaming, "", base.Add(2*time.Hour), false, false),
+				msg("1", message.MessageTypeHuman, message.MessageStatusCompleted, "question", base.Add(time.Hour), false, false),
+			},
+			wantRole: []string{"user"},
+			wantText: []string{"question"},
+		},
+		{
 			name: "excludes message before non-nil cutoff",
 			msgs: []*message.Message{
 				msg("2", message.MessageTypeHuman, message.MessageStatusCompleted, "after cutoff", base.Add(2*time.Hour), false, false),

@@ -74,7 +74,8 @@ func (b *DefaultContextBuilder) Build(msgs []*message.Message, cutoff *time.Time
 
 // IsEligibleForContext reports whether m passes ContextBuilder's exclusion rules (see
 // the ContextBuilder doc comment for the exact list): not soft-deleted, not
-// exclude_from_ai, not a failed AI placeholder, and not before cutoff.
+// exclude_from_ai, not a failed AI placeholder, not an in-flight streaming
+// placeholder, and not before cutoff.
 //
 // It is exported so callers that need to correlate DefaultContextBuilder.Build's
 // output back to its source messages can reproduce the exact same filter without
@@ -92,6 +93,9 @@ func IsEligibleForContext(m *message.Message, cutoff *time.Time) bool {
 		return false
 	}
 	if m.Status == message.MessageStatusFailed {
+		return false
+	}
+	if m.Status == message.MessageStatusStreaming {
 		return false
 	}
 	if cutoff != nil && m.CreatedAt.Before(*cutoff) {

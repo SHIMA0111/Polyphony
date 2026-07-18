@@ -67,7 +67,10 @@ func TestRoomForkRepository_CreateAndGetByID(t *testing.T) {
 
 // TestRoomForkRepository_StateTransitions proves the full
 // pending -> running -> completed lifecycle round-trips through
-// MarkRunning/UpdateProgress/MarkCompleted.
+// MarkRunning/UpdateProgress/CompleteAndUnarchive, and that each of
+// MarkRunning/UpdateProgress rejects a job whose current status doesn't
+// satisfy its source-state guard (see roomfork.ForkJobRepository's
+// "Source-state guards" doc comment), leaving the job untouched.
 func TestRoomForkRepository_StateTransitions(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -87,6 +90,12 @@ func TestRoomForkRepository_StateTransitions(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
+	// UpdateProgress before MarkRunning is rejected: the job is still
+	// StatusPending, not StatusRunning.
+	if err := forkRepo.UpdateProgress(ctx, job.ID, 5); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for UpdateProgress on a pending job, got %v", err)
+	}
+
 	if err := forkRepo.MarkRunning(ctx, job.ID, 42); err != nil {
 		t.Fatalf("MarkRunning failed: %v", err)
 	}
@@ -96,6 +105,11 @@ func TestRoomForkRepository_StateTransitions(t *testing.T) {
 	}
 	if got.Status != roomfork.StatusRunning || got.TotalMessages != 42 {
 		t.Fatalf("expected running/42, got %s/%d", got.Status, got.TotalMessages)
+	}
+
+	// A second MarkRunning is rejected: the job is no longer StatusPending.
+	if err := forkRepo.MarkRunning(ctx, job.ID, 99); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for MarkRunning on an already-running job, got %v", err)
 	}
 
 	if err := forkRepo.UpdateProgress(ctx, job.ID, 10); err != nil {
@@ -109,8 +123,8 @@ func TestRoomForkRepository_StateTransitions(t *testing.T) {
 		t.Fatalf("expected copied_messages 10, got %d", got.CopiedMessages)
 	}
 
-	if err := forkRepo.MarkCompleted(ctx, job.ID); err != nil {
-		t.Fatalf("MarkCompleted failed: %v", err)
+	if err := forkRepo.CompleteAndUnarchive(ctx, job.ID, dest.ID); err != nil {
+		t.Fatalf("CompleteAndUnarchive failed: %v", err)
 	}
 	got, err = forkRepo.GetByID(ctx, job.ID)
 	if err != nil {
@@ -119,10 +133,18 @@ func TestRoomForkRepository_StateTransitions(t *testing.T) {
 	if got.Status != roomfork.StatusCompleted {
 		t.Fatalf("expected status completed, got %s", got.Status)
 	}
+
+	// UpdateProgress after completion is rejected: the job is no longer
+	// StatusRunning.
+	if err := forkRepo.UpdateProgress(ctx, job.ID, 20); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for UpdateProgress on a completed job, got %v", err)
+	}
 }
 
 // TestRoomForkRepository_MarkFailed proves MarkFailed transitions a job to
-// StatusFailed and persists the error message.
+// StatusFailed and persists the error message, and that it rejects a job
+// that has already reached a terminal state (see roomfork.ForkJobRepository's
+// "Source-state guards" doc comment).
 func TestRoomForkRepository_MarkFailed(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -154,6 +176,12 @@ func TestRoomForkRepository_MarkFailed(t *testing.T) {
 	}
 	if got.ErrorMessage == nil || *got.ErrorMessage != "boom" {
 		t.Fatalf("expected error_message 'boom', got %v", got.ErrorMessage)
+	}
+
+	// A job that has already reached the terminal StatusFailed state can
+	// never be marked failed again.
+	if err := forkRepo.MarkFailed(ctx, job.ID, "boom again"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for MarkFailed on an already-failed job, got %v", err)
 	}
 
 	if err := forkRepo.MarkRunning(ctx, uuid.New().String(), 1); !errors.Is(err, domain.ErrNotFound) {

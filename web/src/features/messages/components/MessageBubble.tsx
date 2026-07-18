@@ -16,7 +16,7 @@ import {
 import { AlertTriangle, EyeOff, Lock, MoreVertical, RefreshCw } from "lucide-react"
 import type { Message } from "@/features/messages/types"
 import { Tooltip } from "@/components/ui/tooltip"
-import { formatDateTimeLocal } from "@/lib/format"
+import { formatDateTimeUtc } from "@/lib/format"
 import { roleAtLeast } from "@/lib/roles"
 import { useCurrentUser } from "@/features/auth/hooks/use-current-user"
 import { useRoom } from "@/features/rooms/hooks/use-room"
@@ -47,7 +47,7 @@ interface MessageBubbleProps {
 // between the Next.js server render and the browser's hydration render —
 // otherwise a server/browser timezone mismatch produces a React hydration
 // error on every message bubble's timestamp. The full timestamp (shown in
-// the tooltip) uses the same-pinned shared `formatDateTimeLocal` (`@/lib/format`)
+// the tooltip) uses the same-pinned shared `formatDateTimeUtc` (`@/lib/format`)
 // instead of its own copy.
 
 /** Short time-of-day shown next to each bubble. */
@@ -279,7 +279,7 @@ export function MessageBubble({
             </Text>
           </Flex>
         ) : (
-          <Tooltip content={formatDateTimeLocal(message.created_at)}>
+          <Tooltip content={formatDateTimeUtc(message.created_at)}>
             <Text fontSize="xs" color="fg.muted" tabIndex={0}>
               {formatShortTimestamp(message.created_at)}
             </Text>

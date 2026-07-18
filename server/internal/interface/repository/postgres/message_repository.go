@@ -223,7 +223,7 @@ func (r *MessageRepository) UpdateAIResponse(ctx context.Context, id string, con
 // message. It returns domain.ErrNotFound if the message does not exist.
 func (r *MessageRepository) UpdateExcludeFromAI(ctx context.Context, id string, exclude bool, updatedAt time.Time) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE messages SET exclude_from_ai = $1, updated_at = $2 WHERE id = $3 AND room_id = $4`,
+		`UPDATE messages SET exclude_from_ai = $1, updated_at = $2 WHERE id = $3`,
 		exclude, updatedAt, id,
 	)
 	if err != nil {

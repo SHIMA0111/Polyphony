@@ -2,9 +2,12 @@ package message
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
 	domainmessage "github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
@@ -332,20 +335,30 @@ func (u *MessageUsecase) buildAndEnrichContextBucket(
 // ai.LLMGateway.Complete, and -- on success -- caches the result via
 // u.summaryRepo.Upsert before returning it.
 //
-// Only a Complete failure is returned to the caller (assembleAIContext logs
-// it and degrades to the un-summarized context). A GetRevision failure
-// degrades to skipping the cache write entirely (logged, not returned): the
-// freshly computed summary is still returned for this one call, but without
-// a verified revision there is no safe value to pass Upsert, so writing
-// anyway could reintroduce exactly the race this mechanism exists to close.
-// An EstimateTokens failure is swallowed instead (tokenCount is left at 0,
-// since it is only ever used for the cached ai.ContextSummary.TokenCount
-// metadata field, not to gate anything), and a successful Complete whose
-// subsequent Upsert fails (a genuine error, not a revision-mismatch no-op --
-// see Upsert's doc comment) is logged but otherwise ignored -- either way
-// this call still returns the freshly computed summary text, since the
-// summary itself is still valid for this one call even though a failed or
-// no-op'd Upsert means it won't be reused by a later one.
+// A Complete failure, or a Complete success whose Content is empty or
+// entirely whitespace, is returned to the caller as an error (assembleAIContext
+// logs it and degrades to the un-summarized context in both cases). The
+// empty-content case is deliberately treated as a failure rather than a
+// usable (if vacuous) summary: returning "" here without erroring would let
+// assembleAIContext replace the entire older-public bucket with an empty
+// system message -- silently discarding that history from the AI's context
+// -- and would cache that same empty string via Upsert below, so every
+// subsequent call at this boundary would keep reusing the empty summary
+// instead of ever retrying summarization.
+//
+// A GetRevision failure degrades to skipping the cache write entirely
+// (logged, not returned): the freshly computed summary is still returned
+// for this one call, but without a verified revision there is no safe value
+// to pass Upsert, so writing anyway could reintroduce exactly the race this
+// mechanism exists to close. An EstimateTokens failure is swallowed instead
+// (tokenCount is left at 0, since it is only ever used for the cached
+// ai.ContextSummary.TokenCount metadata field, not to gate anything), and a
+// successful Complete whose subsequent Upsert fails (a genuine error, not a
+// revision-mismatch no-op -- see Upsert's doc comment) is logged but
+// otherwise ignored -- either way this call still returns the freshly
+// computed summary text, since the summary itself is still valid for this
+// one call even though a failed or no-op'd Upsert means it won't be reused
+// by a later one.
 func (u *MessageUsecase) summaryOrCompute(
 	ctx context.Context,
 	roomID, model string,
@@ -370,7 +383,10 @@ func (u *MessageUsecase) summaryOrCompute(
 	if err != nil {
 		return "", err
 	}
-	summaryText := completion.Content
+	summaryText := strings.TrimSpace(completion.Content)
+	if summaryText == "" {
+		return "", fmt.Errorf("%w: summarization returned an empty response", domain.ErrLLMGateway)
+	}
 
 	tokenCount := 0
 	if estimate, err := u.llmGateway.EstimateTokens(ctx, &ai.TokenEstimateRequest{

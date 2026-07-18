@@ -3,7 +3,7 @@
  * this module existed, roughly a dozen components each hand-rolled their own
  * near-identical `toLocaleDateString`/`toLocaleString` wrapper.
  *
- * {@link formatUtcDate} and {@link formatDateTimeLocal} always pin
+ * {@link formatUtcDate} and {@link formatDateTimeUtc} always pin
  * `timeZone: "UTC"` and the `"en-US"` locale, so the rendered string is
  * byte-identical between the Next.js server render and the browser's
  * hydration render — a server/browser timezone (or, for a locale-sensitive
@@ -47,16 +47,51 @@ export function formatUtcDate(
 }
 
 /**
- * Formats an ISO timestamp as a UTC-pinned date *and* time (e.g.
- * "Jul 14, 2026, 3:45 PM"), for the places that show a full timestamp rather
- * than just a calendar date.
+ * Formats an ISO timestamp as a UTC-pinned date *and* time, with a trailing
+ * "UTC" marker (e.g. "Jul 14, 2026, 3:45 PM UTC"), for the places that show
+ * a full timestamp rather than just a calendar date.
+ *
+ * Named `...Utc` (not `...Local`, this function's previous name) precisely
+ * because it is the opposite of local: `timeZone: "UTC"` is pinned
+ * deliberately for hydration safety (see this module's own doc comment
+ * above), so the rendered time is never the viewer's actual local time. The
+ * previous name invited a reader to assume otherwise; the explicit "UTC"
+ * suffix makes the same point unmissable in the rendered output itself, not
+ * just the function name.
+ *
+ * Spelled out as explicit `month`/`day`/`year`/`hour`/`minute` options
+ * (reproducing `dateStyle: "medium"` + `timeStyle: "short"`'s exact output)
+ * rather than those two style shorthands directly: `Intl.DateTimeFormat`
+ * throws a `TypeError` if `dateStyle`/`timeStyle` are combined with
+ * `timeZoneName`, and `timeZoneName` is what appends the "UTC" marker.
  */
-export function formatDateTimeLocal(iso: string): string {
+export function formatDateTimeUtc(iso: string): string {
   return new Date(iso).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
     timeZone: "UTC",
+    timeZoneName: "short",
   })
+}
+
+/**
+ * Minor-unit exponent overrides for currencies where Stripe's own minor-unit
+ * convention disagrees with ISO 4217 -- and therefore with
+ * `Intl.NumberFormat`, which follows ISO 4217. Stripe bills both ISK
+ * (Icelandic króna) and UGX (Ugandan shilling) as ordinary 2-decimal
+ * currencies (see https://docs.stripe.com/currencies#special-cases) even
+ * though ISO 4217, and so `Intl`, lists both as zero-decimal. Without this
+ * override, `amountMinorUnits` for these two currencies would be divided by
+ * `10 ** 0` (i.e. not divided at all), overstating the displayed amount by
+ * 100x. Keyed by lowercase ISO 4217 code, matching this function's own
+ * `currency` parameter convention.
+ */
+const STRIPE_EXPONENT_OVERRIDES: Record<string, number> = {
+  isk: 2,
+  ugx: 2,
 }
 
 /**
@@ -67,9 +102,11 @@ export function formatDateTimeLocal(iso: string): string {
  * The minor-unit exponent is NOT hardcoded to 2 (cents): most currencies use
  * 2 decimal places, but Stripe (and ISO 4217) also has zero-decimal
  * currencies like `"jpy"` (minor unit === major unit) and three-decimal
- * currencies like `"kwd"`. The exponent is instead read back from
- * `Intl.NumberFormat`'s own `resolvedOptions().maximumFractionDigits`, so it
- * always agrees with the `style: "currency"` formatting below.
+ * currencies like `"kwd"`. The exponent is read back from
+ * `Intl.NumberFormat`'s own `resolvedOptions().maximumFractionDigits` so it
+ * always agrees with the `style: "currency"` formatting below, except for
+ * {@link STRIPE_EXPONENT_OVERRIDES}'s two currencies, which are checked
+ * first and win over the `Intl`-derived value.
  *
  * @param amountMinorUnits - The amount in minor currency units (e.g. cents
  *   for `"usd"`, whole yen for `"jpy"`, fils for `"kwd"`).
@@ -85,6 +122,7 @@ export function formatCurrency(amountMinorUnits: number, currency: string): stri
   // `Intl.ResolvedNumberFormatOptions` shape (other `style`s can omit it).
   // The `?? 2` fallback matches this codebase's pre-existing (cents)
   // assumption and only matters if that invariant is ever violated.
-  const exponent = formatter.resolvedOptions().maximumFractionDigits ?? 2
+  const intlExponent = formatter.resolvedOptions().maximumFractionDigits ?? 2
+  const exponent = STRIPE_EXPONENT_OVERRIDES[currency.toLowerCase()] ?? intlExponent
   return formatter.format(amountMinorUnits / 10 ** exponent)
 }

@@ -465,8 +465,15 @@ func readSSEStream(body io.ReadCloser, out chan<- ai.StreamResult) {
 		if err != nil {
 			if err == io.EOF {
 				// Flush any final frame that wasn't terminated by a trailing
-				// blank line before ending cleanly.
-				flush()
+				// blank line before ending cleanly. If that final frame was
+				// itself terminal (an event:error frame, or malformed JSON --
+				// flush already sent an Err-carrying result for either), stop
+				// here: falling through to the sawDone check below would
+				// otherwise send a second, spurious error for the same frame,
+				// since sawDone is never set true by an error frame.
+				if !flush() {
+					return
+				}
 				if !sawDone {
 					out <- ai.StreamResult{Err: fmt.Errorf("%w: stream ended before [DONE] sentinel", domain.ErrLLMGateway)}
 				}

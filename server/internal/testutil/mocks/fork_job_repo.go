@@ -40,9 +40,9 @@ func (f *ForkJobRepo) ensureInit() {
 // *roomfork.Job pointer directly: without it, a caller holding onto a Job
 // it passed to Create (or received from GetByID) would race with this
 // fake's own background-goroutine-driven mutations (MarkRunning,
-// UpdateProgress, MarkCompleted, MarkFailed, CompleteAndUnarchive all write
-// through the map entry under mu) on the very same struct, with no lock
-// protecting the caller's read.
+// UpdateProgress, MarkFailed, CompleteAndUnarchive all write through the map
+// entry under mu) on the very same struct, with no lock protecting the
+// caller's read.
 func cloneForkJob(job *roomfork.Job) *roomfork.Job {
 	cp := *job
 	if job.ErrorMessage != nil {
@@ -79,14 +79,17 @@ func (f *ForkJobRepo) GetByID(_ context.Context, id string) (*roomfork.Job, erro
 	return cloneForkJob(job), nil
 }
 
-// MarkRunning transitions a Job to StatusRunning and records
-// totalMessages. Returns domain.ErrNotFound if the job does not exist.
+// MarkRunning transitions a Job from StatusPending to StatusRunning and
+// records totalMessages, mirroring postgres.RoomForkRepository.MarkRunning's
+// source-state guard (see roomfork.ForkJobRepository's "Source-state
+// guards" doc comment). Returns domain.ErrNotFound if the job does not
+// exist or is not currently StatusPending.
 func (f *ForkJobRepo) MarkRunning(_ context.Context, id string, totalMessages int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	job, ok := f.Jobs[id]
-	if !ok {
+	if !ok || job.Status != roomfork.StatusPending {
 		return domain.ErrNotFound
 	}
 	job.Status = roomfork.StatusRunning
@@ -95,14 +98,17 @@ func (f *ForkJobRepo) MarkRunning(_ context.Context, id string, totalMessages in
 	return nil
 }
 
-// UpdateProgress sets CopiedMessages on a Job. Returns domain.ErrNotFound
-// if the job does not exist.
+// UpdateProgress sets CopiedMessages on a Job while Status == StatusRunning,
+// mirroring postgres.RoomForkRepository.UpdateProgress's source-state guard
+// (see roomfork.ForkJobRepository's "Source-state guards" doc comment).
+// Returns domain.ErrNotFound if the job does not exist or is not currently
+// StatusRunning.
 func (f *ForkJobRepo) UpdateProgress(_ context.Context, id string, copiedMessages int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	job, ok := f.Jobs[id]
-	if !ok {
+	if !ok || job.Status != roomfork.StatusRunning {
 		return domain.ErrNotFound
 	}
 	job.CopiedMessages = copiedMessages
@@ -110,29 +116,17 @@ func (f *ForkJobRepo) UpdateProgress(_ context.Context, id string, copiedMessage
 	return nil
 }
 
-// MarkCompleted transitions a Job to the terminal StatusCompleted state.
-// Returns domain.ErrNotFound if the job does not exist.
-func (f *ForkJobRepo) MarkCompleted(_ context.Context, id string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	job, ok := f.Jobs[id]
-	if !ok {
-		return domain.ErrNotFound
-	}
-	job.Status = roomfork.StatusCompleted
-	job.UpdatedAt = time.Now()
-	return nil
-}
-
 // MarkFailed transitions a Job to the terminal StatusFailed state and
-// records errMsg. Returns domain.ErrNotFound if the job does not exist.
+// records errMsg, mirroring postgres.RoomForkRepository.MarkFailed's
+// source-state guard (see roomfork.ForkJobRepository's "Source-state
+// guards" doc comment). Returns domain.ErrNotFound if the job does not
+// exist or is not currently StatusPending or StatusRunning.
 func (f *ForkJobRepo) MarkFailed(_ context.Context, id string, errMsg string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	job, ok := f.Jobs[id]
-	if !ok {
+	if !ok || (job.Status != roomfork.StatusPending && job.Status != roomfork.StatusRunning) {
 		return domain.ErrNotFound
 	}
 	job.Status = roomfork.StatusFailed
@@ -151,19 +145,33 @@ func (f *ForkJobRepo) MarkFailed(_ context.Context, id string, errMsg string) er
 // newRoomID or a job that isn't currently running leaves both the job and
 // the room untouched. Returns domain.ErrNotFound if the job does not exist
 // or fails that validation.
+//
+// f.mu is held for the whole operation, including the Rooms.SetArchived
+// call, so no other goroutine can observe the job as Completed while the
+// room's archive flag has not (or has failed to) transition — mirroring
+// the real repository's single transaction. Rooms guards its own state with
+// a separate mutex, so this does not risk deadlock. If SetArchived fails,
+// the job's Status and UpdatedAt are rolled back to their pre-completion
+// values so the two stay consistent.
 func (f *ForkJobRepo) CompleteAndUnarchive(ctx context.Context, id, newRoomID string) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	job, ok := f.Jobs[id]
 	if !ok || job.NewRoomID != newRoomID || job.Status != roomfork.StatusRunning {
-		f.mu.Unlock()
 		return domain.ErrNotFound
 	}
+
+	prevUpdatedAt := job.UpdatedAt
 	job.Status = roomfork.StatusCompleted
 	job.UpdatedAt = time.Now()
-	f.mu.Unlock()
 
 	if f.Rooms != nil {
-		return f.Rooms.SetArchived(ctx, newRoomID, false)
+		if err := f.Rooms.SetArchived(ctx, newRoomID, false); err != nil {
+			job.Status = roomfork.StatusRunning
+			job.UpdatedAt = prevUpdatedAt
+			return err
+		}
 	}
 	return nil
 }

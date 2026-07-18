@@ -3,6 +3,15 @@ import type { RoomRole } from "@/features/members/types"
 import type { BatchInviteByGroupResult } from "../types"
 
 /**
+ * The subset of `RoomRole` a batch-invite-by-group call may target — every
+ * value except `"master"`. Previously this field was typed as the full
+ * `RoomRole`, which let `"master"` pass the type checker even though the
+ * server always 400s it; narrowing the type catches that mistake at compile
+ * time instead of at the request.
+ */
+export type InvitationRole = Exclude<RoomRole, "master">
+
+/**
  * Request body for `POST /rooms/:roomId/invitations/batch-by-group`.
  * `role` must be one of the four non-`master` `RoomRole` values; the server
  * 400s otherwise. `expires_in_hours` is optional and follows the same
@@ -10,7 +19,7 @@ import type { BatchInviteByGroupResult } from "../types"
  */
 export interface BatchInviteByGroupInput {
   group_id: string
-  role: RoomRole
+  role: InvitationRole
   expires_in_hours?: number
 }
 

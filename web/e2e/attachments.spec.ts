@@ -113,7 +113,43 @@ test("attach an image and send it with AI", async ({ page }) => {
   await page.getByPlaceholder("Ask me anything...").fill(messageContent)
   await expect(sendWithAIButton).toBeEnabled()
 
+  // Both the initial "Send with AI" pass and the follow-up Vision-aware
+  // regenerate (see `use-chat-room.ts`'s `handleSendWithAI`) draw from the
+  // same canned stub fixture and so return textually identical replies --
+  // asserting on the rendered text alone (as below) would pass even if the
+  // regenerate never actually ran, or errored, since the first pass's reply
+  // is already on screen. These two `waitForResponse` calls instead capture
+  // the actual `POST /messages/ai` and `POST /messages/:id/regenerate`
+  // response bodies the app itself receives, so the assertions after the
+  // click can prove the regenerate genuinely re-ran against the same AI
+  // message (matching `id`, but a *different* `updated_at`) rather than
+  // merely reflecting the untouched first-pass row. Registered before the
+  // click since both responses can arrive before `waitForResponse` would
+  // otherwise start listening.
+  const initialAiResponsePromise = page.waitForResponse(
+    (res) => res.request().method() === "POST" && res.url().endsWith("/messages/ai"),
+  )
+  const regenerateResponsePromise = page.waitForResponse(
+    (res) =>
+      res.request().method() === "POST" &&
+      /\/messages\/[^/]+\/regenerate$/.test(res.url()),
+  )
+
   await sendWithAIButton.click()
+
+  const [initialAiResponse, regenerateResponse] = await Promise.all([
+    initialAiResponsePromise,
+    regenerateResponsePromise,
+  ])
+  const { ai_message: initialAiMessage } = (await initialAiResponse.json()) as {
+    ai_message: { id: string; updated_at: string }
+  }
+  const regeneratedMessage = (await regenerateResponse.json()) as {
+    id: string
+    updated_at: string
+  }
+  expect(regeneratedMessage.id).toBe(initialAiMessage.id)
+  expect(regeneratedMessage.updated_at).not.toBe(initialAiMessage.updated_at)
 
   // Staging is reset() on a successful send, so the chip disappears.
   await expect(removeAttachmentButton).toHaveCount(0)
@@ -128,15 +164,15 @@ test("attach an image and send it with AI", async ({ page }) => {
     page.getByRole("button", { name: "Open message attachment" }),
   ).toBeVisible()
 
-  // The AI's reply appears -- the initial pass and the Vision-aware
-  // regenerate both draw from the same canned stub fixture
-  // (`llm-stub/fixtures/default.json`), so this asserts the final reply
-  // text is present rather than distinguishing the two passes textually.
-  // Longer timeout (wave-7): the non-private AI send now goes through the
-  // streaming endpoint (Step 54) with the stub's paced SSE delivery, and
-  // this send is additionally followed by a Vision regenerate -- under
-  // full-suite parallelism the combined round trip can exceed the default
-  // 5s expect timeout.
+  // The AI's reply appears in the DOM too. The regenerate call having
+  // genuinely re-run (not merely reflected the first pass) is already
+  // proven above via the two responses' `id`/`updated_at`; the initial pass
+  // and the Vision-aware regenerate both draw from the same canned stub
+  // fixture (`llm-stub/fixtures/default.json`), so this text assertion on
+  // its own would not distinguish the two passes. Longer timeout (wave-7):
+  // this send is followed by a Vision regenerate -- under full-suite
+  // parallelism the combined round trip can exceed the default 5s expect
+  // timeout.
   await expect(
     page.getByText("This is a canned E2E stub response for testing purposes."),
   ).toBeVisible({ timeout: 15_000 })

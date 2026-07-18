@@ -30,6 +30,16 @@ const forkBatchSize = 1000
 // lacks that role or is not a member of sourceRoomID, and domain.ErrNotFound
 // if sourceRoomID does not exist.
 //
+// It returns domain.ErrArchivedRoom if sourceRoomID itself is archived —
+// checked right after loading src, before any new room or Job is created.
+// This rejects forking a room that is itself the still-in-progress (or
+// permanently orphaned, per the "does not survive a process restart" note
+// below) destination of another fork: IsArchived == true means
+// sourceRoomID's own message history has not finished copying (or, per the
+// same caveat, is unresumably stuck mid-copy), so a fork of it right now
+// would either be forking incomplete history or forking a room that will
+// never itself become postable.
+//
 // On success, it synchronously:
 //  1. creates a new room owned by userID, named "<source name> (Fork)",
 //     with Description/AIProvider/AIModel copied verbatim from the source
@@ -72,6 +82,9 @@ func (u *RoomUsecase) ForkRoom(ctx context.Context, userID, sourceRoomID string)
 	src, err := u.roomRepo.GetByID(ctx, sourceRoomID)
 	if err != nil {
 		return nil, nil, err
+	}
+	if src.IsArchived {
+		return nil, nil, domain.ErrArchivedRoom
 	}
 
 	now := time.Now()

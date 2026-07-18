@@ -127,7 +127,8 @@ func (r *AttachmentRepository) ListByMessageID(ctx context.Context, messageID st
 // query pattern of calling ListByMessageID once per message. Each group is
 // ordered by creation time ascending, matching ListByMessageID's per-message
 // order; a message ID with no attachments is simply absent from the returned
-// map.
+// map. Query execution, row-scan, and rows-iteration errors are all returned
+// unchanged (not wrapped).
 func (r *AttachmentRepository) ListByMessageIDs(ctx context.Context, messageIDs []string) (map[string][]*attachment.Attachment, error) {
 	result := make(map[string][]*attachment.Attachment)
 	if len(messageIDs) == 0 {

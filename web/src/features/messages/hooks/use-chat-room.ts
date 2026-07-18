@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from "react"
 import { useQueryClient, type QueryClient } from "@tanstack/react-query"
 import { ApiRequestError } from "@/lib/http-client"
+import { toaster } from "@/components/ui/toaster"
 import { useCurrentUser } from "@/features/auth/hooks/use-current-user"
 import { useMembers } from "@/features/members/hooks/use-members"
 import { useRoom } from "@/features/rooms/hooks/use-room"
@@ -32,27 +33,49 @@ import type { Room } from "@/features/rooms/types"
  * instant it mounts, rather than waiting on that hook's own independent
  * fetch to kick off and resolve.
  *
- * A failure linking any individual attachment (or refreshing the list
- * afterward) is logged and swallowed rather than failing the whole send:
- * by the time this runs, the message's text content has already been sent
- * successfully, so surfacing a hard error here would misleadingly suggest
- * the entire send failed.
+ * A failure linking any individual attachment does not throw and does not
+ * fail the whole send: by the time this runs, the message's text content
+ * has already been sent successfully, so surfacing a hard error here would
+ * misleadingly suggest the entire send failed. It is still surfaced, though
+ * — a toaster error naming the failure count — rather than only logged,
+ * since a silent failure here previously left staged files cleared with no
+ * indication their attachments never actually reached the message. Callers
+ * use the returned `failedCount` to decide whether it's worth following up
+ * with an action that depends on the attachment actually being linked (see
+ * `handleSendWithAI`'s regenerate leg below).
+ *
+ * @returns The number of `attachmentIds` that failed to link (`0` if all
+ *   succeeded). A failure refreshing the attachment list afterward is
+ *   logged and swallowed independently of this count -- the links
+ *   themselves may have all succeeded even if that follow-up read fails.
  */
 async function linkAttachments(
   queryClient: QueryClient,
   roomId: string,
   messageId: string,
   attachmentIds: string[],
-): Promise<void> {
-  if (attachmentIds.length === 0) return
+): Promise<{ failedCount: number }> {
+  if (attachmentIds.length === 0) return { failedCount: 0 }
 
-  await Promise.all(
+  const results = await Promise.all(
     attachmentIds.map((attachmentId) =>
-      attachToMessage(roomId, messageId, attachmentId).catch((err: unknown) => {
-        console.error("Failed to link attachment to message", err)
-      }),
+      attachToMessage(roomId, messageId, attachmentId)
+        .then(() => true)
+        .catch((err: unknown) => {
+          console.error("Failed to link attachment to message", err)
+          return false
+        }),
     ),
   )
+  const failedCount = results.filter((linked) => !linked).length
+
+  if (failedCount > 0) {
+    toaster.create({
+      type: "error",
+      title: "Attachment error",
+      description: `${failedCount} attachment(s) could not be attached.`,
+    })
+  }
 
   try {
     const res = await listAttachments(roomId, messageId)
@@ -63,6 +86,8 @@ async function linkAttachments(
   } catch (err) {
     console.error("Failed to refresh attachments after linking", err)
   }
+
+  return { failedCount }
 }
 
 /**
@@ -257,23 +282,37 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
           // gets the attachments in front of the model: no existing endpoint
           // both creates a message and includes attachments linked to that
           // same message in the same outbound completion request.
-          await linkAttachments(queryClient, roomId, res.user_message.id, attachmentIds)
-          try {
-            await regenerateMutation.mutateAsync({
-              aiMessageId: res.ai_message.id,
-              humanMessageId: res.user_message.id,
-              model,
-            })
-          } catch (error) {
-            // Mirrors `handleRegenerate`'s own catch below: a 402 is
-            // surfaced via the same inline `aiError` alert as a direct send
-            // rejection; any other error is already surfaced by
-            // `useRegenerateAIMessage`'s own `onError` toast, and
-            // `MessageBubble` also reflects a persisted `status: "failed"`
-            // AI message via its own styling either way, so there is
-            // nothing further to do here.
-            if (error instanceof ApiRequestError && error.status === 402) {
-              setAiError(INSUFFICIENT_BALANCE_MESSAGE)
+          const { failedCount } = await linkAttachments(
+            queryClient,
+            roomId,
+            res.user_message.id,
+            attachmentIds,
+          )
+          // Skip the regenerate call entirely when every attachment failed
+          // to link: `linkAttachments` already surfaced a toaster error
+          // above, and regenerating here would just re-run the model
+          // against the exact same (attachment-less) content it already
+          // answered, burning tokens for no visible benefit. A *partial*
+          // failure (some, not all, linked) still regenerates -- the model
+          // sees whatever did link.
+          if (failedCount < attachmentIds.length) {
+            try {
+              await regenerateMutation.mutateAsync({
+                aiMessageId: res.ai_message.id,
+                humanMessageId: res.user_message.id,
+                model,
+              })
+            } catch (error) {
+              // Mirrors `handleRegenerate`'s own catch below: a 402 is
+              // surfaced via the same inline `aiError` alert as a direct
+              // send rejection; any other error is already surfaced by
+              // `useRegenerateAIMessage`'s own `onError` toast, and
+              // `MessageBubble` also reflects a persisted `status: "failed"`
+              // AI message via its own styling either way, so there is
+              // nothing further to do here.
+              if (error instanceof ApiRequestError && error.status === 402) {
+                setAiError(INSUFFICIENT_BALANCE_MESSAGE)
+              }
             }
           }
         }
