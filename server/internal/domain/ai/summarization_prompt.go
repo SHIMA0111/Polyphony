@@ -36,9 +36,17 @@ const summarizationImageInstruction = " Describe the content of any images so th
 //   - An entry with no Parts (plain-Content) renders as one
 //     "{role}: {content}" line.
 //   - An entry with Parts (Step 39's multimodal shape) renders each part in
-//     order: a text part's Text is carried through verbatim; an image part
+//     order: a text part's Text is carried through verbatim, except that the
+//     entry's first text part is prefixed with "{role}: " -- mirroring the
+//     "{role}: {content}" shape of the no-Parts case, so a reader (human or
+//     model) sees the same "who said this" framing regardless of which
+//     branch rendered a given message; an image part
 //     (ContentPartTypeImageURL/ContentPartTypeImageBase64) renders
 //     depending on includeImages -- see below.
+//   - A "\n" separator part is inserted between consecutive entries (but
+//     not before the first), again mirroring the "\n"-joined textLines
+//     transcript, so the Parts transcript does not run every message's
+//     content together with no boundary between them.
 //
 // The returned user message's Content field is always the full plain-text
 // transcript (every image part rendered as the fixed
@@ -67,7 +75,14 @@ func BuildSummarizationPrompt(history []ChatMessage, includeImages bool) []ChatM
 	var parts []ContentPart
 	hasImagePart := false
 
-	for _, m := range history {
+	for i, m := range history {
+		if i > 0 {
+			// Mirrors textLines' "\n"-joined transcript: without this, every
+			// message's Parts would run together with no boundary between
+			// them.
+			parts = append(parts, ContentPart{Type: ContentPartTypeText, Text: "\n"})
+		}
+
 		if len(m.Parts) == 0 {
 			textLines = append(textLines, m.Role+": "+m.Content)
 			parts = append(parts, ContentPart{Type: ContentPartTypeText, Text: m.Role + ": " + m.Content})
@@ -76,10 +91,19 @@ func BuildSummarizationPrompt(history []ChatMessage, includeImages bool) []ChatM
 
 		var line strings.Builder
 		line.WriteString(m.Role + ": ")
+		firstTextPart := true
 		for _, part := range m.Parts {
 			if part.Type == ContentPartTypeText {
 				line.WriteString(part.Text)
-				parts = append(parts, ContentPart{Type: ContentPartTypeText, Text: part.Text})
+				text := part.Text
+				if firstTextPart {
+					// Mirrors the no-Parts branch's "{role}: {content}"
+					// shape: only the entry's first text part carries the
+					// role prefix, not every text part.
+					text = m.Role + ": " + text
+					firstTextPart = false
+				}
+				parts = append(parts, ContentPart{Type: ContentPartTypeText, Text: text})
 				continue
 			}
 

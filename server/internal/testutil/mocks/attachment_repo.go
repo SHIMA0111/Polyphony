@@ -17,6 +17,14 @@ import (
 type AttachmentRepo struct {
 	mu          sync.Mutex
 	Attachments map[string]*attachment.Attachment
+
+	// ListByMessageIDErr, if non-nil, makes both ListByMessageID and
+	// ListByMessageIDs return it instead of a result — for tests exercising
+	// a caller's handling of an attachment-enrichment failure (e.g.
+	// MessageUsecase.enrichWithAttachments, reached via
+	// buildAndEnrichContextBucket/assembleAIContext), without needing a
+	// real error condition inside this fake.
+	ListByMessageIDErr error
 }
 
 func (r *AttachmentRepo) ensureInit() {
@@ -25,15 +33,15 @@ func (r *AttachmentRepo) ensureInit() {
 	}
 }
 
-// cloneAttachment returns a deep-enough copy of a: a struct copy, plus (when
-// MessageID is non-nil) a fresh *string holding the same value. A plain
-// struct copy (cp := *a) still leaves cp.MessageID pointing at the exact
-// same *string as a.MessageID, so the caller and the stored row would alias
-// that pointer — mutating the string through one copy's MessageID would
-// leak into the other. cloneAttachment is used for every value stored into
-// or returned from AttachmentRepo (Create, GetByID, AttachToMessage,
-// ListByMessageID) so no two callers, or a caller and the backing store,
-// ever share a MessageID pointer.
+// cloneAttachment returns a deep-enough copy of a: a struct copy plus a
+// fresh *string for MessageID when non-nil. A plain struct copy (`cp := *a`)
+// still leaves cp.MessageID pointing at the very same string as a.MessageID,
+// since copying a struct copies its pointer fields by value, not what they
+// point to — so a caller mutating *cp.MessageID (or the repo later
+// re-deriving a pointer from the same address) would silently alias the
+// stored attachment. cloneAttachment is used for every value stored into or
+// read out of r.Attachments so no caller can ever observe or corrupt the
+// repo's internal state through a shared MessageID pointer.
 func cloneAttachment(a *attachment.Attachment) *attachment.Attachment {
 	cp := *a
 	if a.MessageID != nil {
@@ -68,10 +76,12 @@ func (r *AttachmentRepo) GetByID(_ context.Context, id string) (*attachment.Atta
 	return cloneAttachment(a), nil
 }
 
-// AttachToMessage links an existing attachment to a message. Returns
-// domain.ErrNotFound if the attachment does not exist or belongs to a
-// different room than roomID, and domain.ErrAttachmentAlreadyLinked if it is
-// already linked to a message.
+// AttachToMessage links an existing attachment to a message, provided the
+// attachment's RoomID matches roomID. Returns domain.ErrNotFound if the
+// attachment does not exist or belongs to a different room, and
+// domain.ErrAttachmentAlreadyLinked if it is already linked to a message.
+// Mirrors the room-scoping enforced by the real
+// postgres.AttachmentRepository's UPDATE predicate.
 func (r *AttachmentRepo) AttachToMessage(_ context.Context, attachmentID, messageID, roomID string) (*attachment.Attachment, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -94,6 +104,10 @@ func (r *AttachmentRepo) ListByMessageID(_ context.Context, messageID string) ([
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.ListByMessageIDErr != nil {
+		return nil, r.ListByMessageIDErr
+	}
+
 	var result []*attachment.Attachment
 	for _, a := range r.Attachments {
 		if a.MessageID != nil && *a.MessageID == messageID {
@@ -103,5 +117,36 @@ func (r *AttachmentRepo) ListByMessageID(_ context.Context, messageID string) ([
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].CreatedAt.Before(result[j].CreatedAt)
 	})
+	return result, nil
+}
+
+// ListByMessageIDs returns every attachment linked to any of the given
+// messages, grouped by message ID, with each group ordered by creation time
+// ascending -- mirroring the real postgres.AttachmentRepository's batched
+// query. A message ID with no attachments is absent from the returned map.
+func (r *AttachmentRepo) ListByMessageIDs(_ context.Context, messageIDs []string) (map[string][]*attachment.Attachment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.ListByMessageIDErr != nil {
+		return nil, r.ListByMessageIDErr
+	}
+
+	want := make(map[string]bool, len(messageIDs))
+	for _, id := range messageIDs {
+		want[id] = true
+	}
+
+	result := make(map[string][]*attachment.Attachment)
+	for _, a := range r.Attachments {
+		if a.MessageID != nil && want[*a.MessageID] {
+			result[*a.MessageID] = append(result[*a.MessageID], cloneAttachment(a))
+		}
+	}
+	for id := range result {
+		sort.Slice(result[id], func(i, j int) bool {
+			return result[id][i].CreatedAt.Before(result[id][j].CreatedAt)
+		})
+	}
 	return result, nil
 }

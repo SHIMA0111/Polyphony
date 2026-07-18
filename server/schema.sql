@@ -202,3 +202,18 @@ CREATE TABLE message_context_summaries (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Per-room monotonic fencing counter for message_context_summaries, guarding
+-- against a summarization that is still in flight (a slow LLM Complete call)
+-- when a concurrent DeleteByRoom invalidates the cache: DeleteByRoom
+-- increments this row (creating it at revision 1 the first time) in the same
+-- statement as its DELETE, and the in-flight summarization's later Upsert is
+-- conditioned on the revision it captured before starting still matching
+-- this row's current value, so a moved revision makes the stale Upsert a
+-- no-op instead of resurrecting a summary that predates the delete/exclude
+-- event that bumped it. A room with no row here has never had a
+-- DeleteByRoom call (implicit revision 0).
+CREATE TABLE context_summary_revisions (
+    room_id UUID PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+    revision BIGINT NOT NULL DEFAULT 0
+);

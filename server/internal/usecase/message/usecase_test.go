@@ -911,6 +911,42 @@ func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 	}
 }
 
+// TestDeleteMessagePropagatesSummaryInvalidationFailure proves that
+// DeleteMessage surfaces a summaryRepo.DeleteByRoom failure to the caller
+// instead of only logging it, even though the underlying soft delete has
+// already durably succeeded by that point -- see DeleteMessage's doc
+// comment for why a swallowed invalidation failure would be unsafe.
+func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	invalidationErr := errors.New("boom: summary invalidation failed")
+	summaryRepo := &mocks.ContextSummaryRepo{DeleteByRoomErr: invalidationErr}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, summaryRepo, "gpt-5-mini")
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if err := uc.DeleteMessage(ctx, "user-1", "room-1", sent.ID); !errors.Is(err, invalidationErr) {
+		t.Fatalf("expected DeleteMessage to propagate the summary invalidation error, got %v", err)
+	}
+
+	// The soft delete itself must still have gone through despite the
+	// propagated error.
+	deleted, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID after DeleteMessage: %v", err)
+	}
+	if !deleted.IsDeleted {
+		t.Fatal("expected the message to still be soft-deleted despite the propagated invalidation error")
+	}
+}
+
 // --- SetExcludeFromAI ---
 
 func TestSetExcludeFromAIMemberAllowed(t *testing.T) {
@@ -1008,6 +1044,42 @@ func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
 
 	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", "msg-1", true); err != domain.ErrForbidden {
 		t.Fatalf("expected ErrForbidden for reader, got %v", err)
+	}
+}
+
+// TestSetExcludeFromAIPropagatesSummaryInvalidationFailure proves that
+// SetExcludeFromAI surfaces a summaryRepo.DeleteByRoom failure to the caller
+// instead of only logging it, even though msgRepo.UpdateExcludeFromAI has
+// already durably succeeded by that point -- see SetExcludeFromAI's doc
+// comment for why a swallowed invalidation failure would be unsafe.
+func TestSetExcludeFromAIPropagatesSummaryInvalidationFailure(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	invalidationErr := errors.New("boom: summary invalidation failed")
+	summaryRepo := &mocks.ContextSummaryRepo{DeleteByRoomErr: invalidationErr}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, summaryRepo, "gpt-5-mini")
+	ctx := context.Background()
+
+	sent, err := uc.SendMessage(ctx, "user-1", "room-1", "hello")
+	if err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+
+	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", sent.ID, true); !errors.Is(err, invalidationErr) {
+		t.Fatalf("expected SetExcludeFromAI to propagate the summary invalidation error, got %v", err)
+	}
+
+	// The underlying toggle must still have gone through despite the
+	// propagated error.
+	updated, err := msgRepo.GetByID(ctx, sent.ID, "user-1")
+	if err != nil {
+		t.Fatalf("GetByID after SetExcludeFromAI: %v", err)
+	}
+	if !updated.ExcludeFromAI {
+		t.Fatal("expected ExcludeFromAI to still be true despite the propagated invalidation error")
 	}
 }
 
@@ -1582,7 +1654,7 @@ func TestSendAIMessageCompletedCreateFailureSavesFailedPlaceholder(t *testing.T)
 	}
 }
 
-// --- Ownerless private message publish suppression (Step 22 review fix) ---
+// --- Ownerless private message publish suppression ---
 
 // TestPublishMessageEventSuppressesOwnerlessPrivateMessage asserts that
 // publishMessageEvent does not call hub.Publish for a private message whose

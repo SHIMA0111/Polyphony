@@ -610,7 +610,10 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 // admin — gets domain.ErrForbidden. It returns domain.ErrNotFound if the
 // message does not exist or does not belong to roomID. On success it
 // delegates to msgRepo.Delete, which performs the soft delete (see
-// domainmessage.MessageRepository.Delete).
+// domainmessage.MessageRepository.Delete), and then invalidates the room's
+// cached context summary; a failure in that second step is returned to the
+// caller even though the soft delete itself already succeeded (see the
+// inline comment above the summaryRepo.DeleteByRoom call for why).
 //
 // DeleteMessage intentionally does not use domainroom.Action/Allows: the
 // Action enum has no message-level delete action, so the owner-or-admin
@@ -644,11 +647,20 @@ func (u *MessageUsecase) DeleteMessage(ctx context.Context, userID, roomID, mess
 	// message may fall within the previously-summarized range, and coarsely
 	// wiping the whole room's cache on every delete (rather than checking
 	// whether it actually does) trades a possibly-unnecessary
-	// re-summarization for guaranteed correctness. Best-effort: a cache
-	// invalidation failure must never fail the delete that already
-	// succeeded.
+	// re-summarization for guaranteed correctness. Unlike a merely
+	// best-effort side effect, a DeleteByRoom failure here is propagated to
+	// the caller rather than only logged: DeleteByRoom's revision bump (see
+	// ai.ContextSummaryRepository's "Revision fencing" doc comment) is the
+	// sole mechanism that prevents a summarization already in flight for
+	// this room from resurrecting a summary that predates this delete, so
+	// silently swallowing a failure here could leave that stale summary
+	// reachable indefinitely. The message itself has already been durably
+	// soft-deleted at this point, so a caller seeing this error should
+	// treat the delete as having happened and retry only to confirm the AI
+	// context cache is consistent, not to retry the delete itself.
 	if err := u.summaryRepo.DeleteByRoom(ctx, roomID); err != nil {
 		slog.Error("failed to invalidate cached context summary", "error", err, "room_id", roomID)
+		return err
 	}
 
 	return nil
@@ -663,7 +675,10 @@ func (u *MessageUsecase) DeleteMessage(ctx context.Context, userID, roomID, mess
 // not belong to roomID. On success it persists the change via
 // msgRepo.UpdateExcludeFromAI and returns the mutated in-memory Message
 // (mirroring RegenerateAIMessage's pattern of returning the updated struct
-// rather than re-fetching).
+// rather than re-fetching) -- unless the subsequent cached-context-summary
+// invalidation fails, in which case that error is returned instead even
+// though msgRepo.UpdateExcludeFromAI already succeeded (see
+// DeleteMessage's identical propagation and its inline comment for why).
 func (u *MessageUsecase) SetExcludeFromAI(ctx context.Context, userID, roomID, messageID string, exclude bool) (*domainmessage.Message, error) {
 	member, err := u.getMember(ctx, roomID, userID)
 	if err != nil {
@@ -690,9 +705,12 @@ func (u *MessageUsecase) SetExcludeFromAI(ctx context.Context, userID, roomID, m
 
 	// Invalidate the room's cached context summary (Step 50): see
 	// DeleteMessage's identical invalidation call for why this is
-	// deliberately coarse (whole-room, not range-checked) and best-effort.
+	// deliberately coarse (whole-room, not range-checked), and why a
+	// DeleteByRoom failure is propagated to the caller rather than only
+	// logged.
 	if err := u.summaryRepo.DeleteByRoom(ctx, roomID); err != nil {
 		slog.Error("failed to invalidate cached context summary", "error", err, "room_id", roomID)
+		return nil, err
 	}
 
 	return msg, nil
