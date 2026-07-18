@@ -172,6 +172,49 @@ describe("useRoomSocket", () => {
     )
   })
 
+  it("appends a token_chunk event's delta onto the message with the matching real id (Step 54 streaming)", async () => {
+    mockTicketEndpoint()
+
+    const queryClient = createTestQueryClient()
+    const queryKey = ["rooms", "room-1", "messages"] as const
+    const placeholder = makeMessage("ai-1", {
+      type: "ai",
+      content: "",
+      status: "streaming",
+    })
+    queryClient.setQueryData<MessagesInfiniteData>(queryKey, {
+      pages: [{ messages: [placeholder], next_cursor: null }],
+      pageParams: [undefined],
+    })
+
+    renderHook(() => useRoomSocket("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+    act(() => FakeWebSocket.instances[0].simulateOpen())
+
+    act(() => {
+      FakeWebSocket.instances[0].simulateMessage({
+        type: "token_chunk",
+        room_id: "room-1",
+        chunk: { message_id: "ai-1", delta: "Hello", summary_used: false },
+      })
+    })
+    act(() => {
+      FakeWebSocket.instances[0].simulateMessage({
+        type: "token_chunk",
+        room_id: "room-1",
+        chunk: { message_id: "ai-1", delta: "!", summary_used: false },
+      })
+    })
+
+    const cache = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
+    const aiMessage = cache?.pages[0].messages.find((m) => m.id === "ai-1")
+    expect(aiMessage?.content).toBe("Hello!")
+    expect(aiMessage?.status).toBe("streaming")
+  })
+
   it("patches an existing message in place for a message_updated event", async () => {
     mockTicketEndpoint()
 

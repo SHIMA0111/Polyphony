@@ -305,7 +305,7 @@ describe("useChatRoom handleRetry", () => {
 describe("useChatRoom handleSendWithAI", () => {
   it("sets aiError and does not invalidate the balance query on a 402 response", async () => {
     server.use(
-      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
         return HttpResponse.json(
           { message: "insufficient token balance" },
           { status: 402 },
@@ -355,7 +355,7 @@ describe("useChatRoom handleSendWithAI", () => {
 
   it("does not set aiError for a non-402 failure", async () => {
     server.use(
-      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
         return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
       }),
     )
