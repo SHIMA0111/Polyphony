@@ -40,6 +40,24 @@ func (r *InvitationRepo) ensureInit() {
 	}
 }
 
+// cloneInvitation returns a deep-enough copy of inv: a struct copy plus a
+// fresh *string for InviteeID when non-nil. A plain struct copy (`cp :=
+// *inv`) still leaves cp.InviteeID pointing at the very same string as
+// inv.InviteeID, since copying a struct copies its pointer fields by
+// value, not what they point to -- so a caller mutating *cp.InviteeID would
+// silently alias the stored invitation. cloneInvitation is used for every
+// value stored into or read out of r.Invitations so no caller can ever
+// observe or corrupt the repo's internal state through a shared InviteeID
+// pointer. Mirrors mocks.AttachmentRepo's cloneAttachment.
+func cloneInvitation(inv *invitation.Invitation) *invitation.Invitation {
+	cp := *inv
+	if inv.InviteeID != nil {
+		inviteeID := *inv.InviteeID
+		cp.InviteeID = &inviteeID
+	}
+	return &cp
+}
+
 // Create persists a new invitation. Returns invitation.ErrInviteCodeConflict
 // if inv.InviteCode collides with an existing invitation's code, mirroring
 // postgres.InvitationRepository's unique-constraint behavior.
@@ -53,8 +71,7 @@ func (r *InvitationRepo) Create(_ context.Context, inv *invitation.Invitation) e
 			return invitation.ErrInviteCodeConflict
 		}
 	}
-	cp := *inv
-	r.Invitations[inv.ID] = &cp
+	r.Invitations[inv.ID] = cloneInvitation(inv)
 	return nil
 }
 
@@ -68,8 +85,7 @@ func (r *InvitationRepo) GetByID(_ context.Context, id string) (*invitation.Invi
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	cp := *inv
-	return &cp, nil
+	return cloneInvitation(inv), nil
 }
 
 // GetByCode retrieves an invitation by its unique invite code. Returns
@@ -80,8 +96,7 @@ func (r *InvitationRepo) GetByCode(_ context.Context, code string) (*invitation.
 
 	for _, inv := range r.Invitations {
 		if inv.InviteCode == code {
-			cp := *inv
-			return &cp, nil
+			return cloneInvitation(inv), nil
 		}
 	}
 	return nil, domain.ErrNotFound
@@ -97,8 +112,7 @@ func (r *InvitationRepo) GetPendingByRoomAndInvitee(_ context.Context, roomID, i
 	for _, inv := range r.Invitations {
 		if inv.RoomID == roomID && inv.InviteeID != nil && *inv.InviteeID == inviteeID &&
 			inv.Status == invitation.StatusPending {
-			cp := *inv
-			return &cp, nil
+			return cloneInvitation(inv), nil
 		}
 	}
 	return nil, domain.ErrNotFound
@@ -113,8 +127,7 @@ func (r *InvitationRepo) ListByRoomID(_ context.Context, roomID string) ([]*invi
 	var result []*invitation.Invitation
 	for _, inv := range r.Invitations {
 		if inv.RoomID == roomID {
-			cp := *inv
-			result = append(result, &cp)
+			result = append(result, cloneInvitation(inv))
 		}
 	}
 	sortInvitationsByCreatedAtDesc(result)
@@ -130,8 +143,7 @@ func (r *InvitationRepo) ListPendingByInviteeID(_ context.Context, inviteeID str
 	var result []*invitation.Invitation
 	for _, inv := range r.Invitations {
 		if inv.InviteeID != nil && *inv.InviteeID == inviteeID && inv.Status == invitation.StatusPending {
-			cp := *inv
-			result = append(result, &cp)
+			result = append(result, cloneInvitation(inv))
 		}
 	}
 	sortInvitationsByCreatedAtDesc(result)
@@ -170,25 +182,54 @@ func (r *InvitationRepo) updateStatusLocked(id string, newStatus, expectedStatus
 }
 
 // AcceptTx approximates postgres.InvitationRepository.AcceptTx's atomicity
-// for tests: it holds r.mu across both the status CAS (when
-// transitionStatus is true) and the AddMember callback, so a concurrent
-// UpdateStatus call for the same invitation ID is serialized against this
-// one exactly as a real DB transaction's row lock would serialize it. See
-// the AddMember field's doc comment.
+// for tests: it holds r.mu across the pending-status check -- a CAS via
+// updateStatusLocked when transitionStatus is true, or a plain read-and-
+// compare against StatusPending when transitionStatus is false, mirroring
+// the real transaction's `SELECT ... FOR UPDATE` -- and the AddMember
+// callback, so a concurrent UpdateStatus call for the same invitation ID is
+// serialized against this one exactly as a real DB transaction's row lock
+// would serialize it. If AddMember fails after a successful status CAS,
+// the status is rolled back to what it was immediately before the CAS,
+// mirroring the real transaction's rollback on a failed room_members
+// insert, rather than leaving the invitation stuck StatusAccepted with no
+// corresponding member row. See the AddMember field's doc comment.
 func (r *InvitationRepo) AcceptTx(ctx context.Context, invitationID string, expectedStatus invitation.Status, transitionStatus bool, member *domainroom.RoomMember) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if transitionStatus {
+		var priorStatus invitation.Status
+		if inv, ok := r.Invitations[invitationID]; ok {
+			priorStatus = inv.Status
+		}
 		if err := r.updateStatusLocked(invitationID, invitation.StatusAccepted, expectedStatus); err != nil {
 			return err
 		}
+		if r.AddMember == nil {
+			return nil
+		}
+		if err := r.AddMember(ctx, member); err != nil {
+			r.Invitations[invitationID].Status = priorStatus
+			return err
+		}
+		return nil
 	}
 
-	if r.AddMember != nil {
-		return r.AddMember(ctx, member)
+	// Reusable link invitations never run the CAS above, so check the
+	// invitation's current status here instead -- mirroring
+	// postgres.InvitationRepository.AcceptTx's `SELECT ... FOR UPDATE`
+	// re-check -- rather than admitting the member regardless of status.
+	inv, ok := r.Invitations[invitationID]
+	if !ok {
+		return domain.ErrNotFound
 	}
-	return nil
+	if inv.Status != invitation.StatusPending {
+		return domain.ErrInvitationNotPending
+	}
+	if r.AddMember == nil {
+		return nil
+	}
+	return r.AddMember(ctx, member)
 }
 
 // sortInvitationsByCreatedAtDesc sorts invitations in place by CreatedAt

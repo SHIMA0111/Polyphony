@@ -70,30 +70,40 @@ type InvitationRepository interface {
 	// transition conflict.
 	UpdateStatus(ctx context.Context, id string, newStatus, expectedStatus Status) error
 
-	// AcceptTx atomically performs an invitation accept: when
-	// transitionStatus is true (a username-targeted invitation), it first
-	// transitions the invitation identified by invitationID from
-	// expectedStatus to StatusAccepted exactly as UpdateStatus's CAS does;
-	// only if that transition succeeds (or transitionStatus is false, for a
-	// reusable link invitation, which never changes status) does it then
-	// insert member into room_members — both statements committing or
-	// rolling back together in a single database transaction.
+	// AcceptTx atomically performs an invitation accept, verifying the
+	// invitation's pending status atomically inside a single database
+	// transaction in both modes before ever inserting into room_members:
+	//   - transitionStatus == true (a username-targeted invitation): it
+	//     first transitions the invitation identified by invitationID from
+	//     expectedStatus to StatusAccepted exactly as UpdateStatus's CAS
+	//     does, and only proceeds if that transition succeeds.
+	//   - transitionStatus == false (a reusable link invitation, which
+	//     never changes status): it instead locks the invitation row and
+	//     confirms its current status is still StatusPending, rejecting the
+	//     accept otherwise.
+	// Either way, member is only inserted into room_members once that check
+	// passes, with both the check and the insert committing or rolling back
+	// together in a single database transaction.
 	//
-	// This closes the race UpdateStatus's CAS alone cannot: without a shared
-	// transaction, two callers could each pass their own pre-check (GetByID
-	// + a stale status read) before either writes, and separately call
-	// AddMember and UpdateStatus, leaving a room_members row inserted for an
-	// invitation whose status a concurrent Reject just set to
+	// This closes two races UpdateStatus's CAS alone cannot: without a
+	// shared transaction, two callers could each pass their own pre-check
+	// (GetByID + a stale status read) before either writes, and separately
+	// call AddMember and UpdateStatus, leaving a room_members row inserted
+	// for an invitation whose status a concurrent Reject just set to
 	// StatusRejected (or vice versa: a status flip to StatusAccepted with no
 	// corresponding member row, if AddMember's separate call failed after
-	// UpdateStatus succeeded).
+	// UpdateStatus succeeded). For link invitations specifically — which
+	// never run the CAS above — it also closes a TOCTOU window where a
+	// revoke or expiry landing after the usecase's own pre-check read, but
+	// before this call, would otherwise still admit the member.
 	//
 	// Returns domain.ErrNotFound if the invitation does not exist,
-	// domain.ErrInvitationNotPending if transitionStatus is true and the
-	// invitation's current status is not expectedStatus, and
-	// domain.ErrAlreadyMember if member.UserID is already a member of
-	// member.RoomID (a unique-constraint violation on room_members, e.g. a
-	// concurrent accept of a different invitation into the same room won
-	// first).
+	// domain.ErrInvitationNotPending if the invitation's current status is
+	// not StatusPending — checked against expectedStatus via CAS when
+	// transitionStatus is true, or read-and-compared to StatusPending under
+	// row lock when transitionStatus is false — and domain.ErrAlreadyMember
+	// if member.UserID is already a member of member.RoomID (a unique-
+	// constraint violation on room_members, e.g. a concurrent accept of a
+	// different invitation into the same room won first).
 	AcceptTx(ctx context.Context, invitationID string, expectedStatus Status, transitionStatus bool, member *domainroom.RoomMember) error
 }

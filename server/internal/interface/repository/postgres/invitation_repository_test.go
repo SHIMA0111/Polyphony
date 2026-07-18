@@ -285,17 +285,32 @@ func TestInvitationRepositoryAcceptTxConcurrentAcceptReject(t *testing.T) {
 		JoinedAt: time.Now(),
 	}
 
+	// ready/start form a barrier that provably starts both goroutines
+	// concurrently: each signals ready.Done() and then blocks on <-start,
+	// so neither can begin its repo call until the main goroutine has
+	// observed both are waiting (ready.Wait()) and releases them together
+	// (close(start)). Without this, one goroutine could race ahead and
+	// finish before the other even begins, defeating the point of the test.
+	var ready sync.WaitGroup
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	var acceptErr, rejectErr error
+	ready.Add(2)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		ready.Done()
+		<-start
 		acceptErr = repo.AcceptTx(ctx, inv.ID, invitation.StatusPending, true, member)
 	}()
 	go func() {
 		defer wg.Done()
+		ready.Done()
+		<-start
 		rejectErr = repo.UpdateStatus(ctx, inv.ID, invitation.StatusRejected, invitation.StatusPending)
 	}()
+	ready.Wait()
+	close(start)
 	wg.Wait()
 
 	got, err := repo.GetByID(ctx, inv.ID)
@@ -329,6 +344,46 @@ func TestInvitationRepositoryAcceptTxConcurrentAcceptReject(t *testing.T) {
 		}
 	default:
 		t.Fatalf("expected a definitive final status (accepted or rejected), got %q", got.Status)
+	}
+}
+
+// TestInvitationRepositoryAcceptTxRejectsRevokedLinkInvitation verifies the
+// transitionStatus=false path's TOCTOU fix: if a reusable link invitation
+// is revoked (or otherwise moved out of StatusPending) before AcceptTx
+// runs, AcceptTx must lock and re-check the row's status inside its own
+// transaction and refuse the accept, rather than trusting a caller's
+// now-stale pre-check read. Before this fix, AcceptTx(transitionStatus=
+// false) ran no status validation at all and would have inserted the room
+// member regardless of a concurrent revoke or expiry.
+func TestInvitationRepositoryAcceptTxRejectsRevokedLinkInvitation(t *testing.T) {
+	ctx := context.Background()
+	repo, roomRepo, inviter, invitee, rm := newInvitationTestFixture(ctx, t)
+
+	link := newTestInvitation(rm.ID, inviter.ID, nil, uuid.New().String())
+	if err := repo.Create(ctx, link); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Simulate a revoke landing after the usecase's own pre-check read but
+	// before its call to AcceptTx.
+	if err := repo.UpdateStatus(ctx, link.ID, invitation.StatusRevoked, invitation.StatusPending); err != nil {
+		t.Fatalf("UpdateStatus (revoke) failed: %v", err)
+	}
+
+	member := &domainroom.RoomMember{
+		ID:       uuid.New().String(),
+		RoomID:   rm.ID,
+		UserID:   invitee.ID,
+		Role:     domainroom.RoleMember,
+		JoinedAt: time.Now(),
+	}
+	err := repo.AcceptTx(ctx, link.ID, invitation.StatusPending, false, member)
+	if !errors.Is(err, domain.ErrInvitationNotPending) {
+		t.Fatalf("expected ErrInvitationNotPending for a revoked link invitation, got %v", err)
+	}
+
+	if _, memberErr := roomRepo.GetMember(ctx, rm.ID, invitee.ID); !errors.Is(memberErr, domain.ErrNotFound) {
+		t.Fatalf("expected no room_members row to be inserted, got member lookup error %v", memberErr)
 	}
 }
 

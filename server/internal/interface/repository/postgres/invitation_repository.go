@@ -209,11 +209,19 @@ func (r *InvitationRepository) exists(ctx context.Context, id string) (bool, err
 
 // AcceptTx implements invitation.InvitationRepository.AcceptTx (see its
 // GoDoc for the atomicity guarantee and error contract). It opens a single
-// database transaction, optionally runs UpdateStatus's CAS UPDATE within
-// it, and only inserts member into room_members if that CAS succeeded (or
-// transitionStatus is false), before committing -- so the status
-// transition and the membership insert either both take effect or neither
-// does.
+// database transaction and validates the invitation's pending status
+// atomically inside it, in both modes, before ever inserting into
+// room_members: when transitionStatus is true (a username-targeted
+// invitation), it runs UpdateStatus's CAS UPDATE within the tx and only
+// proceeds if that transition succeeds; when transitionStatus is false (a
+// reusable link invitation, which never changes status), it instead locks
+// the invitation row with `SELECT ... FOR UPDATE` and rejects the accept if
+// its status is no longer StatusPending -- closing a TOCTOU window where a
+// revoke or expiry landing after the usecase's own pre-check read, but
+// before this call, would otherwise still admit the member. Either way,
+// member is only inserted once that check passes, before committing -- so
+// the status transition (or status re-check) and the membership insert
+// either both take effect or neither does.
 func (r *InvitationRepository) AcceptTx(ctx context.Context, invitationID string, expectedStatus invitation.Status, transitionStatus bool, member *domainroom.RoomMember) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -230,6 +238,22 @@ func (r *InvitationRepository) AcceptTx(ctx context.Context, invitationID string
 		}
 		if err := updateStatusCAS(ctx, tx, existsCheck, invitationID, invitation.StatusAccepted, expectedStatus); err != nil {
 			return err
+		}
+	} else {
+		// Reusable link invitations never run the CAS above, so lock and
+		// re-check the row's status here instead: without this, a revoke
+		// or expiry sweep landing after the usecase's own pre-check read
+		// but before this call would still let the accept through.
+		var statusStr string
+		err := tx.QueryRow(ctx, `SELECT status FROM room_invitations WHERE id = $1 FOR UPDATE`, invitationID).Scan(&statusStr)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		if invitation.Status(statusStr) != invitation.StatusPending {
+			return domain.ErrInvitationNotPending
 		}
 	}
 
