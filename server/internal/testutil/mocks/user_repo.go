@@ -30,6 +30,26 @@ func (r *UserRepo) ensureInit() {
 	}
 }
 
+// cloneUser returns a shallow copy of u, additionally allocating a fresh
+// *string for KratosIdentityID when it is non-nil.
+//
+// A plain struct-literal copy (`stored := *u`) only copies the
+// KratosIdentityID pointer value, not the string it points to -- so the
+// clone and u would keep sharing the same *string. The four read paths that
+// hand a clone straight to the caller (GetByID/GetByEmail/GetByUsername/
+// GetByKratosIdentityID) use cloneUser so a caller can never reach back into
+// the internally-stored user (or a previously-returned clone) through that
+// shared pointer, matching the independence a real Postgres round-trip
+// provides.
+func cloneUser(u *user.User) *user.User {
+	cp := *u
+	if u.KratosIdentityID != nil {
+		id := *u.KratosIdentityID
+		cp.KratosIdentityID = &id
+	}
+	return &cp
+}
+
 // Create persists a new user. Returns domain.ErrEmailAlreadyExists or
 // domain.ErrUsernameAlreadyExists if a conflict is detected.
 func (r *UserRepo) Create(_ context.Context, u *user.User) error {
@@ -45,8 +65,7 @@ func (r *UserRepo) Create(_ context.Context, u *user.User) error {
 			return domain.ErrUsernameAlreadyExists
 		}
 	}
-	stored := *u // clone: never alias the caller-owned struct
-	r.Users[u.ID] = &stored
+	r.Users[u.ID] = cloneUser(u) // never alias the caller-owned struct (deep-copies pointer fields)
 	return nil
 }
 
@@ -59,8 +78,7 @@ func (r *UserRepo) GetByID(_ context.Context, id string) (*user.User, error) {
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	stored := *u // clone: never hand out the internally-mutated pointer
-	return &stored, nil
+	return cloneUser(u), nil // never hand out the internally-mutated pointer
 }
 
 // GetByEmail retrieves a user by email. Returns domain.ErrNotFound if not
@@ -71,8 +89,7 @@ func (r *UserRepo) GetByEmail(_ context.Context, email string) (*user.User, erro
 
 	for _, u := range r.Users {
 		if u.Email == email {
-			stored := *u // clone: never hand out the internally-mutated pointer
-			return &stored, nil
+			return cloneUser(u), nil // never hand out the internally-mutated pointer
 		}
 	}
 	return nil, domain.ErrNotFound
@@ -86,8 +103,7 @@ func (r *UserRepo) GetByUsername(_ context.Context, username string) (*user.User
 
 	for _, u := range r.Users {
 		if u.Username == username {
-			stored := *u // clone: never hand out the internally-mutated pointer
-			return &stored, nil
+			return cloneUser(u), nil // never hand out the internally-mutated pointer
 		}
 	}
 	return nil, domain.ErrNotFound
@@ -102,8 +118,7 @@ func (r *UserRepo) GetByKratosIdentityID(_ context.Context, kratosIdentityID str
 
 	for _, u := range r.Users {
 		if u.KratosIdentityID != nil && *u.KratosIdentityID == kratosIdentityID {
-			stored := *u // clone: never hand out the internally-mutated pointer
-			return &stored, nil
+			return cloneUser(u), nil // never hand out the internally-mutated pointer
 		}
 	}
 	return nil, domain.ErrNotFound
@@ -155,8 +170,7 @@ func (r *UserRepo) Update(_ context.Context, u *user.User) error {
 			return domain.ErrUsernameAlreadyExists
 		}
 	}
-	stored := *u // clone: never alias the caller-owned struct
-	r.Users[u.ID] = &stored
+	r.Users[u.ID] = cloneUser(u) // never alias the caller-owned struct (deep-copies pointer fields)
 	return nil
 }
 

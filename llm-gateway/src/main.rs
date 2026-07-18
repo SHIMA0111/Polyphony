@@ -162,7 +162,21 @@ async fn main() {
 /// # Returns
 /// `true` if `key` is set in the environment to a non-empty string, `false` otherwise.
 fn has_non_empty_env(key: &str) -> bool {
-    std::env::var(key).is_ok_and(|v| !v.is_empty())
+    is_non_empty(std::env::var(key).ok().as_deref())
+}
+
+/// Reports whether an optional string value is present and non-empty.
+///
+/// Pure helper extracted from `has_non_empty_env` so its non-empty/empty/absent logic
+/// can be unit-tested without mutating process-global environment state.
+///
+/// # Arguments
+/// * `v` — The value to check, as `Some(&str)` if present or `None` if absent.
+///
+/// # Returns
+/// `true` if `v` is `Some` and non-empty, `false` otherwise.
+fn is_non_empty(v: Option<&str>) -> bool {
+    v.is_some_and(|v| !v.is_empty())
 }
 
 /// Waits until `rx` observes a `true` value, i.e. until the shared shutdown signal has
@@ -217,42 +231,19 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Environment variables are process-global, so serialize tests that mutate them
-    // (mirrors the guard pattern used in `config.rs`'s tests).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn test_has_non_empty_env_true_when_set_and_non_empty() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::set_var("MAIN_TEST_KEY_A", "sk-something");
-        }
-        assert!(has_non_empty_env("MAIN_TEST_KEY_A"));
-        unsafe {
-            std::env::remove_var("MAIN_TEST_KEY_A");
-        }
+    fn test_is_non_empty_true_when_set_and_non_empty() {
+        assert!(is_non_empty(Some("sk-x")));
     }
 
     #[test]
-    fn test_has_non_empty_env_false_when_unset() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::remove_var("MAIN_TEST_KEY_B");
-        }
-        assert!(!has_non_empty_env("MAIN_TEST_KEY_B"));
+    fn test_is_non_empty_false_when_unset() {
+        assert!(!is_non_empty(None));
     }
 
     #[test]
-    fn test_has_non_empty_env_false_when_empty_string() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::set_var("MAIN_TEST_KEY_C", "");
-        }
-        assert!(!has_non_empty_env("MAIN_TEST_KEY_C"));
-        unsafe {
-            std::env::remove_var("MAIN_TEST_KEY_C");
-        }
+    fn test_is_non_empty_false_when_empty_string() {
+        assert!(!is_non_empty(Some("")));
     }
 }

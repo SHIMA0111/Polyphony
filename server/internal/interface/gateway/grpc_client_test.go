@@ -335,6 +335,9 @@ func TestGRPCClientListModelsRetriesOnUnavailableThenSucceeds(t *testing.T) {
 	}
 }
 
+// TestGRPCClientCompleteNonRetryableCodeReturnsImmediately asserts that
+// Complete returns after a single invocation, without retrying, when the
+// gRPC failure code is not in the retryable set (e.g. InvalidArgument).
 func TestGRPCClientCompleteNonRetryableCodeReturnsImmediately(t *testing.T) {
 	fixture, stop := newTestGRPCFixture(t, 3, time.Millisecond)
 	defer stop()

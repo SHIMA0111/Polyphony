@@ -235,6 +235,14 @@ func TestUpdateRoomAndAIContextCutoffDoNotClobberEachOther(t *testing.T) {
 // UpdateAIContextCutoff being genuinely disjoint partial updates (touching
 // only their own columns) makes that interleaving harmless by construction.
 //
+// A BeforeGetByID barrier forces both goroutines to complete their
+// snapshot-reading GetByID call before either is allowed to proceed to its
+// write, so the test provably exercises that concurrent-read-then-disjoint-
+// write interleaving instead of leaving it up to goroutine scheduling luck
+// (without it, the race detector and the assertions below would still pass
+// even if the two calls happened to run back-to-back with no overlap at
+// all).
+//
 // Run with -race to also catch any data race in the repo mock itself.
 func TestConcurrentUpdateRoomAndAIContextCutoffNoLostUpdate(t *testing.T) {
 	repo := &mocks.RoomRepo{}
@@ -243,6 +251,17 @@ func TestConcurrentUpdateRoomAndAIContextCutoffNoLostUpdate(t *testing.T) {
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Original Name", "Original Description")
 	cutoff := time.Now()
+
+	// Barrier: exactly 2 participants (UpdateRoom's and UpdateAIContextCutoff's
+	// snapshot reads) must each reach GetByID and call Done() before either is
+	// released by Wait() -- guaranteeing both snapshots are captured before
+	// either call's subsequent write runs.
+	var snapshotBarrier sync.WaitGroup
+	snapshotBarrier.Add(2)
+	repo.BeforeGetByID = func() {
+		snapshotBarrier.Done()
+		snapshotBarrier.Wait()
+	}
 
 	var wg sync.WaitGroup
 	var ready sync.WaitGroup
@@ -270,6 +289,12 @@ func TestConcurrentUpdateRoomAndAIContextCutoffNoLostUpdate(t *testing.T) {
 	ready.Wait()
 	close(start)
 	wg.Wait()
+
+	// The barrier's fixed 2-participant count is now spent; clear it so the
+	// unrelated GetByID call below (a plain post-hoc assertion read, not a
+	// third snapshot racing the other two) doesn't block forever or drive
+	// the WaitGroup counter negative.
+	repo.BeforeGetByID = nil
 
 	if updateRoomErr != nil {
 		t.Fatalf("UpdateRoom failed: %v", updateRoomErr)
@@ -389,13 +414,21 @@ func TestListRoomsEmpty(t *testing.T) {
 }
 
 // TestListRoomsIncludesRole verifies ListRooms returns each room paired with
-// the caller's own membership role.
+// the caller's own membership role, and (since ListByUserIDWithRole's
+// underlying query joins in ai_context_cutoff_at alongside the other room
+// columns) that a previously-set AI context cutoff round-trips through the
+// list too, not just single-room reads like GetByID.
 func TestListRoomsIncludesRole(t *testing.T) {
 	repo := &mocks.RoomRepo{}
 	uc := NewRoomUsecase(repo)
 	ctx := context.Background()
 
 	rwr, _ := uc.CreateRoom(ctx, "user-1", "Test Room", "desc")
+
+	cutoff := time.Now().Add(-time.Hour)
+	if _, err := uc.UpdateAIContextCutoff(ctx, "user-1", rwr.Room.ID, &cutoff); err != nil {
+		t.Fatalf("UpdateAIContextCutoff failed: %v", err)
+	}
 
 	rooms, err := uc.ListRooms(ctx, "user-1")
 	if err != nil {
@@ -409,6 +442,9 @@ func TestListRoomsIncludesRole(t *testing.T) {
 	}
 	if rooms[0].Role != domainroom.RoleMaster {
 		t.Fatalf("expected role master, got %s", rooms[0].Role)
+	}
+	if rooms[0].Room.AIContextCutoffAt == nil || !rooms[0].Room.AIContextCutoffAt.Equal(cutoff) {
+		t.Fatalf("expected AIContextCutoffAt %v in ListRooms result, got %v", cutoff, rooms[0].Room.AIContextCutoffAt)
 	}
 }
 

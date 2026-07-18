@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -254,6 +255,80 @@ func TestInvitationRepositoryUpdateStatus(t *testing.T) {
 	}
 	if got.Status != invitation.StatusRejected {
 		t.Fatalf("expected status to remain rejected after a failed CAS, got %s", got.Status)
+	}
+}
+
+// TestInvitationRepositoryAcceptTxConcurrentAcceptReject races AcceptTx
+// (from a simulated AcceptInvitation) against UpdateStatus (from a
+// simulated RejectInvitation) for the same username-targeted invitation,
+// and asserts the final state is never mixed: either the invitation ends up
+// StatusAccepted with the room member present, or StatusRejected with no
+// room member ever inserted -- never both a member row AND a rejected
+// status, and never neither outcome (e.g. a status stuck on pending). This
+// exercises the real Postgres transaction/row-locking behavior AcceptTx
+// relies on, which the in-memory mocks.InvitationRepo can only approximate
+// with a shared mutex.
+func TestInvitationRepositoryAcceptTxConcurrentAcceptReject(t *testing.T) {
+	ctx := context.Background()
+	repo, roomRepo, inviter, invitee, rm := newInvitationTestFixture(ctx, t)
+
+	inv := newTestInvitation(rm.ID, inviter.ID, &invitee.ID, uuid.New().String())
+	if err := repo.Create(ctx, inv); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	member := &domainroom.RoomMember{
+		ID:       uuid.New().String(),
+		RoomID:   rm.ID,
+		UserID:   invitee.ID,
+		Role:     domainroom.RoleMember,
+		JoinedAt: time.Now(),
+	}
+
+	var wg sync.WaitGroup
+	var acceptErr, rejectErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		acceptErr = repo.AcceptTx(ctx, inv.ID, invitation.StatusPending, true, member)
+	}()
+	go func() {
+		defer wg.Done()
+		rejectErr = repo.UpdateStatus(ctx, inv.ID, invitation.StatusRejected, invitation.StatusPending)
+	}()
+	wg.Wait()
+
+	got, err := repo.GetByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+
+	_, memberErr := roomRepo.GetMember(ctx, rm.ID, invitee.ID)
+	isMember := memberErr == nil
+
+	switch got.Status {
+	case invitation.StatusAccepted:
+		if acceptErr != nil {
+			t.Fatalf("status is accepted but AcceptTx returned an error: %v", acceptErr)
+		}
+		if rejectErr == nil {
+			t.Fatal("status is accepted but RejectInvitation's UpdateStatus did not report a conflict")
+		}
+		if !isMember {
+			t.Fatal("status is accepted but the room member was never inserted")
+		}
+	case invitation.StatusRejected:
+		if rejectErr != nil {
+			t.Fatalf("status is rejected but UpdateStatus returned an error: %v", rejectErr)
+		}
+		if acceptErr == nil {
+			t.Fatal("status is rejected but AcceptTx did not report a conflict")
+		}
+		if isMember {
+			t.Fatal("status is rejected but a room member was inserted anyway")
+		}
+	default:
+		t.Fatalf("expected a definitive final status (accepted or rejected), got %q", got.Status)
 	}
 }
 

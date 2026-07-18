@@ -4,6 +4,8 @@ package invitation
 import (
 	"context"
 	"errors"
+
+	domainroom "github.com/SHIMA0111/multi-user-ai/server/internal/domain/room"
 )
 
 // ErrInviteCodeConflict indicates Create failed because the generated
@@ -67,4 +69,31 @@ type InvitationRepository interface {
 	// GetByID (and therefore know it exists) can treat any error here as a
 	// transition conflict.
 	UpdateStatus(ctx context.Context, id string, newStatus, expectedStatus Status) error
+
+	// AcceptTx atomically performs an invitation accept: when
+	// transitionStatus is true (a username-targeted invitation), it first
+	// transitions the invitation identified by invitationID from
+	// expectedStatus to StatusAccepted exactly as UpdateStatus's CAS does;
+	// only if that transition succeeds (or transitionStatus is false, for a
+	// reusable link invitation, which never changes status) does it then
+	// insert member into room_members — both statements committing or
+	// rolling back together in a single database transaction.
+	//
+	// This closes the race UpdateStatus's CAS alone cannot: without a shared
+	// transaction, two callers could each pass their own pre-check (GetByID
+	// + a stale status read) before either writes, and separately call
+	// AddMember and UpdateStatus, leaving a room_members row inserted for an
+	// invitation whose status a concurrent Reject just set to
+	// StatusRejected (or vice versa: a status flip to StatusAccepted with no
+	// corresponding member row, if AddMember's separate call failed after
+	// UpdateStatus succeeded).
+	//
+	// Returns domain.ErrNotFound if the invitation does not exist,
+	// domain.ErrInvitationNotPending if transitionStatus is true and the
+	// invitation's current status is not expectedStatus, and
+	// domain.ErrAlreadyMember if member.UserID is already a member of
+	// member.RoomID (a unique-constraint violation on room_members, e.g. a
+	// concurrent accept of a different invitation into the same room won
+	// first).
+	AcceptTx(ctx context.Context, invitationID string, expectedStatus Status, transitionStatus bool, member *domainroom.RoomMember) error
 }

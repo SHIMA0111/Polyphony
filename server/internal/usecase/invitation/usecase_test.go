@@ -24,6 +24,11 @@ func newTestFixture() (*InvitationUsecase, *mocks.RoomRepo, *mocks.UserRepo, *mo
 	roomRepo := &mocks.RoomRepo{}
 	userRepo := &mocks.UserRepo{}
 	invitationRepo := &mocks.InvitationRepo{}
+	// Wire AcceptTx's member-insertion callback to the same roomRepo the
+	// usecase uses, so accepting an invitation actually creates the
+	// room_members-equivalent row in roomRepo -- see InvitationRepo.AddMember's
+	// doc comment.
+	invitationRepo.AddMember = roomRepo.AddMember
 
 	roomRepo.SeedMember("room-1", "admin-1", "admin")
 	roomRepo.SeedMember("room-1", "member-1", "member")

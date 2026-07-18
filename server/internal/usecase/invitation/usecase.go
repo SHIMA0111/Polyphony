@@ -198,19 +198,18 @@ func (u *InvitationUsecase) GetInvitationByCode(ctx context.Context, userID, cod
 // reusable by any authenticated user holding the code until expiry or
 // explicit revocation.
 //
-// Concurrency: for a username-targeted invitation, the status CAS
-// (invitationRepo.UpdateStatus's compare-and-swap, see its GoDoc) is
-// performed BEFORE AddMember, not after -- deliberately, so it acts as the
-// linearization point for this invitation. If a concurrent AcceptInvitation
-// or RejectInvitation call on the same invitation has already transitioned
-// its status away from StatusPending, this caller's CAS fails and the
-// function returns without ever calling AddMember. Doing the CAS first (and
-// only proceeding to mutate room membership on success) is what prevents the
-// "mixed final state" this guards against: a room_members row added for an
-// invitation whose status ultimately reads StatusRejected (or vice versa),
-// which the previous AddMember-then-UpdateStatus ordering could produce
-// under a race, since a losing UpdateStatus call left the already-added
-// member in place with no rollback.
+// Concurrency: the status transition (for username-targeted invitations)
+// and inserting the room_members row happen atomically via
+// invitationRepo.AcceptTx, not as two separate repository calls: without
+// that, a concurrent AcceptInvitation/RejectInvitation pair racing the same
+// invitation could each pass their own pre-check below before either
+// writes, leaving a contradictory final state (e.g. a room_members row
+// inserted for an invitation a concurrent Reject just marked
+// StatusRejected). The checks in this method remain as a fast, friendly
+// pre-validation -- GetByID, forbidden, already-a-member, not-pending,
+// expired -- that lets most requests fail with a precise error before ever
+// reaching the database write; AcceptTx still enforces the authoritative
+// CAS underneath.
 func (u *InvitationUsecase) AcceptInvitation(ctx context.Context, userID, invitationID string) (*domainroom.RoomMember, error) {
 	inv, err := u.invitationRepo.GetByID(ctx, invitationID)
 	if err != nil {
@@ -230,22 +229,13 @@ func (u *InvitationUsecase) AcceptInvitation(ctx context.Context, userID, invita
 	// Single-use semantics only apply to username-targeted invitations;
 	// link invitations stay StatusPending forever (until expiry/revoke) so
 	// this check would otherwise always fail spuriously on the second use.
-	if inv.InviteeID != nil && inv.Status != domaininvitation.StatusPending {
+	transitionStatus := inv.InviteeID != nil
+	if transitionStatus && inv.Status != domaininvitation.StatusPending {
 		return nil, domain.ErrInvitationNotPending
 	}
 
 	if time.Now().After(inv.ExpiresAt) {
 		return nil, domain.ErrInvitationExpired
-	}
-
-	// CAS the status transition FIRST for username-targeted invitations: see
-	// the "Concurrency" note above. Link invitations have no status
-	// transition to race on (they never leave StatusPending here), so this
-	// is skipped for them.
-	if inv.InviteeID != nil {
-		if err := u.invitationRepo.UpdateStatus(ctx, inv.ID, domaininvitation.StatusAccepted, domaininvitation.StatusPending); err != nil {
-			return nil, err
-		}
 	}
 
 	member := &domainroom.RoomMember{
@@ -255,7 +245,7 @@ func (u *InvitationUsecase) AcceptInvitation(ctx context.Context, userID, invita
 		Role:     inv.Role,
 		JoinedAt: time.Now(),
 	}
-	if err := u.roomRepo.AddMember(ctx, member); err != nil {
+	if err := u.invitationRepo.AcceptTx(ctx, inv.ID, domaininvitation.StatusPending, transitionStatus, member); err != nil {
 		return nil, err
 	}
 

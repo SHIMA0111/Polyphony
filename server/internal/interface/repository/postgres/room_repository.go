@@ -108,7 +108,7 @@ func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*ro
 // lookups per room).
 func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string) ([]*room.RoomWithRole, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT r.id, r.name, r.description, r.owner_id, r.created_at, r.updated_at, rm.role
+		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_context_cutoff_at, r.created_at, r.updated_at, rm.role
 		 FROM rooms r
 		 INNER JOIN room_members rm ON r.id = rm.room_id
 		 WHERE rm.user_id = $1
@@ -123,7 +123,7 @@ func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string
 	for rows.Next() {
 		var rm room.Room
 		var roleStr string
-		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.CreatedAt, &rm.UpdatedAt, &roleStr); err != nil {
+		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.CreatedAt, &rm.UpdatedAt, &roleStr); err != nil {
 			return nil, err
 		}
 		result = append(result, &room.RoomWithRole{Room: &rm, Role: room.Role(roleStr)})
@@ -261,10 +261,44 @@ func (r *RoomRepository) RemoveMember(ctx context.Context, roomID, userID string
 	return nil
 }
 
-// UpdateMemberRole updates a single membership's role. It returns
-// domain.ErrNotFound if the membership (roomID, userID) does not exist.
+// UpdateMemberRole implements room.RoomRepository.UpdateMemberRole (see its
+// GoDoc for the owner-protection and TransferOwnership-serialization
+// contract). It runs the owner recheck and the role UPDATE inside a single
+// transaction, following the same r.pool.Begin / defer tx.Rollback /
+// tx.Commit pattern as Create and TransferOwnership:
+//
+//  1. `SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE` takes a row
+//     lock on rooms' roomID row -- the same row TransferOwnership's
+//     `UPDATE rooms SET owner_id = ... WHERE id = ... AND owner_id = ...`
+//     locks, so the two block each other rather than interleaving. Returns
+//     domain.ErrNotFound if the room does not exist.
+//  2. If the (possibly just-updated, if this call waited out a concurrent
+//     TransferOwnership) owner_id equals userID, returns
+//     room.ErrOwnerRoleProtected without writing anything.
+//  3. Otherwise runs the existing room_members role UPDATE and returns
+//     domain.ErrNotFound if it affects zero rows (the membership does not
+//     exist).
 func (r *RoomRepository) UpdateMemberRole(ctx context.Context, roomID, userID string, role room.Role) error {
-	tag, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var ownerID string
+	err = tx.QueryRow(ctx, `SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE`, roomID).Scan(&ownerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	if ownerID == userID {
+		return room.ErrOwnerRoleProtected
+	}
+
+	tag, err := tx.Exec(ctx,
 		`UPDATE room_members SET role = $1 WHERE room_id = $2 AND user_id = $3`,
 		string(role), roomID, userID,
 	)
@@ -274,7 +308,8 @@ func (r *RoomRepository) UpdateMemberRole(ctx context.Context, roomID, userID st
 	if tag.RowsAffected() == 0 {
 		return domain.ErrNotFound
 	}
-	return nil
+
+	return tx.Commit(ctx)
 }
 
 // TransferOwnership atomically updates rooms.owner_id to newOwnerID, sets

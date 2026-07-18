@@ -61,9 +61,29 @@ type RoomRepository interface {
 	RemoveMember(ctx context.Context, roomID, userID string) error
 
 	// UpdateMemberRole updates a single membership's role. It returns
-	// domain.ErrNotFound if the membership (roomID, userID) does not exist.
-	// It does not itself enforce any RBAC or "owner role is protected"
-	// invariant — those are usecase-layer concerns; this method is a plain
+	// domain.ErrNotFound if the membership (roomID, userID) does not exist,
+	// and ErrOwnerRoleProtected if userID is the room's current owner (the
+	// owner's role may only change via TransferOwnership, never a plain
+	// role edit).
+	//
+	// The owner recheck happens inside the same database transaction as the
+	// role UPDATE, under a row lock (`SELECT ... FOR UPDATE`) on rooms taken
+	// against the same rooms row that TransferOwnership's owner_id CAS
+	// update locks — so a TransferOwnership call racing this one is
+	// serialized against it rather than interleaved: whichever of the two
+	// transactions acquires the row lock first runs to completion (commit or
+	// rollback) before the other proceeds, and the loser's owner check
+	// (here) or CAS (in TransferOwnership) then observes the winner's
+	// already-committed state. Without that shared lock, a usecase-layer
+	// pre-check (GetByID then "is targetUserID == OwnerID") could pass
+	// before a concurrent TransferOwnership call makes targetUserID the new
+	// owner, and then this method's UPDATE would still apply, leaving the
+	// room with a master whose room_members.role was just downgraded by a
+	// role change that should have been rejected.
+	//
+	// It does not itself enforce any RBAC invariant beyond the owner check
+	// above — everything else (who may call this, which roles are valid
+	// targets) is a usecase-layer concern; this method is otherwise a plain
 	// persistence operation.
 	UpdateMemberRole(ctx context.Context, roomID, userID string, role Role) error
 

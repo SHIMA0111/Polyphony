@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -431,5 +432,104 @@ func TestTransferOwnershipStaleOwnerCAS(t *testing.T) {
 	}
 	if secondNewOwnerMember.Role != domainroom.RoleMember {
 		t.Fatalf("expected secondNewOwner's role to remain member after the failed stale-owner transfer, got %s", secondNewOwnerMember.Role)
+	}
+}
+
+// TestUpdateMemberRoleSerializedAgainstTransferOwnership races
+// RoomRepository.TransferOwnership(owner -> newOwner) against
+// RoomRepository.UpdateMemberRole(newOwner, RoleReader) -- an attempt to
+// downgrade the very member who is concurrently becoming the room's new
+// owner -- and asserts the room is never left with an owner whose
+// room_members.role is not master.
+//
+// This exercises the row lock UpdateMemberRole's owner recheck
+// (`SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE`) takes against the
+// same rooms row TransferOwnership's `UPDATE rooms SET owner_id = ...`
+// locks: without it, UpdateMemberRole could read owner_id = owner (still
+// the pre-transfer value) with no lock, decide newOwner is not (yet) the
+// owner and so is a legal target, and then have its
+// `UPDATE room_members SET role = 'reader' ...` commit *after*
+// TransferOwnership's own `UPDATE room_members SET role = 'master' ...` for
+// newOwner already committed -- leaving newOwner as rooms.owner_id but with
+// role 'reader'. The row lock instead serializes the two transactions, so
+// whichever commits first is fully visible to the other before it proceeds:
+// either UpdateMemberRole's downgrade lands before TransferOwnership (which
+// then unconditionally promotes newOwner to master anyway, overwriting it),
+// or UpdateMemberRole's owner recheck observes newOwner already installed as
+// owner (post-TransferOwnership-commit) and rejects the downgrade with
+// room.ErrOwnerRoleProtected.
+func TestUpdateMemberRoleSerializedAgainstTransferOwnership(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "serialize-owner")
+	newOwner := createTestUser(ctx, t, userRepo, "serialize-new-owner")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "Serialize Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if err := roomRepo.AddMember(ctx, &domainroom.RoomMember{
+		ID: uuid.New().String(), RoomID: rm.ID, UserID: newOwner.ID, Role: domainroom.RoleMember, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AddMember(newOwner) failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var ready sync.WaitGroup
+	ready.Add(2)
+	start := make(chan struct{})
+
+	var transferErr, updateRoleErr error
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-start
+		transferErr = roomRepo.TransferOwnership(ctx, rm.ID, owner.ID, newOwner.ID)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-start
+		updateRoleErr = roomRepo.UpdateMemberRole(ctx, rm.ID, newOwner.ID, domainroom.RoleReader)
+	}()
+
+	ready.Wait()
+	close(start)
+	wg.Wait()
+
+	if transferErr != nil {
+		t.Fatalf("TransferOwnership failed: %v", transferErr)
+	}
+	if updateRoleErr != nil && !errors.Is(updateRoleErr, domainroom.ErrOwnerRoleProtected) {
+		t.Fatalf("expected UpdateMemberRole to either succeed or fail with ErrOwnerRoleProtected, got %v", updateRoleErr)
+	}
+
+	updatedRoom, err := roomRepo.GetByID(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if updatedRoom.OwnerID != newOwner.ID {
+		t.Fatalf("expected owner_id %s, got %s", newOwner.ID, updatedRoom.OwnerID)
+	}
+
+	newOwnerMember, err := roomRepo.GetMember(ctx, rm.ID, newOwner.ID)
+	if err != nil {
+		t.Fatalf("GetMember(newOwner) failed: %v", err)
+	}
+	// The invariant under test: whoever ends up as rooms.owner_id must have
+	// room_members.role = master -- never "owner" with a downgraded role.
+	if newOwnerMember.Role != domainroom.RoleMaster {
+		t.Fatalf("expected the room's owner to have role master, got %s (owner-with-non-master-role)", newOwnerMember.Role)
 	}
 }

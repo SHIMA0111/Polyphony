@@ -30,6 +30,35 @@ type RoomRepo struct {
 	// Members is the backing store of room memberships, keyed by roomID
 	// then userID; access only while holding mu.
 	Members map[string]map[string]*room.RoomMember // roomID -> userID -> member
+
+	// BeforeGetByID, when set, is invoked synchronously at the very start of
+	// every GetByID call, before it acquires mu or touches the backing
+	// store. Concurrency tests use this hook to build a rendezvous barrier
+	// (e.g. a sync.WaitGroup that every call Done()s then Wait()s on) so
+	// every participating goroutine's "snapshot" GetByID call provably
+	// completes before any of them proceeds to its subsequent write --
+	// exercising the intended concurrent-write race window deterministically
+	// instead of leaving the interleaving up to goroutine scheduling luck.
+	BeforeGetByID func()
+}
+
+// cloneTimePtr returns a pointer to a copy of the time.Time t points to, or
+// nil if t is nil.
+//
+// A plain struct-literal copy of room.Room (`cloned := *rm`) only copies the
+// AIContextCutoffAt pointer value, not the time.Time it points to -- so the
+// clone and the internally-stored room would keep sharing the same
+// *time.Time. GetByID/ListByUserID/ListByUserIDWithRole use cloneTimePtr on
+// their way out, and UpdateAIContextCutoff uses it on its way in, so no
+// caller on either side can mutate a time.Time reachable from the mock's
+// stored state through a pointer it merely received or handed out --
+// matching the independence a real Postgres round-trip provides.
+func cloneTimePtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	return &cp
 }
 
 // ensureInit lazily initializes the backing maps. Callers must hold mu.
@@ -106,6 +135,10 @@ func (r *RoomRepo) Create(_ context.Context, rm *room.Room) error {
 // mutations wouldn't go through r.mu the way UpdateDetails/
 // UpdateAIContextCutoff/etc. do.
 func (r *RoomRepo) GetByID(_ context.Context, id string) (*room.Room, error) {
+	if r.BeforeGetByID != nil {
+		r.BeforeGetByID()
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -114,6 +147,7 @@ func (r *RoomRepo) GetByID(_ context.Context, id string) (*room.Room, error) {
 		return nil, domain.ErrNotFound
 	}
 	cloned := *rm
+	cloned.AIContextCutoffAt = cloneTimePtr(rm.AIContextCutoffAt)
 	return &cloned, nil
 }
 
@@ -131,6 +165,7 @@ func (r *RoomRepo) ListByUserID(_ context.Context, userID string) ([]*room.Room,
 		}
 		if _, ok := members[userID]; ok {
 			cloned := *rm
+			cloned.AIContextCutoffAt = cloneTimePtr(rm.AIContextCutoffAt)
 			rooms = append(rooms, &cloned)
 		}
 	}
@@ -155,6 +190,7 @@ func (r *RoomRepo) ListByUserIDWithRole(_ context.Context, userID string) ([]*ro
 			continue
 		}
 		cloned := *rm
+		cloned.AIContextCutoffAt = cloneTimePtr(rm.AIContextCutoffAt)
 		result = append(result, &room.RoomWithRole{Room: &cloned, Role: member.Role})
 	}
 	return result, nil
@@ -190,7 +226,7 @@ func (r *RoomRepo) UpdateAIContextCutoff(_ context.Context, roomID string, cutof
 	if !ok {
 		return domain.ErrNotFound
 	}
-	rm.AIContextCutoffAt = cutoff
+	rm.AIContextCutoffAt = cloneTimePtr(cutoff)
 	rm.UpdatedAt = updatedAt
 	return nil
 }
@@ -275,11 +311,25 @@ func (r *RoomRepo) RemoveMember(_ context.Context, roomID, userID string) error 
 	return nil
 }
 
-// UpdateMemberRole updates a single membership's role. Returns
-// domain.ErrNotFound if the membership does not exist.
+// UpdateMemberRole updates a single membership's role, mirroring
+// postgres.RoomRepository.UpdateMemberRole's owner-protection contract: it
+// returns room.ErrOwnerRoleProtected if userID is roomID's current owner,
+// checked (and, together with the rest of this method, executed) while
+// holding r.mu -- the same atomicity a real DB transaction's row lock on
+// rooms provides against a concurrent TransferOwnership call, see
+// TransferOwnership's GoDoc. Returns domain.ErrNotFound if the room or the
+// membership does not exist.
 func (r *RoomRepo) UpdateMemberRole(_ context.Context, roomID, userID string, role room.Role) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	rm, ok := r.Rooms[roomID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if rm.OwnerID == userID {
+		return room.ErrOwnerRoleProtected
+	}
 
 	members, ok := r.Members[roomID]
 	if !ok {
