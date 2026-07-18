@@ -66,6 +66,7 @@ export function ChatRoom({ roomId }: ChatRoomProps) {
           onSendWithAI={handleSendWithAI}
           models={models}
           canInvokeAI={canInvokeAI(viewerRole)}
+          messages={messages}
         />
       ) : (
         <Text textAlign="center" fontSize="xs" color="fg.muted" py={4}>

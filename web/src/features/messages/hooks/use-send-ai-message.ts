@@ -86,6 +86,8 @@ export function useSendAIMessage(roomId: string, options?: UseSendAIMessageOptio
         status: "sending",
         sequence: -1,
         in_response_to_message_id: null,
+        is_deleted: false,
+        exclude_from_ai: false,
         created_at: now,
         updated_at: now,
       }
@@ -98,6 +100,8 @@ export function useSendAIMessage(roomId: string, options?: UseSendAIMessageOptio
         status: "sending",
         sequence: -1,
         in_response_to_message_id: humanOptimisticId,
+        is_deleted: false,
+        exclude_from_ai: false,
         created_at: now,
         updated_at: now,
       }

@@ -34,6 +34,8 @@ describe("useChatRoom handleRegenerate", () => {
       status: "completed",
       sequence: 1,
       in_response_to_message_id: null,
+      is_deleted: false,
+      exclude_from_ai: false,
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
     }
@@ -46,6 +48,8 @@ describe("useChatRoom handleRegenerate", () => {
       status: "completed",
       sequence: 2,
       in_response_to_message_id: null,
+      is_deleted: false,
+      exclude_from_ai: false,
       created_at: "2026-01-01T00:00:01Z",
       updated_at: "2026-01-01T00:00:01Z",
     }
@@ -53,6 +57,8 @@ describe("useChatRoom handleRegenerate", () => {
       ...fixtureAiMessage,
       id: "ai-1",
       in_response_to_message_id: "human-1",
+      is_deleted: false,
+      exclude_from_ai: false,
       sequence: 3,
       created_at: "2026-01-01T00:00:02Z",
       updated_at: "2026-01-01T00:00:02Z",
@@ -99,6 +105,8 @@ describe("useChatRoom handleRegenerate", () => {
       ...fixtureAiMessage,
       id: "ai-orphan",
       in_response_to_message_id: null,
+      is_deleted: false,
+      exclude_from_ai: false,
     }
 
     server.use(

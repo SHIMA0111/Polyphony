@@ -1,9 +1,24 @@
 "use client"
 
-import { Box, Button, Flex, Spinner, Text } from "@chakra-ui/react"
-import { AlertTriangle, RefreshCw } from "lucide-react"
+import { useState } from "react"
+import {
+  Box,
+  Button,
+  Dialog,
+  Flex,
+  IconButton,
+  Menu,
+  Portal,
+  Spinner,
+  Text,
+} from "@chakra-ui/react"
+import { AlertTriangle, EyeOff, MoreVertical, RefreshCw } from "lucide-react"
 import type { Message } from "@/features/messages/types"
 import { Tooltip } from "@/components/ui/tooltip"
+import { useSession } from "@/features/auth/hooks/use-session"
+import { useRoom } from "@/features/rooms/hooks/use-room"
+import { useDeleteMessage } from "@/features/messages/hooks/use-delete-message"
+import { useUpdateMessageExclude } from "@/features/messages/hooks/use-update-message-exclude"
 import { MarkdownContent } from "./MarkdownContent"
 import { ThinkingBubble } from "./ThinkingBubble"
 
@@ -47,10 +62,49 @@ function formatShortTimestamp(iso: string): string {
 }
 
 /**
+ * Room-role privilege ranking, mirroring
+ * `server/internal/domain/room/role.go`'s closed
+ * `reader < guest < member < admin < master` hierarchy. Kept as a small,
+ * local, single-purpose helper rather than a shared `lib/roles.ts` module:
+ * the gating here is UX-only (hiding menu items a request would be `403`'d
+ * for anyway) and the server remains the sole authority regardless of what
+ * this computes.
+ */
+const ROOM_ROLE_RANK: Record<string, number> = {
+  reader: 0,
+  guest: 1,
+  member: 2,
+  admin: 3,
+  master: 4,
+}
+
+/**
+ * Reports whether `role` meets or exceeds `min` in the reader < guest <
+ * member < admin < master ordering. An unrecognized or missing `role`
+ * (including `undefined`, e.g. before the room query has loaded) never
+ * meets any minimum — mirroring `domainroom.Role.AtLeast`'s own
+ * fail-closed behavior for an invalid role.
+ */
+function roleAtLeast(role: string | undefined, min: string): boolean {
+  const rank = role ? ROOM_ROLE_RANK[role] : undefined
+  const minRank = ROOM_ROLE_RANK[min]
+  if (rank === undefined || minRank === undefined) return false
+  return rank >= minRank
+}
+
+/**
  * A single message bubble within a `MessageGroup`: the failed-state styling,
  * body content (markdown for AI messages, plain text for human messages),
- * the regenerate/retry action, and an always-visible dim timestamp that
- * expands to the full date-time in a tooltip on hover/focus.
+ * the regenerate/retry action, an always-visible dim timestamp that expands
+ * to the full date-time in a tooltip on hover/focus, and (Step 38) a
+ * per-message action menu offering an AI-context exclude/include toggle and
+ * a soft-delete action, gated by the caller's room role.
+ *
+ * The menu is entirely self-contained: it reads the requesting user's
+ * identity (`useSession`) and room role (`useRoom(message.room_id)`, sharing
+ * the same cached query `ChatRoom.tsx` already populated) directly rather
+ * than needing either threaded down through `MessageList`/`MessageGroup` as
+ * new props.
  */
 export function MessageBubble({
   message,
@@ -58,9 +112,51 @@ export function MessageBubble({
   isRegenerating,
   onRetry,
 }: MessageBubbleProps) {
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  const sessionQuery = useSession()
+  const roomQuery = useRoom(message.room_id)
+  const deleteMutation = useDeleteMessage(message.room_id)
+  const excludeMutation = useUpdateMessageExclude(message.room_id)
+
   const isFailed = message.status === "failed"
   const isSending = message.status === "sending"
   const isFailedHuman = isFailed && message.type === "human"
+  const isExcluded = message.exclude_from_ai
+
+  // A client-synthesized optimistic entry (see `useSendMessage`/
+  // `useSendAIMessage`) has no real, persisted id yet — its menu (if any
+  // were shown) would only ever 404 against the server, so both actions
+  // below are gated on this in addition to the role/ownership checks.
+  const isPersisted = !message.id.startsWith("optimistic-")
+
+  const currentUserId = sessionQuery.data?.identity.id
+  const role = roomQuery.data?.role
+  const isOwnMessage =
+    currentUserId != null && currentUserId === message.sender_id
+
+  const canToggleExclude =
+    isPersisted && !message.is_deleted && roleAtLeast(role, "member")
+  const canDelete =
+    isPersisted &&
+    !message.is_deleted &&
+    (isOwnMessage || roleAtLeast(role, "admin"))
+  const showMenu = canToggleExclude || canDelete
+
+  const handleToggleExclude = () => {
+    excludeMutation.mutate({ messageId: message.id, exclude: !isExcluded })
+  }
+
+  const handleConfirmDelete = async () => {
+    try {
+      await deleteMutation.mutateAsync(message.id)
+      setConfirmOpen(false)
+    } catch {
+      // The mutation's own `onError` already surfaced a failure toast; keep
+      // the confirmation dialog open so the user can retry or cancel rather
+      // than silently discarding their intent to delete.
+    }
+  }
 
   return (
     <Flex
@@ -76,7 +172,7 @@ export function MessageBubble({
         px={4}
         py={2.5}
         maxW="85%"
-        opacity={isSending ? 0.6 : 1}
+        opacity={isSending ? 0.6 : isExcluded ? 0.55 : 1}
         bg={
           isFailed
             ? "red.50"
@@ -131,6 +227,14 @@ export function MessageBubble({
           </Tooltip>
         )}
 
+        {isExcluded && (
+          <Tooltip content="Excluded from AI context">
+            <Flex align="center" color="fg.muted" tabIndex={0}>
+              <EyeOff size={12} aria-label="Excluded from AI context" />
+            </Flex>
+          </Tooltip>
+        )}
+
         {message.type === "ai" && (
           <Button
             variant="ghost"
@@ -167,7 +271,85 @@ export function MessageBubble({
             Retry
           </Button>
         )}
+
+        {showMenu && (
+          <Menu.Root>
+            <Menu.Trigger asChild>
+              <IconButton
+                aria-label="Message actions"
+                variant="ghost"
+                size="xs"
+                h={7}
+                minW={7}
+                opacity={0}
+                _groupHover={{ opacity: 1 }}
+                transition="opacity 0.2s"
+              >
+                <MoreVertical size={14} />
+              </IconButton>
+            </Menu.Trigger>
+            <Portal>
+              <Menu.Positioner>
+                <Menu.Content>
+                  {canToggleExclude && (
+                    <Menu.Item
+                      value="toggle-exclude"
+                      onClick={handleToggleExclude}
+                    >
+                      {isExcluded ? "Include in AI" : "Exclude from AI"}
+                    </Menu.Item>
+                  )}
+                  {canDelete && (
+                    <Menu.Item
+                      value="delete"
+                      color="fg.error"
+                      onClick={() => setConfirmOpen(true)}
+                    >
+                      Delete message
+                    </Menu.Item>
+                  )}
+                </Menu.Content>
+              </Menu.Positioner>
+            </Portal>
+          </Menu.Root>
+        )}
       </Flex>
+
+      <Dialog.Root
+        role="alertdialog"
+        open={confirmOpen}
+        onOpenChange={(e) => setConfirmOpen(e.open)}
+      >
+        <Portal>
+          <Dialog.Backdrop />
+          <Dialog.Positioner>
+            <Dialog.Content maxW="400px">
+              <Dialog.Header>
+                <Dialog.Title>Delete message?</Dialog.Title>
+              </Dialog.Header>
+              <Dialog.Body>
+                <Text color="fg.muted">
+                  This message will be removed from the room. This cannot be
+                  undone.
+                </Text>
+              </Dialog.Body>
+              <Dialog.Footer>
+                <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  colorPalette="red"
+                  loading={deleteMutation.isPending}
+                  onClick={handleConfirmDelete}
+                >
+                  Delete
+                </Button>
+              </Dialog.Footer>
+              <Dialog.CloseTrigger />
+            </Dialog.Content>
+          </Dialog.Positioner>
+        </Portal>
+      </Dialog.Root>
     </Flex>
   )
 }
