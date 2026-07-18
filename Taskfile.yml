@@ -184,6 +184,18 @@ tasks:
     cmds:
       - docker compose -p polyphony-e2e --profile test down -v
 
+  test:e2e:regression:realtime-ai:
+    desc: Run Step 57's realtime + AI-core regression suite (send, model select, context controls, rate limiting) against the running test stack
+    dir: web
+    deps: [test:e2e:up]
+    cmds:
+      - >-
+        bunx playwright test
+        e2e/regression/ai-send-model-select.spec.ts
+        e2e/regression/two-client-realtime.spec.ts
+        e2e/regression/context-controls-ai-effect.spec.ts
+        e2e/regression/rate-limiting.spec.ts
+
   # ---------------------------------------------------------------------------
   # Lint & Format
   # ---------------------------------------------------------------------------
