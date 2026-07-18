@@ -1,0 +1,2 @@
+-- Modify "room_invitations" table
+ALTER TABLE "room_invitations" ADD CONSTRAINT "room_invitations_role_check" CHECK ((role)::text = ANY ((ARRAY['reader'::character varying, 'guest'::character varying, 'member'::character varying, 'admin'::character varying, 'master'::character varying])::text[])), ADD CONSTRAINT "room_invitations_status_check" CHECK ((status)::text = ANY ((ARRAY['pending'::character varying, 'accepted'::character varying, 'rejected'::character varying, 'revoked'::character varying])::text[]));

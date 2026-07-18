@@ -31,8 +31,15 @@ interface MessageBubbleProps {
   onRegenerate: (messageId: string) => void
   /** Whether this specific message is the one currently being regenerated. */
   isRegenerating: boolean
-  /** Re-sends a failed human message's original content. */
-  onRetry: (messageId: string, content: string) => void
+  /**
+   * Re-sends a failed human message's original content. Typed `Promise<void>`
+   * (matching `useChatRoom.handleRetry`'s actual signature) rather than
+   * `void`: that handler already catches its own errors internally
+   * (mirroring `onRegenerate`), so callers may fire-and-forget it, but the
+   * accurate return type keeps that an intentional choice rather than one
+   * this prop's type silently hides.
+   */
+  onRetry: (messageId: string, content: string) => Promise<void>
 }
 
 // The short-time formatter below is pinned to `timeZone: "UTC"` rather than

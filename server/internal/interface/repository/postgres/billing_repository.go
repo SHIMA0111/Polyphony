@@ -47,7 +47,7 @@ func (r *BillingRepository) GetOrCreateBalance(ctx context.Context, userID strin
 // DebitAndRecord atomically decrements userID's balance by amount (applied
 // as a debit) and inserts a matching TransactionTypeConsumption row, both in
 // a single database transaction. See billing.BalanceRepository.DebitAndRecord
-// for the negative-balance/ErrNotFound contract.
+// for the negative-balance/ErrNotFound/ErrInvalidAmount contract.
 func (r *BillingRepository) DebitAndRecord(ctx context.Context, userID, roomID, messageID string, amount int64, description string) (*billing.TokenTransaction, error) {
 	return r.mutateAndRecord(ctx, userID, &roomID, &messageID, billing.TransactionTypeConsumption, -amount, description)
 }
@@ -55,7 +55,7 @@ func (r *BillingRepository) DebitAndRecord(ctx context.Context, userID, roomID, 
 // CreditAndRecord atomically increments userID's balance by amount and
 // inserts a matching row of the given txType, both in a single database
 // transaction. See billing.BalanceRepository.CreditAndRecord for the
-// ErrNotFound contract.
+// ErrNotFound/ErrInvalidAmount contract.
 func (r *BillingRepository) CreditAndRecord(ctx context.Context, userID string, txType billing.TransactionType, amount int64, description string) (*billing.TokenTransaction, error) {
 	return r.mutateAndRecord(ctx, userID, nil, nil, txType, amount, description)
 }
@@ -96,6 +96,13 @@ func (r *BillingRepository) mutateAndRecord(
 // can share the exact same balance-mutation SQL within its own open
 // transaction — crediting a balance and inserting its payment_history row
 // must commit or roll back together (see step49.md's atomicity requirement).
+//
+// mutateWithinTx is also the single shared validation point for every
+// caller of the balance-mutation SQL (BillingRepository.DebitAndRecord,
+// BillingRepository.CreditAndRecord, and PaymentRepository.CreateAndCredit):
+// it rejects a zero/wrongly-signed signedAmount or a txType inconsistent
+// with the mutation's direction (see billing.ErrInvalidAmount) before
+// issuing any SQL, so an invalid call never partially applies.
 func mutateWithinTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -105,6 +112,19 @@ func mutateWithinTx(
 	signedAmount int64,
 	description string,
 ) (*billing.TokenTransaction, error) {
+	switch txType {
+	case billing.TransactionTypeConsumption:
+		if signedAmount >= 0 {
+			return nil, fmt.Errorf("%w: consumption amount must be negative, got %d", billing.ErrInvalidAmount, signedAmount)
+		}
+	case billing.TransactionTypeCharge, billing.TransactionTypeAdjustment:
+		if signedAmount <= 0 {
+			return nil, fmt.Errorf("%w: %s amount must be positive, got %d", billing.ErrInvalidAmount, txType, signedAmount)
+		}
+	default:
+		return nil, fmt.Errorf("%w: unsupported transaction type %q", billing.ErrInvalidAmount, txType)
+	}
+
 	var newBalance int64
 	err := tx.QueryRow(ctx,
 		`UPDATE token_balances SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2 RETURNING balance`,

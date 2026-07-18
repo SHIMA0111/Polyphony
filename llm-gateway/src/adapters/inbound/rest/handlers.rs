@@ -78,6 +78,18 @@ pub async fn complete(
 /// Unlike `complete`, this call is infallible once the DTO is converted: it never
 /// dispatches to a provider, so there is no `ModelNotFound` path; the only error is a
 /// `400` from an unrecognized role string during DTO conversion.
+///
+/// # Arguments
+/// * `service` — Shared `CompletionUseCase` implementation, injected via Axum's
+///   `State` extractor.
+/// * `dto` — Request body, deserialized from JSON into `TokenEstimateRequestDto`.
+///
+/// # Returns
+/// `200` with a `TokenEstimateResponseDto` JSON body on success.
+///
+/// # Errors
+/// Returns `AppError` (mapped to `400 Bad Request`) if `dto.into_domain()` fails to
+/// convert an unrecognized role string into a domain `Role`.
 pub async fn estimate_tokens(
     State(service): State<AppState>,
     Json(dto): Json<TokenEstimateRequestDto>,

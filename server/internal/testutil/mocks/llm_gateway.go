@@ -10,16 +10,20 @@ import (
 
 // LLMGateway is a configurable fake implementing ai.LLMGateway.
 //
-// By default, Complete returns a canned successful completion and
-// ListModels returns an empty slice. Setting ShouldErr makes Complete return
-// a domain.ErrLLMGateway-wrapped error, as if the LLM Gateway call failed.
-// For full control over the response, set CompleteFunc / ListModelsFunc,
-// which take priority over ShouldErr / CompletionResponse / Models.
+// By default, Complete and EstimateTokens return canned successful
+// responses and ListModels returns an empty slice. Setting ShouldErr makes
+// both Complete and EstimateTokens return a domain.ErrLLMGateway-wrapped
+// error, as if the LLM Gateway call failed. For full control over the
+// response, set CompleteFunc / ListModelsFunc / EstimateTokensFunc, which
+// take priority over ShouldErr / CompletionResponse / Models /
+// TokenEstimateResponse.
 //
 // The zero value (mocks.LLMGateway{}) is ready to use.
 type LLMGateway struct {
-	// ShouldErr, if true, makes Complete return a domain.ErrLLMGateway-wrapped
-	// error instead of a canned response.
+	// ShouldErr, if true, makes both Complete and EstimateTokens return a
+	// domain.ErrLLMGateway-wrapped error instead of a canned response, when
+	// their respective CompleteFunc / EstimateTokensFunc override is unset.
+	// It does not affect ListModels or Stream.
 	ShouldErr bool
 	// CompletionResponse, if non-nil, overrides the default canned
 	// completion response returned by Complete.

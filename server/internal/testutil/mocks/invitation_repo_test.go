@@ -164,6 +164,86 @@ func TestInvitationRepoAcceptTxLinkInvitationNotFound(t *testing.T) {
 	}
 }
 
+// TestInvitationRepoAcceptTxRejectsExpiredLinkInvitation verifies that
+// AcceptTx(transitionStatus=false) refuses to accept a link invitation whose
+// status is still StatusPending but whose ExpiresAt has already passed —
+// closing the TOCTOU window a usecase-level pre-check alone cannot, since
+// AcceptTx independently re-validates expiry at accept time.
+func TestInvitationRepoAcceptTxRejectsExpiredLinkInvitation(t *testing.T) {
+	ctx := context.Background()
+	link := newTestInvitation("link-1", "room-1", nil, invitation.StatusPending)
+	link.ExpiresAt = time.Now().Add(-time.Hour)
+
+	called := false
+	repo := &InvitationRepo{
+		Invitations: map[string]*invitation.Invitation{link.ID: link},
+		AddMember: func(context.Context, *domainroom.RoomMember) error {
+			called = true
+			return nil
+		},
+	}
+
+	member := &domainroom.RoomMember{
+		ID:       "member-1",
+		RoomID:   "room-1",
+		UserID:   "someone",
+		Role:     domainroom.RoleMember,
+		JoinedAt: time.Now(),
+	}
+	err := repo.AcceptTx(ctx, link.ID, invitation.StatusPending, false, member)
+	if !errors.Is(err, domain.ErrInvitationExpired) {
+		t.Fatalf("expected ErrInvitationExpired, got %v", err)
+	}
+	if called {
+		t.Fatal("AddMember must not be invoked when the link invitation has expired")
+	}
+}
+
+// TestInvitationRepoAcceptTxRejectsExpiredUsernameInvitation is the
+// transitionStatus==true counterpart of
+// TestInvitationRepoAcceptTxRejectsExpiredLinkInvitation: a username-targeted
+// invitation still StatusPending but past its ExpiresAt must be rejected by
+// AcceptTx's CAS with domain.ErrInvitationExpired, and its status must not
+// transition to StatusAccepted.
+func TestInvitationRepoAcceptTxRejectsExpiredUsernameInvitation(t *testing.T) {
+	ctx := context.Background()
+	inviteeID := "invitee-1"
+	inv := newTestInvitation("inv-1", "room-1", &inviteeID, invitation.StatusPending)
+	inv.ExpiresAt = time.Now().Add(-time.Hour)
+
+	called := false
+	repo := &InvitationRepo{
+		Invitations: map[string]*invitation.Invitation{inv.ID: inv},
+		AddMember: func(context.Context, *domainroom.RoomMember) error {
+			called = true
+			return nil
+		},
+	}
+
+	member := &domainroom.RoomMember{
+		ID:       "member-1",
+		RoomID:   "room-1",
+		UserID:   inviteeID,
+		Role:     domainroom.RoleMember,
+		JoinedAt: time.Now(),
+	}
+	err := repo.AcceptTx(ctx, inv.ID, invitation.StatusPending, true, member)
+	if !errors.Is(err, domain.ErrInvitationExpired) {
+		t.Fatalf("expected ErrInvitationExpired, got %v", err)
+	}
+	if called {
+		t.Fatal("AddMember must not be invoked when the invitation has expired")
+	}
+
+	got, getErr := repo.GetByID(ctx, inv.ID)
+	if getErr != nil {
+		t.Fatalf("GetByID failed: %v", getErr)
+	}
+	if got.Status != invitation.StatusPending {
+		t.Fatalf("expected status to remain pending after a rejected expired accept, got %q", got.Status)
+	}
+}
+
 // TestInvitationRepoAcceptTxAcceptsPendingLinkInvitation is a control case
 // for TestInvitationRepoAcceptTxRejectsNonPendingLinkInvitation: a link
 // invitation that is still StatusPending must be accepted normally, with

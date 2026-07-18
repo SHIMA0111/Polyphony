@@ -142,28 +142,52 @@ fi
 
 WS_URL="ws://localhost:${PORT1}/rooms/${ROOM_ID}/ws?ticket=${TICKET}"
 
+WS_TIMEOUT_SECS=20
+
 echo "==> Opening a WebSocket to replica 1 (${BASE1}) and waiting for the room event"
 (
   cd server
-  go run ./cmd/verifywshub -url "$WS_URL" -timeout 20s
+  go run ./cmd/verifywshub -url "$WS_URL" -timeout "${WS_TIMEOUT_SECS}s"
 ) >"$WS_WAIT_LOG" 2>&1 &
 WS_PID=$!
 
-# Give the WebSocket client time to dial, upgrade, and subscribe on the hub
-# before we publish — RedisHub's Subscribe issues a Redis SUBSCRIBE command
-# that needs a moment to take effect, especially over the Docker network.
-sleep 3
+send_message() {
+  local body
+  body="$(curl -sS -X POST "${BASE2}/rooms/${ROOM_ID}/messages" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"content\":\"${MESSAGE_CONTENT}\"}")"
+  if [[ "$(jq -r '.id // empty' <<<"$body")" == "" ]]; then
+    echo "verify_redis_hub: send message via replica 2 failed: ${body}" >&2
+    kill "$WS_PID" 2>/dev/null || true
+    exit 1
+  fi
+}
 
-echo "==> Sending a message via HTTP against replica 2 (${BASE2})"
-SEND_BODY="$(curl -sS -X POST "${BASE2}/rooms/${ROOM_ID}/messages" \
-  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-  -H 'Content-Type: application/json' \
-  -d "{\"content\":\"${MESSAGE_CONTENT}\"}")"
-if [[ "$(jq -r '.id // empty' <<<"$SEND_BODY")" == "" ]]; then
-  echo "verify_redis_hub: send message via replica 2 failed: ${SEND_BODY}" >&2
-  kill "$WS_PID" 2>/dev/null || true
-  exit 1
-fi
+# RedisHub's Subscribe issues a Redis SUBSCRIBE command that needs a moment
+# to take effect, especially over the Docker network. Rather than guess a
+# single fixed delay before one and only publish attempt (which either
+# wastes time on the common case or, worse, isn't long enough on a slow run
+# and fails the whole check outright), republish at a short interval until
+# the WebSocket client (connected to replica 1) has observed an event and
+# exited, bounded by the same time budget as its own -timeout above, so this
+# loop never outlives the deadline it's racing against.
+PUBLISH_INTERVAL_SECS=2
+PUBLISH_DEADLINE=$(( $(date +%s) + WS_TIMEOUT_SECS ))
+echo "==> Publishing the message via HTTP against replica 2 (${BASE2}), retrying every ${PUBLISH_INTERVAL_SECS}s until observed or the ${WS_TIMEOUT_SECS}s budget is exhausted"
+while true; do
+  send_message
+  if ! kill -0 "$WS_PID" 2>/dev/null; then
+    # The WebSocket client process has already exited -- either it received
+    # the event (success) or hit its own -timeout (failure). Either way, no
+    # further republishing can help; `wait` below reports which it was.
+    break
+  fi
+  if (( $(date +%s) >= PUBLISH_DEADLINE )); then
+    break
+  fi
+  sleep "$PUBLISH_INTERVAL_SECS"
+done
 
 echo "==> Waiting for the WebSocket client (connected to replica 1) to observe the event"
 if ! wait "$WS_PID"; then

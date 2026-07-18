@@ -381,6 +381,188 @@ func TestConcurrentTransferOwnershipAndUpdateMemberRoleSerializes(t *testing.T) 
 	}
 }
 
+// TestRemoveMemberRejectsCurrentOwner is RemoveMember's counterpart to
+// TestUpdateMemberRoleRejectsCurrentOwner: it proves the same lock-and-
+// recheck (`SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE`) rejects a
+// RemoveMember call against whoever the room's *current* owner is, even
+// when that owner only became owner via a TransferOwnership that landed
+// after a caller's own stale pre-check.
+func TestRemoveMemberRejectsCurrentOwner(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "remove-recheck-owner")
+	target := createTestUser(ctx, t, userRepo, "remove-recheck-target")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "Remove Recheck Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if err := roomRepo.AddMember(ctx, &domainroom.RoomMember{
+		ID: uuid.New().String(), RoomID: rm.ID, UserID: target.ID, Role: domainroom.RoleAdmin, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+
+	if err := roomRepo.TransferOwnership(ctx, rm.ID, owner.ID, target.ID); err != nil {
+		t.Fatalf("TransferOwnership failed: %v", err)
+	}
+
+	err := roomRepo.RemoveMember(ctx, rm.ID, target.ID)
+	if !errors.Is(err, domainroom.ErrOwnerRoleProtected) {
+		t.Fatalf("expected domainroom.ErrOwnerRoleProtected for the current owner, got %v", err)
+	}
+
+	got, err := roomRepo.GetMember(ctx, rm.ID, target.ID)
+	if err != nil {
+		t.Fatalf("GetMember failed: %v", err)
+	}
+	if got.Role != domainroom.RoleMaster {
+		t.Fatalf("expected target's membership to remain intact after the rejected RemoveMember, got role %s", got.Role)
+	}
+}
+
+// TestConcurrentTransferOwnershipAndRemoveMemberSerializes is
+// TestConcurrentTransferOwnershipAndUpdateMemberRoleSerializes's counterpart
+// for RemoveMember: it races RoomRepository.TransferOwnership (promoting
+// target to owner) against RoomRepository.RemoveMember (trying to remove
+// target) for the same target member of the same room. Unlike
+// UpdateMemberRole (which only ever mutates the member row's role),
+// RemoveMember can delete the row outright, so both methods locking the
+// rooms row admits two distinct legitimate outcomes rather than one:
+//
+//   - TransferOwnership commits first (fully, under the rooms row lock):
+//     target is promoted to master, and RemoveMember -- unblocked only
+//     after that commit -- observes target is now the owner and is
+//     rejected with domainroom.ErrOwnerRoleProtected. Target remains a
+//     member with exactly one master matching rooms.owner_id.
+//   - RemoveMember commits first (target wasn't yet owner when it read
+//     rooms.owner_id under the lock): target's room_members row is deleted
+//     entirely, so TransferOwnership's own membership-role update -- which
+//     runs after RemoveMember's commit releases the rooms row lock --
+//     affects zero rows and TransferOwnership rolls back with
+//     domain.ErrNotFound, leaving rooms.owner_id unchanged at the original
+//     owner and target no longer a member at all.
+//
+// Any other final state (e.g. zero masters, two masters, or a master not
+// matching rooms.owner_id) means the recheck failed to close the race. It
+// repeats the race across many fresh rooms for the same non-determinism
+// reason TestConcurrentTransferOwnershipAndUpdateMemberRoleSerializes does.
+func TestConcurrentTransferOwnershipAndRemoveMemberSerializes(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	const iterations = 20
+	for i := 0; i < iterations; i++ {
+		owner := createTestUser(ctx, t, userRepo, "remove-race-owner")
+		target := createTestUser(ctx, t, userRepo, "remove-race-target")
+
+		rm := &domainroom.Room{
+			ID: uuid.New().String(), Name: "Remove Race Room", OwnerID: owner.ID,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}
+		if err := roomRepo.Create(ctx, rm); err != nil {
+			t.Fatalf("iteration %d: Create failed: %v", i, err)
+		}
+		if err := roomRepo.AddMember(ctx, &domainroom.RoomMember{
+			ID: uuid.New().String(), RoomID: rm.ID, UserID: target.ID, Role: domainroom.RoleAdmin, JoinedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("iteration %d: AddMember failed: %v", i, err)
+		}
+
+		var wg sync.WaitGroup
+		var transferErr, removeErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			transferErr = roomRepo.TransferOwnership(ctx, rm.ID, owner.ID, target.ID)
+		}()
+		go func() {
+			defer wg.Done()
+			removeErr = roomRepo.RemoveMember(ctx, rm.ID, target.ID)
+		}()
+		wg.Wait()
+
+		switch {
+		case transferErr == nil && removeErr != nil:
+			// TransferOwnership won: RemoveMember must have been rejected
+			// specifically because target is now the owner, never for any
+			// other reason.
+			if !errors.Is(removeErr, domainroom.ErrOwnerRoleProtected) {
+				t.Fatalf("iteration %d: TransferOwnership succeeded but RemoveMember returned unexpected error: %v", i, removeErr)
+			}
+			finalRoom, err := roomRepo.GetByID(ctx, rm.ID)
+			if err != nil {
+				t.Fatalf("iteration %d: GetByID failed: %v", i, err)
+			}
+			if finalRoom.OwnerID != target.ID {
+				t.Fatalf("iteration %d: expected target to be owner after TransferOwnership won, got owner %s", i, finalRoom.OwnerID)
+			}
+			got, err := roomRepo.GetMember(ctx, rm.ID, target.ID)
+			if err != nil {
+				t.Fatalf("iteration %d: GetMember failed: %v", i, err)
+			}
+			if got.Role != domainroom.RoleMaster {
+				t.Fatalf("iteration %d: expected target's role master, got %s", i, got.Role)
+			}
+		case transferErr != nil && removeErr == nil:
+			// RemoveMember won: TransferOwnership must have failed
+			// specifically because its membership-role update found target
+			// already removed, never for any other reason, and the
+			// original owner must remain owner unchanged.
+			if !errors.Is(transferErr, domain.ErrNotFound) {
+				t.Fatalf("iteration %d: RemoveMember succeeded but TransferOwnership returned unexpected error: %v", i, transferErr)
+			}
+			finalRoom, err := roomRepo.GetByID(ctx, rm.ID)
+			if err != nil {
+				t.Fatalf("iteration %d: GetByID failed: %v", i, err)
+			}
+			if finalRoom.OwnerID != owner.ID {
+				t.Fatalf("iteration %d: expected owner unchanged after TransferOwnership rolled back, got %s", i, finalRoom.OwnerID)
+			}
+			if _, err := roomRepo.GetMember(ctx, rm.ID, target.ID); !errors.Is(err, domain.ErrNotFound) {
+				t.Fatalf("iteration %d: expected target to have been removed, GetMember returned %v", i, err)
+			}
+		default:
+			t.Fatalf("iteration %d: expected exactly one of TransferOwnership/RemoveMember to succeed, got transferErr=%v removeErr=%v", i, transferErr, removeErr)
+		}
+
+		// Regardless of which side won, the room must always end up with
+		// exactly one RoleMaster member matching rooms.owner_id -- never
+		// zero, never two.
+		finalRoom, err := roomRepo.GetByID(ctx, rm.ID)
+		if err != nil {
+			t.Fatalf("iteration %d: GetByID failed: %v", i, err)
+		}
+		members, err := roomRepo.ListMembers(ctx, rm.ID)
+		if err != nil {
+			t.Fatalf("iteration %d: ListMembers failed: %v", i, err)
+		}
+		masters := 0
+		for _, m := range members {
+			if m.Role != domainroom.RoleMaster {
+				continue
+			}
+			masters++
+			if m.UserID != finalRoom.OwnerID {
+				t.Fatalf("iteration %d: member %s holds RoleMaster but is not rooms.owner_id (%s)", i, m.UserID, finalRoom.OwnerID)
+			}
+		}
+		if masters != 1 {
+			t.Fatalf("iteration %d: expected exactly one master, found %d", i, masters)
+		}
+	}
+}
+
 // TestTransferOwnershipAtomic proves that RoomRepository.TransferOwnership
 // updates rooms.owner_id, promotes the new owner to master, and demotes the
 // previous owner to admin, all as a single atomic transaction.

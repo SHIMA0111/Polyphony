@@ -128,29 +128,33 @@ struct StreamState {
 /// * `req` — Completion request to stream.
 ///
 /// # Errors
-/// Returns `DomainError::KeyNotFound` if the API key cannot be resolved via `KeyStore`,
-/// `DomainError::Timeout` on a connection/request timeout establishing the stream, and
-/// `DomainError::ProviderError` for any other transport failure or non-2xx initial
-/// response. Once the stream has started, a malformed SSE event, an Anthropic `error`
-/// event, or a stream-body read failure is surfaced as an
-/// `Err(DomainError::ProviderError)` *item* within the stream rather than as a top-level
-/// `Err` from this function.
+/// Returns `DomainError::InvalidRequest` if `req.messages` contains no non-system
+/// message (see `to_anthropic_request`), `DomainError::KeyNotFound` if the API key
+/// cannot be resolved via `KeyStore`, `DomainError::Timeout` on a connection/request
+/// timeout establishing the stream, and `DomainError::ProviderError` for any other
+/// transport failure or non-2xx initial response. Once the stream has started, a
+/// malformed SSE event, an Anthropic `error` event, or a stream-body read failure is
+/// surfaced as an `Err(DomainError::ProviderError)` *item* within the stream rather
+/// than as a top-level `Err` from this function.
 pub(super) fn stream<'a>(
     provider: &'a AnthropicProvider,
     req: &CompletionRequest,
 ) -> BoxFuture<'a, Result<BoxStream<'static, Result<CompletionChunk, DomainError>>, DomainError>> {
-    let mut body = serde_json::to_value(to_anthropic_request(req)).unwrap_or_else(|e| {
-        // `to_anthropic_request`'s output always serializes successfully; this branch
-        // exists only to avoid a `panic!` if that ever stops being true.
-        tracing::error!(error = %e, "failed to serialize Anthropic streaming request body");
-        serde_json::json!({})
-    });
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert("stream".to_string(), serde_json::json!(true));
-    }
+    let anthropic_req = to_anthropic_request(req);
     let url = format!("{}/v1/messages", provider.base_url);
 
     Box::pin(async move {
+        let anthropic_req = anthropic_req?;
+        let mut body = serde_json::to_value(anthropic_req).unwrap_or_else(|e| {
+            // `to_anthropic_request`'s output always serializes successfully; this
+            // branch exists only to avoid a `panic!` if that ever stops being true.
+            tracing::error!(error = %e, "failed to serialize Anthropic streaming request body");
+            serde_json::json!({})
+        });
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("stream".to_string(), serde_json::json!(true));
+        }
+
         let api_key = provider
             .key_store
             .get_key(AnthropicProvider::PROVIDER_NAME)?;

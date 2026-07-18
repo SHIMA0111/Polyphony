@@ -88,13 +88,14 @@ struct GeminiErrorDetail {
 /// * `req` — Completion request to stream.
 ///
 /// # Errors
-/// Returns `DomainError::KeyNotFound` if the API key cannot be resolved via `KeyStore`,
-/// `DomainError::Timeout` on a connection/request timeout establishing the stream, and
-/// `DomainError::ProviderError` for any other transport failure or non-2xx initial
-/// response. Once the stream has started, a malformed SSE event, a
-/// `promptFeedback.blockReason` (safety block), or a stream-body read failure is
-/// surfaced as an `Err(DomainError::ProviderError)` *item* within the stream rather than
-/// as a top-level `Err` from this function.
+/// Returns `DomainError::InvalidRequest` if `req.messages` contains no non-system
+/// message (see `to_gemini_request`), `DomainError::KeyNotFound` if the API key
+/// cannot be resolved via `KeyStore`, `DomainError::Timeout` on a connection/request
+/// timeout establishing the stream, and `DomainError::ProviderError` for any other
+/// transport failure or non-2xx initial response. Once the stream has started, a
+/// malformed SSE event, a `promptFeedback.blockReason` (safety block), or a
+/// stream-body read failure is surfaced as an `Err(DomainError::ProviderError)` *item*
+/// within the stream rather than as a top-level `Err` from this function.
 pub(super) fn stream<'a>(
     provider: &'a GeminiProvider,
     req: &CompletionRequest,
@@ -107,6 +108,7 @@ pub(super) fn stream<'a>(
     );
 
     Box::pin(async move {
+        let body = body?;
         let api_key = provider.key_store.get_key(GeminiProvider::PROVIDER_NAME)?;
 
         let send_request = || {

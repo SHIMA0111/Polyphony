@@ -13,7 +13,7 @@ type BalanceRepository interface {
 	GetOrCreateBalance(ctx context.Context, userID string) (*TokenBalance, error)
 
 	// DebitAndRecord atomically decrements userID's balance by amount
-	// (amount must be >= 0; it is applied as a debit, i.e. subtracted) and
+	// (amount must be > 0; it is applied as a debit, i.e. subtracted) and
 	// inserts a TransactionTypeConsumption row recording the debit, in a
 	// single database transaction. roomID/messageID identify the AI
 	// invocation the debit pays for.
@@ -22,15 +22,21 @@ type BalanceRepository interface {
 	// itself reject the debit once it drives the balance to or below zero —
 	// BillingUsecase.CheckBalance's pre-call guard is what blocks *further*
 	// invocations once that happens. Returns domain.ErrNotFound if userID
-	// has no existing balance row (GetOrCreateBalance must be called first).
+	// has no existing balance row (GetOrCreateBalance must be called first),
+	// and billing.ErrInvalidAmount if amount is not strictly positive,
+	// validated before any mutation is applied.
 	DebitAndRecord(ctx context.Context, userID, roomID, messageID string, amount int64, description string) (*TokenTransaction, error)
 
 	// CreditAndRecord atomically increments userID's balance by amount
-	// (amount must be >= 0) and inserts a row of the given txType (Charge or
-	// Adjustment) recording the credit, in a single database transaction.
-	// Used by the dev seed CLI (cmd/seed-tokens) today, and reserved for
-	// Step 49's Stripe webhook credits. Returns domain.ErrNotFound if userID
-	// has no existing balance row.
+	// (amount must be > 0) and inserts a row of the given txType recording
+	// the credit, in a single database transaction. txType must be
+	// TransactionTypeCharge or TransactionTypeAdjustment —
+	// TransactionTypeConsumption is reserved for debits and is rejected
+	// here. Used by the dev seed CLI (cmd/seed-tokens) today, and reserved
+	// for Step 49's Stripe webhook credits. Returns domain.ErrNotFound if
+	// userID has no existing balance row, and billing.ErrInvalidAmount if
+	// amount is not strictly positive or txType is not Charge/Adjustment,
+	// validated before any mutation is applied.
 	CreditAndRecord(ctx context.Context, userID string, txType TransactionType, amount int64, description string) (*TokenTransaction, error)
 
 	// ListTransactions returns a cursor-paginated page of userID's
@@ -83,6 +89,9 @@ type PaymentRepository interface {
 	// commit or roll back together in one DB transaction. If a
 	// payment_history row with the same StripeEventID already exists, it
 	// returns alreadyProcessed=true and leaves the balance untouched.
+	// Returns billing.ErrInvalidAmount if amount is not strictly positive,
+	// validated (alongside the payment insert) before the transaction
+	// commits, so an invalid call never partially applies.
 	CreateAndCredit(ctx context.Context, payment *PaymentRecord, userID string, amount int64, description string) (alreadyProcessed bool, err error)
 
 	// ListByUserID returns a cursor-paginated page of userID's payment

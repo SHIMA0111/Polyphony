@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest"
+import { act, renderHook } from "@testing-library/react"
+import { createRef } from "react"
+import { describe, expect, it, vi } from "vitest"
 import {
   computeElementAnchoredScrollTop,
   computeScrollAnchorAdjustment,
+  useLoadOlderOnScroll,
 } from "./use-load-older-on-scroll"
 
 describe("computeScrollAnchorAdjustment", () => {
@@ -49,5 +52,75 @@ describe("computeElementAnchoredScrollTop", () => {
 
   it("handles an anchor already at the container's top edge", () => {
     expect(computeElementAnchoredScrollTop(0, 0, 400)).toBe(400)
+  })
+})
+
+describe("useLoadOlderOnScroll's triggerLoadOlder double-fire guard", () => {
+  it("only calls fetchNextPage once when triggerLoadOlder is invoked twice synchronously, before isFetchingNextPage has had a chance to flip", () => {
+    const containerRef = createRef<HTMLDivElement>()
+    containerRef.current = document.createElement("div")
+
+    const fetchNextPage = vi.fn()
+    const { result } = renderHook(() =>
+      useLoadOlderOnScroll({
+        containerRef,
+        hasNextPage: true,
+        isFetchingNextPage: false,
+        fetchNextPage,
+        pageCount: 1,
+      }),
+    )
+
+    // Two synchronous calls in the same tick, exactly like a `scroll` event
+    // firing back-to-back with MessageList.tsx's own viewport-underfill
+    // call -- both still observe the stale isFetchingNextPage=false prop,
+    // so only the synchronous isLoadingRef guard can prevent a second
+    // dispatch.
+    act(() => {
+      result.current.triggerLoadOlder()
+      result.current.triggerLoadOlder()
+    })
+
+    expect(fetchNextPage).toHaveBeenCalledTimes(1)
+  })
+
+  it("releases the guard once isFetchingNextPage flips back to false, allowing a subsequent trigger even without a pageCount change (a failed fetch)", () => {
+    const containerRef = createRef<HTMLDivElement>()
+    containerRef.current = document.createElement("div")
+
+    const fetchNextPage = vi.fn()
+    const { result, rerender } = renderHook(
+      (props: { isFetchingNextPage: boolean }) =>
+        useLoadOlderOnScroll({
+          containerRef,
+          hasNextPage: true,
+          isFetchingNextPage: props.isFetchingNextPage,
+          fetchNextPage,
+          pageCount: 1,
+        }),
+      { initialProps: { isFetchingNextPage: false } },
+    )
+
+    act(() => {
+      result.current.triggerLoadOlder()
+    })
+    expect(fetchNextPage).toHaveBeenCalledTimes(1)
+
+    // Fetch is now in flight: a second trigger must be a no-op, guarded by
+    // the (now-current) isFetchingNextPage prop.
+    rerender({ isFetchingNextPage: true })
+    act(() => {
+      result.current.triggerLoadOlder()
+    })
+    expect(fetchNextPage).toHaveBeenCalledTimes(1)
+
+    // The fetch settles (failed, so pageCount never changed) and
+    // isFetchingNextPage flips back to false: the guard must release so a
+    // retry can fire.
+    rerender({ isFetchingNextPage: false })
+    act(() => {
+      result.current.triggerLoadOlder()
+    })
+    expect(fetchNextPage).toHaveBeenCalledTimes(2)
   })
 })

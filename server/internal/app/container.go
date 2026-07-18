@@ -204,6 +204,22 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 			return nil, fmt.Errorf("parse REDIS_URL: %w", err)
 		}
 		redisClient = redis.NewClient(opts)
+
+		// Verify connectivity up front, mirroring database.NewPool's Ping
+		// pattern, so a misconfigured/unreachable Redis fails container
+		// construction immediately instead of lazily surfacing on the first
+		// rate-limit check, Kratos whoami cache lookup, or Redis-backed
+		// MessageHub publish/subscribe -- all of which reuse this same
+		// client and are wired up after this point.
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		pingErr := redisClient.Ping(pingCtx).Err()
+		cancel()
+		if pingErr != nil {
+			_ = redisClient.Close()
+			pool.Close()
+			return nil, fmt.Errorf("ping redis: %w", pingErr)
+		}
+
 		rateLimiter = redis_rate.NewLimiter(redisClient)
 	}
 

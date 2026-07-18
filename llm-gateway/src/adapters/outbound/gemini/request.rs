@@ -255,8 +255,18 @@ fn to_gemini_part(part: &ContentPart) -> GeminiPartDto {
 ///
 /// All `Role::System` messages are joined (with `"\n"`) into a single top-level
 /// `system_instruction`, since Gemini does not accept a `"system"` role inside
-/// `contents`; all other messages become `contents` entries in original order.
-pub(super) fn to_gemini_request(req: &CompletionRequest) -> GeminiRequest {
+/// `contents`; all other messages (including multimodal `MessageContent::Parts`
+/// messages, mapped via `to_gemini_parts`) become `contents` entries in original
+/// order.
+///
+/// # Errors
+/// Returns `DomainError::InvalidRequest` when `req.messages` contains no
+/// non-`Role::System` message: after system messages are extracted into
+/// `system_instruction`, Gemini's `generateContent` requires a non-empty `contents`
+/// array, and an all-system request would otherwise be sent with `contents: []` and
+/// fail remotely with an opaque `400 Bad Request` instead of being rejected locally
+/// with a clear message.
+pub(super) fn to_gemini_request(req: &CompletionRequest) -> Result<GeminiRequest, DomainError> {
     let mut system_texts = Vec::new();
     let mut contents = Vec::new();
 
@@ -268,6 +278,12 @@ pub(super) fn to_gemini_request(req: &CompletionRequest) -> GeminiRequest {
                 parts: to_gemini_parts(&m.content),
             }),
         }
+    }
+
+    if contents.is_empty() {
+        return Err(DomainError::InvalidRequest(
+            "messages must contain at least one non-system message".to_string(),
+        ));
     }
 
     let system_instruction = if system_texts.is_empty() {
@@ -290,11 +306,11 @@ pub(super) fn to_gemini_request(req: &CompletionRequest) -> GeminiRequest {
         })
     };
 
-    GeminiRequest {
+    Ok(GeminiRequest {
         contents,
         system_instruction,
         generation_config,
-    }
+    })
 }
 
 /// Converts a Gemini `generateContent` response into a provider-agnostic
@@ -397,12 +413,13 @@ fn from_gemini_response(
 /// * `req` — Completion request to send.
 ///
 /// # Errors
-/// Returns `DomainError::KeyNotFound` if the API key cannot be resolved via
-/// `KeyStore`, `DomainError::Timeout` on a connection/request timeout,
-/// `DomainError::RateLimited` on an HTTP 429 response (with `Retry-After` parsed if
-/// present), and `DomainError::ProviderError` (with the original error preserved via
-/// `#[source]` where available) for any other transport or non-2xx response, or an
-/// empty/safety-blocked `candidates` list.
+/// Returns `DomainError::InvalidRequest` if `req.messages` contains no non-system
+/// message (see `to_gemini_request`), `DomainError::KeyNotFound` if the API key
+/// cannot be resolved via `KeyStore`, `DomainError::Timeout` on a connection/request
+/// timeout, `DomainError::RateLimited` on an HTTP 429 response (with `Retry-After`
+/// parsed if present), and `DomainError::ProviderError` (with the original error
+/// preserved via `#[source]` where available) for any other transport or non-2xx
+/// response, or an empty/safety-blocked `candidates` list.
 pub(super) fn complete<'a>(
     provider: &'a GeminiProvider,
     req: &CompletionRequest,
@@ -415,6 +432,7 @@ pub(super) fn complete<'a>(
     );
 
     Box::pin(async move {
+        let gemini_req = gemini_req?;
         let api_key = provider.key_store.get_key(GeminiProvider::PROVIDER_NAME)?;
 
         let send_request = || {
@@ -499,7 +517,7 @@ mod tests {
             max_tokens: Some(256),
         };
 
-        let gemini_req = to_gemini_request(&req);
+        let gemini_req = to_gemini_request(&req).expect("request has a non-system message");
 
         let system_instruction = gemini_req
             .system_instruction
@@ -542,9 +560,37 @@ mod tests {
             max_tokens: None,
         };
 
-        let gemini_req = to_gemini_request(&req);
+        let gemini_req = to_gemini_request(&req).expect("request has a non-system message");
         assert!(gemini_req.system_instruction.is_none());
         assert!(gemini_req.generation_config.is_none());
+    }
+
+    /// A request whose messages are entirely `Role::System` would otherwise produce an
+    /// empty `contents` array, which Gemini rejects remotely with an opaque `400`.
+    /// `to_gemini_request` must reject it locally instead, with a clear
+    /// `DomainError::InvalidRequest`.
+    #[test]
+    fn test_to_gemini_request_all_system_messages_is_invalid_request() {
+        let req = CompletionRequest {
+            model: "gemini-3-pro".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: "You are helpful.".to_string().into(),
+                },
+                ChatMessage {
+                    role: Role::System,
+                    content: "Be concise.".to_string().into(),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        match to_gemini_request(&req) {
+            Ok(_) => panic!("an all-system request should be rejected locally"),
+            Err(e) => assert!(matches!(e, DomainError::InvalidRequest(_))),
+        }
     }
 
     /// `MessageContent::Text` becomes a single-element `parts` array with a `text`
@@ -600,7 +646,7 @@ mod tests {
             max_tokens: None,
         };
 
-        let gemini_req = to_gemini_request(&req);
+        let gemini_req = to_gemini_request(&req).expect("request has a non-system message");
         let json = serde_json::to_value(&gemini_req).unwrap();
         assert_eq!(
             json["contents"][0]["parts"],

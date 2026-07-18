@@ -283,9 +283,41 @@ func (r *RoomRepository) ListMembers(ctx context.Context, roomID string) ([]*roo
 	return members, rows.Err()
 }
 
-// RemoveMember removes a user from a room. It returns domain.ErrNotFound if the membership does not exist.
+// RemoveMember removes a user from a room. It runs inside its own
+// transaction that first locks the room's row with `SELECT owner_id FROM
+// rooms WHERE id = $1 FOR UPDATE` and rechecks, under that lock, whether
+// userID is the room's current owner — returning room.ErrOwnerRoleProtected
+// if so — before performing the DELETE, mirroring UpdateMemberRole's
+// lock-and-recheck pattern (see its GoDoc for why the lock is needed: it
+// serializes this call against a concurrent TransferOwnership for the same
+// room, so the owner check is always answered against the true current
+// owner rather than a caller's stale pre-check read).
+//
+// It returns domain.ErrNotFound if the room does not exist (the FOR UPDATE
+// SELECT finds no row) or if the membership (roomID, userID) does not exist
+// (the DELETE affects zero rows), and room.ErrOwnerRoleProtected if userID
+// is the room's current owner.
 func (r *RoomRepository) RemoveMember(ctx context.Context, roomID, userID string) error {
-	tag, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var ownerID string
+	err = tx.QueryRow(ctx, `SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE`, roomID).Scan(&ownerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	if ownerID == userID {
+		return room.ErrOwnerRoleProtected
+	}
+
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM room_members WHERE room_id = $1 AND user_id = $2`,
 		roomID, userID,
 	)
@@ -295,7 +327,8 @@ func (r *RoomRepository) RemoveMember(ctx context.Context, roomID, userID string
 	if tag.RowsAffected() == 0 {
 		return domain.ErrNotFound
 	}
-	return nil
+
+	return tx.Commit(ctx)
 }
 
 // UpdateMemberRole updates a single membership's role. It runs inside its

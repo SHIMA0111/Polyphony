@@ -6,10 +6,13 @@
 #   buf generate
 #
 # This requires `protoc-gen-go` and `protoc-gen-go-grpc` on PATH (installable via
-# `go install google.golang.org/protobuf/cmd/protoc-gen-go@latest` and
-# `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`). The generated
-# files are committed to the repository (there is no CI codegen step yet), so
-# regeneration is only needed when proto/llmgateway/v1/*.proto changes.
+# `go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11` and
+# `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2`). The
+# protoc-gen-go version is pinned to match this module's google.golang.org/protobuf
+# requirement in go.mod, so the generated code always matches the runtime library
+# it is compiled against. The generated files are committed to the repository
+# (there is no CI codegen step yet), so regeneration is only needed when
+# proto/llmgateway/v1/*.proto changes.
 version: v2
 plugins:
   - local: protoc-gen-go

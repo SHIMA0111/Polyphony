@@ -154,6 +154,16 @@ export interface UseLoadOlderOnScrollOptions {
  * container's viewport at all (so there is no scrollable area for the user
  * to reach the top of, and this hook's `scroll` listener would otherwise
  * never fire).
+ *
+ * `triggerLoadOlder` also guards against double-firing before
+ * `isFetchingNextPage` has had a chance to flip: that prop only updates on
+ * the next render, so two synchronous calls in the same tick — e.g. a
+ * `scroll` event firing back-to-back with `MessageList.tsx`'s own
+ * viewport-underfill call — would both still see the *stale* `false` and
+ * both call `fetchNextPage()`. A synchronous `isLoadingRef`, set the instant
+ * the first call is accepted and cleared once `isFetchingNextPage` reports
+ * the fetch has actually settled (success or failure), closes that window
+ * without waiting on a render.
  */
 export function useLoadOlderOnScroll({
   containerRef,
@@ -168,10 +178,26 @@ export function useLoadOlderOnScroll({
     elementId: string | null
     elementOffset: number | null
   } | null>(null)
+  /**
+   * Synchronous double-fire guard: set to `true` the instant a fetch is
+   * dispatched, before `isFetchingNextPage` (a prop, only updated on the
+   * next render) has any chance to reflect it. Cleared by the effect below
+   * once `isFetchingNextPage` itself flips back to `false`, i.e. once the
+   * fetch has settled — not tied to `pageCount` alone, since a failed fetch
+   * never changes `pageCount` but must still release this guard.
+   */
+  const isLoadingRef = useRef(false)
+
+  useEffect(() => {
+    if (!isFetchingNextPage) {
+      isLoadingRef.current = false
+    }
+  }, [isFetchingNextPage])
 
   const triggerLoadOlder = useCallback(() => {
     const el = containerRef.current
-    if (!el || !hasNextPage || isFetchingNextPage) return
+    if (!el || !hasNextPage || isFetchingNextPage || isLoadingRef.current) return
+    isLoadingRef.current = true
 
     const topmost = findTopmostVisibleMessageElement(el)
     anchorRef.current = {

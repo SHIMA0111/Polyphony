@@ -145,7 +145,15 @@ fn role_to_anthropic_str(role: &Role) -> &'static str {
 /// top-level `system` field, matching Anthropic's Messages API shape. `max_tokens`
 /// is defaulted to [`DEFAULT_MAX_TOKENS`] when the domain request does not specify
 /// one, since Anthropic requires it on every request.
-pub(super) fn to_anthropic_request(req: &CompletionRequest) -> AnthropicRequest {
+///
+/// # Errors
+/// Returns `DomainError::InvalidRequest` when `req.messages` contains no
+/// non-`Role::System` message: after system messages are hoisted into `system`,
+/// Anthropic's Messages API requires a non-empty `messages` array, and an all-system
+/// request would otherwise be sent with `messages: []` and fail remotely with an
+/// opaque `400 invalid_request_error` instead of being rejected locally with a clear
+/// message.
+pub(super) fn to_anthropic_request(req: &CompletionRequest) -> Result<AnthropicRequest, DomainError> {
     let mut system_parts = Vec::new();
     let mut messages = Vec::new();
 
@@ -160,19 +168,25 @@ pub(super) fn to_anthropic_request(req: &CompletionRequest) -> AnthropicRequest 
         }
     }
 
+    if messages.is_empty() {
+        return Err(DomainError::InvalidRequest(
+            "messages must contain at least one non-system message".to_string(),
+        ));
+    }
+
     let system = if system_parts.is_empty() {
         None
     } else {
         Some(system_parts.join("\n\n"))
     };
 
-    AnthropicRequest {
+    Ok(AnthropicRequest {
         model: req.model.clone(),
         max_tokens: req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
         messages,
         system,
         temperature: req.temperature,
-    }
+    })
 }
 
 /// Converts a domain `MessageContent` into Anthropic's `content` union shape.
@@ -274,12 +288,14 @@ fn from_anthropic_response(resp: AnthropicResponse) -> CompletionResponse {
 /// * `req` — Completion request to send.
 ///
 /// # Errors
-/// Returns `DomainError::KeyNotFound` if the API key cannot be resolved via
-/// `KeyStore`, `DomainError::Timeout` on a connection/request timeout,
-/// `DomainError::RateLimited` on an HTTP 429 response (with `Retry-After` parsed if
-/// present), and `DomainError::ProviderError` (with the original error preserved via
-/// `#[source]` where available) for any other transport or non-2xx response, or a
-/// `200 OK` response whose body does not deserialize into the expected shape.
+/// Returns `DomainError::InvalidRequest` if `req.messages` contains no non-system
+/// message (see `to_anthropic_request`), `DomainError::KeyNotFound` if the API key
+/// cannot be resolved via `KeyStore`, `DomainError::Timeout` on a connection/request
+/// timeout, `DomainError::RateLimited` on an HTTP 429 response (with `Retry-After`
+/// parsed if present), and `DomainError::ProviderError` (with the original error
+/// preserved via `#[source]` where available) for any other transport or non-2xx
+/// response, or a `200 OK` response whose body does not deserialize into the expected
+/// shape.
 pub(super) fn complete<'a>(
     provider: &'a AnthropicProvider,
     req: &CompletionRequest,
@@ -288,6 +304,7 @@ pub(super) fn complete<'a>(
     let url = format!("{}/v1/messages", provider.base_url);
 
     Box::pin(async move {
+        let anthropic_req = anthropic_req?;
         let api_key = provider
             .key_store
             .get_key(AnthropicProvider::PROVIDER_NAME)?;
@@ -363,7 +380,7 @@ mod tests {
             max_tokens: Some(1000),
         };
 
-        let anthropic_req = to_anthropic_request(&req);
+        let anthropic_req = to_anthropic_request(&req).expect("request has a non-system message");
         assert_eq!(anthropic_req.model, "claude-opus-4-6");
         assert_eq!(anthropic_req.system, Some("You are helpful.".to_string()));
         assert_eq!(anthropic_req.messages.len(), 1);
@@ -394,12 +411,40 @@ mod tests {
             max_tokens: None,
         };
 
-        let anthropic_req = to_anthropic_request(&req);
+        let anthropic_req = to_anthropic_request(&req).expect("request has a non-system message");
         assert_eq!(
             anthropic_req.system,
             Some("Be concise.\n\nBe polite.".to_string())
         );
         assert_eq!(anthropic_req.messages.len(), 1);
+    }
+
+    /// A request whose messages are entirely `Role::System` would otherwise produce an
+    /// empty `messages` array, which Anthropic rejects remotely with an opaque `400
+    /// invalid_request_error`. `to_anthropic_request` must reject it locally instead,
+    /// with a clear `DomainError::InvalidRequest`.
+    #[test]
+    fn test_to_anthropic_request_all_system_messages_is_invalid_request() {
+        let req = CompletionRequest {
+            model: "claude-opus-4-6".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::System,
+                    content: "You are helpful.".to_string().into(),
+                },
+                ChatMessage {
+                    role: Role::System,
+                    content: "Be concise.".to_string().into(),
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+        };
+
+        match to_anthropic_request(&req) {
+            Ok(_) => panic!("an all-system request should be rejected locally"),
+            Err(e) => assert!(matches!(e, DomainError::InvalidRequest(_))),
+        }
     }
 
     #[test]
@@ -414,7 +459,7 @@ mod tests {
             max_tokens: None,
         };
 
-        let anthropic_req = to_anthropic_request(&req);
+        let anthropic_req = to_anthropic_request(&req).expect("request has a non-system message");
         assert_eq!(anthropic_req.max_tokens, DEFAULT_MAX_TOKENS);
         assert!(anthropic_req.system.is_none());
     }
@@ -475,7 +520,7 @@ mod tests {
             max_tokens: None,
         };
 
-        let anthropic_req = to_anthropic_request(&req);
+        let anthropic_req = to_anthropic_request(&req).expect("request has a non-system message");
         let json = serde_json::to_value(&anthropic_req).unwrap();
         assert_eq!(
             json["messages"][0]["content"],

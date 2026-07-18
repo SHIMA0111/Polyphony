@@ -63,16 +63,18 @@ type InvitationRepository interface {
 	UpdateStatus(ctx context.Context, id string, status, expectedStatus Status) error
 
 	// AcceptTx atomically performs an invitation accept, verifying the
-	// invitation's pending status atomically inside a single database
-	// transaction in both modes before ever inserting into room_members:
+	// invitation's pending, non-expired status atomically inside a single
+	// database transaction in both modes before ever inserting into
+	// room_members:
 	//   - transitionStatus == true (a username-targeted invitation): it
 	//     first transitions the invitation identified by invitationID from
 	//     expectedStatus to StatusAccepted exactly as UpdateStatus's CAS
-	//     does, and only proceeds if that transition succeeds.
+	//     does, additionally gated on the row not being expired, and only
+	//     proceeds if that transition succeeds.
 	//   - transitionStatus == false (a reusable link invitation, which
 	//     never changes status): it instead locks the invitation row and
-	//     confirms its current status is still StatusPending, rejecting the
-	//     accept otherwise.
+	//     confirms its current status is still StatusPending and it has not
+	//     expired, rejecting the accept otherwise.
 	// Either way, member is only inserted into room_members once that check
 	// passes, with both the check and the insert committing or rolling back
 	// together in a single database transaction.
@@ -87,15 +89,20 @@ type InvitationRepository interface {
 	// UpdateStatus succeeded). For link invitations specifically — which
 	// never run the CAS above — it also closes a TOCTOU window where a
 	// revoke or expiry landing after the usecase's own pre-check read, but
-	// before this call, would otherwise still admit the member.
+	// before this call, would otherwise still admit the member. It also
+	// closes a third race not covered by a usecase-level expiry pre-check
+	// alone: an invitation expiring in the gap between that pre-check and
+	// this call would otherwise still be accepted, in either mode.
 	//
 	// Returns domain.ErrNotFound if the invitation does not exist,
 	// domain.ErrInvitationNotPending if the invitation's current status is
 	// not StatusPending — checked against expectedStatus via CAS when
 	// transitionStatus is true, or read-and-compared to StatusPending under
-	// row lock when transitionStatus is false — and domain.ErrAlreadyMember
-	// if member.UserID is already a member of member.RoomID (a unique-
-	// constraint violation on room_members, e.g. a concurrent accept of a
-	// different invitation into the same room won first).
+	// row lock when transitionStatus is false — domain.ErrInvitationExpired
+	// if the status check passed but expires_at is in the past, and
+	// domain.ErrAlreadyMember if member.UserID is already a member of
+	// member.RoomID (a unique-constraint violation on room_members, e.g. a
+	// concurrent accept of a different invitation into the same room won
+	// first).
 	AcceptTx(ctx context.Context, invitationID string, expectedStatus Status, transitionStatus bool, member *domainroom.RoomMember) error
 }

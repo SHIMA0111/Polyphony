@@ -84,6 +84,8 @@ func newTestInvitation(roomID, inviterID string, inviteeID *string, code string)
 	}
 }
 
+// TestInvitationRepositoryCreateAndGetByID verifies that Create persists an
+// invitation and GetByID retrieves it back with every field intact.
 func TestInvitationRepositoryCreateAndGetByID(t *testing.T) {
 	ctx := context.Background()
 	repo, _, inviter, invitee, rm := newInvitationTestFixture(ctx, t)
@@ -111,6 +113,8 @@ func TestInvitationRepositoryCreateAndGetByID(t *testing.T) {
 	}
 }
 
+// TestInvitationRepositoryGetByIDNotFound verifies that GetByID returns
+// domain.ErrNotFound for an id that does not exist.
 func TestInvitationRepositoryGetByIDNotFound(t *testing.T) {
 	ctx := context.Background()
 	repo, _, _, _, _ := newInvitationTestFixture(ctx, t)
@@ -121,6 +125,9 @@ func TestInvitationRepositoryGetByIDNotFound(t *testing.T) {
 	}
 }
 
+// TestInvitationRepositoryGetByCode verifies that GetByCode retrieves an
+// invitation by its unique invite code and returns domain.ErrNotFound for an
+// unknown code.
 func TestInvitationRepositoryGetByCode(t *testing.T) {
 	ctx := context.Background()
 	repo, _, inviter, _, rm := newInvitationTestFixture(ctx, t)
@@ -147,6 +154,10 @@ func TestInvitationRepositoryGetByCode(t *testing.T) {
 	}
 }
 
+// TestInvitationRepositoryGetPendingByRoomAndInvitee verifies that
+// GetPendingByRoomAndInvitee retrieves a pending, username-targeted
+// invitation for a (roomID, inviteeID) pair, and returns domain.ErrNotFound
+// once that invitation is no longer pending.
 func TestInvitationRepositoryGetPendingByRoomAndInvitee(t *testing.T) {
 	ctx := context.Background()
 	repo, _, inviter, invitee, rm := newInvitationTestFixture(ctx, t)
@@ -173,6 +184,8 @@ func TestInvitationRepositoryGetPendingByRoomAndInvitee(t *testing.T) {
 	}
 }
 
+// TestInvitationRepositoryListByRoomID verifies that ListByRoomID returns
+// every invitation created for a room, regardless of type or status.
 func TestInvitationRepositoryListByRoomID(t *testing.T) {
 	ctx := context.Background()
 	repo, _, inviter, invitee, rm := newInvitationTestFixture(ctx, t)
@@ -195,6 +208,10 @@ func TestInvitationRepositoryListByRoomID(t *testing.T) {
 	}
 }
 
+// TestInvitationRepositoryListPendingByInviteeID verifies that
+// ListPendingByInviteeID returns only pending, username-targeted
+// invitations for the given invitee, excluding link invitations even when
+// they share the same room.
 func TestInvitationRepositoryListPendingByInviteeID(t *testing.T) {
 	ctx := context.Background()
 	repo, _, inviter, invitee, rm := newInvitationTestFixture(ctx, t)
@@ -219,6 +236,11 @@ func TestInvitationRepositoryListPendingByInviteeID(t *testing.T) {
 	}
 }
 
+// TestInvitationRepositoryUpdateStatus verifies that UpdateStatus's
+// compare-and-swap transitions an invitation's status when expectedStatus
+// matches, rejects a stale second transition attempt with
+// domain.ErrInvitationNotPending, and returns domain.ErrNotFound for a
+// nonexistent invitation.
 func TestInvitationRepositoryUpdateStatus(t *testing.T) {
 	ctx := context.Background()
 	repo, _, inviter, invitee, rm := newInvitationTestFixture(ctx, t)
@@ -313,6 +335,9 @@ func TestInvitationRepositoryAcceptTxConcurrentAcceptReject(t *testing.T) {
 	}
 
 	_, memberErr := roomRepo.GetMember(ctx, rm.ID, invitee.ID)
+	if memberErr != nil && !errors.Is(memberErr, domain.ErrNotFound) {
+		t.Fatalf("GetMember failed with an unexpected error: %v", memberErr)
+	}
 	isMember := memberErr == nil
 
 	switch got.Status {
@@ -381,6 +406,84 @@ func TestInvitationRepositoryAcceptTxRejectsRevokedLinkInvitation(t *testing.T) 
 	}
 }
 
+// TestInvitationRepositoryAcceptTxRejectsExpiredLinkInvitation is the
+// expiry counterpart of
+// TestInvitationRepositoryAcceptTxRejectsRevokedLinkInvitation: a link
+// invitation still StatusPending but whose expires_at has already passed
+// must be rejected by AcceptTx's FOR UPDATE re-check, closing the same
+// TOCTOU window for expiry that the earlier fix closed for revocation.
+func TestInvitationRepositoryAcceptTxRejectsExpiredLinkInvitation(t *testing.T) {
+	ctx := context.Background()
+	repo, roomRepo, inviter, invitee, rm := newInvitationTestFixture(ctx, t)
+
+	link := newTestInvitation(rm.ID, inviter.ID, nil, uuid.New().String())
+	link.ExpiresAt = time.Now().Add(-time.Hour)
+	if err := repo.Create(ctx, link); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	member := &domainroom.RoomMember{
+		ID:       uuid.New().String(),
+		RoomID:   rm.ID,
+		UserID:   invitee.ID,
+		Role:     domainroom.RoleMember,
+		JoinedAt: time.Now(),
+	}
+	err := repo.AcceptTx(ctx, link.ID, invitation.StatusPending, false, member)
+	if !errors.Is(err, domain.ErrInvitationExpired) {
+		t.Fatalf("expected ErrInvitationExpired for an expired link invitation, got %v", err)
+	}
+
+	if _, memberErr := roomRepo.GetMember(ctx, rm.ID, invitee.ID); !errors.Is(memberErr, domain.ErrNotFound) {
+		t.Fatalf("expected no room_members row to be inserted, got member lookup error %v", memberErr)
+	}
+}
+
+// TestInvitationRepositoryAcceptTxRejectsExpiredUsernameInvitation is the
+// transitionStatus=true counterpart of
+// TestInvitationRepositoryAcceptTxRejectsExpiredLinkInvitation: a username-
+// targeted invitation still StatusPending but past its expires_at must be
+// rejected by AcceptTx's CAS UPDATE (now gated on expires_at), with the
+// invitation left StatusPending (not StatusAccepted) and no room member
+// inserted.
+func TestInvitationRepositoryAcceptTxRejectsExpiredUsernameInvitation(t *testing.T) {
+	ctx := context.Background()
+	repo, roomRepo, inviter, invitee, rm := newInvitationTestFixture(ctx, t)
+
+	inv := newTestInvitation(rm.ID, inviter.ID, &invitee.ID, uuid.New().String())
+	inv.ExpiresAt = time.Now().Add(-time.Hour)
+	if err := repo.Create(ctx, inv); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	member := &domainroom.RoomMember{
+		ID:       uuid.New().String(),
+		RoomID:   rm.ID,
+		UserID:   invitee.ID,
+		Role:     domainroom.RoleMember,
+		JoinedAt: time.Now(),
+	}
+	err := repo.AcceptTx(ctx, inv.ID, invitation.StatusPending, true, member)
+	if !errors.Is(err, domain.ErrInvitationExpired) {
+		t.Fatalf("expected ErrInvitationExpired for an expired username-targeted invitation, got %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, inv.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.Status != invitation.StatusPending {
+		t.Fatalf("expected status to remain pending after a rejected expired accept, got %q", got.Status)
+	}
+
+	if _, memberErr := roomRepo.GetMember(ctx, rm.ID, invitee.ID); !errors.Is(memberErr, domain.ErrNotFound) {
+		t.Fatalf("expected no room_members row to be inserted, got member lookup error %v", memberErr)
+	}
+}
+
+// TestInvitationRepositoryInviteCodeUniqueConstraint verifies that Create
+// returns invitation.ErrInviteCodeConflict when inv.InviteCode collides with
+// an existing invitation's code.
 func TestInvitationRepositoryInviteCodeUniqueConstraint(t *testing.T) {
 	ctx := context.Background()
 	repo, _, inviter, invitee, rm := newInvitationTestFixture(ctx, t)

@@ -86,7 +86,9 @@ CREATE TABLE room_invitations (
     status VARCHAR(20) NOT NULL DEFAULT 'pending',
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT room_invitations_invite_code_unique UNIQUE (invite_code)
+    CONSTRAINT room_invitations_invite_code_unique UNIQUE (invite_code),
+    CONSTRAINT room_invitations_role_check CHECK (role IN ('reader', 'guest', 'member', 'admin', 'master')),
+    CONSTRAINT room_invitations_status_check CHECK (status IN ('pending', 'accepted', 'rejected', 'revoked'))
 );
 
 CREATE INDEX idx_room_invitations_room_id ON room_invitations(room_id);

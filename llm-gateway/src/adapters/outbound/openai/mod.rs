@@ -109,9 +109,14 @@ fn models_list() -> &'static Vec<ModelInfo> {
 /// HTTP client timeouts, retry policy) is injected explicitly via `Config` at
 /// construction time — this adapter never reads `std::env` directly.
 pub struct OpenAIProvider {
+    /// HTTP client used for every request to the OpenAI Chat Completions API.
     client: Client,
+    /// Base URL of the OpenAI API (e.g. `https://api.openai.com`), injected via
+    /// `ProviderConfig` so it can be swapped for a test double.
     base_url: String,
+    /// Key store used to resolve the OpenAI API key lazily, per request.
     key_store: Arc<dyn KeyStore>,
+    /// Bounded exponential-backoff policy applied to `429`/`5xx` responses.
     retry_policy: RetryPolicy,
 }
 
@@ -125,6 +130,10 @@ impl OpenAIProvider {
     ///   eagerly here), so gateway startup never depends on the key being present.
     /// * `http` — Shared HTTP client tuning (connect/request timeouts, retry policy).
     /// * `provider` — OpenAI-specific configuration (base URL).
+    ///
+    /// # Returns
+    /// A ready-to-use `OpenAIProvider` wrapping a configured `reqwest::Client` and the
+    /// given `key_store`/`retry_policy`. No network call is made during construction.
     ///
     /// # Errors
     /// Returns `DomainError::ProviderError` if the underlying `reqwest::Client` fails

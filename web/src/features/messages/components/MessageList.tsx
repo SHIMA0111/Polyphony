@@ -34,8 +34,11 @@ interface MessageListProps {
   messages: Message[]
   onRegenerate: (messageId: string) => void
   isRegenerating: string | null
-  /** Re-sends a failed human message's original content. */
-  onRetry: (messageId: string, content: string) => void
+  /**
+   * Re-sends a failed human message's original content. See
+   * `MessageBubble`'s `onRetry` doc comment for the `Promise<void>` return type.
+   */
+  onRetry: (messageId: string, content: string) => Promise<void>
   /** Whether an older page of history is available via `fetchNextPage`. */
   hasNextPage: boolean
   /** Whether the next (older) page is currently being fetched. */

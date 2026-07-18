@@ -22,13 +22,20 @@ const DOT_DELAYS_S = [0, 0.16, 0.32]
  * The bounce animation is a plain Chakra `css`-prop `@keyframes` (per
  * `.claude/rules/chakra-ui.md`), so no extra animation dependency
  * (e.g. `framer-motion`) is needed for three dots.
+ *
+ * The container carries `role="status"` (implying `aria-live="polite"`) so
+ * screen readers announce "AI is thinking" once, via its `aria-label`,
+ * rather than staying silent through the whole wait; the individual dot
+ * `Box`es are purely decorative and are `aria-hidden` so they don't get
+ * enumerated as extra unlabeled content alongside that announcement.
  */
 export function ThinkingBubble() {
   return (
-    <Flex align="center" gap="1.5" py="1" aria-label="AI is thinking">
+    <Flex align="center" gap="1.5" py="1" role="status" aria-label="AI is thinking">
       {DOT_DELAYS_S.map((delay) => (
         <Box
           key={delay}
+          aria-hidden="true"
           w="6px"
           h="6px"
           rounded="full"

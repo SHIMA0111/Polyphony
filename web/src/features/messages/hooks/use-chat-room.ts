@@ -332,17 +332,56 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
 
   const handleRetry = useCallback(
     async (messageId: string, content: string) => {
-      // Drop the stale failed optimistic entry first so `useSendMessage`'s
-      // own `onMutate` (which appends a *new* optimistic entry with a fresh
-      // id) doesn't leave both the old failed bubble and the new "sending"
+      // Drop the stale failed optimistic entry first so the mutation's own
+      // `onMutate` (which appends a *new* optimistic entry with a fresh id)
+      // doesn't leave both the old failed bubble and the new "sending"
       // bubble on screen at once.
       queryClient.setQueryData<MessagesInfiniteData>(
         ["rooms", roomId, "messages"],
         (old) => removeFromNewestPage(old, messageId),
       )
-      await sendMessageMutation.mutateAsync(content)
+
+      // A failed AI send leaves its human echo's optimistic id recorded in
+      // `sendAIMessageMutation.failedIntentsRef.current` (set in that
+      // hook's own `onError`, see its docstring) -- consulting it here is
+      // what makes a retry of an AI send actually retry as an AI send (with
+      // the original model/stream/private), instead of this method
+      // previously always falling back to the plain-send mutation regardless
+      // of how the message was originally sent -- which also silently
+      // downgraded a failed private send's retry to a public one. A failed
+      // *plain* send has no entry here, so it falls through to the
+      // plain-send branch exactly as before. Read/written here (inside this
+      // callback), never during either hook's render, per `failedIntentsRef`'s
+      // own doc comment.
+      const failedIntents = sendAIMessageMutation.failedIntentsRef.current
+      const aiIntent = failedIntents.get(messageId)
+      failedIntents.delete(messageId)
+
+      // Mirrors `handleRegenerate`'s error handling: both mutations' own
+      // `onError` already roll back the optimistic entry (to `status:
+      // "failed"` again) and surface a toast, so there is nothing further
+      // to do here beyond the same 402-specific `aiError` alert
+      // `handleSendWithAI`/`handleRegenerate` also set. Deliberately not
+      // re-thrown, unlike `handleSendWithAI`, so `onRetry` callers can fire
+      // this without needing their own catch.
+      try {
+        if (aiIntent) {
+          await sendAIMessageMutation.mutateAsync({
+            content,
+            model: aiIntent.model,
+            stream: aiIntent.stream,
+            private: aiIntent.private,
+          })
+        } else {
+          await sendMessageMutation.mutateAsync(content)
+        }
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status === 402) {
+          setAiError(INSUFFICIENT_BALANCE_MESSAGE)
+        }
+      }
     },
-    [queryClient, roomId, sendMessageMutation],
+    [queryClient, roomId, sendMessageMutation, sendAIMessageMutation],
   )
 
   const isRegenerating = regenerateMutation.isPending

@@ -15,7 +15,8 @@ interface MessageGroupProps {
   messages: Message[]
   onRegenerate: (messageId: string) => void
   isRegenerating: string | null
-  onRetry: (messageId: string, content: string) => void
+  /** See `MessageBubble`'s `onRetry` doc comment for the `Promise<void>` return type. */
+  onRetry: (messageId: string, content: string) => Promise<void>
   /**
    * The signed-in viewer's own user id, or `null` before it's known. A human
    * group whose `senderId` matches this is labeled "You" instead of the

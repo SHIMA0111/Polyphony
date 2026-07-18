@@ -42,6 +42,12 @@ export interface RegenerateAIMessageInput {
  * (`BillingUsecase.RecordUsage`), so the top-bar balance should refresh
  * promptly rather than waiting for `useBalance`'s background poll (parity
  * with `useChatRoom.handleSendWithAI`'s own invalidation after a send).
+ *
+ * `onMutate` cancels any in-flight refetch of `["rooms", roomId, "messages"]`
+ * (mirroring `useSendMessage`/`useSendAIMessage`'s same first step), so a
+ * racing background refetch that resolves between this mutation starting
+ * and its own `onSuccess` running can't clobber the `setQueryData` swap
+ * below with stale (pre-regenerate) server data.
  */
 export function useRegenerateAIMessage(roomId: string) {
   const queryClient = useQueryClient()
@@ -50,6 +56,9 @@ export function useRegenerateAIMessage(roomId: string) {
   return useMutation({
     mutationFn: ({ humanMessageId, model }: RegenerateAIMessageInput) =>
       regenerateAIMessage(roomId, humanMessageId, model),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey })
+    },
     onSuccess: (updated, variables) => {
       // Unlike optimistic sends (always in `pages[0]`), the AI message being
       // regenerated can live in any already-loaded page once the reader has

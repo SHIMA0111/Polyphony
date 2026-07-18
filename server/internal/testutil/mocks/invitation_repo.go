@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/invitation"
@@ -176,6 +177,28 @@ func (r *InvitationRepo) updateStatusLocked(id string, status, expectedStatus in
 	return nil
 }
 
+// acceptStatusLocked is AcceptTx's transitionStatus==true body: it mirrors
+// updateStatusLocked's CAS but additionally rejects an expired invitation,
+// mirroring postgres.InvitationRepository's acceptStatusCAS. Deliberately
+// separate from updateStatusLocked (rather than adding the expiry check
+// there) since that helper also backs UpdateStatus's StatusRejected
+// transition, where rejecting an already-expired invitation must still
+// succeed.
+func (r *InvitationRepo) acceptStatusLocked(id string, status, expectedStatus invitation.Status) error {
+	inv, ok := r.Invitations[id]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if inv.Status != expectedStatus {
+		return domain.ErrInvitationNotPending
+	}
+	if inv.ExpiresAt.Before(time.Now()) {
+		return domain.ErrInvitationExpired
+	}
+	inv.Status = status
+	return nil
+}
+
 // AcceptTx approximates postgres.InvitationRepository.AcceptTx's atomicity
 // for tests: it holds r.mu across the pending-status check — a CAS via
 // updateStatusLocked when transitionStatus is true, or a plain read-and-
@@ -197,7 +220,7 @@ func (r *InvitationRepo) AcceptTx(ctx context.Context, invitationID string, expe
 		if inv, ok := r.Invitations[invitationID]; ok {
 			priorStatus = inv.Status
 		}
-		if err := r.updateStatusLocked(invitationID, invitation.StatusAccepted, expectedStatus); err != nil {
+		if err := r.acceptStatusLocked(invitationID, invitation.StatusAccepted, expectedStatus); err != nil {
 			return err
 		}
 		if r.AddMember == nil {
@@ -211,7 +234,7 @@ func (r *InvitationRepo) AcceptTx(ctx context.Context, invitationID string, expe
 	}
 
 	// Reusable link invitations never run the CAS above, so check the
-	// invitation's current status here instead — mirroring
+	// invitation's current status/expiry here instead — mirroring
 	// postgres.InvitationRepository.AcceptTx's `SELECT ... FOR UPDATE`
 	// re-check — rather than admitting the member regardless of status.
 	inv, ok := r.Invitations[invitationID]
@@ -220,6 +243,9 @@ func (r *InvitationRepo) AcceptTx(ctx context.Context, invitationID string, expe
 	}
 	if inv.Status != invitation.StatusPending {
 		return domain.ErrInvitationNotPending
+	}
+	if inv.ExpiresAt.Before(time.Now()) {
+		return domain.ErrInvitationExpired
 	}
 	if r.AddMember == nil {
 		return nil

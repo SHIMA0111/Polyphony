@@ -1,6 +1,7 @@
 "use client"
 
 import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useRef } from "react"
 import { sendAIMessage, sendAIMessageStream } from "../api/send-ai-message"
 import { ApiRequestError } from "@/lib/http-client"
 import { getErrorMessage } from "@/lib/get-error-message"
@@ -14,6 +15,26 @@ import {
   type MessagesInfiniteData,
 } from "../lib/message-cache"
 import type { Message } from "../types"
+
+/**
+ * The original send parameters an AI send needs to be retried faithfully —
+ * captured in `useSendAIMessage`'s `onError` (keyed by the failed human
+ * message's optimistic id) and consulted by `useChatRoom.handleRetry` to
+ * decide whether a retry should go through `useSendAIMessage` (with these
+ * exact parameters) instead of the plain `useSendMessage` mutation.
+ */
+export interface FailedAISendIntent {
+  model?: string
+  stream: boolean
+  /**
+   * Whether the failed send was a private AI send. Restored verbatim on
+   * retry (see `useChatRoom.handleRetry`) so a retried private send stays
+   * private instead of silently downgrading to a public one -- the same
+   * leak the pre-retry-intent code always had, now closed for the one
+   * parameter this map previously dropped.
+   */
+  private: boolean
+}
 
 export interface SendAIMessageInput {
   content: string
@@ -103,12 +124,32 @@ interface SendAIMessageContext {
  * surfaces that specific rejection via its own inline `aiError` alert
  * (`INSUFFICIENT_BALANCE_MESSAGE`), and showing both at once (M1 post-review
  * finding) was a confusing double-toast for the exact same failure.
+ *
+ * `onError` also records the failed send's original `model`/`stream`/
+ * `private` parameters into `failedIntentsRef.current`, keyed by
+ * `context.humanOptimisticId` -- the same id the human echo's `status:
+ * "failed"` entry keeps in the cache, and so the same id `MessageBubble`'s
+ * retry affordance passes back as `messageId`. `useChatRoom.handleRetry`
+ * consults this map (via the returned ref, not a dereferenced value -- see
+ * `failedIntentsRef`'s own doc comment) to route a retry through this same
+ * AI mutation (with the original model/stream/private) instead of always
+ * falling back to the plain-send mutation, which previously silently
+ * downgraded every AI-send retry into a plain send -- including dropping
+ * `private`, which would have leaked a failed private send's retry to the
+ * whole room. Entries are removed once consumed by a retry (successful or
+ * not) to avoid unbounded growth over a long session; a retry that itself
+ * fails repopulates the map under the *new* optimistic id its own `onError`
+ * call produces.
  */
 export function useSendAIMessage(roomId: string) {
   const queryClient = useQueryClient()
   const queryKey = ["rooms", roomId, "messages"] as const
+  // Returned as-is (never dereferenced here) so callers only ever read/write
+  // `.current` from their own event-handler-time code, not during this
+  // hook's render -- see the `return` statement's comment below.
+  const failedIntentsRef = useRef(new Map<string, FailedAISendIntent>())
 
-  return useMutation({
+  const mutation = useMutation({
     // Private-mode sends cannot use the streaming endpoint (`StreamAI`
     // rejects `private: true` with HTTP 400), and callers may opt out of
     // streaming explicitly (`stream: false`, see `SendAIMessageInput`) --
@@ -192,8 +233,18 @@ export function useSendAIMessage(roomId: string) {
             )
       })
     },
-    onError: (error, _vars, context) => {
+    onError: (error, vars, context) => {
       if (!context) return
+
+      // Recorded regardless of error kind (including a 402 below) so a
+      // retry of *any* failed AI send -- insufficient balance included --
+      // still routes back through this same AI mutation with the original
+      // model/stream, not just retries that hit a generic failure.
+      failedIntentsRef.current.set(context.humanOptimisticId, {
+        model: vars.model,
+        stream: vars.private ? false : (vars.stream ?? true),
+        private: vars.private ?? false,
+      })
 
       queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) => {
         const withoutPlaceholder = removeFromNewestPage(old, context.aiOptimisticId)
@@ -213,4 +264,11 @@ export function useSendAIMessage(roomId: string) {
       })
     },
   })
+
+  // Returns the ref itself, not `failedIntentsRef.current`: dereferencing
+  // `.current` here (during this hook's own render) trips
+  // `react-hooks/refs` ("refs should only be accessed outside of render").
+  // `useChatRoom.handleRetry` reads/writes `.current` from inside its own
+  // event-handler-time callback instead, which the rule permits.
+  return { ...mutation, failedIntentsRef }
 }

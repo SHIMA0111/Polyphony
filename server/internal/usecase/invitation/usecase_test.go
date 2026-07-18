@@ -30,6 +30,14 @@ func newTestFixture() (*InvitationUsecase, *mocks.RoomRepo, *mocks.UserRepo, *mo
 	// doc comment.
 	invitationRepo.AddMember = roomRepo.AddMember
 
+	// SeedRoom populates Rooms["room-1"] (with no OwnerID set, since no test
+	// in this file exercises owner-protected behavior) so that
+	// RoomRepo.RemoveMember's owner-protection lock-and-recheck -- which
+	// requires a Rooms entry to exist, exactly like the pre-existing
+	// UpdateMemberRole check it mirrors -- has a row to find; without this,
+	// TestAcceptInvitationNotPendingAfterRemoval's direct
+	// roomRepo.RemoveMember call would spuriously fail with ErrNotFound.
+	roomRepo.SeedRoom("room-1", nil)
 	roomRepo.SeedMember("room-1", "admin-1", "admin")
 	roomRepo.SeedMember("room-1", "member-1", "member")
 
@@ -347,6 +355,9 @@ func TestConcurrentAcceptAndRejectNeverMixState(t *testing.T) {
 	}
 
 	_, memberErr := roomRepo.GetMember(ctx, "room-1", "bob-1")
+	if memberErr != nil && !errors.Is(memberErr, domain.ErrNotFound) {
+		t.Fatalf("GetMember failed with an unexpected error: %v", memberErr)
+	}
 	isMember := memberErr == nil
 
 	switch got.Status {

@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -223,17 +224,30 @@ func TestBillingRepositoryListTransactionsCursorPagination(t *testing.T) {
 	}
 
 	const total = 5
-	var wantIDs []string
+	var seeded []*billing.TokenTransaction
 	for i := 0; i < total; i++ {
 		txn, err := billingRepo.CreditAndRecord(ctx, userID, billing.TransactionTypeCharge, 10, "topup")
 		if err != nil {
 			t.Fatalf("seed transaction %d: %v", i, err)
 		}
-		wantIDs = append(wantIDs, txn.ID)
+		seeded = append(seeded, txn)
 	}
-	// wantIDs is oldest-first; ListTransactions returns newest-first.
-	for i, j := 0, len(wantIDs)-1; i < j; i, j = i+1, j-1 {
-		wantIDs[i], wantIDs[j] = wantIDs[j], wantIDs[i]
+	// Sort the captured (id, created_at) pairs by the exact same ORDER BY
+	// ListTransactions itself uses (created_at DESC, id DESC), rather than
+	// assuming insertion order is a reliable proxy for it: NOW() has only
+	// microsecond resolution, so two transactions seeded in the same
+	// transaction-commit tick can legitimately share a created_at, in which
+	// case only the id DESC tie-break (not simple insertion-order reversal)
+	// determines their relative order.
+	sort.Slice(seeded, func(i, j int) bool {
+		if seeded[i].CreatedAt.Equal(seeded[j].CreatedAt) {
+			return seeded[i].ID > seeded[j].ID
+		}
+		return seeded[i].CreatedAt.After(seeded[j].CreatedAt)
+	})
+	wantIDs := make([]string, len(seeded))
+	for i, txn := range seeded {
+		wantIDs[i] = txn.ID
 	}
 
 	const pageSize = 2

@@ -454,7 +454,7 @@ export function MessageInput({
             </Button>
             {canInvokeAI && (
               <Tooltip content={VISION_UNSUPPORTED_MESSAGE} disabled={!visionGated}>
-                <Box as="span" display="inline-flex">
+                <Box as="span" display="inline-flex" tabIndex={0}>
                   <Button
                     size="sm"
                     onClick={handleSendWithAI}
