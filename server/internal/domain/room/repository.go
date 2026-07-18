@@ -81,9 +81,18 @@ type RoomRepository interface {
 
 	// UpdateMemberRole updates a single membership's role. It returns
 	// domain.ErrNotFound if the membership (roomID, userID) does not exist.
-	// It does not itself enforce any RBAC or "owner role is protected"
-	// invariant — those are usecase-layer concerns; this method is a plain
-	// persistence operation.
+	// It does not itself enforce caller-side RBAC (who is allowed to call
+	// it) — that remains a usecase-layer concern. It does, however, lock the
+	// room's row and recheck, under that lock, whether userID is the room's
+	// current owner, returning ErrOwnerRoleProtected if so: this recheck
+	// exists specifically to close a race against a concurrent
+	// TransferOwnership call for the same room (the usecase layer's own
+	// owner check, read via a separate non-transactional GetByID before
+	// calling this method, can otherwise be stale by the time this method's
+	// write lands — see the postgres implementation's GoDoc for the two
+	// directions that race can go wrong). Implementations must serialize
+	// against TransferOwnership on the same room row for this guarantee to
+	// hold.
 	UpdateMemberRole(ctx context.Context, roomID, userID string, role Role) error
 
 	// SetArchived flips a room's is_archived flag. It is a narrow, dedicated

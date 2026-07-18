@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -240,6 +241,143 @@ func TestUpdateMemberRoleNotFound(t *testing.T) {
 	err := roomRepo.UpdateMemberRole(ctx, rm.ID, nonMember.ID, domainroom.RoleAdmin)
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected domain.ErrNotFound, got %v", err)
+	}
+}
+
+// TestUpdateMemberRoleRejectsCurrentOwner proves that
+// RoomRepository.UpdateMemberRole's row-locked owner recheck (see its
+// GoDoc) rejects a role change for whoever rooms.owner_id currently points
+// at, even when that ownership only became true after this test's own
+// setup ran a completed TransferOwnership -- i.e. it rechecks at call time
+// rather than trusting a caller's earlier, now-stale ownership snapshot.
+// TestConcurrentTransferOwnershipAndUpdateMemberRoleSerializes below proves
+// the same invariant holds when the two calls genuinely race.
+func TestUpdateMemberRoleRejectsCurrentOwner(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := createTestUser(ctx, t, userRepo, "recheck-owner")
+	target := createTestUser(ctx, t, userRepo, "recheck-target")
+
+	rm := &domainroom.Room{
+		ID: uuid.New().String(), Name: "Recheck Room", OwnerID: owner.ID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if err := roomRepo.AddMember(ctx, &domainroom.RoomMember{
+		ID: uuid.New().String(), RoomID: rm.ID, UserID: target.ID, Role: domainroom.RoleAdmin, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+
+	if err := roomRepo.TransferOwnership(ctx, rm.ID, owner.ID, target.ID); err != nil {
+		t.Fatalf("TransferOwnership failed: %v", err)
+	}
+
+	err := roomRepo.UpdateMemberRole(ctx, rm.ID, target.ID, domainroom.RoleReader)
+	if !errors.Is(err, domainroom.ErrOwnerRoleProtected) {
+		t.Fatalf("expected domainroom.ErrOwnerRoleProtected for the current owner, got %v", err)
+	}
+
+	got, err := roomRepo.GetMember(ctx, rm.ID, target.ID)
+	if err != nil {
+		t.Fatalf("GetMember failed: %v", err)
+	}
+	if got.Role != domainroom.RoleMaster {
+		t.Fatalf("expected target's role to remain master after the rejected UpdateMemberRole, got %s", got.Role)
+	}
+}
+
+// TestConcurrentTransferOwnershipAndUpdateMemberRoleSerializes proves that
+// RoomRepository.TransferOwnership and RoomRepository.UpdateMemberRole,
+// racing to act on the same target member of the same room (one promoting
+// them to owner, the other trying to change their role to something else),
+// never leave the room observably inconsistent -- i.e. never with zero or
+// two RoleMaster members, and never with a RoleMaster member who isn't
+// rooms.owner_id. Both methods lock the rooms row (TransferOwnership via
+// its CAS UPDATE, UpdateMemberRole via its `SELECT ... FOR UPDATE`), which
+// should serialize the two calls: whichever wins the lock commits (or, for
+// UpdateMemberRole, is rejected under the lock) fully before the other
+// proceeds. It repeats the race across many fresh rooms because Postgres's
+// lock-acquisition order across two concurrently-started transactions is
+// not deterministic -- a single iteration could pass by only ever
+// exercising one of the two possible interleavings.
+func TestConcurrentTransferOwnershipAndUpdateMemberRoleSerializes(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	const iterations = 20
+	for i := 0; i < iterations; i++ {
+		owner := createTestUser(ctx, t, userRepo, "race-owner")
+		target := createTestUser(ctx, t, userRepo, "race-target")
+
+		rm := &domainroom.Room{
+			ID: uuid.New().String(), Name: "Race Room", OwnerID: owner.ID,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}
+		if err := roomRepo.Create(ctx, rm); err != nil {
+			t.Fatalf("iteration %d: Create failed: %v", i, err)
+		}
+		if err := roomRepo.AddMember(ctx, &domainroom.RoomMember{
+			ID: uuid.New().String(), RoomID: rm.ID, UserID: target.ID, Role: domainroom.RoleAdmin, JoinedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("iteration %d: AddMember failed: %v", i, err)
+		}
+
+		var wg sync.WaitGroup
+		var transferErr, roleErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			transferErr = roomRepo.TransferOwnership(ctx, rm.ID, owner.ID, target.ID)
+		}()
+		go func() {
+			defer wg.Done()
+			roleErr = roomRepo.UpdateMemberRole(ctx, rm.ID, target.ID, domainroom.RoleReader)
+		}()
+		wg.Wait()
+
+		if transferErr != nil {
+			t.Fatalf("iteration %d: TransferOwnership returned unexpected error: %v", i, transferErr)
+		}
+		// UpdateMemberRole must either succeed (it committed before
+		// TransferOwnership locked the rooms row, i.e. target wasn't yet
+		// owner) or be rejected with ErrOwnerRoleProtected (it observed
+		// target already promoted to owner under the lock); any other
+		// outcome means the recheck failed to close the race.
+		if roleErr != nil && !errors.Is(roleErr, domainroom.ErrOwnerRoleProtected) {
+			t.Fatalf("iteration %d: UpdateMemberRole returned unexpected error: %v", i, roleErr)
+		}
+
+		finalRoom, err := roomRepo.GetByID(ctx, rm.ID)
+		if err != nil {
+			t.Fatalf("iteration %d: GetByID failed: %v", i, err)
+		}
+		members, err := roomRepo.ListMembers(ctx, rm.ID)
+		if err != nil {
+			t.Fatalf("iteration %d: ListMembers failed: %v", i, err)
+		}
+		masters := 0
+		for _, m := range members {
+			if m.Role != domainroom.RoleMaster {
+				continue
+			}
+			masters++
+			if m.UserID != finalRoom.OwnerID {
+				t.Fatalf("iteration %d: member %s holds RoleMaster but is not rooms.owner_id (%s)", i, m.UserID, finalRoom.OwnerID)
+			}
+		}
+		if masters != 1 {
+			t.Fatalf("iteration %d: expected exactly one master, found %d", i, masters)
+		}
 	}
 }
 

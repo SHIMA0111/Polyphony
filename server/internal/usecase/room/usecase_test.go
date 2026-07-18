@@ -451,6 +451,54 @@ func TestChangeMemberRoleOwnerProtected(t *testing.T) {
 	}
 }
 
+// TestRepoUpdateMemberRoleRejectsCurrentOwnerAfterConcurrentTransferOwnership
+// proves that mocks.RoomRepo.UpdateMemberRole rechecks room ownership at
+// call time -- mirroring postgres.RoomRepository.UpdateMemberRole's `SELECT
+// ... FOR UPDATE` recheck under lock, see that method's GoDoc -- rather than
+// trusting a caller's earlier, now-stale ownership check. This is exactly
+// the scenario RoomUsecase.ChangeMemberRole's own GetByID-based pre-check
+// (in ChangeMemberRole above this method) cannot catch by itself: if a
+// concurrent TransferOwnership promotes targetUserID to owner strictly
+// *after* that pre-check reads the room but *before* ChangeMemberRole calls
+// UpdateMemberRole, only a repository-level recheck taken under the same
+// lock TransferOwnership itself holds can still reject the write. This test
+// bypasses ChangeMemberRole's pre-check entirely and calls repo.
+// UpdateMemberRole directly to isolate that guarantee deterministically;
+// the full interleaving is exercised against real Postgres locking by
+// postgres.TestConcurrentTransferOwnershipAndUpdateMemberRoleSerializes.
+func TestRepoUpdateMemberRoleRejectsCurrentOwnerAfterConcurrentTransferOwnership(t *testing.T) {
+	repo := &mocks.RoomRepo{}
+	uc := NewRoomUsecase(repo, &mocks.MessageRepo{}, &mocks.ForkJobRepo{}, nil)
+	ctx := context.Background()
+
+	rwr, _ := uc.CreateRoom(ctx, "owner-1", "Race Room", "desc")
+	_ = repo.AddMember(ctx, &domainroom.RoomMember{
+		ID: "m-target", RoomID: rwr.Room.ID, UserID: "target-1", Role: domainroom.RoleAdmin,
+	})
+
+	// Simulate a concurrent TransferOwnership landing strictly between
+	// ChangeMemberRole's own owner pre-check and its call to
+	// UpdateMemberRole: by the time UpdateMemberRole runs below, target-1 IS
+	// the room's owner, even though nothing in this test re-reads the room
+	// to notice before calling it.
+	if err := repo.TransferOwnership(ctx, rwr.Room.ID, "owner-1", "target-1"); err != nil {
+		t.Fatalf("TransferOwnership failed: %v", err)
+	}
+
+	err := repo.UpdateMemberRole(ctx, rwr.Room.ID, "target-1", domainroom.RoleReader)
+	if !errors.Is(err, domainroom.ErrOwnerRoleProtected) {
+		t.Fatalf("expected ErrOwnerRoleProtected for the now-current owner, got %v", err)
+	}
+
+	member, err := repo.GetMember(ctx, rwr.Room.ID, "target-1")
+	if err != nil {
+		t.Fatalf("GetMember failed: %v", err)
+	}
+	if member.Role != domainroom.RoleMaster {
+		t.Fatalf("expected target-1's role to remain master after the rejected UpdateMemberRole, got %s", member.Role)
+	}
+}
+
 // TestChangeMemberRoleRejectsGrantingMaster asserts ChangeMemberRole rejects
 // newRole == domainroom.RoleMaster as defense in depth, even though the
 // handler layer already rejects it with HTTP 400 before ever calling the

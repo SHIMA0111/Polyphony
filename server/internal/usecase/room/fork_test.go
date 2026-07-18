@@ -84,9 +84,15 @@ func TestForkRoomSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRoom failed: %v", err)
 	}
+	// Set via UpdateAISettings rather than mutating src.Room directly:
+	// mocks.RoomRepo now stores (and returns) clones of every Room, so
+	// src.Room is no longer the same object as the fake's internal state —
+	// only a real repo write is observed by ForkRoom's own GetByID read
+	// below.
 	aiProvider, aiModel := "anthropic", "claude-opus-4"
-	src.Room.AIProvider = &aiProvider
-	src.Room.AIModel = &aiModel
+	if err := roomRepo.UpdateAISettings(ctx, src.Room.ID, &aiProvider, &aiModel); err != nil {
+		t.Fatalf("UpdateAISettings failed: %v", err)
+	}
 
 	job, newRoom, err := uc.ForkRoom(ctx, "owner", src.Room.ID)
 	if err != nil {

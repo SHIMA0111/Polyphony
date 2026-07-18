@@ -19,7 +19,7 @@
 #   docker compose port --index=1 api 8080
 #   docker compose port --index=2 api 8080
 #
-# The `!override` merge tag requires Docker Compose v2.24.0 or later; on
+# The `!override` merge tag requires Docker Compose v2.24.4 or later; on
 # older Compose versions this file fails to parse.
 services:
   api:

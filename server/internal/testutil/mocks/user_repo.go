@@ -27,6 +27,25 @@ func (r *UserRepo) ensureInit() {
 	}
 }
 
+// cloneUser returns a deep-enough copy of u: a struct copy plus a fresh
+// *string for KratosIdentityID when non-nil. A plain struct copy (`cp :=
+// *u`) still leaves cp.KratosIdentityID pointing at the very same string as
+// u.KratosIdentityID, since copying a struct copies its pointer fields by
+// value, not what they point to -- so a caller mutating *cp.KratosIdentityID
+// (or SetKratosIdentityID later re-deriving a pointer from the same
+// address) would silently alias the stored user. cloneUser is used for
+// every value stored into or read out of r.Users so no caller can ever
+// observe or corrupt the repo's internal state through a shared
+// KratosIdentityID pointer. Mirrors mocks.AttachmentRepo's cloneAttachment.
+func cloneUser(u *user.User) *user.User {
+	cp := *u
+	if u.KratosIdentityID != nil {
+		kratosID := *u.KratosIdentityID
+		cp.KratosIdentityID = &kratosID
+	}
+	return &cp
+}
+
 // Create persists a new user. Returns domain.ErrEmailAlreadyExists or
 // domain.ErrUsernameAlreadyExists if a conflict is detected.
 func (r *UserRepo) Create(_ context.Context, u *user.User) error {
@@ -42,7 +61,9 @@ func (r *UserRepo) Create(_ context.Context, u *user.User) error {
 			return domain.ErrUsernameAlreadyExists
 		}
 	}
-	r.Users[u.ID] = u
+	// Store a clone so later in-place mutation of the caller's own struct
+	// (or of u.KratosIdentityID's pointee) can't alias the repo's state.
+	r.Users[u.ID] = cloneUser(u)
 	return nil
 }
 
@@ -55,7 +76,7 @@ func (r *UserRepo) GetByID(_ context.Context, id string) (*user.User, error) {
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	return u, nil
+	return cloneUser(u), nil
 }
 
 // GetByEmail retrieves a user by email. Returns domain.ErrNotFound if not
@@ -66,7 +87,7 @@ func (r *UserRepo) GetByEmail(_ context.Context, email string) (*user.User, erro
 
 	for _, u := range r.Users {
 		if u.Email == email {
-			return u, nil
+			return cloneUser(u), nil
 		}
 	}
 	return nil, domain.ErrNotFound
@@ -80,7 +101,7 @@ func (r *UserRepo) GetByUsername(_ context.Context, username string) (*user.User
 
 	for _, u := range r.Users {
 		if u.Username == username {
-			return u, nil
+			return cloneUser(u), nil
 		}
 	}
 	return nil, domain.ErrNotFound
@@ -95,7 +116,7 @@ func (r *UserRepo) GetByKratosIdentityID(_ context.Context, kratosIdentityID str
 
 	for _, u := range r.Users {
 		if u.KratosIdentityID != nil && *u.KratosIdentityID == kratosIdentityID {
-			return u, nil
+			return cloneUser(u), nil
 		}
 	}
 	return nil, domain.ErrNotFound
@@ -147,7 +168,9 @@ func (r *UserRepo) Update(_ context.Context, u *user.User) error {
 			return domain.ErrUsernameAlreadyExists
 		}
 	}
-	r.Users[u.ID] = u
+	// Store a clone, same reasoning as Create: u is caller-owned and must
+	// not be aliased by the repo's internal state.
+	r.Users[u.ID] = cloneUser(u)
 	return nil
 }
 
