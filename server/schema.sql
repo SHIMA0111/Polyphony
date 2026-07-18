@@ -132,3 +132,41 @@ CREATE TABLE group_members (
 
 CREATE INDEX idx_groups_owner_id ON groups(owner_id);
 CREATE INDEX idx_group_members_group_id ON group_members(group_id);
+
+CREATE TABLE subscriptions (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    stripe_customer_id VARCHAR(255) NOT NULL,
+    stripe_subscription_id VARCHAR(255) NOT NULL,
+    stripe_price_id VARCHAR(255) NOT NULL,
+    plan_code VARCHAR(50) NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    monthly_token_allocation BIGINT NOT NULL,
+    current_period_start TIMESTAMPTZ NOT NULL,
+    current_period_end TIMESTAMPTZ NOT NULL,
+    cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+    canceled_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT subscriptions_stripe_subscription_id_unique UNIQUE (stripe_subscription_id)
+);
+
+CREATE INDEX idx_subscriptions_user_id ON subscriptions(user_id);
+
+CREATE TABLE payment_history (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    subscription_id UUID REFERENCES subscriptions(id) ON DELETE SET NULL,
+    payment_rail VARCHAR(20) NOT NULL DEFAULT 'stripe',
+    stripe_event_id VARCHAR(255) NOT NULL,
+    stripe_reference_id VARCHAR(255) NOT NULL DEFAULT '',
+    kind VARCHAR(20) NOT NULL,
+    amount_cents BIGINT NOT NULL,
+    currency VARCHAR(10) NOT NULL DEFAULT 'usd',
+    tokens_credited BIGINT NOT NULL DEFAULT 0,
+    status VARCHAR(20) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT payment_history_stripe_event_id_unique UNIQUE (stripe_event_id)
+);
+
+CREATE INDEX idx_payment_history_user_id ON payment_history(user_id, created_at DESC);

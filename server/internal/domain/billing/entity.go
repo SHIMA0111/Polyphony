@@ -66,3 +66,116 @@ type TransactionPage struct {
 	Transactions []*TokenTransaction
 	NextCursor   *string // nil when no more pages
 }
+
+// --- Step 49: Stripe subscription / payment entities ---
+
+// Subscription is a user's recurring Stripe Checkout subscription, tracking
+// the plan they are on and the current billing period. There is at most one
+// Subscription row per user in this step's scope (a single flat
+// plan-code → price-id → monthly-token-allocation mapping — see
+// step49.md's Out of scope for the explicit exclusion of upgrades/downgrades
+// and multi-seat billing). CanceledAt is nil until
+// customer.subscription.deleted is processed; CancelAtPeriodEnd is set
+// eagerly by BillingUsecase.CancelSubscription and does not by itself mean
+// the subscription has ended yet — Status/CanceledAt only flip once Stripe's
+// webhook confirms the period actually ended.
+type Subscription struct {
+	ID                     string
+	UserID                 string
+	StripeCustomerID       string
+	StripeSubscriptionID   string
+	StripePriceID          string
+	PlanCode               string
+	Status                 string
+	MonthlyTokenAllocation int64
+	CurrentPeriodStart     time.Time
+	CurrentPeriodEnd       time.Time
+	CancelAtPeriodEnd      bool
+	CanceledAt             *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+// PaymentKind identifies what a PaymentRecord paid for.
+type PaymentKind string
+
+const (
+	// PaymentKindSubscription marks a recurring subscription-renewal payment
+	// (an invoice.paid event with billing_reason subscription_create/cycle).
+	PaymentKindSubscription PaymentKind = "subscription"
+
+	// PaymentKindTokenPurchase marks a one-time token top-up purchase (a
+	// checkout.session.completed event in "payment" mode).
+	PaymentKindTokenPurchase PaymentKind = "token_purchase"
+)
+
+// PaymentRecord is a single immutable row in the payment_history ledger,
+// recording one Stripe payment event (subscription renewal or one-time
+// token purchase) and how many tokens it credited. StripeEventID is the
+// idempotency key: PaymentRepository.Create/CreateAndCredit treat a
+// unique-constraint violation on it as "already processed" rather than an
+// error, since Stripe delivers webhooks at-least-once. SubscriptionID is nil
+// for a token-purchase payment (not tied to any subscription).
+type PaymentRecord struct {
+	ID                string
+	UserID            string
+	SubscriptionID    *string
+	PaymentRail       string
+	StripeEventID     string
+	StripeReferenceID string
+	Kind              PaymentKind
+	AmountCents       int64
+	Currency          string
+	TokensCredited    int64
+	Status            string
+	CreatedAt         time.Time
+}
+
+// PaymentHistoryPage holds a cursor-paginated page of PaymentRecord rows,
+// newest first, mirroring TransactionPage's shape.
+type PaymentHistoryPage struct {
+	Payments   []*PaymentRecord
+	NextCursor *string // nil when no more pages
+}
+
+// Plan is a purchasable monthly subscription plan. It is built by the
+// composition root (app.NewContainer) from the infrastructure config
+// package's config.StripePlan so that the domain/usecase layers never import
+// infrastructure config directly (see CLAUDE.md's Clean Architecture rule).
+type Plan struct {
+	Code                   string
+	StripePriceID          string
+	Name                   string
+	Description            string
+	PriceCents             int64
+	Currency               string
+	MonthlyTokenAllocation int64
+}
+
+// TokenPackage is a purchasable one-time token top-up package, converted
+// from config.StripeTokenPackage the same way Plan is converted from
+// config.StripePlan.
+type TokenPackage struct {
+	Code          string
+	StripePriceID string
+	Name          string
+	Description   string
+	PriceCents    int64
+	Currency      string
+	Tokens        int64
+}
+
+// PlanCatalogEntry is a single row of the purchasable catalog served by
+// GET /billing/plans, merging Plan and TokenPackage into one display shape.
+// Interval is "month" for a Plan or "one_time" for a TokenPackage.
+// StripePriceID is deliberately not carried onto this type — the catalog
+// endpoint never exposes Stripe price IDs to clients.
+type PlanCatalogEntry struct {
+	Code           string
+	Name           string
+	Description    string
+	PriceCents     int64
+	Currency       string
+	Interval       string
+	TokenAllowance int64
+}

@@ -248,3 +248,13 @@ tasks:
       DATABASE_URL: postgres://polyphony:polyphony@localhost:5432/polyphony?sslmode=disable
     cmds:
       - go run ./cmd/seed-tokens {{.CLI_ARGS}}
+
+  stripe:listen:
+    desc: >-
+      Start the stripe-cli service and tail its logs so a developer can grab
+      the printed webhook signing secret (whsec_...) — copy it into .env's
+      STRIPE_WEBHOOK_SECRET and run `task up` again to recreate the api
+      service with it (Step 49).
+    cmds:
+      - docker compose up -d stripe-cli
+      - docker compose logs -f stripe-cli

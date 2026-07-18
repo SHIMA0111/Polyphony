@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -176,6 +177,66 @@ type Config struct {
 	// unparseable as a time.Duration. Unused when AuthMode is "simple_jwt",
 	// since SimpleJWTService is never wrapped by CachedAuthService.
 	WhoamiCacheTTL time.Duration
+
+	// StripeSecretKey is the Stripe test-mode secret API key (env
+	// STRIPE_SECRET_KEY), optional/empty-default like LLMGatewayURL's
+	// third-party-config handling: an empty value does not fail Load —
+	// container.go simply does not construct a billing.StripeGateway, and
+	// checkout/portal/cancel endpoints return domain.ErrStripeNotConfigured
+	// (mapped to HTTP 503) instead. GET /billing/plans works regardless.
+	StripeSecretKey string
+	// StripeWebhookSecret is the signing secret (whsec_...) used to verify
+	// the Stripe-Signature header on POST /webhooks/stripe (env
+	// STRIPE_WEBHOOK_SECRET). Obtained locally by running `docker compose
+	// logs stripe-cli` after starting the stripe-cli service (see
+	// docker-compose.yml/Taskfile.yml's stripe:listen task). Optional/empty
+	// default, same rationale as StripeSecretKey.
+	StripeWebhookSecret string
+	// StripePlans is the purchasable monthly subscription plan catalog,
+	// parsed from the single-line JSON array in STRIPE_PLANS_JSON. Empty
+	// (nil) if unset.
+	StripePlans []StripePlan
+	// StripeTokenPackages is the purchasable one-time token top-up package
+	// catalog, parsed from the single-line JSON array in
+	// STRIPE_TOKEN_PACKAGES_JSON. Empty (nil) if unset.
+	StripeTokenPackages []StripeTokenPackage
+	// StripeCheckoutSuccessURL is the URL Stripe Checkout redirects to after
+	// a successful payment (env STRIPE_CHECKOUT_SUCCESS_URL, default
+	// "http://localhost:3000/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}").
+	// "{CHECKOUT_SESSION_ID}" is Stripe's own template placeholder, passed
+	// through verbatim.
+	StripeCheckoutSuccessURL string
+	// StripeCheckoutCancelURL is the URL Stripe Checkout redirects to if the
+	// customer cancels (env STRIPE_CHECKOUT_CANCEL_URL, default
+	// "http://localhost:3000/billing/checkout/cancel").
+	StripeCheckoutCancelURL string
+}
+
+// StripePlan configures one purchasable monthly subscription plan: the
+// Stripe wiring fields (PriceID) alongside the display fields
+// GET /billing/plans serves. Parsed from one element of the
+// STRIPE_PLANS_JSON env var's JSON array.
+type StripePlan struct {
+	PlanCode               string `json:"plan_code"`
+	PriceID                string `json:"price_id"`
+	Name                   string `json:"name"`
+	Description            string `json:"description"`
+	PriceCents             int64  `json:"price_cents"`
+	Currency               string `json:"currency"`
+	MonthlyTokenAllocation int64  `json:"monthly_token_allocation"`
+}
+
+// StripeTokenPackage configures one purchasable one-time token top-up
+// package, the TokenPurchase counterpart of StripePlan. Parsed from one
+// element of the STRIPE_TOKEN_PACKAGES_JSON env var's JSON array.
+type StripeTokenPackage struct {
+	PackageCode string `json:"package_code"`
+	PriceID     string `json:"price_id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	PriceCents  int64  `json:"price_cents"`
+	Currency    string `json:"currency"`
+	Tokens      int64  `json:"tokens"`
 }
 
 // Load reads configuration from environment variables and returns a Config.
@@ -344,6 +405,30 @@ func Load() (*Config, error) {
 
 	whoamiCacheTTL := parseDurationEnv("WHOAMI_CACHE_TTL", defaultWhoamiCacheTTL)
 
+	stripeSecretKey := os.Getenv("STRIPE_SECRET_KEY")
+	stripeWebhookSecret := os.Getenv("STRIPE_WEBHOOK_SECRET")
+
+	var stripePlans []StripePlan
+	if err := parseJSONArrayEnv("STRIPE_PLANS_JSON", &stripePlans); err != nil {
+		slog.Default().Warn("invalid STRIPE_PLANS_JSON, ignoring", "error", err)
+		stripePlans = nil
+	}
+
+	var stripeTokenPackages []StripeTokenPackage
+	if err := parseJSONArrayEnv("STRIPE_TOKEN_PACKAGES_JSON", &stripeTokenPackages); err != nil {
+		slog.Default().Warn("invalid STRIPE_TOKEN_PACKAGES_JSON, ignoring", "error", err)
+		stripeTokenPackages = nil
+	}
+
+	stripeCheckoutSuccessURL := os.Getenv("STRIPE_CHECKOUT_SUCCESS_URL")
+	if stripeCheckoutSuccessURL == "" {
+		stripeCheckoutSuccessURL = "http://localhost:3000/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}"
+	}
+	stripeCheckoutCancelURL := os.Getenv("STRIPE_CHECKOUT_CANCEL_URL")
+	if stripeCheckoutCancelURL == "" {
+		stripeCheckoutCancelURL = "http://localhost:3000/billing/checkout/cancel"
+	}
+
 	return &Config{
 		Port:                port,
 		DatabaseURL:         dbURL,
@@ -378,6 +463,13 @@ func Load() (*Config, error) {
 		RateLimitLoginPerMinute:    rateLimitLoginPerMinute,
 		RateLimitAIInvokePerMinute: rateLimitAIInvokePerMinute,
 		WhoamiCacheTTL:             whoamiCacheTTL,
+
+		StripeSecretKey:          stripeSecretKey,
+		StripeWebhookSecret:      stripeWebhookSecret,
+		StripePlans:              stripePlans,
+		StripeTokenPackages:      stripeTokenPackages,
+		StripeCheckoutSuccessURL: stripeCheckoutSuccessURL,
+		StripeCheckoutCancelURL:  stripeCheckoutCancelURL,
 	}, nil
 }
 
@@ -413,6 +505,23 @@ func parseCORSOrigins(raw string) (string, error) {
 		trimmed = append(trimmed, origin)
 	}
 	return strings.Join(trimmed, ","), nil
+}
+
+// parseJSONArrayEnv reads the given environment variable and unmarshals it
+// as a JSON array into out (a pointer to a slice), following the same
+// whole-array-as-a-single-JSON-string convention used elsewhere for
+// list-shaped optional config (e.g. KRATOS_OIDC_PROVIDERS_JSON). If the
+// variable is unset or empty, out is left unmodified (its zero value, an
+// empty/nil slice) and no error is returned.
+func parseJSONArrayEnv(key string, out any) error {
+	val := os.Getenv(key)
+	if val == "" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(val), out); err != nil {
+		return fmt.Errorf("parse %s: %w", key, err)
+	}
+	return nil
 }
 
 // parseDurationEnv reads the given environment variable and parses it as a

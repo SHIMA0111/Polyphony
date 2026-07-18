@@ -107,8 +107,34 @@ func (r *BillingRepository) mutateAndRecord(
 	// Safe no-op after a successful Commit below.
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	txn, err := mutateWithinTx(ctx, tx, userID, roomID, messageID, txType, signedAmount, description)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return txn, nil
+}
+
+// mutateWithinTx is mutateAndRecord's body, extracted so
+// PaymentRepository.CreateAndCredit (server/internal/interface/repository/postgres/payment_repository.go)
+// can share the exact same balance-mutation SQL within its own open
+// transaction — crediting a balance and inserting its payment_history row
+// must commit or roll back together (see step49.md's atomicity requirement).
+func mutateWithinTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID string,
+	roomID, messageID *string,
+	txType billing.TransactionType,
+	signedAmount int64,
+	description string,
+) (*billing.TokenTransaction, error) {
 	var newBalance int64
-	err = tx.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		`UPDATE token_balances SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2 RETURNING balance`,
 		signedAmount, userID,
 	).Scan(&newBalance)
@@ -137,10 +163,6 @@ func (r *BillingRepository) mutateAndRecord(
 	).Scan(&txn.CreatedAt)
 	if err != nil {
 		return nil, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return txn, nil

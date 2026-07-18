@@ -37,6 +37,12 @@ services:
       RATE_LIMIT_LOGIN_PER_MINUTE: ${RATE_LIMIT_LOGIN_PER_MINUTE:-10}
       RATE_LIMIT_AI_INVOKE_PER_MINUTE: ${RATE_LIMIT_AI_INVOKE_PER_MINUTE:-20}
       WHOAMI_CACHE_TTL: ${WHOAMI_CACHE_TTL:-30s}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PLANS_JSON: ${STRIPE_PLANS_JSON:-}
+      STRIPE_TOKEN_PACKAGES_JSON: ${STRIPE_TOKEN_PACKAGES_JSON:-}
+      STRIPE_CHECKOUT_SUCCESS_URL: ${STRIPE_CHECKOUT_SUCCESS_URL:-http://localhost:3000/billing/checkout/success?session_id={CHECKOUT_SESSION_ID}}
+      STRIPE_CHECKOUT_CANCEL_URL: ${STRIPE_CHECKOUT_CANCEL_URL:-http://localhost:3000/billing/checkout/cancel}
     ports:
       - "8080:8080"
     healthcheck:
@@ -225,6 +231,19 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  # Forwards Stripe test-mode webhook events to the api container so local
+  # development never needs a publicly reachable webhook URL (Step 49). On
+  # first start it prints an ephemeral `whsec_...` signing secret to its
+  # logs (`docker compose logs stripe-cli` / `task stripe:listen`) — copy
+  # that value into `.env`'s STRIPE_WEBHOOK_SECRET and restart the api
+  # service for signature verification to succeed.
+  stripe-cli:
+    image: stripe/stripe-cli:v1.21.6
+    command: listen --api-key ${STRIPE_SECRET_KEY:-} --forward-to api:8080/webhooks/stripe --skip-verify
+    depends_on:
+      api:
+        condition: service_started
 
   web:
     build:
