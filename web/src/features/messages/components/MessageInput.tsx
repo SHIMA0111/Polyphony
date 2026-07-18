@@ -12,6 +12,15 @@ interface MessageInputProps {
   onSendWithAI: (content: string, model: string) => Promise<void>
   models: ModelInfo[]
   disabled?: boolean
+  /**
+   * Whether the viewer may invoke AI in this room (Step 37's `RoomRole`
+   * gating: `guest` and below cannot). Defaults to `true` so every existing
+   * caller that doesn't pass this prop is unaffected. When `false`, the
+   * "Send with AI" button is omitted entirely rather than left visible and
+   * disabled — the control must not be visible, not just inert, since a
+   * guest attempting AI invocation is independently rejected server-side.
+   */
+  canInvokeAI?: boolean
 }
 
 export function MessageInput({
@@ -19,6 +28,7 @@ export function MessageInput({
   onSendWithAI,
   models,
   disabled,
+  canInvokeAI = true,
 }: MessageInputProps) {
   const [input, setInput] = useState("")
   const [isSending, setIsSending] = useState(false)
@@ -162,41 +172,43 @@ export function MessageInput({
               <ArrowUp size={14} />
               Send
             </Button>
-            <Tooltip
-              content="Select a model to send with AI"
-              disabled={!!selectedModel}
-            >
-              {/*
-                A `disabled` native button doesn't fire pointer or focus
-                events in most browsers, so a Tooltip wrapping it directly
-                would never trigger — not on mouse hover, and not on
-                keyboard focus (Tab). Wrapping the Button in a focusable
-                (`tabIndex={0}`) `span` gives the tooltip an always-
-                interactive element to anchor to, so "Select a model to send
-                with AI" is reachable both by hovering and by tabbing to it,
-                even while the button itself is disabled.
-              */}
-              <Box as="span" display="inline-flex" tabIndex={0}>
-                <Button
-                  size="sm"
-                  onClick={handleSendWithAI}
-                  disabled={isAISendDisabled}
-                  h={8}
-                  px={3}
-                  fontSize="xs"
-                  fontWeight="medium"
-                  gap={1.5}
-                  rounded="lg"
-                  colorPalette="blue"
-                  bg="linear-gradient(to right, var(--chakra-colors-blue-500), var(--chakra-colors-blue-600))"
-                  color="white"
-                  _hover={{ opacity: 0.9 }}
-                >
-                  <Sparkles size={14} />
-                  Send with AI
-                </Button>
-              </Box>
-            </Tooltip>
+            {canInvokeAI && (
+              <Tooltip
+                content="Select a model to send with AI"
+                disabled={!!selectedModel}
+              >
+                {/*
+                  A `disabled` native button doesn't fire pointer or focus
+                  events in most browsers, so a Tooltip wrapping it directly
+                  would never trigger — not on mouse hover, and not on
+                  keyboard focus (Tab). Wrapping the Button in a focusable
+                  (`tabIndex={0}`) `span` gives the tooltip an always-
+                  interactive element to anchor to, so "Select a model to send
+                  with AI" is reachable both by hovering and by tabbing to it,
+                  even while the button itself is disabled.
+                */}
+                <Box as="span" display="inline-flex" tabIndex={0}>
+                  <Button
+                    size="sm"
+                    onClick={handleSendWithAI}
+                    disabled={isAISendDisabled}
+                    h={8}
+                    px={3}
+                    fontSize="xs"
+                    fontWeight="medium"
+                    gap={1.5}
+                    rounded="lg"
+                    colorPalette="blue"
+                    bg="linear-gradient(to right, var(--chakra-colors-blue-500), var(--chakra-colors-blue-600))"
+                    color="white"
+                    _hover={{ opacity: 0.9 }}
+                  >
+                    <Sparkles size={14} />
+                    Send with AI
+                  </Button>
+                </Box>
+              </Tooltip>
+            )}
           </Flex>
         </Box>
 
