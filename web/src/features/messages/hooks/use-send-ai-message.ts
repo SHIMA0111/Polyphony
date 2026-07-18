@@ -23,6 +23,21 @@ export interface SendAIMessageInput {
    * `sendAIMessage`. Defaults to `false`.
    */
   private?: boolean
+  /**
+   * Whether to use the streaming endpoint (default `true`). `useChatRoom`'s
+   * attachment flow passes `false`: a send-with-attachments is immediately
+   * followed by a `RegenerateAIMessage` call (so the model actually sees the
+   * just-linked images), and regenerating while the original streamed reply
+   * is still in flight races the stream's own finalize -- whichever write
+   * lands last clobbers the other's content (observed live in the wave-7
+   * integration run as the streamed text overwriting the Vision-aware
+   * regenerated text). The non-streaming endpoint only resolves once the
+   * throwaway first reply is complete, so the follow-up regenerate always
+   * targets a settled (`"completed"`/`"failed"`) message. Ignored (treated
+   * as `false`) when `private` is set -- `StreamAI` rejects private sends
+   * with HTTP 400 regardless.
+   */
+  stream?: boolean
 }
 
 /** Context carried from `onMutate` through to `onSuccess`/`onError`. */
@@ -105,12 +120,13 @@ export function useSendAIMessage(roomId: string, options?: UseSendAIMessageOptio
 
   return useMutation({
     // Private-mode sends cannot use the streaming endpoint (`StreamAI`
-    // rejects `private: true` with HTTP 400), so route those through the
-    // non-streaming `sendAIMessage` instead; everything else (the default)
-    // goes through `sendAIMessageStream`.
-    mutationFn: ({ content, model, private: isPrivate }: SendAIMessageInput) =>
-      isPrivate
-        ? sendAIMessage(roomId, content, model, isPrivate)
+    // rejects `private: true` with HTTP 400), and callers may opt out of
+    // streaming explicitly (`stream: false`, see `SendAIMessageInput`) --
+    // both route through the non-streaming `sendAIMessage`; everything else
+    // (the default) goes through `sendAIMessageStream`.
+    mutationFn: ({ content, model, private: isPrivate, stream = true }: SendAIMessageInput) =>
+      isPrivate || !stream
+        ? sendAIMessage(roomId, content, model, isPrivate ?? false)
         : sendAIMessageStream(roomId, content, model),
     onMutate: async ({ content, private: isPrivate }): Promise<SendAIMessageContext> => {
       await queryClient.cancelQueries({ queryKey })

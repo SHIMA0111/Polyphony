@@ -85,6 +85,50 @@ export async function loadStreamingFixture(name: string): Promise<string | null>
   return await file.text()
 }
 
+/**
+ * Milliseconds to wait between consecutive SSE events when serving a
+ * streaming fixture (overridable via `STREAM_EVENT_DELAY_MS`; `0` disables
+ * pacing entirely). Real providers emit tokens over time; serving the whole
+ * canned SSE body in a single write let the entire stub -> gateway -> Go ->
+ * WebSocket pipeline complete faster than the web client's batched cache
+ * notifications could produce even one intermediate render, so
+ * `web/e2e/streaming.spec.ts`'s incremental-render assertion could never
+ * hold (caught live by the wave-7 integration run). A small fixed delay
+ * makes chunk delivery observable without meaningfully slowing any suite.
+ */
+const STREAM_EVENT_DELAY_MS = Number(process.env.STREAM_EVENT_DELAY_MS ?? 25)
+
+/**
+ * Wraps a raw SSE fixture body in a `ReadableStream` that emits one SSE
+ * event block (`...\n\n`-delimited) at a time, waiting
+ * {@link STREAM_EVENT_DELAY_MS} between events. With a delay of `0` the
+ * whole body is enqueued in one write, preserving the old single-write
+ * behavior.
+ *
+ * @param sse - The raw SSE fixture text (`fixtures/stream/{name}.sse`).
+ * @returns A stream suitable as a `text/event-stream` response body.
+ */
+export function paceSseBody(sse: string): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      if (STREAM_EVENT_DELAY_MS <= 0) {
+        controller.enqueue(encoder.encode(sse))
+        controller.close()
+        return
+      }
+      // Keep the trailing blank line on every event block so the
+      // re-assembled wire bytes are identical to the fixture file's.
+      const events = sse.split(/(?<=\n\n)/)
+      for (const event of events) {
+        controller.enqueue(encoder.encode(event))
+        await new Promise((resolve) => setTimeout(resolve, STREAM_EVENT_DELAY_MS))
+      }
+      controller.close()
+    },
+  })
+}
+
 /** Builds a JSON error response body shaped like OpenAI's `{ error: { message } }`. */
 function errorResponse(status: number, message: string): Response {
   return new Response(JSON.stringify({ error: { message } }), {
@@ -152,7 +196,7 @@ export async function handleChatCompletions(request: Request): Promise<Response>
     if (sse === null) {
       return errorResponse(404, `unknown streaming fixture: ${fixtureName}`)
     }
-    return new Response(sse, {
+    return new Response(paceSseBody(sse), {
       status: 200,
       headers: { "Content-Type": "text/event-stream" },
     })

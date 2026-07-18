@@ -24,7 +24,10 @@ async function loginAndOpenFixtureRoom(page: Page): Promise<void> {
   await page.getByPlaceholder("you@example.com").fill(FIXTURE_USER.email)
   await page.getByPlaceholder("Enter your password").fill(FIXTURE_USER.password)
   await page.getByRole("button", { name: "Sign in" }).click()
-  await expect(page).toHaveURL(/\/rooms$/)
+  // Longer timeout (wave-7 deflake, same as members/groups/rooms'
+  // registerUser carryover fix): under full-suite parallelism this
+  // post-auth navigation can exceed Playwright's default 5s.
+  await expect(page).toHaveURL(/\/rooms$/, { timeout: 15_000 })
 
   await page.getByRole("heading", { name: FIXTURE_ROOM_NAME }).click()
   await expect(page).toHaveURL(/\/rooms\/[^/]+$/)

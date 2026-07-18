@@ -116,7 +116,10 @@ test.describe("Room settings: create, rename, delete, and RBAC gating", () => {
     const updateRes = await updateResponse
     expect(updateRes.ok()).toBe(true)
 
-    await page.getByRole("button", { name: "Close" }).click()
+    // `exact: true`: the drawer also has an icon close-trigger whose
+    // accessible name is "Close room settings", which non-exact (substring)
+    // role matching would also hit, tripping strict mode.
+    await page.getByRole("button", { name: "Close", exact: true }).click()
 
     // Navigate away and back (rather than just relying on the in-place
     // update) so the assertion also covers the renamed room surviving a

@@ -176,6 +176,35 @@ describe("useSendAIMessage", () => {
     expect(aiMessage).toEqual(finalMessage)
   })
 
+  it("routes stream: false sends through the non-streaming endpoint (attachment flow)", async () => {
+    // `useChatRoom.handleSendWithAI` passes `stream: false` for
+    // send-with-attachments so the follow-up regenerate never races a
+    // still-in-flight stream's finalize (see `SendAIMessageInput.stream`).
+    // The MSW handler set below would 404 the default streaming endpoint,
+    // so reaching a resolved mutation proves the non-streaming route was
+    // taken; its response also carries a settled `"completed"` AI message.
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
+        return HttpResponse.json(
+          { message: "streaming endpoint must not be called for stream: false" },
+          { status: 500 },
+        )
+      }),
+    )
+
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useSendAIMessage("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    const res = await result.current.mutateAsync({
+      content: "Hello, AI!",
+      stream: false,
+    })
+
+    expect(res.ai_message.status).toBe("completed")
+  })
+
   it("rolls the human echo back to status: 'failed' and drops the AI placeholder when the request fails", async () => {
     server.use(
       http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {

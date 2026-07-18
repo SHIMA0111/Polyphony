@@ -288,6 +288,12 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
           content,
           model,
           private: isPrivate,
+          // Attachment sends opt out of streaming: the regenerate call
+          // below must target a settled AI message, not one whose stream is
+          // still in flight -- see `SendAIMessageInput.stream`'s doc
+          // comment for the finalize-vs-regenerate clobbering race this
+          // avoids.
+          stream: attachmentIds.length === 0,
         })
         // Refresh the top-bar balance promptly after a successful AI send,
         // rather than waiting for `useBalance`'s background poll — a send

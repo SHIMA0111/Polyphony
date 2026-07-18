@@ -49,5 +49,10 @@ export const DEX_FIXTURE_USER = {
 export const HYDRA_DEMO_FIXTURE_USER = {
   email: "e2e-hydra-fixture@polyphony.test",
   username: "e2e_hydra_fixture",
-  password: "e2e-hydra-fixture-password-123",
+  // Deliberately dissimilar to the email/username: Kratos's default
+  // password policy rejects a password too similar to an identifier
+  // (`4000031`), which a `e2e-hydra-fixture-password-...` value trips --
+  // the seed's register call then 500s and the whole suite's globalSetup
+  // aborts (caught live by the wave-7 integration run).
+  password: "Polyphony-Demo-P@ss-9271",
 } as const
