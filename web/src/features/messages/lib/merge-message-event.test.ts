@@ -368,6 +368,192 @@ describe("mergeMessageEvent", () => {
     })
   })
 
+  // --- Wave-9 review follow-up: per-request correlation under concurrent sends ---
+
+  describe("concurrent AI sends (per-request correlation)", () => {
+    /** Seeds two concurrent `useSendAIMessage` sends' optimistic pairs, newest (B) first. */
+    function seedTwoConcurrentSends(): MessagesInfiniteData {
+      const humanA = makeMessage("optimistic-human-A", {
+        type: "human",
+        content: "hello A",
+        status: "sending",
+      })
+      const aiA = makeMessage("optimistic-ai-A", {
+        type: "ai",
+        content: "",
+        status: "sending",
+        in_response_to_message_id: "optimistic-human-A",
+      })
+      const humanB = makeMessage("optimistic-human-B", {
+        type: "human",
+        content: "hello B",
+        status: "sending",
+      })
+      const aiB = makeMessage("optimistic-ai-B", {
+        type: "ai",
+        content: "",
+        status: "sending",
+        in_response_to_message_id: "optimistic-human-B",
+      })
+      return {
+        pages: [{ messages: [aiB, humanB, aiA, humanA], next_cursor: null }],
+        pageParams: [undefined],
+      }
+    }
+
+    it("correlates each concurrent send's human echo, AI echo, and chunks to its own placeholder pair -- never first-match", () => {
+      let data: MessagesInfiniteData | undefined = seedTwoConcurrentSends()
+
+      // Human echoes land out of send order (B's arrives before A's) --
+      // each reconciles only its own optimistic human entry, by content,
+      // and propagates the real id to that send's own AI placeholder.
+      data = mergeMessageEvent(
+        data,
+        makeCreatedEvent(makeMessage("human-real-B", { type: "human", content: "hello B" })),
+      )
+      expect(
+        data?.pages[0].messages.find((m) => m.id === "optimistic-ai-B")
+          ?.in_response_to_message_id,
+      ).toBe("human-real-B")
+      expect(
+        data?.pages[0].messages.find((m) => m.id === "optimistic-ai-A")
+          ?.in_response_to_message_id,
+      ).toBe("optimistic-human-A")
+
+      data = mergeMessageEvent(
+        data,
+        makeCreatedEvent(makeMessage("human-real-A", { type: "human", content: "hello A" })),
+      )
+      expect(
+        data?.pages[0].messages.find((m) => m.id === "optimistic-ai-A")
+          ?.in_response_to_message_id,
+      ).toBe("human-real-A")
+
+      // Both AI placeholders are still pending -- an AI message_created echo
+      // must match by `in_response_to_message_id`, not first-match, to land
+      // on the correct one.
+      data = mergeMessageEvent(
+        data,
+        makeCreatedEvent(
+          makeMessage("ai-real-B", {
+            type: "ai",
+            content: "",
+            status: "streaming",
+            in_response_to_message_id: "human-real-B",
+          }),
+        ),
+      )
+      data = mergeMessageEvent(
+        data,
+        makeCreatedEvent(
+          makeMessage("ai-real-A", {
+            type: "ai",
+            content: "",
+            status: "streaming",
+            in_response_to_message_id: "human-real-A",
+          }),
+        ),
+      )
+
+      const idsAfterEchoes = data?.pages[0].messages.map((m) => m.id)
+      expect(idsAfterEchoes).toContain("ai-real-A")
+      expect(idsAfterEchoes).toContain("ai-real-B")
+      expect(idsAfterEchoes).not.toContain("optimistic-ai-A")
+      expect(idsAfterEchoes).not.toContain("optimistic-ai-B")
+
+      // Once each placeholder carries its real id, chunk delivery is
+      // unambiguous (direct id match) regardless of interleaving.
+      data = mergeMessageEvent(data, makeChunkEvent("ai-real-B", "Hi B"))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-real-A", "Hi A"))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-real-B", ", second chunk"))
+
+      expect(data?.pages[0].messages.find((m) => m.id === "ai-real-A")?.content).toBe("Hi A")
+      expect(data?.pages[0].messages.find((m) => m.id === "ai-real-B")?.content).toBe(
+        "Hi B, second chunk",
+      )
+    })
+
+    it("does not guess which placeholder an AI message_created echo belongs to when its expected parent isn't yet resolved on either candidate", () => {
+      const data = seedTwoConcurrentSends()
+
+      // Neither optimistic human has been reconciled yet, so both AI
+      // placeholders still carry their (fake) optimistic human ids -- an
+      // echo carrying a real human id can't match either one.
+      const result = mergeMessageEvent(
+        data,
+        makeCreatedEvent(
+          makeMessage("ai-real-A", {
+            type: "ai",
+            content: "",
+            status: "streaming",
+            in_response_to_message_id: "human-real-A",
+          }),
+        ),
+      )
+
+      // Falls back to inserting a new entry rather than clobbering either
+      // pending placeholder with the wrong send's content.
+      const ids = result?.pages[0].messages.map((m) => m.id)
+      expect(ids).toContain("ai-real-A")
+      expect(ids).toContain("optimistic-ai-A")
+      expect(ids).toContain("optimistic-ai-B")
+      expect(result?.pages[0].messages.find((m) => m.id === "optimistic-ai-A")?.content).toBe("")
+      expect(result?.pages[0].messages.find((m) => m.id === "optimistic-ai-B")?.content).toBe("")
+    })
+
+    it("creates a standalone streaming entry instead of guessing when a chunk arrives with two optimistic AI placeholders pending", () => {
+      // A `token_chunk` payload never carries `in_response_to_message_id`,
+      // so with two sends in flight there is no signal to correlate it to
+      // either placeholder -- even though this is the only kind of event
+      // that could otherwise race ahead of both sends' human echoes.
+      const data = seedTwoConcurrentSends()
+
+      const result = mergeMessageEvent(data, makeChunkEvent("ai-real-1", "First delta"))
+
+      const ids = result?.pages[0].messages.map((m) => m.id)
+      expect(ids).toContain("ai-real-1")
+      expect(ids).toContain("optimistic-ai-A")
+      expect(ids).toContain("optimistic-ai-B")
+      expect(result?.pages[0].messages.find((m) => m.id === "ai-real-1")).toMatchObject({
+        status: "streaming",
+        content: "First delta",
+      })
+      // Neither pending placeholder was touched.
+      expect(result?.pages[0].messages.find((m) => m.id === "optimistic-ai-A")?.content).toBe("")
+      expect(result?.pages[0].messages.find((m) => m.id === "optimistic-ai-B")?.content).toBe("")
+    })
+
+    it("does not reconcile any optimistic human entry when two concurrent sends share identical content (ambiguous match is never guessed)", () => {
+      const humanA = makeMessage("optimistic-human-A", {
+        type: "human",
+        content: "duplicate text",
+        status: "sending",
+      })
+      const humanB = makeMessage("optimistic-human-B", {
+        type: "human",
+        content: "duplicate text",
+        status: "sending",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [humanB, humanA], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(
+        seeded,
+        makeCreatedEvent(
+          makeMessage("human-real-1", { type: "human", content: "duplicate text" }),
+        ),
+      )
+
+      // Neither optimistic entry is touched -- the new real message is
+      // simply inserted, left for `useSendAIMessage`'s own `onSuccess` to
+      // reconcile unambiguously via its closed-over optimistic id.
+      const ids = result?.pages[0].messages.map((m) => m.id)
+      expect(ids).toEqual(["human-real-1", "optimistic-human-B", "optimistic-human-A"])
+    })
+  })
+
   // --- Step 47: private AI mode ---
 
   it("passes visibility through untouched for a message_created event", () => {

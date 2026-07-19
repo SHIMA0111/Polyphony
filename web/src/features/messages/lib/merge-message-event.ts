@@ -91,6 +91,28 @@ import type { RoomSocketEvent } from "../types/ws-events"
  * own remove-if-real-present logic (`use-send-ai-message.ts`) still runs
  * afterward as a no-op fallback in that case (the optimistic id it looks for
  * has already been swapped out here).
+ *
+ * Per-request correlation under concurrent sends (wave-9 review follow-up):
+ * the placeholder lookup above is unambiguous when exactly one AI send is in
+ * flight, but two or more concurrent `useSendAIMessage` calls each leave
+ * their own `status: "sending"` placeholder in the cache at the same time --
+ * a first-match there would splice one send's echo/chunk onto a *different*
+ * send's bubble (wrong-bubble content until the next finalize). With 2+
+ * pending placeholders, {@link findSendingOptimisticAIPlaceholder} instead
+ * requires an exact `in_response_to_message_id` match against the real human
+ * message id, once that is known for the send in question. That id becomes
+ * known either through `useSendAIMessage`'s own `onSuccess` (which replaces
+ * the whole placeholder directly by its closed-over optimistic id,
+ * sidestepping this lookup entirely) or, if a WS frame beats that response,
+ * through the human-echo reconciliation branch below ({@link
+ * findUniqueSendingOptimisticHuman} / {@link findPendingAIPlaceholderExpecting}),
+ * which patches a still-pending AI placeholder's expected parent from its
+ * original optimistic human id to the real one as soon as that send's own
+ * human `message_created` echo lands. Until one of those has happened for a
+ * given send, its AI echo/chunk cannot yet be told apart from another
+ * concurrent send's -- see `applyTokenChunk`'s matching fallback, which
+ * creates a standalone streaming entry rather than guessing in exactly that
+ * window.
  */
 export function mergeMessageEvent(
   data: MessagesInfiniteData | undefined,
@@ -146,9 +168,35 @@ export function mergeMessageEvent(
     return replaceMessageInAnyPage(data, (m) => m.id === message.id, message)
   }
   if (message.type === "ai") {
-    const placeholder = findSendingOptimisticAIPlaceholder(data)
+    const placeholder = findSendingOptimisticAIPlaceholder(
+      data,
+      message.in_response_to_message_id,
+    )
     if (placeholder) {
       return replaceMessageInAnyPage(data, (m) => m.id === placeholder.id, message)
+    }
+  } else {
+    // message.type === "human": reconcile the optimistic human echo (if
+    // this is one of ours) and propagate its now-known real id to any AI
+    // placeholder waiting on it -- see the "Per-request correlation under
+    // concurrent sends" docstring above.
+    const optimisticHuman = findUniqueSendingOptimisticHuman(data, message.content)
+    if (optimisticHuman) {
+      const reconciled = replaceMessageInAnyPage(
+        data,
+        (m) => m.id === optimisticHuman.id,
+        message,
+      )
+      const pendingAIPlaceholder = findPendingAIPlaceholderExpecting(
+        reconciled,
+        optimisticHuman.id,
+      )
+      return pendingAIPlaceholder
+        ? replaceMessageInAnyPage(reconciled, (m) => m.id === pendingAIPlaceholder.id, {
+            ...pendingAIPlaceholder,
+            in_response_to_message_id: message.id,
+          })
+        : reconciled
     }
   }
   return prependToNewestPage(data, message)
@@ -157,18 +205,112 @@ export function mergeMessageEvent(
 /**
  * Finds a still-pending `status: "sending"` optimistic AI placeholder (id
  * prefixed `optimistic-ai-`, created by `useSendAIMessage`'s `onMutate`) in
- * the cache, if one is present. See {@link mergeMessageEvent}'s docstring
- * ("Duplicate-placeholder race") for why the AI merge paths use this instead
- * of the usual id-based already-present check.
+ * the cache, if one can be identified unambiguously. See {@link
+ * mergeMessageEvent}'s docstring ("Duplicate-placeholder race" and
+ * "Per-request correlation under concurrent sends") for why the AI merge
+ * paths use this instead of the usual id-based already-present check.
+ *
+ * - Zero pending placeholders: nothing to match, `undefined`.
+ * - Exactly one: returned unconditionally, regardless of
+ *   `expectedParentId` -- with only one AI send in flight it is the only
+ *   possible match, which is what keeps a single concurrent send's behavior
+ *   byte-identical to before per-request correlation existed.
+ * - Two or more (concurrent sends): a guess would risk attaching this
+ *   event's content to the wrong bubble, so only an exact
+ *   `in_response_to_message_id` match against `expectedParentId` (the real
+ *   human message id this event is known to correlate to, when available)
+ *   is accepted. Anything else -- no `expectedParentId` yet, zero matches,
+ *   or (should never happen) more than one -- is treated as "not yet
+ *   correlatable" and returns `undefined` rather than guessing; the caller
+ *   falls back to inserting a standalone/new entry instead.
+ *
+ * @param expectedParentId - The real human message id this event's AI
+ *   message correlates to, if already known. `undefined`/`null` when the
+ *   caller has no such signal (e.g. a `token_chunk`, whose payload never
+ *   carries `in_response_to_message_id`).
  */
 function findSendingOptimisticAIPlaceholder(
   data: MessagesInfiniteData | undefined,
+  expectedParentId?: string | null,
+): Message | undefined {
+  if (!data) return undefined
+
+  const candidates: Message[] = []
+  for (const page of data.pages) {
+    for (const m of page.messages) {
+      if (m.type === "ai" && m.status === "sending" && m.id.startsWith("optimistic-ai-")) {
+        candidates.push(m)
+      }
+    }
+  }
+
+  if (candidates.length === 0) return undefined
+  if (candidates.length === 1) return candidates[0]
+
+  if (expectedParentId == null) return undefined
+  const matches = candidates.filter((c) => c.in_response_to_message_id === expectedParentId)
+  return matches.length === 1 ? matches[0] : undefined
+}
+
+/**
+ * Finds the single still-pending `status: "sending"` optimistic human entry
+ * (id prefixed `optimistic-human-`, created by `useSendAIMessage`'s
+ * `onMutate`) whose `content` exactly matches `content`, if there is exactly
+ * one such candidate in the cache.
+ *
+ * A real human `message_created` echo carries only the server-assigned id,
+ * never the client-generated optimistic one, so verbatim `content` is the
+ * only signal available to correlate it back to the optimistic entry that
+ * spawned it. Two or more candidates (e.g. two concurrent sends with
+ * identical text) is genuinely ambiguous and is never guessed at --
+ * `undefined` is returned, leaving reconciliation to `useSendAIMessage`'s
+ * own `onSuccess`, which has no such ambiguity since it closes over the
+ * exact optimistic id.
+ */
+function findUniqueSendingOptimisticHuman(
+  data: MessagesInfiniteData | undefined,
+  content: string,
+): Message | undefined {
+  if (!data) return undefined
+
+  let match: Message | undefined
+  for (const page of data.pages) {
+    for (const m of page.messages) {
+      if (
+        m.type === "human" &&
+        m.status === "sending" &&
+        m.id.startsWith("optimistic-human-") &&
+        m.content === content
+      ) {
+        if (match) return undefined
+        match = m
+      }
+    }
+  }
+  return match
+}
+
+/**
+ * Finds the still-pending `status: "sending"` optimistic AI placeholder
+ * whose `in_response_to_message_id` equals `parentId`, if any.
+ *
+ * Only ever called right after `parentId` (an optimistic human id) has just
+ * been confirmed by {@link findUniqueSendingOptimisticHuman} to identify
+ * exactly one pending send, so -- unlike {@link
+ * findSendingOptimisticAIPlaceholder} -- no ambiguity is possible here:
+ * `useSendAIMessage`'s `onMutate` links each AI placeholder to its own
+ * send's optimistic human id one-to-one.
+ */
+function findPendingAIPlaceholderExpecting(
+  data: MessagesInfiniteData | undefined,
+  parentId: string,
 ): Message | undefined {
   if (!data) return undefined
 
   for (const page of data.pages) {
     const found = page.messages.find(
-      (m) => m.type === "ai" && m.status === "sending" && m.id.startsWith("optimistic-ai-"),
+      (m) =>
+        m.type === "ai" && m.status === "sending" && m.in_response_to_message_id === parentId,
     )
     if (found) return found
   }
@@ -190,8 +332,17 @@ function findSendingOptimisticAIPlaceholder(
  *   cached yet (chunk delivery is not strictly ordered relative to the
  *   `message_created` echo or the mutation's HTTP response, both of which
  *   race it independently), a new `status: "streaming"` entry is prepended
- *   to the newest page instead, seeded with just this chunk's delta. Later
- *   chunks then append to it by the same `message_id`; the eventual
+ *   to the newest page instead, seeded with just this chunk's delta --
+ *   *unless* exactly one `status: "sending"` optimistic AI placeholder is
+ *   still pending, in which case the chunk attaches to it in place instead
+ *   (see {@link findSendingOptimisticAIPlaceholder}). A `chunk` payload
+ *   never carries `in_response_to_message_id`, so with two or more pending
+ *   placeholders (concurrent sends) there is no signal to correlate this
+ *   chunk to the right one -- the standalone-entry path is taken instead of
+ *   guessing; the eventual `message_created` echo (correlated via {@link
+ *   mergeMessageEvent}'s own AI branch, which does have the real id to
+ *   match against) or `message_updated` finalize reconciles it properly.
+ *   Later chunks then append to it by the same `message_id`; the eventual
  *   `message_updated` finalize event replaces it wholesale with the
  *   authoritative final message (fixing up `sequence`,
  *   `in_response_to_message_id`, timestamps, etc. — this placeholder's
@@ -248,7 +399,11 @@ function applyTokenChunk(
   // first `token_chunk` for this send beats the POST response, the
   // `onMutate`-created `status: "sending"` optimistic placeholder is still
   // in the cache under a different (`optimistic-ai-*`) id -- replace it in
-  // place instead of prepending a second bubble.
+  // place instead of prepending a second bubble. No `expectedParentId` is
+  // passed -- a chunk never carries `in_response_to_message_id` -- so with
+  // two or more concurrent sends pending this only matches when exactly one
+  // candidate exists; otherwise it falls through to the standalone-entry
+  // path below rather than guessing which send this chunk belongs to.
   const optimisticPlaceholder = findSendingOptimisticAIPlaceholder(data)
   if (optimisticPlaceholder) {
     return replaceMessageInAnyPage(data, (m) => m.id === optimisticPlaceholder.id, placeholder)

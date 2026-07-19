@@ -47,7 +47,7 @@ Create `.ai_progress/phaseX.md` when starting each phase, and track tasks with c
 
 ## Development Conventions
 
-- **Language**: All code, comments, and documentation in English
+- **Language**: All code, comments, and documentation in English (`README-ja.md` is the approved Japanese localization and the sole exception)
 - **Go docstrings**: GoDoc format on all exported symbols. Describe what/why/constraints/error behavior
 - **Rust docstrings**: rustdoc (`///`) on all public symbols with `# Arguments`, `# Returns`, `# Errors` sections
 - **Clean Architecture**: Domain layer must NOT import infrastructure packages. All inter-layer communication via interfaces
