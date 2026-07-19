@@ -1,0 +1,22 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - staticcheck
+    - gosec
+    - unused
+    - govet
+    - ineffassign
+
+  settings:
+    gosec:
+      excludes:
+        # G104: covered by errcheck; avoid duplicate findings.
+        - G104
+    staticcheck:
+      checks:
+        - all

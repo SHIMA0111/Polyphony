@@ -6,37 +6,33 @@ import (
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	domainauth "github.com/SHIMA0111/multi-user-ai/server/internal/domain/auth"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
 
-type mockAuthService struct {
-	registered map[string]bool
-}
+// nonRevokerAuthService implements only domainauth.AuthService -- deliberately
+// not domainauth.Revoke -- unlike mocks.AuthService, which always satisfies
+// domainauth.Revoker (its zero-value Revoke method is a no-op returning nil).
+// It exists so TestAuthUsecaseLogoutNoOpWithoutRevoker exercises
+// AuthUsecase.Logout's actual "authService does not implement Revoker" branch
+// instead of silently taking the Revoker branch through a no-op Revoke.
+type nonRevokerAuthService struct{}
 
-func newMockAuthService() *mockAuthService {
-	return &mockAuthService{registered: make(map[string]bool)}
-}
-
-func (m *mockAuthService) Register(_ context.Context, email, _, _ string) (*domainauth.TokenPair, error) {
-	if m.registered[email] {
-		return nil, domain.ErrEmailAlreadyExists
-	}
-	m.registered[email] = true
+func (nonRevokerAuthService) Register(_ context.Context, _, _, _ string) (*domainauth.TokenPair, error) {
 	return &domainauth.TokenPair{AccessToken: "tok", TokenType: "Bearer"}, nil
 }
 
-func (m *mockAuthService) Login(_ context.Context, email, password string) (*domainauth.TokenPair, error) {
-	if !m.registered[email] || password != "correct" {
-		return nil, domain.ErrInvalidCredentials
-	}
+func (nonRevokerAuthService) Login(_ context.Context, _, _ string) (*domainauth.TokenPair, error) {
 	return &domainauth.TokenPair{AccessToken: "tok", TokenType: "Bearer"}, nil
 }
 
-func (m *mockAuthService) ValidateToken(_ context.Context, _ string) (*domainauth.Claims, error) {
+func (nonRevokerAuthService) ValidateToken(_ context.Context, _ string) (*domainauth.Claims, error) {
 	return &domainauth.Claims{UserID: "user-1"}, nil
 }
 
+// TestAuthUsecaseRegister verifies Register succeeds and returns a token
+// pair for a new, unique email/username.
 func TestAuthUsecaseRegister(t *testing.T) {
-	svc := newMockAuthService()
+	svc := &mocks.AuthService{}
 	uc := NewAuthUsecase(svc)
 	ctx := context.Background()
 
@@ -49,8 +45,11 @@ func TestAuthUsecaseRegister(t *testing.T) {
 	}
 }
 
+// TestAuthUsecaseRegisterDuplicate verifies Register returns
+// domain.ErrEmailAlreadyExists when registering a second account with an
+// email already in use.
 func TestAuthUsecaseRegisterDuplicate(t *testing.T) {
-	svc := newMockAuthService()
+	svc := &mocks.AuthService{}
 	uc := NewAuthUsecase(svc)
 	ctx := context.Background()
 
@@ -61,8 +60,10 @@ func TestAuthUsecaseRegisterDuplicate(t *testing.T) {
 	}
 }
 
+// TestAuthUsecaseLogin verifies Login succeeds with correct credentials and
+// returns domain.ErrInvalidCredentials with an incorrect password.
 func TestAuthUsecaseLogin(t *testing.T) {
-	svc := newMockAuthService()
+	svc := &mocks.AuthService{}
 	uc := NewAuthUsecase(svc)
 	ctx := context.Background()
 
@@ -79,5 +80,49 @@ func TestAuthUsecaseLogin(t *testing.T) {
 	_, err = uc.Login(ctx, "test@example.com", "wrong")
 	if err != domain.ErrInvalidCredentials {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
+// TestAuthUsecaseLogoutDelegatesToRevoker proves that Logout calls the
+// wrapped AuthService's Revoke with the exact token given, when the service
+// implements domainauth.Revoker.
+func TestAuthUsecaseLogoutDelegatesToRevoker(t *testing.T) {
+	var revokedToken string
+	var called bool
+	svc := &mocks.AuthService{
+		RevokeFunc: func(_ context.Context, token string) error {
+			called = true
+			revokedToken = token
+			return nil
+		},
+	}
+	uc := NewAuthUsecase(svc)
+	ctx := context.Background()
+
+	if err := uc.Logout(ctx, "some-token"); err != nil {
+		t.Fatalf("Logout returned unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected Revoke to be called")
+	}
+	if revokedToken != "some-token" {
+		t.Fatalf("expected Revoke to be called with %q, got %q", "some-token", revokedToken)
+	}
+}
+
+// TestAuthUsecaseLogoutNoOpWithoutRevoker proves that Logout returns nil for
+// an AuthService that does not implement domainauth.Revoker at all (the
+// documented no-op behavior for a backend without server-side session
+// revocation). It deliberately uses nonRevokerAuthService rather than
+// mocks.AuthService: the latter always satisfies domainauth.Revoker (its
+// zero-value Revoke is a no-op returning nil), so it would exercise Logout's
+// Revoker branch instead of the not-a-Revoker branch this test targets.
+func TestAuthUsecaseLogoutNoOpWithoutRevoker(t *testing.T) {
+	svc := nonRevokerAuthService{}
+	uc := NewAuthUsecase(svc)
+	ctx := context.Background()
+
+	if err := uc.Logout(ctx, "some-token"); err != nil {
+		t.Fatalf("expected Logout to be a no-op returning nil, got %v", err)
 	}
 }

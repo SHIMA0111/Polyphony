@@ -1,3 +1,4 @@
+// Package message defines the chat message entity, its repository port, and cursor pagination types.
 package message
 
 import "time"
@@ -22,19 +23,74 @@ const (
 
 	// MessageStatusFailed indicates the AI call failed. Eligible for regeneration.
 	MessageStatusFailed MessageStatus = "failed"
+
+	// MessageStatusStreaming indicates an AI placeholder message whose
+	// response is still being generated via MessageUsecase.SendAIMessageStream
+	// (Step 51): assigned when the placeholder is first persisted (with
+	// empty Content) and replaced with MessageStatusCompleted or
+	// MessageStatusFailed once the LLM Gateway's stream ends. No schema
+	// migration is needed for this new value since messages.status is a
+	// plain VARCHAR(20) with no CHECK/enum constraint (see server/schema.sql).
+	MessageStatusStreaming MessageStatus = "streaming"
+)
+
+// MessageVisibility represents who is allowed to see a message: every room
+// member (MessageVisibilityPublic, the default) or only the message's
+// SenderID (MessageVisibilityPrivate), which powers "private AI mode"
+// (phases.md Phase 14). A private message is invisible to every user other
+// than its owner through every read path — MessageRepository.ListByRoom,
+// GetByID, ListByRoomUpTo, and ai.ContextBuilder.Build (the latter via the
+// repository-level filtering applied before messages ever reach Build) — and
+// is delivered over WebSocket only to that owner's connections instead of
+// being broadcast to the room (see event.RoomEvent.TargetUserIDs).
+type MessageVisibility string
+
+const (
+	// MessageVisibilityPublic is visible to every member of the room. This
+	// is the default for all messages created before this dimension existed
+	// and for any message not explicitly marked private.
+	MessageVisibilityPublic MessageVisibility = "public"
+
+	// MessageVisibilityPrivate is visible only to the message's SenderID.
+	// It is used by "private AI mode": both the human question and the AI
+	// answer are marked private so neither ever appears to another room
+	// member.
+	MessageVisibilityPrivate MessageVisibility = "private"
 )
 
 // Message represents a single message in a chat room.
 type Message struct {
-	ID        string
-	RoomID    string
-	SenderID  *string // nil for AI messages
-	Content   string
-	Type      MessageType
-	Status    MessageStatus
-	Sequence  int64
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID       string
+	RoomID   string
+	SenderID *string // nil for AI messages
+	Content  string
+	Type     MessageType
+	Status   MessageStatus
+	Sequence int64
+	// InResponseToMessageID is set on an AI message to the ID of the human
+	// message it answers, giving a durable prompt/response link that later
+	// context-building/summarization work (Phase 5, 18) can rely on instead
+	// of inferring the pairing from adjacent sequence numbers. It is nil for
+	// human messages.
+	InResponseToMessageID *string
+	// IsDeleted marks the message as soft-deleted (see
+	// MessageRepository.Delete). A soft-deleted message is excluded from
+	// MessageRepository.ListByRoom, MessageRepository.ListByRoomUpTo, and
+	// ai.ContextBuilder.Build, but remains fetchable via
+	// MessageRepository.GetByID and is never physically removed.
+	IsDeleted bool
+	// ExcludeFromAI marks the message as excluded from AI context
+	// assembly (ai.ContextBuilder.Build) while still appearing in normal
+	// room message listings. It lets a user keep a message visible to
+	// other humans in the room without it ever being sent to the LLM.
+	ExcludeFromAI bool
+	// Visibility controls whether this message is visible to every room
+	// member (MessageVisibilityPublic, the default) or only to SenderID
+	// (MessageVisibilityPrivate). See the MessageVisibility doc comment for
+	// the full contract.
+	Visibility MessageVisibility
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // CursorPage holds a page of messages with cursor-based pagination.

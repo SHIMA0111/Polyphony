@@ -1,15 +1,14 @@
-mod adapters;
-mod config;
-mod domain;
-mod ports;
-
 use std::sync::Arc;
 
-use adapters::inbound::rest::router::build_router;
-use adapters::outbound::env_key::EnvKeyStore;
-use adapters::outbound::openai::OpenAIProvider;
-use config::Config;
-use domain::service::CompletionService;
+use llm_gateway::adapters::inbound::grpc::serve_grpc;
+use llm_gateway::adapters::inbound::rest::router::build_router;
+use llm_gateway::adapters::outbound::anthropic::AnthropicProvider;
+use llm_gateway::adapters::outbound::env_key::EnvKeyStore;
+use llm_gateway::adapters::outbound::gemini::GeminiProvider;
+use llm_gateway::adapters::outbound::openai::OpenAIProvider;
+use llm_gateway::config::Config;
+use llm_gateway::domain::service::CompletionService;
+use llm_gateway::ports::inbound::completion::CompletionUseCase;
 
 #[tokio::main]
 async fn main() {
@@ -26,28 +25,225 @@ async fn main() {
 
     tracing::info!(port = config.port, "starting LLM Gateway");
 
-    // Dependency injection assembly
+    // Dependency injection assembly.
+    //
+    // Each provider is only registered when its API key environment variable is
+    // present and non-empty. This keeps `GET /ready` (backed by
+    // `CompletionService::readiness`, which checks exactly the registered providers)
+    // truthful in deployments that only configure a subset of providers -- without
+    // this gating, readiness would fail forever unless ALL of
+    // OPENAI/ANTHROPIC/GEMINI_API_KEY were set, even for operators who only intend to
+    // use one provider.
     let key_store = Arc::new(EnvKeyStore);
-    let openai_provider = match OpenAIProvider::new(key_store) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("failed to initialize OpenAIProvider: {e}");
-            std::process::exit(1);
+    let mut providers: Vec<Box<dyn llm_gateway::ports::outbound::provider::LLMProvider>> =
+        Vec::new();
+
+    if has_non_empty_env("OPENAI_API_KEY") {
+        match OpenAIProvider::new(
+            key_store.clone(),
+            config.http.clone(),
+            config.openai.clone(),
+        ) {
+            Ok(p) => providers.push(Box::new(p)),
+            Err(e) => {
+                tracing::error!(provider = "openai", error = %e, "failed to initialize provider");
+                std::process::exit(1);
+            }
         }
+    } else {
+        tracing::info!(
+            provider = "openai",
+            "OPENAI_API_KEY not set, skipping provider registration"
+        );
+    }
+
+    if has_non_empty_env("ANTHROPIC_API_KEY") {
+        match AnthropicProvider::new(
+            key_store.clone(),
+            config.http.clone(),
+            config.anthropic.clone(),
+        ) {
+            Ok(p) => providers.push(Box::new(p)),
+            Err(e) => {
+                tracing::error!(provider = "anthropic", error = %e, "failed to initialize provider");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        tracing::info!(
+            provider = "anthropic",
+            "ANTHROPIC_API_KEY not set, skipping provider registration"
+        );
+    }
+
+    if has_non_empty_env("GEMINI_API_KEY") {
+        match GeminiProvider::new(
+            key_store.clone(),
+            config.http.clone(),
+            config.gemini.clone(),
+        ) {
+            Ok(p) => providers.push(Box::new(p)),
+            Err(e) => {
+                tracing::error!(provider = "gemini", error = %e, "failed to initialize provider");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        tracing::info!(
+            provider = "gemini",
+            "GEMINI_API_KEY not set, skipping provider registration"
+        );
+    }
+
+    if providers.is_empty() {
+        tracing::error!(
+            "no LLM providers registered: set at least one of OPENAI_API_KEY, \
+             ANTHROPIC_API_KEY, GEMINI_API_KEY"
+        );
+        std::process::exit(1);
+    }
+
+    let service = CompletionService::new(providers, key_store);
+    // Coerced to the trait object once here so the exact same instance is shared by
+    // both the REST router and the gRPC server below — no second `CompletionService`
+    // is ever constructed.
+    let state: Arc<dyn CompletionUseCase> = Arc::new(service);
+
+    let router = build_router(state.clone());
+
+    // `shutdown_signal()` resolves at most once, but both the REST and gRPC servers
+    // each need their own graceful-shutdown future. A `watch` channel lets any number
+    // of clones observe the same one-shot signal: the sender task awaits it once and
+    // flips the shared value, and each receiver (already subscribed before the flip)
+    // wakes on that change regardless of exactly when the signal fires.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let signal_task = async move {
+        shutdown_signal().await;
+        // No listeners left is not an error here — both servers may have already
+        // exited for other reasons.
+        let _ = shutdown_tx.send(true);
     };
 
-    let service = CompletionService::new(vec![Box::new(openai_provider)]);
-    let state = Arc::new(service);
+    let rest_shutdown_rx = shutdown_rx.clone();
+    let rest_server = async {
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port))
+            .await
+            .expect("failed to bind TCP listener");
 
-    let router = build_router(state);
+        tracing::info!(port = config.port, "LLM Gateway (REST) listening");
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port))
-        .await
-        .expect("failed to bind TCP listener");
+        axum::serve(listener, router)
+            .with_graceful_shutdown(wait_for_shutdown(rest_shutdown_rx))
+            .await
+            .expect("REST server error");
+    };
 
-    tracing::info!(port = config.port, "LLM Gateway listening");
+    let grpc_addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
+    let grpc_server = async move {
+        tracing::info!(port = config.grpc_port, "LLM Gateway (gRPC) listening");
 
-    axum::serve(listener, router)
-        .await
-        .expect("server error");
+        serve_grpc(state, grpc_addr, wait_for_shutdown(shutdown_rx))
+            .await
+            .expect("gRPC server error");
+    };
+
+    tokio::join!(signal_task, rest_server, grpc_server);
+}
+
+/// Reports whether environment variable `key` is set to a non-empty value.
+///
+/// Used to gate provider registration in `main` on API key presence: a variable that
+/// is unset OR set to the empty string is treated the same way (provider skipped),
+/// since an empty key could never authenticate a real request anyway.
+///
+/// # Arguments
+/// * `key` — Environment variable name to check.
+///
+/// # Returns
+/// `true` if `key` is set in the environment to a non-empty string, `false` otherwise.
+fn has_non_empty_env(key: &str) -> bool {
+    is_non_empty(std::env::var(key).ok().as_deref())
+}
+
+/// Reports whether an optional string value is present and non-empty.
+///
+/// Pure helper extracted from `has_non_empty_env` so its non-empty/empty/absent logic
+/// can be unit-tested without mutating process-global environment state.
+///
+/// # Arguments
+/// * `v` — The value to check, as `Some(&str)` if present or `None` if absent.
+///
+/// # Returns
+/// `true` if `v` is `Some` and non-empty, `false` otherwise.
+fn is_non_empty(v: Option<&str>) -> bool {
+    v.is_some_and(|v| !v.is_empty())
+}
+
+/// Waits until `rx` observes a `true` value, i.e. until the shared shutdown signal has
+/// fired.
+///
+/// Used to derive independent graceful-shutdown futures for the REST and gRPC servers
+/// from a single `shutdown_signal()` call, since that underlying signal can only be
+/// awaited once.
+async fn wait_for_shutdown(mut rx: tokio::sync::watch::Receiver<bool>) {
+    // `wait_for` also checks the currently held value first, so a signal that already
+    // fired before this receiver started waiting is not missed.
+    let _ = rx.wait_for(|shutdown| *shutdown).await;
+}
+
+/// Waits for a `Ctrl+C` (SIGINT) or, on Unix, a `SIGTERM` signal, whichever comes
+/// first, logging which one triggered shutdown.
+///
+/// Used as the graceful-shutdown future for `axum::serve(...).with_graceful_shutdown`,
+/// so in-flight requests are allowed to complete before the process exits.
+///
+/// # Errors
+/// Panics if installing either signal handler fails (a process-setup error that
+/// should not be recovered from).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("received Ctrl+C, starting graceful shutdown");
+        }
+        _ = terminate => {
+            tracing::info!("received SIGTERM, starting graceful shutdown");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_non_empty_true_when_set_and_non_empty() {
+        assert!(is_non_empty(Some("sk-x")));
+    }
+
+    #[test]
+    fn test_is_non_empty_false_when_unset() {
+        assert!(!is_non_empty(None));
+    }
+
+    #[test]
+    fn test_is_non_empty_false_when_empty_string() {
+        assert!(!is_non_empty(Some("")));
+    }
 }

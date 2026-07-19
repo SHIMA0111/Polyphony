@@ -1,3 +1,4 @@
+// Package user defines the user entity and its repository port.
 package user
 
 import "time"
@@ -8,6 +9,11 @@ type User struct {
 	Email        string
 	Username     string
 	PasswordHash string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// KratosIdentityID is the linked Ory Kratos identity ID (Phase 9), or nil
+	// if this user has not yet been created/migrated in Kratos. It is set by
+	// KratosAuthService.Register/Login (self-heal path) or backfilled by the
+	// cmd/kratosmigrate one-off tool.
+	KratosIdentityID *string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }

@@ -13,6 +13,7 @@ Thumbs.db
 Cargo.lock
 
 # ===== Go (server) =====
+/server/api
 /server/tmp/
 *.exe
 *.exe~
@@ -43,6 +44,7 @@ out/
 .env
 .env.*
 !.env.example
+!.env.local.example
 *.pem
 *.key
 
@@ -61,6 +63,14 @@ coverage/
 *.lcov
 htmlcov/
 
+# ===== Claude Code =====
+.claude/
+.agents/
+
 # ===== Misc =====
 *.log
 tmp/
+
+# Local planning documents (working artifacts, not for the repo)
+docs/tasks/
+.ai_progress/

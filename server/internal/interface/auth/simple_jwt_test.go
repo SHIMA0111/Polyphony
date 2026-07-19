@@ -8,75 +8,11 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
-	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/user"
+	"github.com/SHIMA0111/multi-user-ai/server/internal/testutil/mocks"
 )
 
-// mockUserRepo implements user.UserRepository for testing.
-type mockUserRepo struct {
-	users map[string]*user.User
-}
-
-func newMockUserRepo() *mockUserRepo {
-	return &mockUserRepo{users: make(map[string]*user.User)}
-}
-
-func (m *mockUserRepo) Create(_ context.Context, u *user.User) error {
-	for _, existing := range m.users {
-		if existing.Email == u.Email {
-			return domain.ErrEmailAlreadyExists
-		}
-		if existing.Username == u.Username {
-			return domain.ErrUsernameAlreadyExists
-		}
-	}
-	m.users[u.ID] = u
-	return nil
-}
-
-func (m *mockUserRepo) GetByID(_ context.Context, id string) (*user.User, error) {
-	u, ok := m.users[id]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	return u, nil
-}
-
-func (m *mockUserRepo) GetByEmail(_ context.Context, email string) (*user.User, error) {
-	for _, u := range m.users {
-		if u.Email == email {
-			return u, nil
-		}
-	}
-	return nil, domain.ErrNotFound
-}
-
-func (m *mockUserRepo) GetByUsername(_ context.Context, username string) (*user.User, error) {
-	for _, u := range m.users {
-		if u.Username == username {
-			return u, nil
-		}
-	}
-	return nil, domain.ErrNotFound
-}
-
-func (m *mockUserRepo) Update(_ context.Context, u *user.User) error {
-	if _, ok := m.users[u.ID]; !ok {
-		return domain.ErrNotFound
-	}
-	m.users[u.ID] = u
-	return nil
-}
-
-func (m *mockUserRepo) Delete(_ context.Context, id string) error {
-	if _, ok := m.users[id]; !ok {
-		return domain.ErrNotFound
-	}
-	delete(m.users, id)
-	return nil
-}
-
 func TestRegisterAndLogin(t *testing.T) {
-	repo := newMockUserRepo()
+	repo := &mocks.UserRepo{}
 	svc := NewSimpleJWTService(repo, "test-secret")
 	ctx := context.Background()
 
@@ -114,7 +50,7 @@ func TestRegisterAndLogin(t *testing.T) {
 }
 
 func TestTokenRoundTrip(t *testing.T) {
-	repo := newMockUserRepo()
+	repo := &mocks.UserRepo{}
 	svc := NewSimpleJWTService(repo, "test-secret")
 	ctx := context.Background()
 
@@ -133,7 +69,7 @@ func TestTokenRoundTrip(t *testing.T) {
 }
 
 func TestExpiredToken(t *testing.T) {
-	svc := NewSimpleJWTService(newMockUserRepo(), "test-secret")
+	svc := NewSimpleJWTService(&mocks.UserRepo{}, "test-secret")
 	ctx := context.Background()
 
 	// Create an expired token manually
@@ -155,7 +91,7 @@ func TestExpiredToken(t *testing.T) {
 }
 
 func TestWrongSecret(t *testing.T) {
-	svc := NewSimpleJWTService(newMockUserRepo(), "secret-a")
+	svc := NewSimpleJWTService(&mocks.UserRepo{}, "secret-a")
 	ctx := context.Background()
 
 	// Create token with different secret
@@ -176,7 +112,7 @@ func TestWrongSecret(t *testing.T) {
 }
 
 func TestDuplicateEmail(t *testing.T) {
-	repo := newMockUserRepo()
+	repo := &mocks.UserRepo{}
 	svc := NewSimpleJWTService(repo, "test-secret")
 	ctx := context.Background()
 

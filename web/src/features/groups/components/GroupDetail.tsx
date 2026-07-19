@@ -1,0 +1,167 @@
+"use client"
+
+import { useState } from "react"
+import { Box, Button, Card, Dialog, Flex, Heading, Portal, Skeleton, Text } from "@chakra-ui/react"
+import { Trash2 } from "lucide-react"
+import { ApiRequestError } from "@/lib/http-client"
+import { useGroup } from "../hooks/use-group"
+import { useDeleteGroup } from "../hooks/use-delete-group"
+import { GroupFormDialog } from "./GroupFormDialog"
+import { GroupMembersPanel } from "./GroupMembersPanel"
+
+interface GroupDetailProps {
+  groupId: string
+}
+
+/**
+ * The `/groups/[groupId]` page content: the group's name/description (with
+ * an "Edit" entry point opening `GroupFormDialog` in edit mode), a
+ * destructive "Delete group" action gated behind a confirmation dialog
+ * (mirroring the confirm-then-mutate pattern already used for other
+ * destructive actions in this codebase, e.g. `TransferOwnershipDialog`), and
+ * `GroupMembersPanel`. Loading/not-found states are driven by
+ * `useGroup(groupId)`.
+ */
+export function GroupDetail({ groupId }: GroupDetailProps) {
+  const groupQuery = useGroup(groupId)
+  const deleteGroupMutation = useDeleteGroup()
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  const handleDelete = async () => {
+    try {
+      await deleteGroupMutation.mutateAsync(groupId)
+      setConfirmOpen(false)
+    } catch {
+      // Surfaced below via `deleteGroupMutation.isError`.
+    }
+  }
+
+  if (groupQuery.isPending) {
+    return (
+      <Box h="100%" bg="bg">
+        <Box as="main" maxW="4xl" mx="auto" px={4} py={8}>
+          <Skeleton h={8} w="240px" mb={4} />
+          <Skeleton h={4} w="360px" />
+        </Box>
+      </Box>
+    )
+  }
+
+  if (groupQuery.isError || !groupQuery.data) {
+    const status =
+      groupQuery.error instanceof ApiRequestError ? groupQuery.error.status : undefined
+    // A non-404 failure (network error, 500, ...) is not evidence the group
+    // doesn't exist -- claiming "not found" there would send the viewer
+    // looking for a group that may well still be there once the request
+    // that just failed is retried. The `!groupQuery.isError` arm covers the
+    // defensive `!groupQuery.data` fallback above, which has no error to
+    // read a status from either.
+    const isNotFound = !groupQuery.isError || status === 404
+
+    return (
+      <Box h="100%" bg="bg">
+        <Box as="main" maxW="4xl" mx="auto" px={4} py={8}>
+          <Heading size="md">{isNotFound ? "Group not found" : "Unable to load group"}</Heading>
+          <Text color="fg.muted" mt={2}>
+            {isNotFound
+              ? "This group may have been deleted, or you don't have access to it."
+              : "Something went wrong while loading this group."}
+          </Text>
+          {!isNotFound && (
+            <Button
+              mt={4}
+              size="sm"
+              variant="outline"
+              loading={groupQuery.isFetching}
+              onClick={() => groupQuery.refetch()}
+            >
+              Retry
+            </Button>
+          )}
+        </Box>
+      </Box>
+    )
+  }
+
+  const group = groupQuery.data
+
+  return (
+    <Box h="100%" bg="bg">
+      <Box as="main" maxW="4xl" mx="auto" px={4} py={8}>
+        <Flex align="flex-start" justify="space-between" mb={2} gap={4}>
+          <Box>
+            <Heading size="3xl" fontWeight="bold" letterSpacing="tight">
+              {group.name}
+            </Heading>
+            <Text color="fg.muted" mt={1}>
+              {group.description || "No description"}
+            </Text>
+          </Box>
+          <Flex gap={2} flexShrink={0}>
+            <GroupFormDialog mode="edit" initialGroup={group} />
+
+            <Dialog.Root
+              open={confirmOpen}
+              onOpenChange={(e) => {
+                setConfirmOpen(e.open)
+                if (!e.open) deleteGroupMutation.reset()
+              }}
+            >
+              <Dialog.Trigger asChild>
+                <Button variant="outline" size="sm" colorPalette="red" gap={2}>
+                  <Trash2 size={14} />
+                  Delete group
+                </Button>
+              </Dialog.Trigger>
+              <Portal>
+                <Dialog.Backdrop />
+                <Dialog.Positioner>
+                  <Dialog.Content maxW="420px">
+                    <Dialog.Header>
+                      <Dialog.Title>Delete this group?</Dialog.Title>
+                      <Dialog.Description color="fg.muted">
+                        This permanently deletes &ldquo;{group.name}&rdquo; and its
+                        membership list. This cannot be undone.
+                      </Dialog.Description>
+                    </Dialog.Header>
+                    <Dialog.Body>
+                      {deleteGroupMutation.isError && (
+                        <Box fontSize="sm" color="fg.error" role="alert">
+                          {deleteGroupMutation.error instanceof Error
+                            ? deleteGroupMutation.error.message
+                            : "Failed to delete group."}
+                        </Box>
+                      )}
+                    </Dialog.Body>
+                    <Dialog.Footer>
+                      <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+                        Cancel
+                      </Button>
+                      <Button
+                        colorPalette="red"
+                        loading={deleteGroupMutation.isPending}
+                        onClick={handleDelete}
+                      >
+                        Delete group
+                      </Button>
+                    </Dialog.Footer>
+                    <Dialog.CloseTrigger />
+                  </Dialog.Content>
+                </Dialog.Positioner>
+              </Portal>
+            </Dialog.Root>
+          </Flex>
+        </Flex>
+
+        <Card.Root mt={8}>
+          <Card.Header>
+            <Card.Title>Members</Card.Title>
+          </Card.Header>
+          <Card.Body>
+            <GroupMembersPanel groupId={groupId} />
+          </Card.Body>
+        </Card.Root>
+      </Box>
+    </Box>
+  )
+}

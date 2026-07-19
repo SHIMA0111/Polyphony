@@ -1,3 +1,7 @@
+// Package auth implements the authentication use cases (AuthUsecase):
+// registration, login, and token validation, delegating the actual password
+// hashing and JWT issuance/validation to a domain/auth.AuthService
+// implementation.
 package auth
 
 import (
@@ -38,4 +42,24 @@ func (u *AuthUsecase) Login(ctx context.Context, email, password string) (*domai
 // Returns an error if the token is invalid, expired, or cannot be verified.
 func (u *AuthUsecase) ValidateToken(ctx context.Context, token string) (*domainauth.Claims, error) {
 	return u.authService.ValidateToken(ctx, token)
+}
+
+// Logout invalidates token so it can no longer be used to authenticate.
+//
+// It type-asserts the wrapped AuthService against domainauth.Revoker: if the
+// service implements it (e.g. Step 33's CachedAuthService wrapping
+// KratosAuthService, which purges the whoami cache entry and revokes the
+// underlying Kratos session), it delegates to Revoke and returns its error.
+// If the service does not implement domainauth.Revoker (e.g. plain
+// SimpleJWTService — a stateless HMAC JWT has no server-side session to
+// revoke), Logout is a documented no-op that returns nil: the caller
+// (handler.AuthHandler.Logout) still responds with HTTP 200, since asking
+// the client to discard its token is a valid, if limited, logout semantic
+// for a backend with no server-side revocation.
+func (u *AuthUsecase) Logout(ctx context.Context, token string) error {
+	revoker, ok := u.authService.(domainauth.Revoker)
+	if !ok {
+		return nil
+	}
+	return revoker.Revoke(ctx, token)
 }

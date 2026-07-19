@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -39,7 +40,7 @@ func (h *MessageHandler) Send(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
 	}
 
-	if req.Content == "" {
+	if strings.TrimSpace(req.Content) == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "content is required"})
 	}
 
@@ -89,9 +90,12 @@ func (h *MessageHandler) List(c echo.Context) error {
 // SendAI handles POST /rooms/:roomId/messages/ai. It sends a user message and
 // invokes the LLM Gateway to generate an AI response. The request body may
 // optionally specify a model name. On success it returns HTTP 201 with a
-// SendAIMessageResponse containing both the user message and the AI message.
-// Check ai_message.status to determine if the LLM call succeeded ("completed")
-// or failed ("failed"). It returns HTTP 400 for invalid input, HTTP 403 if the
+// SendAIMessageResponse containing both the user message and the AI message;
+// the AI message's used_context_summary reports whether its context included
+// a summary of older room history (see MessageResponse.UsedContextSummary and
+// usecase/message.MessageUsecase.assembleAIContext, Step 50). Check
+// ai_message.status to determine if the LLM call succeeded ("completed") or
+// failed ("failed"). It returns HTTP 400 for invalid input, HTTP 403 if the
 // user lacks permission, HTTP 404 if the room is not found, and HTTP 502 if the
 // AI service encounters an error.
 func (h *MessageHandler) SendAI(c echo.Context) error {
@@ -103,18 +107,76 @@ func (h *MessageHandler) SendAI(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
 	}
 
-	if req.Content == "" {
+	if strings.TrimSpace(req.Content) == "" {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "content is required"})
 	}
 
-	result, err := h.usecase.SendAIMessage(c.Request().Context(), userID, roomID, req.Content, req.Model)
+	result, err := h.usecase.SendAIMessage(c.Request().Context(), userID, roomID, req.Content, req.Model, req.Private)
 	if err != nil {
 		return handleMessageError(c, err)
 	}
 
+	aiResp := toMessageResponse(result.AIMessage)
+	aiResp.UsedContextSummary = result.UsedContextSummary
+
 	return c.JSON(http.StatusCreated, SendAIMessageResponse{
 		UserMessage: toMessageResponse(result.HumanMessage),
-		AIMessage:   toMessageResponse(result.AIMessage),
+		AIMessage:   aiResp,
+	})
+}
+
+// StreamAI handles POST /rooms/:roomId/messages/ai/stream. It sends a user
+// message and invokes the LLM Gateway's streaming completion endpoint,
+// returning immediately with HTTP 202 rather than waiting for the AI
+// response to finish generating. The response body is the same
+// SendAIMessageResponse shape SendAI returns; ai_message.status will be
+// "streaming" on the happy path (or "failed" if the gateway rejected the
+// request synchronously -- e.g. an unknown model), never "completed": the
+// response is forwarded to WebSocket-connected room members as it arrives,
+// via a sequence of "token_chunk" frames followed by a final
+// "message_updated" frame once the stream ends (see
+// websocket_handler.go and MessageUsecase.SendAIMessageStream).
+// ai_message.used_context_summary reports whether the context assembled for
+// this call included a summary of older room history (see
+// MessageResponse.UsedContextSummary and
+// usecase/message.MessageUsecase.assembleAIContext, Step 50), exactly as
+// SendAI's does -- it is known and reported synchronously in this response,
+// even though the AI response itself has not finished generating yet.
+//
+// Private AI mode (SendAIMessageRequest.Private) is not supported by this
+// endpoint yet: a request with "private": true is rejected with HTTP 400
+// rather than silently broadcasting a private exchange to the whole room.
+// It otherwise returns HTTP 400 for empty content, HTTP 403 if the user
+// lacks permission, HTTP 404 if the room is not found, and HTTP 402 if the
+// room's token balance is exhausted, matching SendAI's error mapping via
+// handleMessageError.
+func (h *MessageHandler) StreamAI(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+
+	var req SendAIMessageRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
+	}
+
+	if strings.TrimSpace(req.Content) == "" {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "content is required"})
+	}
+	if req.Private {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "private mode is not supported for streaming yet"})
+	}
+
+	result, err := h.usecase.SendAIMessageStream(c.Request().Context(), userID, roomID, req.Content, req.Model)
+	if err != nil {
+		return handleMessageError(c, err)
+	}
+
+	aiResp := toMessageResponse(result.AIMessage)
+	aiResp.UsedContextSummary = result.UsedContextSummary
+
+	return c.JSON(http.StatusAccepted, SendAIMessageResponse{
+		UserMessage: toMessageResponse(result.HumanMessage),
+		AIMessage:   aiResp,
 	})
 }
 
@@ -122,7 +184,10 @@ func (h *MessageHandler) SendAI(c echo.Context) error {
 // It regenerates an AI response for an existing human message. The request body
 // may optionally specify a different model. The target message must be of type
 // "human"; otherwise HTTP 400 is returned. On success it returns HTTP 200 with
-// the new AI MessageResponse.
+// the new AI MessageResponse, whose used_context_summary reports whether its
+// context included a summary of older room history (see
+// MessageResponse.UsedContextSummary and
+// usecase/message.MessageUsecase.assembleAIContext, Step 50).
 func (h *MessageHandler) RegenerateAI(c echo.Context) error {
 	userID := middleware.GetUserID(c)
 	roomID := c.Param("roomId")
@@ -133,7 +198,58 @@ func (h *MessageHandler) RegenerateAI(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
 	}
 
-	msg, err := h.usecase.RegenerateAIMessage(c.Request().Context(), userID, roomID, messageID, req.Model)
+	msg, usedSummary, err := h.usecase.RegenerateAIMessage(c.Request().Context(), userID, roomID, messageID, req.Model)
+	if err != nil {
+		return handleMessageError(c, err)
+	}
+
+	resp := toMessageResponse(msg)
+	resp.UsedContextSummary = usedSummary
+
+	return c.JSON(http.StatusOK, resp)
+}
+
+// Delete handles DELETE /rooms/:roomId/messages/:messageId. It soft-deletes
+// a message: the caller must either be the message's own sender or hold at
+// least admin in the room (see MessageUsecase.DeleteMessage for the exact
+// owner-or-admin rule). On success it returns HTTP 204 with no content. It
+// returns HTTP 403 if the caller lacks permission and HTTP 404 if the
+// message does not exist or does not belong to the room.
+func (h *MessageHandler) Delete(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+	messageID := c.Param("messageId")
+
+	if err := h.usecase.DeleteMessage(c.Request().Context(), userID, roomID, messageID); err != nil {
+		return handleMessageError(c, err)
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// UpdateExclude handles PATCH /rooms/:roomId/messages/:messageId. It toggles
+// whether a message is excluded from future AI context assembly. The caller
+// must be allowed domainroom.ActionInvokeAI (member or above). On success it
+// returns HTTP 200 with the updated MessageResponse. It returns HTTP 400 if
+// the request body is malformed or omits exclude_from_ai (see
+// UpdateMessageExcludeRequest's docstring -- a missing field is rejected
+// rather than silently defaulting to false), HTTP 403 if the caller lacks
+// permission, and HTTP 404 if the message does not exist or does not belong
+// to the room.
+func (h *MessageHandler) UpdateExclude(c echo.Context) error {
+	userID := middleware.GetUserID(c)
+	roomID := c.Param("roomId")
+	messageID := c.Param("messageId")
+
+	var req UpdateMessageExcludeRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "invalid request body"})
+	}
+	if req.ExcludeFromAI == nil {
+		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "exclude_from_ai is required"})
+	}
+
+	msg, err := h.usecase.SetExcludeFromAI(c.Request().Context(), userID, roomID, messageID, *req.ExcludeFromAI)
 	if err != nil {
 		return handleMessageError(c, err)
 	}
@@ -143,15 +259,19 @@ func (h *MessageHandler) RegenerateAI(c echo.Context) error {
 
 func toMessageResponse(msg *domainmessage.Message) MessageResponse {
 	return MessageResponse{
-		ID:        msg.ID,
-		RoomID:    msg.RoomID,
-		SenderID:  msg.SenderID,
-		Content:   msg.Content,
-		Type:      string(msg.Type),
-		Status:    string(msg.Status),
-		Sequence:  msg.Sequence,
-		CreatedAt: msg.CreatedAt,
-		UpdatedAt: msg.UpdatedAt,
+		ID:                    msg.ID,
+		RoomID:                msg.RoomID,
+		SenderID:              msg.SenderID,
+		Content:               msg.Content,
+		Type:                  string(msg.Type),
+		Status:                string(msg.Status),
+		Sequence:              msg.Sequence,
+		InResponseToMessageID: msg.InResponseToMessageID,
+		IsDeleted:             msg.IsDeleted,
+		ExcludeFromAI:         msg.ExcludeFromAI,
+		Visibility:            string(msg.Visibility),
+		CreatedAt:             msg.CreatedAt,
+		UpdatedAt:             msg.UpdatedAt,
 	}
 }
 
@@ -163,10 +283,21 @@ func handleMessageError(c echo.Context, err error) error {
 		return c.JSON(http.StatusNotFound, ErrorResponse{Message: "not found"})
 	}
 	if errors.Is(err, domain.ErrLLMGateway) {
+		middleware.GetLogger(c).Error("llm gateway error", "error", err)
 		return c.JSON(http.StatusBadGateway, ErrorResponse{Message: "ai service error"})
 	}
 	if errors.Is(err, domain.ErrInvalidMessageType) {
 		return c.JSON(http.StatusBadRequest, ErrorResponse{Message: "message must be of type human"})
 	}
+	if errors.Is(err, domain.ErrInsufficientBalance) {
+		return c.JSON(http.StatusPaymentRequired, ErrorResponse{Message: "insufficient token balance"})
+	}
+	if errors.Is(err, domain.ErrArchivedRoom) {
+		return c.JSON(http.StatusConflict, ErrorResponse{Message: "room is archived"})
+	}
+	if errors.Is(err, domain.ErrConflict) {
+		return c.JSON(http.StatusConflict, ErrorResponse{Message: "message is still streaming"})
+	}
+	middleware.GetLogger(c).Error("unhandled message error", "error", err)
 	return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
 }

@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+// Polyphony LLM Gateway model-listing contract.
+//
+// Defines the model-metadata RPC served by the LLM Gateway (Rust) and consumed by the
+// Go API server. This is the gRPC counterpart of the REST `GET /models` endpoint
+// (`llm-gateway/src/adapters/inbound/rest/`); both transports share the same domain
+// service (`CompletionUseCase`) and must expose identical model metadata.
+package polyphony.llmgateway.v1;
+
+option go_package = "github.com/SHIMA0111/multi-user-ai/server/internal/interface/gateway/grpc/llmgatewaypb;llmgatewaypb";
+
+// Per-model pricing, expressed per 1 million tokens.
+//
+// Per-1M-token USD pricing is the project-wide canonical unit for model pricing,
+// matching how OpenAI/Anthropic/Google publish their price lists. Never introduce a
+// per-1k-token field alongside this one.
+message ModelPricing {
+  // USD price per 1,000,000 input (prompt) tokens.
+  double input_price_per_million_tokens = 1;
+  // USD price per 1,000,000 output (completion) tokens.
+  double output_price_per_million_tokens = 2;
+  // ISO 4217 currency code the prices above are denominated in (e.g. "USD").
+  string currency = 3;
+}
+
+// Information about an available model.
+message ModelInfo {
+  // Model identifier used in `CompletionRequest.model` (e.g. "gpt-5.2").
+  string id = 1;
+  // Human-readable display name (e.g. "GPT-5.2").
+  string name = 2;
+  // Provider that serves this model (e.g. "openai").
+  string provider = 3;
+  // Organization that owns the model (e.g. "openai").
+  string owned_by = 4;
+  // Maximum context window in tokens, if known. Absent means "unknown".
+  optional uint32 context_window = 5;
+  // Pricing metadata, if known. Absent means "unknown".
+  optional ModelPricing pricing = 6;
+  // Whether the model accepts image/Vision content parts. Absent means "unknown";
+  // consumers must treat an absent value as "no".
+  optional bool supports_image_input = 7;
+}
+
+// Request message for `ModelsService.ListModels`. Intentionally empty; model listing
+// always returns every model across every configured provider.
+message ListModelsRequest {}
+
+// Response message for `ModelsService.ListModels`.
+message ListModelsResponse {
+  repeated ModelInfo models = 1;
+}
+
+// Model-listing RPC service, backed by the same `CompletionUseCase` domain port the
+// REST `GET /models` endpoint uses.
+service ModelsService {
+  // Returns all available models across all configured providers.
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+}

@@ -1,0 +1,17 @@
+{
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "This canned reply confirms the explicitly selected OpenAI model reached the E2E stub."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 11,
+    "completion_tokens": 15,
+    "total_tokens": 26
+  }
+}

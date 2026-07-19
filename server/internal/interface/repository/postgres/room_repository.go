@@ -30,12 +30,13 @@ func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO rooms (id, name, description, owner_id, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		rm.ID, rm.Name, rm.Description, rm.OwnerID, rm.CreatedAt, rm.UpdatedAt,
+		`INSERT INTO rooms (id, name, description, owner_id, forked_from_room_id, is_archived, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		rm.ID, rm.Name, rm.Description, rm.OwnerID, rm.ForkedFromRoomID, rm.IsArchived, rm.CreatedAt, rm.UpdatedAt,
 	)
 	if err != nil {
 		return err
@@ -51,8 +52,8 @@ func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO room_members (id, room_id, user_id, role, joined_at)
-		 VALUES ($1, $2, $3, 'master', $4)`,
-		uuid.New().String(), rm.ID, rm.OwnerID, time.Now(),
+		 VALUES ($1, $2, $3, $4, $5)`,
+		uuid.New().String(), rm.ID, rm.OwnerID, string(room.RoleMaster), time.Now(),
 	)
 	if err != nil {
 		return err
@@ -65,8 +66,8 @@ func (r *RoomRepository) Create(ctx context.Context, rm *room.Room) error {
 func (r *RoomRepository) GetByID(ctx context.Context, id string) (*room.Room, error) {
 	var rm room.Room
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, name, description, owner_id, created_at, updated_at FROM rooms WHERE id = $1`, id,
-	).Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.CreatedAt, &rm.UpdatedAt)
+		`SELECT id, name, description, owner_id, ai_context_cutoff_at, ai_provider, ai_model, forked_from_room_id, is_archived, created_at, updated_at FROM rooms WHERE id = $1`, id,
+	).Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.AIProvider, &rm.AIModel, &rm.ForkedFromRoomID, &rm.IsArchived, &rm.CreatedAt, &rm.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
@@ -79,7 +80,7 @@ func (r *RoomRepository) GetByID(ctx context.Context, id string) (*room.Room, er
 // ListByUserID returns all rooms that the given user is a member of, ordered by creation time descending.
 func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*room.Room, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT r.id, r.name, r.description, r.owner_id, r.created_at, r.updated_at
+		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_context_cutoff_at, r.ai_provider, r.ai_model, r.forked_from_room_id, r.is_archived, r.created_at, r.updated_at
 		 FROM rooms r
 		 INNER JOIN room_members rm ON r.id = rm.room_id
 		 WHERE rm.user_id = $1
@@ -93,7 +94,7 @@ func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*ro
 	var rooms []*room.Room
 	for rows.Next() {
 		var rm room.Room
-		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.CreatedAt, &rm.UpdatedAt); err != nil {
+		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.AIProvider, &rm.AIModel, &rm.ForkedFromRoomID, &rm.IsArchived, &rm.CreatedAt, &rm.UpdatedAt); err != nil {
 			return nil, err
 		}
 		rooms = append(rooms, &rm)
@@ -101,11 +102,140 @@ func (r *RoomRepository) ListByUserID(ctx context.Context, userID string) ([]*ro
 	return rooms, rows.Err()
 }
 
-// Update updates the name, description, and updated_at fields of a room. It returns domain.ErrNotFound if the room does not exist.
-func (r *RoomRepository) Update(ctx context.Context, rm *room.Room) error {
+// ListByUserIDWithRole returns all rooms that the given user is a member of,
+// together with the user's role in each room, ordered by creation time
+// descending. It performs a single INNER JOIN query (no N+1 GetMember
+// lookups per room).
+func (r *RoomRepository) ListByUserIDWithRole(ctx context.Context, userID string) ([]*room.RoomWithRole, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT r.id, r.name, r.description, r.owner_id, r.ai_context_cutoff_at, r.ai_provider, r.ai_model, r.forked_from_room_id, r.is_archived, r.created_at, r.updated_at, rm.role
+		 FROM rooms r
+		 INNER JOIN room_members rm ON r.id = rm.room_id
+		 WHERE rm.user_id = $1
+		 ORDER BY r.created_at DESC`, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*room.RoomWithRole
+	for rows.Next() {
+		var rm room.Room
+		var roleStr string
+		if err := rows.Scan(&rm.ID, &rm.Name, &rm.Description, &rm.OwnerID, &rm.AIContextCutoffAt, &rm.AIProvider, &rm.AIModel, &rm.ForkedFromRoomID, &rm.IsArchived, &rm.CreatedAt, &rm.UpdatedAt, &roleStr); err != nil {
+			return nil, err
+		}
+		result = append(result, &room.RoomWithRole{Room: &rm, Role: room.Role(roleStr)})
+	}
+	return result, rows.Err()
+}
+
+// UpdateDetails updates only a room's name, description, and updated_at
+// columns, per room.RoomRepository's UpdateDetails GoDoc (a deliberate
+// partial update that leaves ai_context_cutoff_at/ai_provider/ai_model
+// untouched, unlike the full-row update this replaced). It returns
+// domain.ErrNotFound if the room does not exist.
+func (r *RoomRepository) UpdateDetails(ctx context.Context, roomID, name, description string, updatedAt time.Time) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE rooms SET name = $1, description = $2, updated_at = $3 WHERE id = $4`,
-		rm.Name, rm.Description, rm.UpdatedAt, rm.ID,
+		name, description, updatedAt, roomID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// UpdateAIContextCutoff updates only a room's ai_context_cutoff_at and
+// updated_at columns, per room.RoomRepository's UpdateAIContextCutoff
+// GoDoc (a deliberate partial update that leaves name/description/
+// ai_provider/ai_model untouched). It returns domain.ErrNotFound if the
+// room does not exist.
+func (r *RoomRepository) UpdateAIContextCutoff(ctx context.Context, roomID string, cutoff *time.Time, updatedAt time.Time) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE rooms SET ai_context_cutoff_at = $1, updated_at = $2 WHERE id = $3`,
+		cutoff, updatedAt, roomID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// UpdateAISettings updates only a room's ai_provider, ai_model, and
+// updated_at columns, per room.RoomRepository's UpdateAISettings GoDoc (a
+// deliberate partial update that leaves name/description/
+// ai_context_cutoff_at untouched, following the same narrow-setter
+// convention as UpdateDetails and UpdateAIContextCutoff).
+//
+// The two SET clauses below are each a CASE WHEN keyed on whether the
+// corresponding field was provided at all (aiSettingAssignment's set
+// return): when a field is omitted (aiProvider/aiModel == nil), its CASE
+// WHEN evaluates the ELSE branch and reassigns the column to its own
+// current value, so the UPDATE never depends on any value this call itself
+// read beforehand. That is what makes this safe against the lost-update
+// race a GetByID-then-write approach has: two concurrent UpdateAISettings
+// calls that each touch only one of the two fields (e.g. one sets only
+// aiProvider, the other only aiModel) can both commit their intended change
+// regardless of interleaving, because neither statement ever writes a value
+// for the column it was not asked to change.
+//
+// It returns domain.ErrNotFound if the room does not exist.
+func (r *RoomRepository) UpdateAISettings(ctx context.Context, roomID string, aiProvider, aiModel *string, updatedAt time.Time) error {
+	setProvider, providerValue := aiSettingAssignment(aiProvider)
+	setModel, modelValue := aiSettingAssignment(aiModel)
+
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE rooms SET
+			ai_provider = CASE WHEN $1 THEN $2::text ELSE ai_provider END,
+			ai_model = CASE WHEN $3 THEN $4::text ELSE ai_model END,
+			updated_at = $5
+		 WHERE id = $6`,
+		setProvider, providerValue, setModel, modelValue, updatedAt, roomID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// aiSettingAssignment translates UpdateAISettings's nil/empty-string-
+// sentinel/value *string convention for a single field into the (set,
+// value) pair its CASE WHEN SQL expects: set reports whether the column
+// should be assigned at all (false when field is nil, meaning "leave the
+// column untouched"), and value is the literal value to assign when set is
+// true (nil clears the column to SQL NULL; a non-nil pointer sets it to the
+// pointed-to value).
+func aiSettingAssignment(field *string) (set bool, value *string) {
+	if field == nil {
+		return false, nil
+	}
+	if *field == "" {
+		return true, nil
+	}
+	v := *field
+	return true, &v
+}
+
+// SetArchived flips a room's is_archived flag via a single dedicated
+// UPDATE, without loading or rewriting any other column — see
+// room.RoomRepository.SetArchived's GoDoc for why this is kept separate
+// from the other narrow setters above. It returns domain.ErrNotFound if
+// the room does not exist.
+func (r *RoomRepository) SetArchived(ctx context.Context, roomID string, archived bool) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE rooms SET is_archived = $1, updated_at = NOW() WHERE id = $2`,
+		archived, roomID,
 	)
 	if err != nil {
 		return err
@@ -133,31 +263,47 @@ func (r *RoomRepository) AddMember(ctx context.Context, member *room.RoomMember)
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO room_members (id, room_id, user_id, role, joined_at)
 		 VALUES ($1, $2, $3, $4, $5)`,
-		member.ID, member.RoomID, member.UserID, member.Role, member.JoinedAt,
+		member.ID, member.RoomID, member.UserID, string(member.Role), member.JoinedAt,
 	)
 	return err
 }
 
-// GetMember retrieves a specific room membership by room ID and user ID. It returns domain.ErrNotFound if the membership does not exist.
+// GetMember retrieves a specific room membership by room ID and user ID. It
+// JOINs against the users table to populate RoomMember.Username, mirroring
+// ListMembers, so a single-membership lookup is just as usable for
+// display purposes as a list one. It returns domain.ErrNotFound if the
+// membership does not exist.
 func (r *RoomRepository) GetMember(ctx context.Context, roomID, userID string) (*room.RoomMember, error) {
 	var m room.RoomMember
+	var roleStr string
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, room_id, user_id, role, joined_at FROM room_members WHERE room_id = $1 AND user_id = $2`,
+		`SELECT rm.id, rm.room_id, rm.user_id, rm.role, rm.joined_at, u.username
+		 FROM room_members rm
+		 JOIN users u ON u.id = rm.user_id
+		 WHERE rm.room_id = $1 AND rm.user_id = $2`,
 		roomID, userID,
-	).Scan(&m.ID, &m.RoomID, &m.UserID, &m.Role, &m.JoinedAt)
+	).Scan(&m.ID, &m.RoomID, &m.UserID, &roleStr, &m.JoinedAt, &m.Username)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
 		return nil, err
 	}
+	m.Role = room.Role(roleStr)
 	return &m, nil
 }
 
 // ListMembers returns all members of a room, ordered by join time ascending.
+// It JOINs against the users table to populate each RoomMember.Username, so
+// callers get human-readable display names without a separate
+// user-directory lookup.
 func (r *RoomRepository) ListMembers(ctx context.Context, roomID string) ([]*room.RoomMember, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, room_id, user_id, role, joined_at FROM room_members WHERE room_id = $1 ORDER BY joined_at`,
+		`SELECT rm.id, rm.room_id, rm.user_id, rm.role, rm.joined_at, u.username
+		 FROM room_members rm
+		 JOIN users u ON u.id = rm.user_id
+		 WHERE rm.room_id = $1
+		 ORDER BY rm.joined_at`,
 		roomID,
 	)
 	if err != nil {
@@ -168,17 +314,59 @@ func (r *RoomRepository) ListMembers(ctx context.Context, roomID string) ([]*roo
 	var members []*room.RoomMember
 	for rows.Next() {
 		var m room.RoomMember
-		if err := rows.Scan(&m.ID, &m.RoomID, &m.UserID, &m.Role, &m.JoinedAt); err != nil {
+		var roleStr string
+		if err := rows.Scan(&m.ID, &m.RoomID, &m.UserID, &roleStr, &m.JoinedAt, &m.Username); err != nil {
 			return nil, err
 		}
+		m.Role = room.Role(roleStr)
 		members = append(members, &m)
 	}
 	return members, rows.Err()
 }
 
-// RemoveMember removes a user from a room. It returns domain.ErrNotFound if the membership does not exist.
+// RemoveMember implements room.RoomRepository.RemoveMember (see its GoDoc
+// for the owner-protection and TransferOwnership-serialization contract).
+// It runs the owner recheck and the room_members DELETE inside a single
+// transaction, following the same r.pool.Begin / defer tx.Rollback /
+// tx.Commit / row-lock pattern as UpdateMemberRole:
+//
+//  1. `SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE` takes a row
+//     lock on rooms' roomID row -- the same row TransferOwnership's and
+//     UpdateMemberRole's owner checks lock, so a concurrent ownership
+//     transfer and a remove-member call on the same room block each other
+//     rather than interleaving. Returns domain.ErrNotFound if the room does
+//     not exist.
+//  2. If the (possibly just-updated, if this call waited out a concurrent
+//     TransferOwnership) owner_id equals userID, returns
+//     room.ErrOwnerRoleProtected without deleting anything -- a room's
+//     owner must transfer ownership (RoomUsecase.TransferOwnership) before
+//     they can be removed, exactly as they must before they can leave
+//     (RoomUsecase.LeaveRoom) or have their role changed directly
+//     (UpdateMemberRole).
+//  3. Otherwise runs the existing room_members DELETE and returns
+//     domain.ErrNotFound if it affects zero rows (the membership does not
+//     exist).
 func (r *RoomRepository) RemoveMember(ctx context.Context, roomID, userID string) error {
-	tag, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var ownerID string
+	err = tx.QueryRow(ctx, `SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE`, roomID).Scan(&ownerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	if ownerID == userID {
+		return room.ErrOwnerRoleProtected
+	}
+
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM room_members WHERE room_id = $1 AND user_id = $2`,
 		roomID, userID,
 	)
@@ -188,5 +376,124 @@ func (r *RoomRepository) RemoveMember(ctx context.Context, roomID, userID string
 	if tag.RowsAffected() == 0 {
 		return domain.ErrNotFound
 	}
-	return nil
+
+	return tx.Commit(ctx)
+}
+
+// UpdateMemberRole implements room.RoomRepository.UpdateMemberRole (see its
+// GoDoc for the owner-protection and TransferOwnership-serialization
+// contract). It runs the owner recheck and the role UPDATE inside a single
+// transaction, following the same r.pool.Begin / defer tx.Rollback /
+// tx.Commit pattern as Create and TransferOwnership:
+//
+//  1. `SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE` takes a row
+//     lock on rooms' roomID row -- the same row TransferOwnership's
+//     `UPDATE rooms SET owner_id = ... WHERE id = ... AND owner_id = ...`
+//     locks, so the two block each other rather than interleaving. Returns
+//     domain.ErrNotFound if the room does not exist.
+//  2. If the (possibly just-updated, if this call waited out a concurrent
+//     TransferOwnership) owner_id equals userID, returns
+//     room.ErrOwnerRoleProtected without writing anything.
+//  3. Otherwise runs the existing room_members role UPDATE and returns
+//     domain.ErrNotFound if it affects zero rows (the membership does not
+//     exist).
+func (r *RoomRepository) UpdateMemberRole(ctx context.Context, roomID, userID string, role room.Role) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var ownerID string
+	err = tx.QueryRow(ctx, `SELECT owner_id FROM rooms WHERE id = $1 FOR UPDATE`, roomID).Scan(&ownerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	if ownerID == userID {
+		return room.ErrOwnerRoleProtected
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE room_members SET role = $1 WHERE room_id = $2 AND user_id = $3`,
+		string(role), roomID, userID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	return tx.Commit(ctx)
+}
+
+// TransferOwnership atomically updates rooms.owner_id to newOwnerID, sets
+// the new owner's room_members.role to master, and sets the previous
+// owner's (oldOwnerID) room_members.role to admin, all within a single
+// transaction, following the same r.pool.Begin / defer tx.Rollback /
+// tx.Commit pattern as Create.
+//
+// The rooms.owner_id update is itself a compare-and-swap:
+// `WHERE id = $2 AND owner_id = $3` guards against a concurrent transfer of
+// the same room racing this one -- without the owner_id condition, two
+// overlapping TransferOwnership calls (e.g. the current owner double-
+// submitting, or a stale client retrying against an already-transferred
+// room) could both report success while only one of their intended
+// grant/demote pairs actually reflects the room's final owner, leaving
+// room_members with an admin who still thinks they're master or vice versa.
+// A zero-rows result from this CAS is treated as domain.ErrNotFound (the
+// caller's assumed oldOwnerID is stale -- ownership already moved), the
+// same as a genuinely missing room.
+//
+// It returns domain.ErrNotFound — rolling back all writes made so far in the
+// transaction — if the rooms CAS update, the new owner's membership update,
+// or the previous owner's membership update affects zero rows (i.e. the
+// room does not exist, oldOwnerID is no longer the current owner, or either
+// user is not already a room member).
+func (r *RoomRepository) TransferOwnership(ctx context.Context, roomID, oldOwnerID, newOwnerID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Rollback after a successful Commit returns pgx.ErrTxClosed by design; safe to ignore.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE rooms SET owner_id = $1 WHERE id = $2 AND owner_id = $3`,
+		newOwnerID, roomID, oldOwnerID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	tag, err = tx.Exec(ctx,
+		`UPDATE room_members SET role = $1 WHERE room_id = $2 AND user_id = $3`,
+		string(room.RoleMaster), roomID, newOwnerID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	tag, err = tx.Exec(ctx,
+		`UPDATE room_members SET role = $1 WHERE room_id = $2 AND user_id = $3`,
+		string(room.RoleAdmin), roomID, oldOwnerID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	return tx.Commit(ctx)
 }

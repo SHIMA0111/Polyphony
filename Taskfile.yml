@@ -1,0 +1,333 @@
+version: '3'
+
+tasks:
+  # ---------------------------------------------------------------------------
+  # Docker
+  # ---------------------------------------------------------------------------
+  up:
+    desc: Start all services
+    cmds:
+      - docker compose up -d
+
+  rebuild:
+    desc: Rebuild all Docker images from scratch and restart the stack
+    cmds:
+      - docker compose build --no-cache
+      - docker compose up -d --force-recreate
+
+  down:
+    desc: Stop all services
+    cmds:
+      - docker compose down
+
+  down:clean:
+    desc: Stop all services and remove volumes
+    cmds:
+      - docker compose down -v
+
+  build:
+    desc: Build all Docker images
+    cmds:
+      - docker compose build
+
+  logs:
+    desc: Tail service logs (use -- <service> to filter)
+    cmds:
+      - docker compose logs -f {{.CLI_ARGS}}
+
+  ps:
+    desc: Show running services
+    cmds:
+      - docker compose ps
+
+  verify:redis-hub:
+    desc: >-
+      Multi-instance smoke check (Step 31): scale api=2 via
+      docker-compose.scale-test.yml and prove a message sent via one replica
+      is delivered over a WebSocket held by the other, through RedisHub
+    cmds:
+      - bash server/scripts/verify_redis_hub.sh
+
+  # ---------------------------------------------------------------------------
+  # Migration
+  # ---------------------------------------------------------------------------
+  migrate:generate:
+    desc: Generate migration SQL from schema.sql diff
+    dir: server
+    vars:
+      NAME: '{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}auto_{{now | date "20060102150405"}}{{end}}'
+    cmds:
+      - atlas migrate diff {{.NAME}} --env local
+
+  migrate:apply:
+    desc: Start db and run migrations via Docker
+    cmds:
+      - docker compose up -d db
+      - docker compose run --rm migrate
+
+  migrate:status:
+    desc: Show migration status
+    dir: server
+    cmds:
+      - atlas migrate status --env local
+
+  migrate:lint:
+    # Requires `atlas login` (Atlas v0.38+ gates `migrate lint` behind an Atlas Pro account).
+    # See docs/infra-conventions.md for the login step and a manual-review fallback.
+    desc: Lint the latest migration for destructive/unsafe changes (requires `atlas login`)
+    dir: server
+    cmds:
+      - atlas migrate lint --env local --latest 1
+
+  # ---------------------------------------------------------------------------
+  # Test
+  # ---------------------------------------------------------------------------
+  test:
+    desc: Run all tests in parallel
+    deps: [test:server, test:gateway, test:web]
+
+  test:server:
+    desc: Run Go tests
+    dir: server
+    cmds:
+      - go test ./...
+
+  test:server:integration:
+    desc: Run Go integration tests against a real Postgres testcontainer (requires Docker)
+    dir: server
+    cmds:
+      - go test -tags=integration ./...
+
+  test:gateway:
+    desc: Run Rust tests
+    dir: llm-gateway
+    cmds:
+      - cargo test
+
+  test:web:
+    desc: Run web frontend tests
+    dir: web
+    cmds:
+      - bun run test
+
+  test:e2e:up:
+    desc: Start the isolated E2E compose stack (test profile, alternate ports)
+    cmds:
+      # Namespaced under its own compose project (`-p polyphony-e2e`) so its
+      # containers/volumes/network are fully isolated from the dev stack —
+      # `down -v` below must never be able to touch the dev stack's `pgdata`
+      # or `kratos_pgdata` volumes.
+      #
+      # An explicit service list is passed (rather than relying on
+      # `--profile test` alone) because `--profile test` only controls which
+      # *profiled* services start; every non-profiled base service (db,
+      # kratos, kratos-db, kratos-migrate, mailslurper, migrate, minio,
+      # minio-init, redis, api, web, ...) would also start under this
+      # project, port-colliding with a running dev stack. Rather than reusing
+      # those shared dev services, api-e2e/web-e2e point at their own
+      # dedicated kratos-e2e/kratos-db-e2e/kratos-migrate-e2e/mailslurper-e2e
+      # services (also `profiles: ["test"]`) so the E2E stack never binds the
+      # dev stack's fixed 4433/4434/4436/4437 host ports and can run fully
+      # alongside a running dev stack. `kratos-e2e` is the one exception: it
+      # publishes its own dedicated 8093/8094 host ports (still distinct from
+      # the dev `kratos` service's 4433/4434) purely so dex's OIDC callback
+      # redirect — issued directly to the browser, not through the
+      # `/api/kratos/*` proxy — can reach it (Step 44; see docker-compose.yml's
+      # `kratos-e2e` block and ory/dex/config.yaml).
+      #
+      # `dex-e2e` (its own `profiles: ["test"]` service, distinct from the
+      # dev `dex` service) publishes its own dedicated 8095 host port so it
+      # can run fully alongside a running dev stack's `dex` on 5556 — the two
+      # used to be the same shared, non-profiled `dex` service, which
+      # port-collided whenever both stacks ran at once (a wave-5 review
+      # finding: the second `up` left one `dex` container attached to no
+      # network). `dex-e2e` is aliased as `dex` inside this project's own
+      # network so `KRATOS_OIDC_PROVIDERS_JSON`'s hardcoded `http://dex:5556/dex`
+      # issuer URL still resolves for `kratos-e2e` unchanged; only the
+      # host-published port differs, which `web/playwright.config.ts`'s
+      # `--host-resolver-rules` mapping accounts for.
+      #
+      # `minio-e2e`/`minio-init-e2e` (their own `profiles: ["test"]`
+      # services, distinct from the dev `minio`/`minio-init` services) give
+      # this stack its own object storage on host port 9002, so
+      # `attachments.spec.ts` never depends on whatever happens to be
+      # listening on the dev stack's port 9000 (wave-6 review finding).
+      #
+      # `hydra-db-e2e`/`hydra-migrate-e2e`/`hydra-e2e` (Step 56, their own
+      # `profiles: ["test"]` services, distinct from the dev `hydra`/
+      # `hydra-db`/`hydra-migrate` services) give this stack its own Hydra
+      # OAuth2/OIDC provider on host ports 8096/8097, so
+      # `oauth-hydra.spec.ts` never depends on the dev stack's Hydra being up
+      # -- Step 55 never added Hydra to the E2E profile at all.
+      - >-
+        docker compose -p polyphony-e2e --profile test up -d --build
+        db-e2e dex-e2e migrate-e2e llm-stub llm-gateway-e2e api-e2e web-e2e
+        kratos-db-e2e kratos-migrate-e2e kratos-e2e mailslurper-e2e redis-e2e
+        minio-e2e minio-init-e2e
+        hydra-db-e2e hydra-migrate-e2e hydra-e2e
+
+  test:e2e:seed:
+    desc: Seed the idempotent E2E fixture user + room against the running test stack
+    dir: web
+    cmds:
+      - bun run e2e/seed/cli.ts
+
+  test:e2e:
+    # This is the authoritative full-suite E2E gate (Step 60): a clean
+    # `test:e2e:down && test:e2e:up && test:e2e` run is expected to pass
+    # 100% of specs with zero flaky-after-retry results before merging.
+    # `test`/`test:server`/`test:gateway` above are fast, compose-free
+    # unit-only tasks and deliberately do NOT depend on this task (Step 10's
+    # original separation) — run this task explicitly when you need the
+    # full-stack signal, not as a side effect of the plain `test` task.
+    desc: Run Playwright E2E specs against the seeded test stack
+    dir: web
+    deps: [test:e2e:up]
+    cmds:
+      - bunx playwright test
+
+  test:e2e:down:
+    desc: Tear down the E2E compose stack and remove its volumes
+    cmds:
+      - docker compose -p polyphony-e2e --profile test down -v
+
+  test:e2e:regression:realtime-ai:
+    desc: Run Step 57's realtime + AI-core regression suite (send, model select, context controls, rate limiting) against the running test stack
+    dir: web
+    deps: [test:e2e:up]
+    cmds:
+      # rate-limiting runs as its own, second invocation: its Case 2
+      # recreates api-e2e with a tightened AI-invoke limit, which must never
+      # overlap another spec's AI sends (see playwright.config.ts's
+      # `rate-limiting` project). `--no-deps` skips that project's chromium
+      # dependency, which would otherwise re-run the full suite here.
+      - >-
+        bunx playwright test
+        e2e/regression/ai-send-model-select.spec.ts
+        e2e/regression/two-client-realtime.spec.ts
+        e2e/regression/context-controls-ai-effect.spec.ts
+      - bunx playwright test e2e/regression/rate-limiting.spec.ts --no-deps
+
+  # ---------------------------------------------------------------------------
+  # Lint & Format
+  # ---------------------------------------------------------------------------
+  lint:
+    desc: Lint all projects in parallel
+    deps: [lint:server, lint:gateway, lint:web]
+
+  lint:server:
+    desc: Lint Go code
+    dir: server
+    cmds:
+      - golangci-lint run ./...
+
+  lint:gateway:
+    desc: Lint Rust code
+    dir: llm-gateway
+    cmds:
+      - cargo clippy
+
+  lint:web:
+    desc: Lint web frontend
+    dir: web
+    cmds:
+      - bun run lint
+
+  fmt:
+    desc: Format all projects in parallel
+    deps: [fmt:server, fmt:gateway]
+
+  fmt:server:
+    desc: Format Go code
+    dir: server
+    cmds:
+      - go fmt ./...
+
+  fmt:gateway:
+    desc: Format Rust code
+    dir: llm-gateway
+    cmds:
+      - cargo fmt
+
+  # ---------------------------------------------------------------------------
+  # Local Development
+  # ---------------------------------------------------------------------------
+  dev:server:
+    desc: Run Go API server locally
+    dir: server
+    dotenv: ['../.env.local', '../.env']
+    cmds:
+      - go run ./cmd/api
+
+  dev:gateway:
+    desc: Run LLM Gateway locally
+    dir: llm-gateway
+    dotenv: ['../.env.local', '../.env']
+    cmds:
+      - cargo run
+
+  dev:web:
+    desc: Run web frontend dev server
+    dir: web
+    dotenv: ['../.env.local', '../.env']
+    cmds:
+      - bun run dev
+
+  # ---------------------------------------------------------------------------
+  # OAuth2/OIDC provider (Ory Hydra, Step 55)
+  # ---------------------------------------------------------------------------
+  oauth:hydra:register-demo-client:
+    desc: >-
+      Register the first-party demo OAuth2 client against the running Hydra
+      admin API. Copy the printed client_id/client_secret into .env's
+      HYDRA_DEMO_CLIENT_ID/HYDRA_DEMO_CLIENT_SECRET (see ory/README.md to
+      register additional first-party clients with different scopes/redirect
+      URIs).
+    cmds:
+      - >-
+        docker compose exec hydra hydra create oauth2-client
+        --endpoint http://localhost:4445
+        --name "Polyphony Demo Client"
+        --grant-type authorization_code,refresh_token
+        --response-type code
+        --scope "openid offline_access profile email"
+        --redirect-uri http://localhost:9999/callback
+        --token-endpoint-auth-method client_secret_basic
+        --format json
+      - 'echo "Copy the client_id/client_secret above into .env as HYDRA_DEMO_CLIENT_ID/HYDRA_DEMO_CLIENT_SECRET, then re-run: task oauth:hydra:test"'
+
+  oauth:hydra:test:
+    desc: Run the scripted Hydra authorization-code flow end to end (registration through /userinfo)
+    dotenv: ['.env.local', '.env']
+    cmds:
+      - bun run ory/hydra/test-oauth-flow.ts
+
+  # ---------------------------------------------------------------------------
+  # Billing
+  # ---------------------------------------------------------------------------
+  billing:topup:
+    desc: 'Credit a user''s token balance for local dev/testing, e.g. task billing:topup -- -email user@example.com -amount 100000'
+    dir: server
+    dotenv: ['../.env.local', '../.env']
+    env:
+      # This CLI runs on the host against the compose-exposed 5432 port, but
+      # `../.env` sets DATABASE_URL to the compose-internal "db" hostname
+      # (for containers on the compose network) — which the dotenv above
+      # would otherwise inject here, breaking hostname resolution on the
+      # host. This task-level `env:` wins over `dotenv` (but still loses to
+      # an actual OS environment variable, e.g. `DATABASE_URL=... task
+      # billing:topup -- ...`), so the task works out of the box while
+      # staying overridable, matching cmd/seed-tokens' own localhost default.
+      DATABASE_URL: postgres://polyphony:polyphony@localhost:5432/polyphony?sslmode=disable
+    cmds:
+      - go run ./cmd/seed-tokens {{.CLI_ARGS}}
+
+  stripe:listen:
+    desc: >-
+      Start the stripe-cli service and tail its logs so a developer can grab
+      the printed webhook signing secret (whsec_...) — copy it into .env's
+      STRIPE_WEBHOOK_SECRET and run `task up` again to recreate the api
+      service with it (Step 49).
+    cmds:
+      - docker compose up -d stripe-cli
+      - docker compose logs -f stripe-cli

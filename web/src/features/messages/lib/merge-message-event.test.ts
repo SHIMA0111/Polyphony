@@ -1,0 +1,639 @@
+import { describe, expect, it, vi } from "vitest"
+import type { Message } from "@/features/messages/types"
+import type { RoomSocketEvent } from "@/features/messages/types/ws-events"
+import { mergeMessageEvent } from "./merge-message-event"
+import type { MessagesInfiniteData } from "./message-cache"
+
+/** Builds a minimal `Message` fixture; only `id`/`content`/`status` vary per call. */
+function makeMessage(id: string, overrides: Partial<Message> = {}): Message {
+  return {
+    id,
+    room_id: "room-1",
+    sender_id: "user-1",
+    content: `content-${id}`,
+    type: "human",
+    status: "completed",
+    sequence: Number(id),
+    in_response_to_message_id: null,
+    is_deleted: false,
+    exclude_from_ai: false,
+    used_context_summary: false,
+    visibility: "public",
+    created_at: `2026-01-01T00:00:0${id}Z`,
+    updated_at: `2026-01-01T00:00:0${id}Z`,
+    ...overrides,
+  }
+}
+
+function makeCreatedEvent(message: Message): RoomSocketEvent {
+  return { type: "message_created", room_id: "room-1", message }
+}
+
+function makeUpdatedEvent(message: Message): RoomSocketEvent {
+  return { type: "message_updated", room_id: "room-1", message }
+}
+
+function makeChunkEvent(
+  messageId: string,
+  delta: string,
+  summaryUsed = false,
+): RoomSocketEvent {
+  return {
+    type: "token_chunk",
+    room_id: "room-1",
+    chunk: { message_id: messageId, delta, summary_used: summaryUsed },
+  }
+}
+
+describe("mergeMessageEvent", () => {
+  it("prepends a message_created event for a new id to the newest page", () => {
+    const seeded: MessagesInfiniteData = {
+      pages: [{ messages: [makeMessage("2"), makeMessage("1")], next_cursor: null }],
+      pageParams: [undefined],
+    }
+
+    const result = mergeMessageEvent(seeded, makeCreatedEvent(makeMessage("3")))
+
+    expect(result?.pages[0].messages.map((m) => m.id)).toEqual(["3", "2", "1"])
+  })
+
+  it("initializes the cache from undefined for a message_created event", () => {
+    const result = mergeMessageEvent(undefined, makeCreatedEvent(makeMessage("1")))
+
+    expect(result?.pages).toEqual([{ messages: [makeMessage("1")], next_cursor: null }])
+  })
+
+  it("does not append a duplicate for a message_created event whose id is already cached (dedup)", () => {
+    const seeded: MessagesInfiniteData = {
+      pages: [{ messages: [makeMessage("1")], next_cursor: null }],
+      pageParams: [undefined],
+    }
+
+    const result = mergeMessageEvent(
+      seeded,
+      makeCreatedEvent(makeMessage("1", { content: "server-reconciled" })),
+    )
+
+    expect(result?.pages[0].messages).toHaveLength(1)
+    expect(result?.pages[0].messages[0].content).toBe("server-reconciled")
+  })
+
+  it("dedupes a message_created event against an id present only in an older page", () => {
+    const seeded: MessagesInfiniteData = {
+      pages: [
+        { messages: [makeMessage("3")], next_cursor: "2" },
+        { messages: [makeMessage("2"), makeMessage("1")], next_cursor: null },
+      ],
+      pageParams: [undefined, "2"],
+    }
+
+    const result = mergeMessageEvent(seeded, makeCreatedEvent(makeMessage("2")))
+
+    // No new entry added to the newest page, and the older page still has
+    // exactly one copy of "2".
+    expect(result?.pages[0].messages.map((m) => m.id)).toEqual(["3"])
+    expect(result?.pages[1].messages.map((m) => m.id)).toEqual(["2", "1"])
+  })
+
+  it("patches an existing message in place for a message_updated event", () => {
+    const seeded: MessagesInfiniteData = {
+      pages: [{ messages: [makeMessage("2"), makeMessage("1")], next_cursor: null }],
+      pageParams: [undefined],
+    }
+
+    const updated = makeMessage("1", { content: "edited", status: "completed" })
+    const result = mergeMessageEvent(seeded, makeUpdatedEvent(updated))
+
+    expect(result?.pages[0].messages.map((m) => m.id)).toEqual(["2", "1"])
+    expect(result?.pages[0].messages.find((m) => m.id === "1")?.content).toBe("edited")
+  })
+
+  it("patches an existing message in an older page (not just the newest) for a message_updated event", () => {
+    const seeded: MessagesInfiniteData = {
+      pages: [
+        { messages: [makeMessage("3")], next_cursor: "2" },
+        { messages: [makeMessage("2"), makeMessage("1")], next_cursor: null },
+      ],
+      pageParams: [undefined, "2"],
+    }
+
+    const updated = makeMessage("1", { content: "regenerated" })
+    const result = mergeMessageEvent(seeded, makeUpdatedEvent(updated))
+
+    expect(result?.pages[1].messages.find((m) => m.id === "1")?.content).toBe(
+      "regenerated",
+    )
+    // Page order/length is untouched.
+    expect(result?.pages.map((p) => p.messages.length)).toEqual([1, 2])
+  })
+
+  it("no-ops a message_updated event for an id not present anywhere in the cache", () => {
+    const seeded: MessagesInfiniteData = {
+      pages: [{ messages: [makeMessage("1")], next_cursor: null }],
+      pageParams: [undefined],
+    }
+
+    const result = mergeMessageEvent(seeded, makeUpdatedEvent(makeMessage("unknown")))
+
+    expect(result).toBe(seeded)
+  })
+
+  it("replaces the sending optimistic AI placeholder in place when a message_created event for the real AI message arrives first (wave-9 review finding)", () => {
+    const optimisticAI = makeMessage("optimistic-ai-xyz", {
+      type: "ai",
+      content: "",
+      status: "sending",
+    })
+    const seeded: MessagesInfiniteData = {
+      pages: [{ messages: [optimisticAI], next_cursor: null }],
+      pageParams: [undefined],
+    }
+
+    const realAIMessage = makeMessage("ai-real-3", {
+      type: "ai",
+      content: "",
+      status: "streaming",
+    })
+    const result = mergeMessageEvent(seeded, makeCreatedEvent(realAIMessage))
+
+    expect(result?.pages[0].messages.map((m) => m.id)).toEqual(["ai-real-3"])
+  })
+
+  it("preserves arrival order for out-of-order message_created events instead of re-sorting by sequence", () => {
+    // Two create events arrive with an out-of-order `sequence` (e.g. a
+    // network reordering between two independent senders); the merge must
+    // not attempt to reconcile the numeric ordering itself.
+    let data: MessagesInfiniteData | undefined = {
+      pages: [{ messages: [], next_cursor: null }],
+      pageParams: [undefined],
+    }
+
+    data = mergeMessageEvent(data, makeCreatedEvent(makeMessage("5")))
+    data = mergeMessageEvent(data, makeCreatedEvent(makeMessage("4")))
+
+    // "4" (arrived second) is prepended in front of "5" (arrived first),
+    // i.e. arrival order is preserved even though 4 < 5 numerically.
+    expect(data?.pages[0].messages.map((m) => m.id)).toEqual(["4", "5"])
+  })
+
+  describe("token_chunk (Step 54 streaming)", () => {
+    it("appends a chunk's delta to an existing message and marks it status: streaming", () => {
+      const placeholder = makeMessage("ai-1", {
+        type: "ai",
+        content: "Hello",
+        status: "streaming",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [placeholder], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-1", ", world"))
+
+      const updated = result?.pages[0].messages.find((m) => m.id === "ai-1")
+      expect(updated?.content).toBe("Hello, world")
+      expect(updated?.status).toBe("streaming")
+    })
+
+    it("creates a new streaming placeholder when the first chunk for a message id arrives before any other event", () => {
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [makeMessage("1")], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-new", "First "))
+
+      const created = result?.pages[0].messages.find((m) => m.id === "ai-new")
+      expect(created).toMatchObject({
+        id: "ai-new",
+        type: "ai",
+        status: "streaming",
+        content: "First ",
+      })
+      // Prepended ahead of what was already cached.
+      expect(result?.pages[0].messages.map((m) => m.id)).toEqual(["ai-new", "1"])
+    })
+
+    it("accumulates content across multiple chunks for the same message id", () => {
+      let data: MessagesInfiniteData | undefined = {
+        pages: [{ messages: [], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "The "))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "quick "))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "fox"))
+
+      expect(data?.pages[0].messages.find((m) => m.id === "ai-1")?.content).toBe(
+        "The quick fox",
+      )
+    })
+
+    it("preserves accumulated content (and ORs used_context_summary) when a late message_created echo arrives for an already-streaming placeholder", () => {
+      let data: MessagesInfiniteData | undefined = {
+        pages: [{ messages: [], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      // token_chunk(s) race ahead of the message_created echo and build up
+      // real content on a placeholder they create themselves (see the
+      // first-chunk-creates-placeholder case tested above).
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "The "))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "quick fox"))
+      expect(data?.pages[0].messages[0]).toMatchObject({
+        id: "ai-1",
+        status: "streaming",
+        content: "The quick fox",
+        sequence: -1,
+      })
+
+      // The late-arriving message_created echo of the *original* (still
+      // empty) AI placeholder must not wipe the accumulated content back to
+      // "" -- but its other, authoritative fields (sequence included) still
+      // win over the transient chunk-created placeholder's guesses.
+      const lateEcho = makeMessage("ai-1", {
+        type: "ai",
+        content: "",
+        status: "streaming",
+        used_context_summary: true,
+        sequence: 7,
+      })
+      data = mergeMessageEvent(data, makeCreatedEvent(lateEcho))
+
+      const merged = data?.pages[0].messages.find((m) => m.id === "ai-1")
+      expect(merged?.content).toBe("The quick fox")
+      expect(merged?.status).toBe("streaming")
+      expect(merged?.used_context_summary).toBe(true)
+      expect(merged?.sequence).toBe(7)
+    })
+
+    it("replaces the in-flight streamed entry wholesale on the terminating message_updated finalize event", () => {
+      let data: MessagesInfiniteData | undefined = {
+        pages: [{ messages: [], next_cursor: null }],
+        pageParams: [undefined],
+      }
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "partial"))
+      expect(data?.pages[0].messages[0].status).toBe("streaming")
+
+      const finalMessage = makeMessage("ai-1", {
+        type: "ai",
+        content: "partial response, finished",
+        status: "completed",
+        sequence: 7,
+      })
+      data = mergeMessageEvent(data, makeUpdatedEvent(finalMessage))
+
+      expect(data?.pages[0].messages).toEqual([finalMessage])
+    })
+
+    it("ignores a chunk that arrives for a message already finalized as completed (idempotent finalize/chunk race)", () => {
+      const finalized = makeMessage("ai-1", {
+        type: "ai",
+        content: "Already done.",
+        status: "completed",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [finalized], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-1", " more text"))
+
+      expect(result).toEqual(seeded)
+    })
+
+    it("ignores a chunk that arrives for a message already finalized as failed", () => {
+      const finalized = makeMessage("ai-1", {
+        type: "ai",
+        content: "partial before failure",
+        status: "failed",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [finalized], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-1", " ignored"))
+
+      expect(result).toEqual(seeded)
+    })
+
+    // --- Wave-9 review finding: duplicate optimistic/streaming placeholder ---
+
+    it("replaces the sending optimistic AI placeholder in place when the first chunk arrives before the send POST resolves", () => {
+      const optimisticHuman = makeMessage("optimistic-human-abc", {
+        type: "human",
+        status: "sending",
+      })
+      const optimisticAI = makeMessage("optimistic-ai-abc", {
+        type: "ai",
+        content: "",
+        status: "sending",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [optimisticAI, optimisticHuman], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-real-1", "Hello"))
+
+      const ids = result?.pages[0].messages.map((m) => m.id)
+      // The real streaming message replaces the optimistic AI placeholder
+      // in place (same slot) instead of being prepended alongside it --
+      // exactly one AI bubble, not two.
+      expect(ids).toEqual(["ai-real-1", "optimistic-human-abc"])
+      expect(
+        result?.pages[0].messages.find((m) => m.id === "ai-real-1"),
+      ).toMatchObject({ type: "ai", status: "streaming", content: "Hello" })
+    })
+
+    it("does not touch an already-completed/failed optimistic AI entry when a later chunk arrives for a different message", () => {
+      // Only a `status: "sending"` placeholder should ever be treated as
+      // "still pending" -- a settled optimistic entry (shouldn't normally
+      // exist, but guards against a stale one lingering) must not be
+      // clobbered by an unrelated chunk.
+      const settledOptimistic = makeMessage("optimistic-ai-old", {
+        type: "ai",
+        status: "completed",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [settledOptimistic], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-real-2", "Hi"))
+
+      const ids = result?.pages[0].messages.map((m) => m.id)
+      expect(ids).toEqual(["ai-real-2", "optimistic-ai-old"])
+    })
+  })
+
+  // --- Wave-9 review follow-up: per-request correlation under concurrent sends ---
+
+  describe("concurrent AI sends (per-request correlation)", () => {
+    /** Seeds two concurrent `useSendAIMessage` sends' optimistic pairs, newest (B) first. */
+    function seedTwoConcurrentSends(): MessagesInfiniteData {
+      const humanA = makeMessage("optimistic-human-A", {
+        type: "human",
+        content: "hello A",
+        status: "sending",
+      })
+      const aiA = makeMessage("optimistic-ai-A", {
+        type: "ai",
+        content: "",
+        status: "sending",
+        in_response_to_message_id: "optimistic-human-A",
+      })
+      const humanB = makeMessage("optimistic-human-B", {
+        type: "human",
+        content: "hello B",
+        status: "sending",
+      })
+      const aiB = makeMessage("optimistic-ai-B", {
+        type: "ai",
+        content: "",
+        status: "sending",
+        in_response_to_message_id: "optimistic-human-B",
+      })
+      return {
+        pages: [{ messages: [aiB, humanB, aiA, humanA], next_cursor: null }],
+        pageParams: [undefined],
+      }
+    }
+
+    it("correlates each concurrent send's human echo, AI echo, and chunks to its own placeholder pair -- never first-match", () => {
+      let data: MessagesInfiniteData | undefined = seedTwoConcurrentSends()
+
+      // Human echoes land out of send order (B's arrives before A's) --
+      // each reconciles only its own optimistic human entry, by content,
+      // and propagates the real id to that send's own AI placeholder.
+      data = mergeMessageEvent(
+        data,
+        makeCreatedEvent(makeMessage("human-real-B", { type: "human", content: "hello B" })),
+      )
+      expect(
+        data?.pages[0].messages.find((m) => m.id === "optimistic-ai-B")
+          ?.in_response_to_message_id,
+      ).toBe("human-real-B")
+      expect(
+        data?.pages[0].messages.find((m) => m.id === "optimistic-ai-A")
+          ?.in_response_to_message_id,
+      ).toBe("optimistic-human-A")
+
+      data = mergeMessageEvent(
+        data,
+        makeCreatedEvent(makeMessage("human-real-A", { type: "human", content: "hello A" })),
+      )
+      expect(
+        data?.pages[0].messages.find((m) => m.id === "optimistic-ai-A")
+          ?.in_response_to_message_id,
+      ).toBe("human-real-A")
+
+      // Both AI placeholders are still pending -- an AI message_created echo
+      // must match by `in_response_to_message_id`, not first-match, to land
+      // on the correct one.
+      data = mergeMessageEvent(
+        data,
+        makeCreatedEvent(
+          makeMessage("ai-real-B", {
+            type: "ai",
+            content: "",
+            status: "streaming",
+            in_response_to_message_id: "human-real-B",
+          }),
+        ),
+      )
+      data = mergeMessageEvent(
+        data,
+        makeCreatedEvent(
+          makeMessage("ai-real-A", {
+            type: "ai",
+            content: "",
+            status: "streaming",
+            in_response_to_message_id: "human-real-A",
+          }),
+        ),
+      )
+
+      const idsAfterEchoes = data?.pages[0].messages.map((m) => m.id)
+      expect(idsAfterEchoes).toContain("ai-real-A")
+      expect(idsAfterEchoes).toContain("ai-real-B")
+      expect(idsAfterEchoes).not.toContain("optimistic-ai-A")
+      expect(idsAfterEchoes).not.toContain("optimistic-ai-B")
+
+      // Once each placeholder carries its real id, chunk delivery is
+      // unambiguous (direct id match) regardless of interleaving.
+      data = mergeMessageEvent(data, makeChunkEvent("ai-real-B", "Hi B"))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-real-A", "Hi A"))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-real-B", ", second chunk"))
+
+      expect(data?.pages[0].messages.find((m) => m.id === "ai-real-A")?.content).toBe("Hi A")
+      expect(data?.pages[0].messages.find((m) => m.id === "ai-real-B")?.content).toBe(
+        "Hi B, second chunk",
+      )
+    })
+
+    it("does not guess which placeholder an AI message_created echo belongs to when its expected parent isn't yet resolved on either candidate", () => {
+      const data = seedTwoConcurrentSends()
+
+      // Neither optimistic human has been reconciled yet, so both AI
+      // placeholders still carry their (fake) optimistic human ids -- an
+      // echo carrying a real human id can't match either one.
+      const result = mergeMessageEvent(
+        data,
+        makeCreatedEvent(
+          makeMessage("ai-real-A", {
+            type: "ai",
+            content: "",
+            status: "streaming",
+            in_response_to_message_id: "human-real-A",
+          }),
+        ),
+      )
+
+      // Falls back to inserting a new entry rather than clobbering either
+      // pending placeholder with the wrong send's content.
+      const ids = result?.pages[0].messages.map((m) => m.id)
+      expect(ids).toContain("ai-real-A")
+      expect(ids).toContain("optimistic-ai-A")
+      expect(ids).toContain("optimistic-ai-B")
+      expect(result?.pages[0].messages.find((m) => m.id === "optimistic-ai-A")?.content).toBe("")
+      expect(result?.pages[0].messages.find((m) => m.id === "optimistic-ai-B")?.content).toBe("")
+    })
+
+    it("creates a standalone streaming entry instead of guessing when a chunk arrives with two optimistic AI placeholders pending", () => {
+      // A `token_chunk` payload never carries `in_response_to_message_id`,
+      // so with two sends in flight there is no signal to correlate it to
+      // either placeholder -- even though this is the only kind of event
+      // that could otherwise race ahead of both sends' human echoes.
+      const data = seedTwoConcurrentSends()
+
+      const result = mergeMessageEvent(data, makeChunkEvent("ai-real-1", "First delta"))
+
+      const ids = result?.pages[0].messages.map((m) => m.id)
+      expect(ids).toContain("ai-real-1")
+      expect(ids).toContain("optimistic-ai-A")
+      expect(ids).toContain("optimistic-ai-B")
+      expect(result?.pages[0].messages.find((m) => m.id === "ai-real-1")).toMatchObject({
+        status: "streaming",
+        content: "First delta",
+      })
+      // Neither pending placeholder was touched.
+      expect(result?.pages[0].messages.find((m) => m.id === "optimistic-ai-A")?.content).toBe("")
+      expect(result?.pages[0].messages.find((m) => m.id === "optimistic-ai-B")?.content).toBe("")
+    })
+
+    it("does not reconcile any optimistic human entry when two concurrent sends share identical content (ambiguous match is never guessed)", () => {
+      const humanA = makeMessage("optimistic-human-A", {
+        type: "human",
+        content: "duplicate text",
+        status: "sending",
+      })
+      const humanB = makeMessage("optimistic-human-B", {
+        type: "human",
+        content: "duplicate text",
+        status: "sending",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [humanB, humanA], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(
+        seeded,
+        makeCreatedEvent(
+          makeMessage("human-real-1", { type: "human", content: "duplicate text" }),
+        ),
+      )
+
+      // Neither optimistic entry is touched -- the new real message is
+      // simply inserted, left for `useSendAIMessage`'s own `onSuccess` to
+      // reconcile unambiguously via its closed-over optimistic id.
+      const ids = result?.pages[0].messages.map((m) => m.id)
+      expect(ids).toEqual(["human-real-1", "optimistic-human-B", "optimistic-human-A"])
+    })
+  })
+
+  // --- Step 47: private AI mode ---
+
+  it("passes visibility through untouched for a message_created event", () => {
+    const result = mergeMessageEvent(
+      undefined,
+      makeCreatedEvent(makeMessage("1", { visibility: "private" })),
+      "user-1",
+    )
+
+    expect(result?.pages[0].messages[0].visibility).toBe("private")
+  })
+
+  it("passes visibility through untouched for a message_updated event", () => {
+    const seeded: MessagesInfiniteData = {
+      pages: [{ messages: [makeMessage("1", { visibility: "private" })], next_cursor: null }],
+      pageParams: [undefined],
+    }
+
+    const result = mergeMessageEvent(
+      seeded,
+      makeUpdatedEvent(makeMessage("1", { visibility: "private", content: "edited" })),
+      "user-1",
+    )
+
+    expect(result?.pages[0].messages[0]).toMatchObject({
+      visibility: "private",
+      content: "edited",
+    })
+  })
+
+  it("drops (and logs) a private message_created event whose sender_id doesn't match the current user", () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+    const result = mergeMessageEvent(
+      undefined,
+      makeCreatedEvent(
+        makeMessage("1", { visibility: "private", sender_id: "someone-else" }),
+      ),
+      "user-1",
+    )
+
+    expect(result).toBeUndefined()
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1)
+
+    consoleErrorSpy.mockRestore()
+  })
+
+  it("does not drop a private event when no currentUserId is available (guard degrades to a no-op)", () => {
+    const result = mergeMessageEvent(
+      undefined,
+      makeCreatedEvent(
+        makeMessage("1", { visibility: "private", sender_id: "someone-else" }),
+      ),
+      // currentUserId omitted entirely
+    )
+
+    expect(result?.pages[0].messages[0].id).toBe("1")
+  })
+
+  it("does not drop a private AI event (null sender_id) even when a currentUserId is available", () => {
+    const result = mergeMessageEvent(
+      undefined,
+      makeCreatedEvent(
+        makeMessage("1", { visibility: "private", sender_id: null, type: "ai" }),
+      ),
+      "user-1",
+    )
+
+    expect(result?.pages[0].messages[0].id).toBe("1")
+  })
+
+  it("merges a private event normally when sender_id matches the current user", () => {
+    const result = mergeMessageEvent(
+      undefined,
+      makeCreatedEvent(
+        makeMessage("1", { visibility: "private", sender_id: "user-1" }),
+      ),
+      "user-1",
+    )
+
+    expect(result?.pages[0].messages[0].id).toBe("1")
+  })
+})

@@ -1,0 +1,148 @@
+syntax = "proto3";
+
+// Polyphony LLM Gateway completion contract.
+//
+// Defines the chat-completion RPC served by the LLM Gateway (Rust) and consumed by
+// the Go API server. This is the gRPC counterpart of the REST `POST /completions`
+// endpoint (`llm-gateway/src/adapters/inbound/rest/`); both transports share the same
+// domain service (`CompletionUseCase`) and must stay semantically identical.
+//
+// Streaming completions are explicitly out of scope for this contract version — see
+// `docs/tasks/step19.md` for the rationale. Multimodal (Vision) message content was
+// added in Step 39 via `ChatMessage.content`'s `text`/`parts` oneof (see below).
+package polyphony.llmgateway.v1;
+
+option go_package = "github.com/SHIMA0111/multi-user-ai/server/internal/interface/gateway/grpc/llmgatewaypb;llmgatewaypb";
+
+// Role of a chat message, mirroring the domain `Role` enum
+// (`llm-gateway/src/domain/model.rs`).
+enum ChatRole {
+  // Unset/unknown role. Never produced intentionally; presence indicates a caller bug.
+  CHAT_ROLE_UNSPECIFIED = 0;
+  // System instructions / context setting.
+  CHAT_ROLE_SYSTEM = 1;
+  // User input.
+  CHAT_ROLE_USER = 2;
+  // AI response.
+  CHAT_ROLE_ASSISTANT = 3;
+  // Tool execution result (web search, function calls, etc.).
+  CHAT_ROLE_TOOL = 4;
+}
+
+// A single part of a multimodal message's content, mirroring the domain `ContentPart`
+// enum (`llm-gateway/src/domain/model.rs`) and the REST `ContentPartDto` union
+// (`llm-gateway/src/adapters/inbound/rest/request.rs`).
+message ContentPart {
+  oneof part {
+    // A plain text segment.
+    string text = 1;
+    // A reference to an image by URL.
+    string image_url = 2;
+    // An inline base64-encoded image.
+    ImageBase64Data image_base64 = 3;
+  }
+}
+
+// An inline base64-encoded image, referenced by `ContentPart.image_base64`.
+message ImageBase64Data {
+  // MIME type of the image (e.g. "image/png").
+  string media_type = 1;
+  // Base64-encoded image bytes.
+  string data = 2;
+}
+
+// A sequence of content parts (text mixed with images), referenced by
+// `ChatMessage.content`'s `parts` oneof member.
+message ContentParts {
+  repeated ContentPart parts = 1;
+}
+
+// A single chat message.
+//
+// `content` is a oneof: `text` (field 2) is the original plain-text shape and is
+// wire-compatible with the pre-Step-39 `string content = 2` field it replaces (same
+// field number, same wire type); `parts` (field 3) carries multimodal (Vision)
+// content, added in Step 39. Exactly one of `text`/`parts` is set on any message
+// this contract produces or expects.
+message ChatMessage {
+  ChatRole role = 1;
+  oneof content {
+    string text = 2;
+    ContentParts parts = 3;
+  }
+}
+
+// A chat completion request.
+message CompletionRequest {
+  // Model identifier to route the request to (e.g. "gpt-5.2").
+  string model = 1;
+  // Conversation history, oldest first.
+  repeated ChatMessage messages = 2;
+  // Sampling temperature. Absent means "use the provider's default".
+  optional float temperature = 3;
+  // Maximum number of tokens to generate. Absent means "use the provider's default".
+  optional uint32 max_tokens = 4;
+}
+
+// A single completion choice returned by the provider.
+message Choice {
+  // Index of this choice within `CompletionResponse.choices`.
+  uint32 index = 1;
+  // The generated message.
+  ChatMessage message = 2;
+  // Why generation stopped (e.g. "stop", "length").
+  string finish_reason = 3;
+}
+
+// Token usage statistics for a completion request/response pair.
+message Usage {
+  uint32 prompt_tokens = 1;
+  uint32 completion_tokens = 2;
+  uint32 total_tokens = 3;
+}
+
+// A chat completion response.
+message CompletionResponse {
+  // Provider-assigned identifier for this completion.
+  string id = 1;
+  // Model that actually served the request.
+  string model = 2;
+  repeated Choice choices = 3;
+  Usage usage = 4;
+}
+
+// Request message for `CompletionService.EstimateTokens`. Mirrors
+// `CompletionRequest`'s shape minus the sampling parameters (`temperature`,
+// `max_tokens`), which are irrelevant to estimation — the gRPC counterpart of
+// the REST `POST /tokens/estimate` endpoint's request body.
+message TokenEstimateRequest {
+  // Model identifier the estimate is computed for (for future model-specific
+  // tokenizer tuning; the current heuristic is model-agnostic).
+  string model = 1;
+  // Conversation history, oldest first.
+  repeated ChatMessage messages = 2;
+}
+
+// Response message for `CompletionService.EstimateTokens`.
+//
+// `estimated_tokens` is an approximation produced by a character-based
+// heuristic, not an exact count from the target model's real tokenizer. It is
+// intended for UI meters and rough context-budget checks, not for precise
+// billing.
+message TokenEstimateResponse {
+  // Model identifier the estimate was computed for, echoed back from the
+  // request.
+  string model = 1;
+  // Approximate token count for the given messages.
+  uint32 estimated_tokens = 2;
+}
+
+// Chat-completion RPC service, backed by the same `CompletionUseCase` domain port the
+// REST `POST /completions` endpoint uses.
+service CompletionService {
+  // Executes a single (non-streaming) chat completion.
+  rpc Complete(CompletionRequest) returns (CompletionResponse);
+  // Returns an approximate token count for a list of chat messages, the gRPC
+  // counterpart of the REST `POST /tokens/estimate` endpoint.
+  rpc EstimateTokens(TokenEstimateRequest) returns (TokenEstimateResponse);
+}

@@ -1,9 +1,16 @@
-use std::future::Future;
-use std::pin::Pin;
+use std::sync::Arc;
+
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 
 use crate::domain::error::DomainError;
-use crate::domain::model::{CompletionRequest, CompletionResponse, ModelInfo};
+use crate::domain::model::{
+    CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, TokenEstimateRequest,
+    TokenEstimateResponse,
+};
+use crate::domain::token_estimator;
 use crate::ports::inbound::completion::CompletionUseCase;
+use crate::ports::outbound::key_store::KeyStore;
 use crate::ports::outbound::provider::LLMProvider;
 
 /// Completion domain service.
@@ -12,23 +19,42 @@ use crate::ports::outbound::provider::LLMProvider;
 /// to the appropriate provider based on the requested model name.
 pub struct CompletionService {
     providers: Vec<Box<dyn LLMProvider>>,
+    key_store: Arc<dyn KeyStore>,
 }
 
 impl CompletionService {
     /// Creates a new `CompletionService`.
     ///
     /// # Arguments
-    /// * `providers` — List of available LLM providers
-    pub fn new(providers: Vec<Box<dyn LLMProvider>>) -> Self {
-        Self { providers }
+    /// * `providers` — List of available LLM providers.
+    /// * `key_store` — Key store used by `readiness()` to confirm every registered
+    ///   provider's API key is resolvable, without making any network calls.
+    ///
+    /// # Returns
+    /// A `CompletionService` holding `providers` and `key_store`, ready to serve
+    /// `complete`/`list_models`/`readiness` calls.
+    pub fn new(providers: Vec<Box<dyn LLMProvider>>, key_store: Arc<dyn KeyStore>) -> Self {
+        Self {
+            providers,
+            key_store,
+        }
     }
 
     /// Finds a provider that supports the given model ID.
-    fn find_provider(&self, model: &str) -> Option<&dyn LLMProvider> {
-        self.providers
-            .iter()
-            .find(|p| p.models().iter().any(|m| m.id == model))
-            .map(|p| p.as_ref())
+    ///
+    /// # Arguments
+    /// * `model` — Model ID to look up.
+    ///
+    /// # Returns
+    /// The first provider (in registration order) whose `models()` list contains
+    /// `model`, or `None` if no provider offers it.
+    async fn find_provider(&self, model: &str) -> Option<&dyn LLMProvider> {
+        for p in &self.providers {
+            if p.models().await.iter().any(|m| m.id == model) {
+                return Some(p.as_ref());
+            }
+        }
+        None
     }
 }
 
@@ -36,7 +62,7 @@ impl CompletionUseCase for CompletionService {
     fn complete(
         &self,
         req: CompletionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<CompletionResponse, DomainError>> + Send + '_>> {
+    ) -> BoxFuture<'_, Result<CompletionResponse, DomainError>> {
         Box::pin(async move {
             if req.messages.is_empty() {
                 return Err(DomainError::InvalidRequest(
@@ -46,6 +72,7 @@ impl CompletionUseCase for CompletionService {
 
             let provider = self
                 .find_provider(&req.model)
+                .await
                 .ok_or_else(|| DomainError::ModelNotFound(req.model.clone()))?;
 
             tracing::info!(
@@ -59,15 +86,71 @@ impl CompletionUseCase for CompletionService {
         })
     }
 
-    fn list_models(&self) -> Vec<ModelInfo> {
-        self.providers.iter().flat_map(|p| p.models()).collect()
+    fn list_models(&self) -> BoxFuture<'_, Vec<ModelInfo>> {
+        Box::pin(async move {
+            let mut models = Vec::new();
+            for p in &self.providers {
+                models.extend(p.models().await);
+            }
+            models
+        })
+    }
+
+    fn stream(
+        &self,
+        req: CompletionRequest,
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<CompletionChunk, DomainError>>, DomainError>>
+    {
+        Box::pin(async move {
+            if req.messages.is_empty() {
+                return Err(DomainError::InvalidRequest(
+                    "messages must not be empty".to_string(),
+                ));
+            }
+
+            let provider = self
+                .find_provider(&req.model)
+                .await
+                .ok_or_else(|| DomainError::ModelNotFound(req.model.clone()))?;
+
+            provider.stream(&req).await
+        })
+    }
+
+    fn readiness(&self) -> Result<(), DomainError> {
+        for provider in &self.providers {
+            self.key_store.get_key(provider.provider_name())?;
+        }
+        Ok(())
+    }
+
+    fn estimate_tokens(&self, req: TokenEstimateRequest) -> TokenEstimateResponse {
+        // No provider dispatch, no `find_provider` involvement: estimation is a pure
+        // function of the message content, so it never fails with `ModelNotFound`
+        // even for an unrecognized model name.
+        let estimated_tokens = token_estimator::estimate_tokens(&req.messages);
+        TokenEstimateResponse {
+            model: req.model,
+            estimated_tokens,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::model::{ChatMessage, Choice, Role, Usage};
+    use crate::domain::model::{ChatMessage, Choice, ModelPricing, Role, Usage};
+    use futures::stream::BoxStream;
+
+    /// Always-succeeding `KeyStore` test double for tests that do not exercise
+    /// `readiness()` failure paths.
+    struct StubKeyStore;
+
+    impl KeyStore for StubKeyStore {
+        fn get_key(&self, _provider: &str) -> Result<String, DomainError> {
+            Ok("test-key".to_string())
+        }
+    }
 
     /// Mock provider for testing.
     struct MockProvider {
@@ -88,8 +171,7 @@ mod tests {
         fn complete(
             &self,
             req: &CompletionRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<CompletionResponse, DomainError>> + Send + '_>>
-        {
+        ) -> BoxFuture<'_, Result<CompletionResponse, DomainError>> {
             let model = req.model.clone();
             Box::pin(async move {
                 Ok(CompletionResponse {
@@ -99,7 +181,7 @@ mod tests {
                         index: 0,
                         message: ChatMessage {
                             role: Role::Assistant,
-                            content: "mock response".to_string(),
+                            content: "mock response".to_string().into(),
                         },
                         finish_reason: "stop".to_string(),
                     }],
@@ -112,15 +194,42 @@ mod tests {
             })
         }
 
-        fn models(&self) -> Vec<ModelInfo> {
-            self.model_ids
+        fn models(&self) -> BoxFuture<'_, Vec<ModelInfo>> {
+            let models = self
+                .model_ids
                 .iter()
                 .map(|id| ModelInfo {
                     id: id.clone(),
+                    name: id.clone(),
                     provider: self.name.clone(),
                     owned_by: self.name.clone(),
+                    // Non-zero fixture values so tests can assert that
+                    // `CompletionService::list_models` propagates this metadata
+                    // rather than dropping it.
+                    context_window: Some(128_000),
+                    pricing: Some(ModelPricing {
+                        input_price_per_million_tokens: 1.5,
+                        output_price_per_million_tokens: 6.0,
+                        currency: "USD".to_string(),
+                    }),
+                    supports_image_input: Some(true),
                 })
-                .collect()
+                .collect();
+            Box::pin(async move { models })
+        }
+
+        fn stream(
+            &self,
+            _req: &CompletionRequest,
+        ) -> BoxFuture<
+            '_,
+            Result<BoxStream<'static, Result<CompletionChunk, DomainError>>, DomainError>,
+        > {
+            Box::pin(async move {
+                Err(DomainError::provider_error(
+                    "streaming not supported by mock provider",
+                ))
+            })
         }
 
         fn provider_name(&self) -> &str {
@@ -133,7 +242,7 @@ mod tests {
             model: model.to_string(),
             messages: vec![ChatMessage {
                 role: Role::User,
-                content: "hello".to_string(),
+                content: "hello".to_string().into(),
             }],
             temperature: None,
             max_tokens: None,
@@ -142,10 +251,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_routes_to_correct_provider() {
-        let service = CompletionService::new(vec![
-            Box::new(MockProvider::new("openai", vec!["gpt-5.2", "gpt-5-mini"])),
-            Box::new(MockProvider::new("anthropic", vec!["claude-opus-4-6"])),
-        ]);
+        let service = CompletionService::new(
+            vec![
+                Box::new(MockProvider::new("openai", vec!["gpt-5.2", "gpt-5-mini"])),
+                Box::new(MockProvider::new("anthropic", vec!["claude-opus-4-6"])),
+            ],
+            Arc::new(StubKeyStore),
+        );
 
         let resp = service.complete(make_request("gpt-5.2")).await.unwrap();
         assert_eq!(resp.model, "gpt-5.2");
@@ -159,10 +271,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_not_found() {
-        let service = CompletionService::new(vec![Box::new(MockProvider::new(
-            "openai",
-            vec!["gpt-5.2"],
-        ))]);
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
 
         let result = service.complete(make_request("nonexistent")).await;
         assert!(matches!(result, Err(DomainError::ModelNotFound(_))));
@@ -170,10 +282,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_messages_rejected() {
-        let service = CompletionService::new(vec![Box::new(MockProvider::new(
-            "openai",
-            vec!["gpt-5.2"],
-        ))]);
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
 
         let req = CompletionRequest {
             model: "gpt-5.2".to_string(),
@@ -185,14 +297,123 @@ mod tests {
         assert!(matches!(result, Err(DomainError::InvalidRequest(_))));
     }
 
-    #[test]
-    fn test_list_models_aggregates_all_providers() {
-        let service = CompletionService::new(vec![
-            Box::new(MockProvider::new("openai", vec!["gpt-5.2", "gpt-5-mini"])),
-            Box::new(MockProvider::new("anthropic", vec!["claude-opus-4-6"])),
-        ]);
+    #[tokio::test]
+    async fn test_stream_empty_messages_rejected() {
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
 
-        let models = service.list_models();
+        let req = CompletionRequest {
+            model: "gpt-5.2".to_string(),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+        };
+        let result = service.stream(req).await;
+        assert!(matches!(result, Err(DomainError::InvalidRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn test_list_models_aggregates_all_providers() {
+        let service = CompletionService::new(
+            vec![
+                Box::new(MockProvider::new("openai", vec!["gpt-5.2", "gpt-5-mini"])),
+                Box::new(MockProvider::new("anthropic", vec!["claude-opus-4-6"])),
+            ],
+            Arc::new(StubKeyStore),
+        );
+
+        let models = service.list_models().await;
         assert_eq!(models.len(), 3);
+
+        // `list_models` must propagate each provider's context-window/pricing
+        // metadata unchanged rather than dropping it during aggregation.
+        for model in &models {
+            assert_eq!(model.context_window, Some(128_000));
+            let pricing = model
+                .pricing
+                .as_ref()
+                .expect("pricing should be propagated");
+            assert_eq!(pricing.input_price_per_million_tokens, 1.5);
+            assert_eq!(pricing.output_price_per_million_tokens, 6.0);
+        }
+    }
+
+    #[test]
+    fn test_readiness_ok_when_all_keys_resolve() {
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
+
+        assert!(service.readiness().is_ok());
+    }
+
+    #[test]
+    fn test_readiness_fails_when_key_missing() {
+        struct MissingKeyStore;
+        impl KeyStore for MissingKeyStore {
+            fn get_key(&self, provider: &str) -> Result<String, DomainError> {
+                Err(DomainError::KeyNotFound(provider.to_string()))
+            }
+        }
+
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(MissingKeyStore),
+        );
+
+        assert!(matches!(
+            service.readiness(),
+            Err(DomainError::KeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn test_estimate_tokens_matches_token_estimator_directly() {
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
+
+        let messages = vec![ChatMessage {
+            role: Role::User,
+            content: "hello world".to_string().into(),
+        }];
+        let req = TokenEstimateRequest {
+            model: "gpt-5.2".to_string(),
+            messages: messages.clone(),
+        };
+
+        let resp = service.estimate_tokens(req);
+
+        assert_eq!(resp.model, "gpt-5.2");
+        assert_eq!(
+            resp.estimated_tokens,
+            crate::domain::token_estimator::estimate_tokens(&messages)
+        );
+    }
+
+    /// Confirms estimation never involves provider dispatch: an unrecognized model
+    /// name still succeeds (unlike `complete`, which would return `ModelNotFound`).
+    #[test]
+    fn test_estimate_tokens_does_not_require_known_model() {
+        let service = CompletionService::new(
+            vec![Box::new(MockProvider::new("openai", vec!["gpt-5.2"]))],
+            Arc::new(StubKeyStore),
+        );
+
+        let req = TokenEstimateRequest {
+            model: "totally-unknown-model".to_string(),
+            messages: vec![ChatMessage {
+                role: Role::User,
+                content: "hi".to_string().into(),
+            }],
+        };
+
+        let resp = service.estimate_tokens(req);
+        assert_eq!(resp.model, "totally-unknown-model");
+        assert!(resp.estimated_tokens > 0);
     }
 }
