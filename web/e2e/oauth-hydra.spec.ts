@@ -74,6 +74,59 @@ const DEMO_CLIENT_SECRET = "e2e-oauth-hydra-demo-client-secret"
 const REDIRECT_URI = "http://localhost:9999/callback"
 const REDIRECT_PORT = 9999
 
+/** Overall deadline for {@link ensureDemoClient}'s retry loop -- mirrors `e2e/seed/seed.ts`'s `HEALTH_POLL_TIMEOUT_MS`. */
+const DEMO_CLIENT_PROVISION_TIMEOUT_MS = 30_000
+/** How long each individual provisioning attempt is allowed to hang before its own `AbortSignal.timeout` fires. */
+const DEMO_CLIENT_PROVISION_ATTEMPT_TIMEOUT_MS = 5_000
+/** Delay between retry attempts -- mirrors `e2e/seed/seed.ts`'s `HEALTH_POLL_INTERVAL_MS`. */
+const DEMO_CLIENT_PROVISION_POLL_INTERVAL_MS = 1_000
+
+/** Outcome of a single {@link ensureDemoClient} provisioning attempt. */
+type EnsureDemoClientAttempt =
+  | { ok: true }
+  | { ok: false; transient: boolean; error: Error }
+
+/**
+ * A single attempt at `POST /admin/clients`, bounded by
+ * `DEMO_CLIENT_PROVISION_ATTEMPT_TIMEOUT_MS` so a stalled connection (e.g.
+ * `hydra-e2e` still finishing its own startup) cannot hang the caller
+ * indefinitely. A `5xx` response or any network-level failure (connection
+ * refused during that same startup race) is reported as transient and worth
+ * retrying; any other non-`409` non-`ok` response is a genuine client-config
+ * problem that will never succeed on retry, so it is reported as
+ * non-transient instead.
+ */
+async function attemptEnsureDemoClient(): Promise<EnsureDemoClientAttempt> {
+  try {
+    const res = await fetch(`${HYDRA_E2E_ADMIN_URL}/admin/clients`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: DEMO_CLIENT_ID,
+        client_secret: DEMO_CLIENT_SECRET,
+        client_name: "E2E OAuth Hydra Demo Client",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        redirect_uris: [REDIRECT_URI],
+        scope: "openid offline_access profile email",
+        token_endpoint_auth_method: "client_secret_basic",
+      }),
+      signal: AbortSignal.timeout(DEMO_CLIENT_PROVISION_ATTEMPT_TIMEOUT_MS),
+    })
+
+    if (res.ok || res.status === 409) {
+      return { ok: true }
+    }
+
+    const body = await res.text()
+    const error = new Error(`failed to provision the e2e demo OAuth2 client: HTTP ${res.status}: ${body}`)
+    return { ok: false, transient: res.status >= 500, error }
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err))
+    return { ok: false, transient: true, error }
+  }
+}
+
 /**
  * Idempotently registers the fixed demo OAuth2 client against `hydra-e2e`'s
  * admin API (`POST /admin/clients`), so this spec never depends on the
@@ -81,29 +134,29 @@ const REDIRECT_PORT = 9999
  * (client id already exists, e.g. from a previous run against a stack that
  * was never torn down) is treated as success, same idempotency convention
  * as `e2e/seed/seed.ts`'s fixture-user/fixture-room helpers.
+ *
+ * Retries transient failures (see {@link attemptEnsureDemoClient}) until
+ * `DEMO_CLIENT_PROVISION_TIMEOUT_MS` has elapsed, mirroring `e2e/seed/
+ * seed.ts`'s `waitForHealth` deadline-poll pattern -- `test:e2e:up`'s
+ * detached Compose startup gives no guarantee `hydra-e2e` is actually ready
+ * to serve its admin API the instant this spec's `beforeAll` runs. A
+ * non-transient response is thrown immediately rather than retried.
  */
 async function ensureDemoClient(): Promise<void> {
-  const res = await fetch(`${HYDRA_E2E_ADMIN_URL}/admin/clients`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_id: DEMO_CLIENT_ID,
-      client_secret: DEMO_CLIENT_SECRET,
-      client_name: "E2E OAuth Hydra Demo Client",
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
-      redirect_uris: [REDIRECT_URI],
-      scope: "openid offline_access profile email",
-      token_endpoint_auth_method: "client_secret_basic",
-    }),
-  })
+  const deadline = Date.now() + DEMO_CLIENT_PROVISION_TIMEOUT_MS
+  let lastError: unknown
 
-  if (res.ok || res.status === 409) {
-    return
+  while (Date.now() < deadline) {
+    const result = await attemptEnsureDemoClient()
+    if (result.ok) return
+    if (!result.transient) throw result.error
+    lastError = result.error
+    await new Promise((resolve) => setTimeout(resolve, DEMO_CLIENT_PROVISION_POLL_INTERVAL_MS))
   }
 
-  const body = await res.text()
-  throw new Error(`failed to provision the e2e demo OAuth2 client: HTTP ${res.status}: ${body}`)
+  throw new Error(
+    `failed to provision the e2e demo OAuth2 client within ${DEMO_CLIENT_PROVISION_TIMEOUT_MS}ms: ${String(lastError)}`,
+  )
 }
 
 test.describe("Hydra OAuth2/OIDC authorization-code flow (Step 55, browser-level regression)", () => {
@@ -125,8 +178,14 @@ test.describe("Hydra OAuth2/OIDC authorization-code flow (Step 55, browser-level
   })
 
   test.afterAll(async () => {
+    // If `beforeAll` threw before `callbackServer` was ever assigned (e.g.
+    // `ensureDemoClient` failed), there is nothing listening to close --
+    // `close()`'s callback only fires once a listening server has actually
+    // shut down, so calling it on an unassigned server would leave this
+    // Promise pending forever.
+    if (!callbackServer) return
     await new Promise<void>((resolve) => {
-      callbackServer?.close(() => resolve())
+      callbackServer.close(() => resolve())
     })
   })
 

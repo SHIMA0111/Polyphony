@@ -21,7 +21,13 @@ import type { RoomSocketEvent } from "../types/ws-events"
  *   reconciled in place (the server-authoritative copy replaces whatever was
  *   there) rather than appended a second time — this is what keeps the
  *   sender's own optimistic entry from becoming a duplicate once its own WS
- *   echo of the same message arrives.
+ *   echo of the same message arrives. Exception: if the cached entry is
+ *   still `status: "streaming"` and the incoming event is itself a
+ *   non-terminal streaming placeholder (a late created-echo of the AI
+ *   placeholder racing behind one or more `token_chunk` frames), the cached
+ *   entry's accumulated `content` is preserved instead of being wiped back
+ *   to the echo's still-empty content — see the `message_created` branch
+ *   below.
  * - `message_created` for an id not yet present is prepended to the newest
  *   page only (see `prependToNewestPage`'s docstring for why: cursor
  *   pagination guarantees a live-created message is always newer than every
@@ -61,9 +67,14 @@ import type { RoomSocketEvent } from "../types/ws-events"
  * correctly, any such event is dropped (logged via a single
  * `console.error`) instead of merged into the cache. The check only runs
  * when `currentUserId` is available and the message actually carries a
- * `sender_id` (a human message; AI messages have a `null` `sender_id` and
- * are never subject to this check) -- no new auth/session endpoint is
- * introduced to make this check possible.
+ * `sender_id` -- a *public* AI message always has a `null` `sender_id` and
+ * is never subject to this check, but a *private* AI message is the
+ * documented exception (see `server/internal/usecase/message/usecase.go`'s
+ * `SendAIMessage` deviation comment): it deliberately records the owning
+ * user's id as `sender_id` so `targetUserIDsForVisibility` can scope its
+ * delivery, so private AI messages ARE covered by this guard just like
+ * private human messages -- no new auth/session endpoint is introduced to
+ * make this check possible.
  *
  * @param data - Current cache data, or `undefined` if nothing has loaded yet.
  * @param event - The inbound, already-validated WS event.
@@ -130,6 +141,21 @@ export function mergeMessageEvent(
 
   // event.type === "message_created"
   if (existing) {
+    if (existing.status === "streaming" && message.status === "streaming") {
+      // Late created-echo of the AI placeholder (`SendAIMessageStream`
+      // persists it synchronously before any token is generated -- see
+      // `applyTokenChunk`'s docstring): its own `content` is still empty at
+      // that point, so if one or more `token_chunk` frames already
+      // accumulated real content onto this id before the echo arrives,
+      // replacing wholesale would wipe that content back out. Preserve the
+      // cached accumulated content and OR `used_context_summary`, mirroring
+      // the `message_updated` hardening above.
+      return replaceMessageInAnyPage(data, (m) => m.id === message.id, {
+        ...message,
+        content: existing.content,
+        used_context_summary: existing.used_context_summary || message.used_context_summary,
+      })
+    }
     return replaceMessageInAnyPage(data, (m) => m.id === message.id, message)
   }
   if (message.type === "ai") {

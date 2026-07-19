@@ -306,7 +306,20 @@ test.describe("billing regression", () => {
     await page.getByRole("button", { name: /cancel/i }).first().click()
     const confirmCancel = page.getByRole("button", { name: /cancel subscription|confirm/i })
     if (await confirmCancel.isVisible().catch(() => false)) {
-      await confirmCancel.click()
+      // Wait for network evidence the cancellation actually landed on
+      // Stripe's side before navigating away below -- without this, the
+      // subsequent `page.goto("/billing/subscription")` can race ahead of
+      // the portal's own cancel request, so the app's webhook-driven state
+      // hasn't updated yet when the polling loop below starts.
+      await Promise.all([
+        page.waitForResponse(
+          (res) =>
+            res.url().startsWith("https://billing.stripe.com/") &&
+            res.request().method() === "POST",
+          { timeout: 30_000 },
+        ),
+        confirmCancel.click(),
+      ])
     }
 
     // Return to the app (Stripe's hosted portal links back to the

@@ -264,7 +264,10 @@ test.describe("rate limiting", () => {
       expect(retryAfterHeader).toBeDefined()
       const retryAfterSeconds = Number(retryAfterHeader)
       expect(Number.isInteger(retryAfterSeconds)).toBe(true)
-      expect(retryAfterSeconds).toBeGreaterThanOrEqual(0)
+      // The server clamps Retry-After to >= 1 (never 0), so >= 1 is the
+      // actual contract -- >= 0 would also pass a regression that silently
+      // started emitting 0.
+      expect(retryAfterSeconds).toBeGreaterThanOrEqual(1)
     })
   })
 })

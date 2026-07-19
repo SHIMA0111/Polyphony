@@ -107,6 +107,17 @@ test("selecting a specific OpenAI model and sending with AI reaches the matching
 
   const messageContent = `[[fixture:model-select]] Which model am I talking to? ${runId}`
   await composer.fill(messageContent)
+
+  // Captured before the send: the shared fixture room accumulates one
+  // identical canned reply per run of this spec against a long-lived stack,
+  // so a bare `.first()` visibility check below could be satisfied by a
+  // leftover reply from a prior run without this send having produced
+  // anything at all.
+  const cannedReply = page.getByText(
+    "This canned reply confirms the explicitly selected OpenAI model reached the E2E stub.",
+  )
+  const cannedReplyCountBefore = await cannedReply.count()
+
   await page.getByRole("button", { name: "Send with AI" }).click()
 
   await expect(page.getByText(messageContent).first()).toBeVisible()
@@ -115,19 +126,13 @@ test("selecting a specific OpenAI model and sending with AI reaches the matching
   // fixture's canned text -- proving the request actually reached the
   // step-10 stub via the selected model, not some other provider's model
   // being silently substituted (which would instead 404 against a
-  // fixture-less provider or return the unrelated `default` text).
-  // `.first()` + a longer timeout: the shared fixture room accumulates one
-  // identical canned reply per run of this spec against a long-lived stack
-  // (strict mode would otherwise fail on the second run), and the reply now
-  // arrives via the streaming pipeline (Step 54) whose paced chunk delivery
-  // can exceed the default 5s under full-suite parallelism.
-  await expect(
-    page
-      .getByText(
-        "This canned reply confirms the explicitly selected OpenAI model reached the E2E stub.",
-      )
-      .first(),
-  ).toBeVisible({ timeout: 15_000 })
+  // fixture-less provider or return the unrelated `default` text). Asserts
+  // the count grew by exactly one (rather than `.first()` visibility) so a
+  // pre-existing leftover reply can't satisfy the assertion; a longer
+  // timeout since the reply now arrives via the streaming pipeline (Step
+  // 54) whose paced chunk delivery can exceed the default 5s under
+  // full-suite parallelism.
+  await expect(cannedReply).toHaveCount(cannedReplyCountBefore + 1, { timeout: 15_000 })
 
   // No silent substitution: the selector still shows the explicitly chosen
   // model after the send completes (nothing in `MessageInput`/`ModelSelector`

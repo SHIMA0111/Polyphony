@@ -89,8 +89,16 @@ const CONTEXT_MESSAGE_WINDOW = 50
  * Exists purely so a miscalibrated threshold/filler size fails fast with a
  * descriptive error (see the loop below) instead of silently sending
  * hundreds of messages forever.
+ *
+ * Set to {@link CONTEXT_MESSAGE_WINDOW}: only the newest that-many messages
+ * are ever fetched as AI context (see that constant's docstring), so once
+ * the window is fully saturated with fixed-size filler, every subsequent
+ * send's self-verification estimate over the newest-`CONTEXT_MESSAGE_WINDOW`
+ * slice is unchanged -- sending further messages could never newly cross
+ * `TARGET_TOKENS` if it hadn't already, so a higher cap would only waste
+ * sends before hitting the same "never crossed the threshold" error below.
  */
-const MAX_MESSAGES = 300
+const MAX_MESSAGES = CONTEXT_MESSAGE_WINDOW
 
 /** How many messages to send between each self-verification estimate call. */
 const ESTIMATE_CHECK_BATCH = 5
@@ -265,6 +273,12 @@ export async function seedLongHistoryRoom(
   opts: SeedLongHistoryRoomOptions = {},
 ): Promise<SeedLongHistoryRoomResult> {
   const runId = `${Date.now()}_${Math.floor(Math.random() * 100_000)}`
+
+  if (Boolean(opts.userEmail) !== Boolean(opts.userPassword)) {
+    throw new Error(
+      "seedLongHistoryRoom: userEmail and userPassword must be provided together (or both omitted)",
+    )
+  }
 
   let accessToken: string
   if (opts.userEmail && opts.userPassword) {

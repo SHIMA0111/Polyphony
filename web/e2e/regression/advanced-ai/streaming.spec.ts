@@ -201,6 +201,17 @@ test("AI reply streams incrementally, disables Regenerate while in flight, and s
   // flight).
   const regenerateButton = page.getByRole("button", { name: /regenerate/i })
   await expect(regenerateButton).toBeEnabled()
-  await regenerateButton.click()
+  // Wait for the regenerate call's own network response before asserting
+  // FINAL_TEXT: the pre-click transcript already contains FINAL_TEXT (the
+  // first send's settled reply), so asserting on it immediately after the
+  // click would pass even if the regenerate request never actually fired.
+  await Promise.all([
+    page.waitForResponse(
+      (res) =>
+        /\/rooms\/[^/]+\/messages\/[^/]+\/regenerate(\?|$)/.test(res.url()) &&
+        res.request().method() === "POST",
+    ),
+    regenerateButton.click(),
+  ])
   await expect(page.getByText(FINAL_TEXT)).toBeVisible({ timeout: 20_000 })
 })

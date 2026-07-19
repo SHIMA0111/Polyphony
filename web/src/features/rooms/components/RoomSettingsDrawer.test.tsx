@@ -398,4 +398,69 @@ describe("RoomSettingsDrawer fork room section", () => {
 
     await waitFor(() => expect(forkCallCount).toBe(2))
   })
+
+  it("preserves the fork progress view across closing and reopening the drawer", async () => {
+    mockFork({
+      id: "job-4",
+      source_room_id: "room-1",
+      new_room_id: "room-1-fork",
+      status: "running",
+      total_messages: 1000,
+      copied_messages: 320,
+      error_message: null,
+      created_at: "2026-01-03T00:00:00Z",
+      updated_at: "2026-01-03T00:00:01Z",
+    })
+
+    const user = userEvent.setup()
+    const room = roomWithRole("master")
+    const { rerender } = render(
+      <RoomSettingsDrawer
+        open
+        onOpenChange={vi.fn()}
+        room={room}
+        role="master"
+      />,
+    )
+
+    await user.click(
+      await screen.findByRole("button", { name: "Fork this room" }),
+    )
+    expect(
+      await screen.findByText("Copying messages… 320 / 1000"),
+    ).toBeInTheDocument()
+
+    // Closing (rerendering with open={false}) remounts
+    // `RoomSettingsDrawerBody` -- its `key` switches from the room id to
+    // "closed" -- which must reset the name/description/model/cutoff form
+    // fields but must NOT lose track of the still-running fork job, since
+    // `forkJobId` now lives in the un-keyed `RoomSettingsDrawer` parent.
+    rerender(
+      <RoomSettingsDrawer
+        open={false}
+        onOpenChange={vi.fn()}
+        room={room}
+        role="master"
+      />,
+    )
+
+    // Reopening must render the progress view immediately from the
+    // preserved fork-job id -- not the initial "Fork this room" button --
+    // proving `forkJobId` survived the body's per-open remount.
+    rerender(
+      <RoomSettingsDrawer
+        open
+        onOpenChange={vi.fn()}
+        room={room}
+        role="master"
+      />,
+    )
+
+    expect(
+      await screen.findByText("Copying messages… 320 / 1000"),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Fork this room" }),
+    ).not.toBeInTheDocument()
+  })
 })

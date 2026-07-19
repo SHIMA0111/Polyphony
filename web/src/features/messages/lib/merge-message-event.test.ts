@@ -229,6 +229,66 @@ describe("mergeMessageEvent", () => {
       )
     })
 
+    it("preserves accumulated chunk content when a late message_created echo of the AI placeholder arrives", () => {
+      let data: MessagesInfiniteData | undefined = {
+        pages: [{ messages: [], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "The "))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "quick fox"))
+      expect(data?.pages[0].messages[0].content).toBe("The quick fox")
+
+      // The server's own `message_created` echo of the placeholder it
+      // persisted *before* streaming began -- content still empty, status
+      // still "streaming" -- arrives after the chunks above (a routine
+      // race: WS frame delivery order relative to another frame is not
+      // guaranteed). Replacing wholesale would wipe the content already
+      // accumulated above.
+      const lateEcho = makeMessage("ai-1", { type: "ai", content: "", status: "streaming" })
+      data = mergeMessageEvent(data, makeCreatedEvent(lateEcho))
+
+      const merged = data?.pages[0].messages.find((m) => m.id === "ai-1")
+      expect(merged?.content).toBe("The quick fox")
+      expect(merged?.status).toBe("streaming")
+
+      // The eventual finalize event still produces the completed message as
+      // usual -- this hardening only affects the intermediate created-echo.
+      const finalMessage = makeMessage("ai-1", {
+        type: "ai",
+        content: "The quick fox jumps.",
+        status: "completed",
+        sequence: 7,
+      })
+      data = mergeMessageEvent(data, makeUpdatedEvent(finalMessage))
+      expect(data?.pages[0].messages).toEqual([finalMessage])
+    })
+
+    it("ORs used_context_summary instead of taking it verbatim when a late message_created echo arrives", () => {
+      let data: MessagesInfiniteData | undefined = {
+        pages: [{ messages: [], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "partial", true))
+      expect(data?.pages[0].messages[0].used_context_summary).toBe(true)
+
+      // The created-echo's own message would wipe the flag if taken
+      // verbatim (simulating a server response that omitted it).
+      const lateEcho = makeMessage("ai-1", {
+        type: "ai",
+        content: "",
+        status: "streaming",
+        used_context_summary: false,
+      })
+      data = mergeMessageEvent(data, makeCreatedEvent(lateEcho))
+
+      expect(data?.pages[0].messages[0]).toMatchObject({
+        content: "partial",
+        used_context_summary: true,
+      })
+    })
+
     it("replaces the in-flight streamed entry wholesale on the terminating message_updated finalize event", () => {
       let data: MessagesInfiniteData | undefined = {
         pages: [{ messages: [], next_cursor: null }],

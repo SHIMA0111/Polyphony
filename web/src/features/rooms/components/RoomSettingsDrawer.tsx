@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
@@ -36,7 +36,7 @@ import { useForkJob } from "../hooks/use-fork-job"
 import { useUpdateAIContextCutoff } from "../hooks/use-update-ai-context-cutoff"
 import { useUpdateRoom } from "../hooks/use-update-room"
 import { useUpdateRoomSettings } from "../hooks/use-update-room-settings"
-import type { Room } from "../types"
+import type { ForkJob, Room } from "../types"
 
 /** `<option>` value meaning "use the deployment-wide default model". */
 const GLOBAL_DEFAULT_VALUE = ""
@@ -84,6 +84,18 @@ function formatCutoff(cutoffAt: string | null): string {
  * (name/description/selected model/cutoff input) always initializes fresh
  * from the current `room` -- without a reset-on-open effect syncing state
  * that was already seeded from props.
+ *
+ * The fork-job state (`forkJobId`/`forkRoomMutation`/`useForkJob`) lives
+ * here instead, in this un-keyed parent, rather than inside
+ * `RoomSettingsDrawerBody` -- a fork can run for minutes (Step 32's async
+ * batch job), and closing the drawer mid-fork (e.g. to check something else
+ * in the room) must not lose track of the in-flight job: if that state lived
+ * in the body, the same per-open remount that correctly resets the form
+ * fields on every open would also discard `forkJobId`, silently dropping the
+ * polling subscription and showing "Fork this room" again on reopen even
+ * though the job is still running server-side. Reset only when `room.id`
+ * itself changes (a genuinely different room's fork state must never leak
+ * into another room's view), not on open/close of the same room.
  */
 export function RoomSettingsDrawer({
   open,
@@ -91,6 +103,40 @@ export function RoomSettingsDrawer({
   room,
   role,
 }: RoomSettingsDrawerProps) {
+  const queryClient = useQueryClient()
+  const [forkJobId, setForkJobId] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    setForkJobId(undefined)
+  }, [room.id])
+
+  const forkRoomMutation = useMutation({
+    mutationFn: () => forkRoom(room.id),
+    onSuccess: (data) => {
+      // Seed the fork-job query cache with the response's initial
+      // ("pending") job state so the progress view below renders
+      // immediately, without waiting on `useForkJob`'s first poll.
+      queryClient.setQueryData(
+        ["rooms", room.id, "fork-jobs", data.job.id],
+        data.job,
+      )
+      setForkJobId(data.job.id)
+    },
+  })
+  const forkJobQuery = useForkJob(room.id, forkJobId)
+
+  const handleForkRoom = async () => {
+    try {
+      await forkRoomMutation.mutateAsync()
+    } catch (err) {
+      toaster.create({
+        type: "error",
+        title: "Failed to fork room",
+        description: getErrorMessage(err, "Please try again."),
+      })
+    }
+  }
+
   return (
     <Drawer.Root open={open} onOpenChange={(e) => onOpenChange(e.open)}>
       <Portal>
@@ -105,6 +151,9 @@ export function RoomSettingsDrawer({
               room={room}
               role={role}
               onClose={() => onOpenChange(false)}
+              forkJob={forkJobQuery.data}
+              forkPending={forkRoomMutation.isPending}
+              onForkRoom={handleForkRoom}
             />
             <Drawer.CloseTrigger asChild>
               <IconButton
@@ -129,20 +178,35 @@ interface RoomSettingsDrawerBodyProps {
   role: RoomRole
   /** Closes the parent `Drawer.Root` (e.g. after a successful delete). */
   onClose: () => void
+  /**
+   * Current fork-job state, owned by `RoomSettingsDrawer` (see that
+   * component's docstring for why it lives above this component's own
+   * per-open remount boundary). `undefined` until a fork has been triggered
+   * in this drawer session.
+   */
+  forkJob: ForkJob | undefined
+  /** Whether `POST /rooms/:roomId/fork` is in flight. */
+  forkPending: boolean
+  /** Triggers a fork of `room` (owned by `RoomSettingsDrawer`). */
+  onForkRoom: () => Promise<void>
 }
 
 /**
  * `RoomSettingsDrawer`'s body/footer content, split out solely so it can be
  * remounted by `key` on open/room-id change (see that component's
  * docstring) instead of syncing local edit state to `room` via an effect.
+ * The fork-job state is a deliberate exception -- it's owned by the parent
+ * and passed down as props instead, so it survives this remount.
  */
 function RoomSettingsDrawerBody({
   room,
   role,
   onClose,
+  forkJob,
+  forkPending,
+  onForkRoom,
 }: RoomSettingsDrawerBodyProps) {
   const router = useRouter()
-  const queryClient = useQueryClient()
   // `admin` and above may edit; only the current owner (`master`) may delete.
   const canManage = roleAtLeast(role, "admin")
   const canDelete = isOwnerRole(role)
@@ -162,23 +226,6 @@ function RoomSettingsDrawerBody({
   )
   const [cutoffInput, setCutoffInput] = useState("")
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
-  const [forkJobId, setForkJobId] = useState<string | undefined>(undefined)
-
-  const forkRoomMutation = useMutation({
-    mutationFn: () => forkRoom(room.id),
-    onSuccess: (data) => {
-      // Seed the fork-job query cache with the response's initial
-      // ("pending") job state so the progress view below renders
-      // immediately, without waiting on `useForkJob`'s first poll.
-      queryClient.setQueryData(
-        ["rooms", room.id, "fork-jobs", data.job.id],
-        data.job,
-      )
-      setForkJobId(data.job.id)
-    },
-  })
-  const forkJobQuery = useForkJob(room.id, forkJobId)
-  const forkJob = forkJobQuery.data
 
   const reportError = (title: string, err: unknown) => {
     toaster.create({
@@ -226,14 +273,6 @@ function RoomSettingsDrawerBody({
       await updateCutoffMutation.mutateAsync({ cutoff_at: cutoffAt })
     } catch (err) {
       reportError("Failed to update AI context cutoff", err)
-    }
-  }
-
-  const handleForkRoom = async () => {
-    try {
-      await forkRoomMutation.mutateAsync()
-    } catch (err) {
-      reportError("Failed to fork room", err)
     }
   }
 
@@ -459,8 +498,8 @@ function RoomSettingsDrawerBody({
                             <Button
                               size="sm"
                               variant="outline"
-                              loading={forkRoomMutation.isPending}
-                              onClick={handleForkRoom}
+                              loading={forkPending}
+                              onClick={onForkRoom}
                             >
                               Try again
                             </Button>
@@ -495,8 +534,8 @@ function RoomSettingsDrawerBody({
                           size="sm"
                           colorPalette="blue"
                           alignSelf="flex-start"
-                          loading={forkRoomMutation.isPending}
-                          onClick={handleForkRoom}
+                          loading={forkPending}
+                          onClick={onForkRoom}
                         >
                           Fork this room
                         </Button>
