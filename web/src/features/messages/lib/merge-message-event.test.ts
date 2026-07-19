@@ -138,6 +138,27 @@ describe("mergeMessageEvent", () => {
     expect(result).toBe(seeded)
   })
 
+  it("replaces the sending optimistic AI placeholder in place when a message_created event for the real AI message arrives first (wave-9 review finding)", () => {
+    const optimisticAI = makeMessage("optimistic-ai-xyz", {
+      type: "ai",
+      content: "",
+      status: "sending",
+    })
+    const seeded: MessagesInfiniteData = {
+      pages: [{ messages: [optimisticAI], next_cursor: null }],
+      pageParams: [undefined],
+    }
+
+    const realAIMessage = makeMessage("ai-real-3", {
+      type: "ai",
+      content: "",
+      status: "streaming",
+    })
+    const result = mergeMessageEvent(seeded, makeCreatedEvent(realAIMessage))
+
+    expect(result?.pages[0].messages.map((m) => m.id)).toEqual(["ai-real-3"])
+  })
+
   it("preserves arrival order for out-of-order message_created events instead of re-sorting by sequence", () => {
     // Two create events arrive with an out-of-order `sequence` (e.g. a
     // network reordering between two independent senders); the merge must
@@ -295,6 +316,55 @@ describe("mergeMessageEvent", () => {
       const result = mergeMessageEvent(seeded, makeChunkEvent("ai-1", " ignored"))
 
       expect(result).toEqual(seeded)
+    })
+
+    // --- Wave-9 review finding: duplicate optimistic/streaming placeholder ---
+
+    it("replaces the sending optimistic AI placeholder in place when the first chunk arrives before the send POST resolves", () => {
+      const optimisticHuman = makeMessage("optimistic-human-abc", {
+        type: "human",
+        status: "sending",
+      })
+      const optimisticAI = makeMessage("optimistic-ai-abc", {
+        type: "ai",
+        content: "",
+        status: "sending",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [optimisticAI, optimisticHuman], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-real-1", "Hello"))
+
+      const ids = result?.pages[0].messages.map((m) => m.id)
+      // The real streaming message replaces the optimistic AI placeholder
+      // in place (same slot) instead of being prepended alongside it --
+      // exactly one AI bubble, not two.
+      expect(ids).toEqual(["ai-real-1", "optimistic-human-abc"])
+      expect(
+        result?.pages[0].messages.find((m) => m.id === "ai-real-1"),
+      ).toMatchObject({ type: "ai", status: "streaming", content: "Hello" })
+    })
+
+    it("does not touch an already-completed/failed optimistic AI entry when a later chunk arrives for a different message", () => {
+      // Only a `status: "sending"` placeholder should ever be treated as
+      // "still pending" -- a settled optimistic entry (shouldn't normally
+      // exist, but guards against a stale one lingering) must not be
+      // clobbered by an unrelated chunk.
+      const settledOptimistic = makeMessage("optimistic-ai-old", {
+        type: "ai",
+        status: "completed",
+      })
+      const seeded: MessagesInfiniteData = {
+        pages: [{ messages: [settledOptimistic], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      const result = mergeMessageEvent(seeded, makeChunkEvent("ai-real-2", "Hi"))
+
+      const ids = result?.pages[0].messages.map((m) => m.id)
+      expect(ids).toEqual(["ai-real-2", "optimistic-ai-old"])
     })
   })
 

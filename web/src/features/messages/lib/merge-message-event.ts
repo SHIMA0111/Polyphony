@@ -76,6 +76,21 @@ import type { RoomSocketEvent } from "../types/ws-events"
  * @param currentUserId - The authenticated user's id (`useSession()`'s
  * `identity.id`), or `undefined` if not yet available -- in which case the
  * sender-mismatch guard is skipped entirely rather than guessed at.
+ *
+ * Duplicate-placeholder race (wave-9 review finding): `useSendAIMessage`'s
+ * `onMutate` prepends a `status: "sending"` AI placeholder (id prefixed
+ * `optimistic-ai-`) and only removes it in its own `onSuccess`, once the
+ * send POST resolves. If a `message_created` or `token_chunk` WS frame
+ * carrying the *real* server-assigned AI message id arrives first (routine,
+ * since a WS frame can beat the POST response), the id-based
+ * already-present check above never matches the differently-id'd optimistic
+ * entry, so both the "sending" placeholder and the new real/streaming entry
+ * would render side by side. {@link findSendingOptimisticAIPlaceholder}
+ * detects that still-pending optimistic entry so the AI branches below
+ * replace it in place instead of prepending a second bubble; `onSuccess`'s
+ * own remove-if-real-present logic (`use-send-ai-message.ts`) still runs
+ * afterward as a no-op fallback in that case (the optimistic id it looks for
+ * has already been swapped out here).
  */
 export function mergeMessageEvent(
   data: MessagesInfiniteData | undefined,
@@ -130,7 +145,34 @@ export function mergeMessageEvent(
     }
     return replaceMessageInAnyPage(data, (m) => m.id === message.id, message)
   }
+  if (message.type === "ai") {
+    const placeholder = findSendingOptimisticAIPlaceholder(data)
+    if (placeholder) {
+      return replaceMessageInAnyPage(data, (m) => m.id === placeholder.id, message)
+    }
+  }
   return prependToNewestPage(data, message)
+}
+
+/**
+ * Finds a still-pending `status: "sending"` optimistic AI placeholder (id
+ * prefixed `optimistic-ai-`, created by `useSendAIMessage`'s `onMutate`) in
+ * the cache, if one is present. See {@link mergeMessageEvent}'s docstring
+ * ("Duplicate-placeholder race") for why the AI merge paths use this instead
+ * of the usual id-based already-present check.
+ */
+function findSendingOptimisticAIPlaceholder(
+  data: MessagesInfiniteData | undefined,
+): Message | undefined {
+  if (!data) return undefined
+
+  for (const page of data.pages) {
+    const found = page.messages.find(
+      (m) => m.type === "ai" && m.status === "sending" && m.id.startsWith("optimistic-ai-"),
+    )
+    if (found) return found
+  }
+  return undefined
 }
 
 /**
@@ -200,6 +242,16 @@ function applyTokenChunk(
     visibility: "public",
     created_at: now,
     updated_at: now,
+  }
+
+  // See `mergeMessageEvent`'s "Duplicate-placeholder race" docstring: if the
+  // first `token_chunk` for this send beats the POST response, the
+  // `onMutate`-created `status: "sending"` optimistic placeholder is still
+  // in the cache under a different (`optimistic-ai-*`) id -- replace it in
+  // place instead of prepending a second bubble.
+  const optimisticPlaceholder = findSendingOptimisticAIPlaceholder(data)
+  if (optimisticPlaceholder) {
+    return replaceMessageInAnyPage(data, (m) => m.id === optimisticPlaceholder.id, placeholder)
   }
   return prependToNewestPage(data, placeholder)
 }
