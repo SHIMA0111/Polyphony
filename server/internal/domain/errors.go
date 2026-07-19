@@ -145,6 +145,17 @@ var (
 	// Mapped to HTTP 409 by handler.handleMessageError, alongside the more
 	// specific ErrArchivedRoom which predates this generic sentinel.
 	ErrConflict = errors.New("conflict")
+
+	// ErrInvalidArgument indicates a call was rejected because one of its
+	// arguments is structurally invalid for the operation (e.g.
+	// domainmessage.MessageRepository.ReserveSequenceRange's count <= 0) —
+	// as distinct from ErrNotFound (a valid argument that does not
+	// currently resolve to anything) or a domain-specific validation
+	// sentinel like ErrInvalidMaxTokens/ErrInvalidAttachmentSize (a
+	// narrower, already-established error for one specific field). Use this
+	// generic sentinel for a new argument-validity check only when no more
+	// specific sentinel already fits.
+	ErrInvalidArgument = errors.New("invalid argument")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.

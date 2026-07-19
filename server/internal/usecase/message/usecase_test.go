@@ -18,6 +18,8 @@ import (
 
 // --- Tests ---
 
+// TestSendMessage asserts that a member's SendMessage call persists a
+// human-typed message with the given content.
 func TestSendMessage(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -39,6 +41,8 @@ func TestSendMessage(t *testing.T) {
 	}
 }
 
+// TestSendMessageNotMember asserts that a caller who is not a member of the
+// room gets domain.ErrForbidden from SendMessage.
 func TestSendMessageNotMember(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -136,6 +140,8 @@ func TestListMessagesReaderAllowed(t *testing.T) {
 	}
 }
 
+// TestListMessages asserts that ListMessages returns every message
+// previously sent to the room.
 func TestListMessages(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -157,6 +163,8 @@ func TestListMessages(t *testing.T) {
 	}
 }
 
+// TestSendAIMessage asserts that a successful SendAIMessage call returns
+// both the persisted human message and its completed AI response.
 func TestSendAIMessage(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -220,6 +228,10 @@ func TestSendAIMessageHonorsRoomConfiguredModel(t *testing.T) {
 	}
 }
 
+// TestRegenerateAIMessageAfterFailure asserts that, after a failed
+// SendAIMessage call left a failed AI placeholder, RegenerateAIMessage
+// against a now-working LLM Gateway overwrites that same placeholder with a
+// completed response.
 func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -256,6 +268,9 @@ func TestRegenerateAIMessageAfterFailure(t *testing.T) {
 	}
 }
 
+// TestRegenerateAIMessageOverwritesExisting asserts that regenerating an
+// already-completed AI response reuses its existing ID and sequence rather
+// than creating a new message row.
 func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -359,6 +374,9 @@ func TestRegenerateAIMessageHonorsRoomConfiguredModel(t *testing.T) {
 	}
 }
 
+// TestRegenerateAIMessageNotHuman asserts that targeting an AI message
+// (rather than the human message it answers) returns
+// domain.ErrInvalidMessageType.
 func TestRegenerateAIMessageNotHuman(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -403,6 +421,9 @@ func TestRegenerateAIMessageNotFound(t *testing.T) {
 	}
 }
 
+// TestRegenerateAIMessageWrongRoom asserts that targeting a message ID that
+// belongs to a different room than the one named in the call returns
+// domain.ErrNotFound.
 func TestRegenerateAIMessageWrongRoom(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -427,6 +448,8 @@ func TestRegenerateAIMessageWrongRoom(t *testing.T) {
 	}
 }
 
+// TestRegenerateAIMessageNotMember asserts that a caller who is not a
+// member of the room gets domain.ErrForbidden from RegenerateAIMessage.
 func TestRegenerateAIMessageNotMember(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -448,6 +471,10 @@ func TestRegenerateAIMessageNotMember(t *testing.T) {
 	}
 }
 
+// TestSendAIMessageContextExcludesFailedMessages asserts that a failed AI
+// placeholder from a prior SendAIMessage call is never included as an
+// (empty-content) assistant turn in the context a later, successful call
+// sends to the LLM Gateway.
 func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -493,6 +520,10 @@ func TestSendAIMessageContextExcludesFailedMessages(t *testing.T) {
 	}
 }
 
+// TestSendAIMessageLLMError asserts that an LLM Gateway failure still
+// returns both messages -- the human message persisted normally and an AI
+// message with MessageStatusFailed and empty content -- rather than
+// SendAIMessage itself returning an error.
 func TestSendAIMessageLLMError(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -860,6 +891,8 @@ func TestSendAIMessageAttachmentEnrichmentMultipleImages(t *testing.T) {
 
 // --- DeleteMessage ---
 
+// TestDeleteMessageSenderCanDeleteOwnMessage asserts that a message's own
+// sender can delete it.
 func TestDeleteMessageSenderCanDeleteOwnMessage(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -879,6 +912,9 @@ func TestDeleteMessageSenderCanDeleteOwnMessage(t *testing.T) {
 	}
 }
 
+// TestDeleteMessageNonSenderNonAdminForbidden asserts that a plain member
+// who neither sent the message nor holds an admin/master role gets
+// domain.ErrForbidden from DeleteMessage.
 func TestDeleteMessageNonSenderNonAdminForbidden(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -899,6 +935,8 @@ func TestDeleteMessageNonSenderNonAdminForbidden(t *testing.T) {
 	}
 }
 
+// TestDeleteMessageAdminCanDeleteAnotherMembersMessage asserts that a room
+// admin can delete a message sent by a different member.
 func TestDeleteMessageAdminCanDeleteAnotherMembersMessage(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -919,6 +957,9 @@ func TestDeleteMessageAdminCanDeleteAnotherMembersMessage(t *testing.T) {
 	}
 }
 
+// TestDeleteMessageWrongRoomNotFound asserts that targeting a message ID
+// that belongs to a different room than the one named in the call returns
+// domain.ErrNotFound.
 func TestDeleteMessageWrongRoomNotFound(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -978,6 +1019,8 @@ func TestDeleteMessagePropagatesSummaryInvalidationFailure(t *testing.T) {
 
 // --- SetExcludeFromAI ---
 
+// TestSetExcludeFromAIMemberAllowed asserts that a plain member can toggle
+// exclude_from_ai on a message.
 func TestSetExcludeFromAIMemberAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -1001,6 +1044,8 @@ func TestSetExcludeFromAIMemberAllowed(t *testing.T) {
 	}
 }
 
+// TestSetExcludeFromAIAdminAllowed asserts that a room admin can toggle
+// exclude_from_ai on a message.
 func TestSetExcludeFromAIAdminAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -1020,6 +1065,8 @@ func TestSetExcludeFromAIAdminAllowed(t *testing.T) {
 	}
 }
 
+// TestSetExcludeFromAIMasterAllowed asserts that a room master can toggle
+// exclude_from_ai on a message.
 func TestSetExcludeFromAIMasterAllowed(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -1039,6 +1086,9 @@ func TestSetExcludeFromAIMasterAllowed(t *testing.T) {
 	}
 }
 
+// TestSetExcludeFromAIGuestForbidden asserts that a guest -- who may send
+// messages but not toggle their AI-context inclusion -- gets
+// domain.ErrForbidden from SetExcludeFromAI.
 func TestSetExcludeFromAIGuestForbidden(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -1059,6 +1109,8 @@ func TestSetExcludeFromAIGuestForbidden(t *testing.T) {
 	}
 }
 
+// TestSetExcludeFromAIReaderForbidden asserts that a read-only reader gets
+// domain.ErrForbidden from SetExcludeFromAI.
 func TestSetExcludeFromAIReaderForbidden(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -2569,6 +2621,11 @@ func TestSendAIMessageStreamPlaceholderCreateFailureSavesFailedPlaceholder(t *te
 	}
 }
 
+// TestSendAIMessageStreamListByRoomFailureFinalizesPlaceholder asserts that
+// a ListByRoom failure during context assembly still finalizes (rather than
+// leaves stuck in MessageStatusStreaming) the streaming AI placeholder
+// SendAIMessageStream already published, propagating the original
+// ListByRoom error to the caller.
 func TestSendAIMessageStreamListByRoomFailureFinalizesPlaceholder(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}

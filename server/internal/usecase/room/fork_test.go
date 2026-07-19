@@ -3,6 +3,7 @@ package room
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -526,6 +527,194 @@ func TestRunForkJobMultiBatchBoundaryRemap(t *testing.T) {
 	}
 	if *newBoundaryAI.InResponseToMessageID != newBoundaryHuman.ID {
 		t.Fatalf("expected in_response_to_message_id %s (new boundary human), got %s", newBoundaryHuman.ID, *newBoundaryAI.InResponseToMessageID)
+	}
+}
+
+// delayedVisibilityMessageRepo wraps *mocks.MessageRepo, modeling the gap
+// between ReserveSequenceRange committing a sequence number and its row
+// later becoming visible (see runForkJob's "Reserved-but-uncommitted tail"
+// doc section): delayed is withheld from the underlying store's Messages map
+// until ListByRoomAfter has been called revealAfterCalls times, simulating
+// an in-flight AI generation whose row lands only partway through the tail
+// grace period rather than before the main copy loop's first pass.
+type delayedVisibilityMessageRepo struct {
+	*mocks.MessageRepo
+	delayed          *domainmessage.Message
+	revealAfterCalls int
+	calls            int
+}
+
+func (d *delayedVisibilityMessageRepo) ListByRoomAfter(ctx context.Context, roomID string, afterSequence, maxSequence int64, limit int) ([]*domainmessage.Message, error) {
+	d.calls++
+	if d.calls > d.revealAfterCalls {
+		if _, ok := d.Messages[d.delayed.ID]; !ok {
+			d.Messages[d.delayed.ID] = d.delayed
+		}
+	}
+	return d.MessageRepo.ListByRoomAfter(ctx, roomID, afterSequence, maxSequence, limit)
+}
+
+// TestRunForkJobTailGraceRecoversLeapfroggedReservation is the regression
+// test for the "Reserved-but-uncommitted tail" fix in runForkJob: sequence 6
+// commits (and is visible) before sequence 5 -- modeling
+// ReserveSequenceRange having reserved 5 for an AI response whose completion
+// is still in flight when 6 (a later, unrelated message) finishes and
+// commits first -- so CountAndMaxSequence's snapshot reports maxSeq=6 while
+// only 5 of those 6 rows actually exist yet. The main copy loop's first pass
+// necessarily leapfrogs straight from sequence 4 to 6 and terminates with
+// copied=5, short of maxSeq=6. Message 5 becomes visible (revealAfterCalls)
+// exactly when the main loop's second (terminating) ListByRoomAfter call
+// happens, i.e. before the tail grace period's first re-scan — proving the
+// grace period recovers it even though it was never on the main loop's
+// (already-advanced-past-5) cursor.
+func TestRunForkJobTailGraceRecoversLeapfroggedReservation(t *testing.T) {
+	const sourceRoomID = "source-room"
+	const newRoomID = "new-room"
+
+	now := time.Now()
+	msg := func(n int64) *domainmessage.Message {
+		return &domainmessage.Message{
+			ID: fmt.Sprintf("src-%d", n), RoomID: sourceRoomID,
+			Content: fmt.Sprintf("msg-%d", n), Type: domainmessage.MessageTypeHuman,
+			Status: domainmessage.MessageStatusCompleted, Sequence: n,
+			CreatedAt: now, UpdatedAt: now,
+		}
+	}
+	delayedMsg := msg(5)
+
+	msgRepo := &delayedVisibilityMessageRepo{
+		MessageRepo: &mocks.MessageRepo{
+			Messages: map[string]*domainmessage.Message{
+				"src-1": msg(1), "src-2": msg(2), "src-3": msg(3), "src-4": msg(4),
+				// src-5 deliberately absent: reserved but not yet committed
+				// at CountAndMaxSequence's snapshot time.
+				"src-6": msg(6),
+			},
+		},
+		delayed:          delayedMsg,
+		revealAfterCalls: 1,
+	}
+
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedRoom(newRoomID, nil)
+
+	forkJobRepo := &mocks.ForkJobRepo{Rooms: roomRepo}
+	job := &domainroomfork.Job{
+		ID: "job-1", SourceRoomID: sourceRoomID, NewRoomID: newRoomID,
+		Status: domainroomfork.StatusPending, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := forkJobRepo.Create(context.Background(), job); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	uc := NewRoomUsecase(roomRepo, msgRepo, forkJobRepo)
+	uc.forkTailGraceDelay = time.Millisecond // keep the test fast; see the field's doc comment
+
+	uc.runForkJob(context.Background(), job.ID, sourceRoomID, newRoomID)
+
+	got, err := forkJobRepo.GetByID(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.Status != domainroomfork.StatusCompleted {
+		t.Fatalf("expected job to complete, got status %s (error: %v)", got.Status, got.ErrorMessage)
+	}
+	if got.CopiedMessages != 6 {
+		t.Fatalf("expected copied_messages 6 (the leapfrogged sequence 5 recovered by the tail grace period), got %d", got.CopiedMessages)
+	}
+
+	var copiedMsgs []*domainmessage.Message
+	for _, m := range msgRepo.Messages {
+		if m.RoomID == newRoomID {
+			copiedMsgs = append(copiedMsgs, m)
+		}
+	}
+	if len(copiedMsgs) != 6 {
+		t.Fatalf("expected 6 copied messages in the new room, got %d", len(copiedMsgs))
+	}
+	seqSeen := make(map[int64]*domainmessage.Message, len(copiedMsgs))
+	for _, m := range copiedMsgs {
+		seqSeen[m.Sequence] = m
+	}
+	for seq := int64(1); seq <= 6; seq++ {
+		if _, ok := seqSeen[seq]; !ok {
+			t.Fatalf("expected a copied message with new-room sequence %d, none found", seq)
+		}
+	}
+	if seqSeen[6].Content != "msg-5" {
+		t.Fatalf("expected the last-copied message (recovered by the tail grace period) to carry source msg-5's content, got %q", seqSeen[6].Content)
+	}
+}
+
+// TestRunForkJobTailGraceExhaustsAndCompletesWithResidualGap proves the
+// documented residual-window behavior: if a reserved-but-uncommitted
+// sequence never becomes visible before the tail grace period's retries are
+// exhausted (e.g. the process that reserved it crashed before persisting
+// anything for it at all), runForkJob still completes the job -- it does not
+// hang or fail -- with that message permanently missing from the fork.
+func TestRunForkJobTailGraceExhaustsAndCompletesWithResidualGap(t *testing.T) {
+	const sourceRoomID = "source-room"
+	const newRoomID = "new-room"
+
+	now := time.Now()
+	msg := func(n int64) *domainmessage.Message {
+		return &domainmessage.Message{
+			ID: fmt.Sprintf("src-%d", n), RoomID: sourceRoomID,
+			Content: fmt.Sprintf("msg-%d", n), Type: domainmessage.MessageTypeHuman,
+			Status: domainmessage.MessageStatusCompleted, Sequence: n,
+			CreatedAt: now, UpdatedAt: now,
+		}
+	}
+
+	// src-5 is never seeded and never becomes visible (revealAfterCalls set
+	// far beyond however many calls this job will ever make), modeling a
+	// permanent gap.
+	msgRepo := &delayedVisibilityMessageRepo{
+		MessageRepo: &mocks.MessageRepo{
+			Messages: map[string]*domainmessage.Message{
+				"src-1": msg(1), "src-2": msg(2), "src-3": msg(3), "src-4": msg(4),
+				"src-6": msg(6),
+			},
+		},
+		delayed:          msg(5),
+		revealAfterCalls: 1000,
+	}
+
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedRoom(newRoomID, nil)
+
+	forkJobRepo := &mocks.ForkJobRepo{Rooms: roomRepo}
+	job := &domainroomfork.Job{
+		ID: "job-1", SourceRoomID: sourceRoomID, NewRoomID: newRoomID,
+		Status: domainroomfork.StatusPending, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := forkJobRepo.Create(context.Background(), job); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	uc := NewRoomUsecase(roomRepo, msgRepo, forkJobRepo)
+	uc.forkTailGraceDelay = time.Millisecond
+	uc.forkTailGraceRetries = 2
+
+	uc.runForkJob(context.Background(), job.ID, sourceRoomID, newRoomID)
+
+	got, err := forkJobRepo.GetByID(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got.Status != domainroomfork.StatusCompleted {
+		t.Fatalf("expected job to complete despite the permanent gap, got status %s (error: %v)", got.Status, got.ErrorMessage)
+	}
+	if got.CopiedMessages != 5 {
+		t.Fatalf("expected copied_messages 5 (sequence 5 permanently missing), got %d", got.CopiedMessages)
+	}
+
+	newRoomAfter, err := roomRepo.GetByID(context.Background(), newRoomID)
+	if err != nil {
+		t.Fatalf("GetByID(newRoom) failed: %v", err)
+	}
+	if newRoomAfter.IsArchived {
+		t.Fatal("expected new room's is_archived to be cleared even though the fork completed with a residual gap")
 	}
 }
 

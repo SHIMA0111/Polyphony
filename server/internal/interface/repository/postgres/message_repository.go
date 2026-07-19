@@ -7,12 +7,20 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/message"
 )
+
+// messagesRoomSequenceUniqueConstraint is schema.sql's
+// messages_room_sequence_unique UNIQUE(room_id, sequence) constraint name,
+// used to translate a raw *pgconn.PgError into message.ErrSequenceConflict
+// in Create.
+const messagesRoomSequenceUniqueConstraint = "messages_room_sequence_unique"
 
 // MessageRepository implements the message.MessageRepository interface using PostgreSQL.
 type MessageRepository struct {
@@ -30,13 +38,24 @@ func NewMessageRepository(pool *pgxpool.Pool) *MessageRepository {
 // sets it explicitly to MessageVisibilityPublic or MessageVisibilityPrivate;
 // the column has a NOT NULL DEFAULT 'public' at the schema level as a
 // belt-and-suspenders default for any row inserted outside that path).
+// Returns message.ErrSequenceConflict if the insert violates
+// messages_room_sequence_unique — see that sentinel's doc comment for why
+// this should not normally happen.
 func (r *MessageRepository) Create(ctx context.Context, msg *message.Message) error {
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO messages (id, room_id, sender_id, content, type, status, sequence, in_response_to_message_id, is_deleted, exclude_from_ai, visibility, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		msg.ID, msg.RoomID, msg.SenderID, msg.Content, string(msg.Type), string(msg.Status), msg.Sequence, msg.InResponseToMessageID, false, false, string(msg.Visibility), msg.CreatedAt, msg.UpdatedAt,
 	)
-	return err
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation &&
+			pgErr.ConstraintName == messagesRoomSequenceUniqueConstraint {
+			return message.ErrSequenceConflict
+		}
+		return err
+	}
+	return nil
 }
 
 // scanMessage scans a message row into a Message struct.
@@ -464,8 +483,16 @@ func (r *MessageRepository) CreateBatch(ctx context.Context, msgs []*message.Mes
 // is performed atomically by PostgreSQL and is safe under concurrent callers
 // racing on the same room (see the row-level lock a single-statement UPDATE
 // implicitly takes). It returns domain.ErrNotFound if the room has no
-// sequence counter entry.
+// sequence counter entry, and domain.ErrInvalidArgument if count <= 0,
+// checked and returned before the UPDATE is ever issued: a non-positive
+// count would either waste a round trip with no effect (count == 0) or move
+// the counter backwards (count < 0), silently reintroducing already-issued
+// sequence numbers for a later caller to collide with.
 func (r *MessageRepository) ReserveSequenceRange(ctx context.Context, roomID string, count int64) (int64, error) {
+	if count <= 0 {
+		return 0, domain.ErrInvalidArgument
+	}
+
 	var first int64
 	err := r.pool.QueryRow(ctx,
 		`UPDATE room_sequences SET next_sequence = next_sequence + $2

@@ -20,6 +20,16 @@ type RoomUsecase struct {
 	roomRepo    domainroom.RoomRepository
 	msgRepo     domainmessage.MessageRepository
 	forkJobRepo domainroomfork.ForkJobRepository
+
+	// forkTailGraceRetries/forkTailGraceDelay tune runForkJob's tail grace
+	// period (see its doc comment's "Reserved-but-uncommitted tail"
+	// section). NewRoomUsecase defaults both to the
+	// defaultForkTailGraceRetries/defaultForkTailGraceDelay constants;
+	// there is no exported setter; a same-package test may still overwrite
+	// these fields directly on a constructed *RoomUsecase to exercise the
+	// grace period without real multi-second sleeps.
+	forkTailGraceRetries int
+	forkTailGraceDelay   time.Duration
 }
 
 // NewRoomUsecase creates a new RoomUsecase. msgRepo and forkJobRepo are used
@@ -29,7 +39,13 @@ type RoomUsecase struct {
 // forkJobRepo persists roomfork.Job progress/state transitions. Every other
 // RoomUsecase method (CreateRoom, UpdateRoom, ...) uses only roomRepo.
 func NewRoomUsecase(roomRepo domainroom.RoomRepository, msgRepo domainmessage.MessageRepository, forkJobRepo domainroomfork.ForkJobRepository) *RoomUsecase {
-	return &RoomUsecase{roomRepo: roomRepo, msgRepo: msgRepo, forkJobRepo: forkJobRepo}
+	return &RoomUsecase{
+		roomRepo:             roomRepo,
+		msgRepo:              msgRepo,
+		forkJobRepo:          forkJobRepo,
+		forkTailGraceRetries: defaultForkTailGraceRetries,
+		forkTailGraceDelay:   defaultForkTailGraceDelay,
+	}
 }
 
 // CreateRoom creates a new room with the given user as owner. The creating

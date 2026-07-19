@@ -54,8 +54,17 @@ type ContextSummary struct {
 	// LLMGateway.EstimateTokens), cached alongside the text so a later
 	// budget calculation does not need to re-estimate it.
 	TokenCount int
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// CreatedAt is when this summary row was first inserted. Because a room
+	// has at most one cached summary (see the type doc comment), this
+	// reflects the room's very first cache write, not the current
+	// summary's own generation time -- Upsert's UPDATE path leaves it
+	// unchanged; only UpdatedAt advances on a subsequent replace.
+	CreatedAt time.Time
+	// UpdatedAt is when this summary row was last written -- either its
+	// initial insert or the most recent Upsert replacement (a fresh
+	// summarization triggered by a new CoveredUpToSequence boundary, or an
+	// invalidation-and-recompute).
+	UpdatedAt time.Time
 }
 
 // ContextSummaryRepository is the port through which

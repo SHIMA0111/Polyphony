@@ -45,10 +45,22 @@ const (
 // usecase/room.RoomUsecase.GetForkJobStatus without blocking on the copy
 // itself.
 type Job struct {
-	ID           string
+	// ID uniquely identifies this Job, independent of both SourceRoomID and
+	// NewRoomID -- it is the identifier usecase/room.RoomUsecase.
+	// GetForkJobStatus/ForkJobRepository's methods key on.
+	ID string
+	// SourceRoomID is the room whose message history is being copied. It
+	// must not itself be archived at the moment ForkRoom creates the Job
+	// (see ForkRoom's doc comment).
 	SourceRoomID string
-	NewRoomID    string
-	Status       Status
+	// NewRoomID is the destination room ForkRoom created for this copy. It
+	// stays IsArchived == true (rejecting new posts) until Status reaches
+	// StatusCompleted.
+	NewRoomID string
+	// Status is this Job's current lifecycle state; see the Status
+	// constants' doc comments for the full StatusPending ->
+	// StatusRunning -> (StatusCompleted | StatusFailed) progression.
+	Status Status
 	// TotalMessages is the source room's message count as of the moment the
 	// worker started (see ForkJobRepository.MarkRunning); it is 0 while
 	// Status == StatusPending.
@@ -60,6 +72,13 @@ type Job struct {
 	// ErrorMessage is non-nil only when Status == StatusFailed, holding the
 	// error that aborted the copy.
 	ErrorMessage *string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// CreatedAt is when this Job row was first inserted -- i.e. when
+	// ForkRoom was called, before the background worker (runForkJob) has
+	// necessarily started.
+	CreatedAt time.Time
+	// UpdatedAt is when this Job row was last written: any of
+	// MarkRunning/UpdateProgress/CompleteAndUnarchive/MarkFailed advances
+	// it, so it always reflects the most recent progress or status
+	// transition, not just the original Create.
+	UpdatedAt time.Time
 }

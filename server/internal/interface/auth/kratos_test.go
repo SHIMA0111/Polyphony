@@ -330,7 +330,9 @@ func TestKratosLoginSelfHeal(t *testing.T) {
 // e.g. a SimpleJWT-era row, or one created directly via the Kratos Admin API
 // without going through Register) rather than creating a duplicate second
 // user row for the same person: the user count stays 1, and the identity ID
-// ends up set on the original row.
+// ends up set on the original row. The fake identity's VerifiableAddresses
+// marks the email verified, since ensureLocalUser now refuses the relink
+// otherwise (see TestKratosLoginRelinkRefusedWithoutVerifiedEmail).
 func TestKratosLoginRelinksPreexistingUnlinkedUser(t *testing.T) {
 	f := newFakeKratos()
 	defer f.close()
@@ -340,7 +342,11 @@ func TestKratosLoginRelinksPreexistingUnlinkedUser(t *testing.T) {
 		SessionToken: "relink-session-token",
 		Session: struct {
 			Identity kratosIdentityDTO `json:"identity"`
-		}{Identity: kratosIdentityDTO{ID: identityID, Traits: kratosTraitsDTO{Email: "f@example.com", Username: "fuser"}}},
+		}{Identity: kratosIdentityDTO{
+			ID:                  identityID,
+			Traits:              kratosTraitsDTO{Email: "f@example.com", Username: "fuser"},
+			VerifiableAddresses: []kratosVerifiableAddressDTO{{Value: "f@example.com", Verified: true}},
+		}},
 	}
 
 	userRepo := &mocks.UserRepo{}
@@ -372,6 +378,59 @@ func TestKratosLoginRelinksPreexistingUnlinkedUser(t *testing.T) {
 	}
 }
 
+// TestKratosLoginRelinkRefusedWithoutVerifiedEmail is the regression test
+// for the ownership-gate fix in ensureLocalUser: a Kratos identity whose
+// email trait matches a pre-existing unlinked local user, but whose
+// verifiable_addresses does not mark that email verified, must NOT be
+// relinked to it. Without this gate, anyone could claim a victim's email as
+// a Kratos trait — without ever proving control of that inbox — and Login's
+// self-heal would silently hand them the victim's existing local account.
+// The failure must surface as the same conflict a caller sees for a taken
+// identifier (domain.ErrEmailAlreadyExists), and the victim's row must
+// remain unlinked and unique (no shadow account created either).
+func TestKratosLoginRelinkRefusedWithoutVerifiedEmail(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	identityID := uuid.New().String()
+	f.loginSubmitBody = kratosLoginRespDTO{
+		SessionToken: "unverified-session-token",
+		Session: struct {
+			Identity kratosIdentityDTO `json:"identity"`
+		}{Identity: kratosIdentityDTO{
+			ID:     identityID,
+			Traits: kratosTraitsDTO{Email: "victim@example.com", Username: "attacker"},
+			// No VerifiableAddresses entry for victim@example.com: the
+			// identity has claimed the trait but never proven ownership.
+		}},
+	}
+
+	userRepo := &mocks.UserRepo{}
+	victim := newSeedUser("victim@example.com", "victim")
+	if err := userRepo.Create(context.Background(), victim); err != nil {
+		t.Fatalf("seed victim user: %v", err)
+	}
+
+	svc := newTestKratosService(f, userRepo)
+
+	_, err := svc.Login(context.Background(), "victim@example.com", "Str0ngP@ss1")
+	if !errors.Is(err, domain.ErrEmailAlreadyExists) {
+		t.Fatalf("expected domain.ErrEmailAlreadyExists, got %v", err)
+	}
+
+	if got := len(userRepo.Users); got != 1 {
+		t.Errorf("expected the refused relink not to create a shadow account, got %d users", got)
+	}
+
+	got, getErr := userRepo.GetByID(context.Background(), victim.ID)
+	if getErr != nil {
+		t.Fatalf("get victim user: %v", getErr)
+	}
+	if got.KratosIdentityID != nil {
+		t.Fatalf("expected victim user to remain unlinked, got linked to %q", *got.KratosIdentityID)
+	}
+}
+
 // TestKratosEnsureLocalUserUsernameCollisionDoesNotLink is the regression
 // test for the account-takeover fix in lookupUnlinkedLocalUser: an existing
 // unlinked local user whose username matches the incoming identity's
@@ -395,7 +454,7 @@ func TestKratosEnsureLocalUserUsernameCollisionDoesNotLink(t *testing.T) {
 	svc := newTestKratosService(f, userRepo)
 
 	attackerIdentityID := uuid.New().String()
-	_, err := svc.ensureLocalUser(context.Background(), attackerIdentityID, "attacker@example.com", "shared-username")
+	_, err := svc.ensureLocalUser(context.Background(), attackerIdentityID, "attacker@example.com", "shared-username", false)
 	if !errors.Is(err, domain.ErrUsernameAlreadyExists) {
 		t.Fatalf("expected domain.ErrUsernameAlreadyExists, got %v", err)
 	}
@@ -414,10 +473,10 @@ func TestKratosEnsureLocalUserUsernameCollisionDoesNotLink(t *testing.T) {
 	}
 }
 
-// TestKratosEnsureLocalUserEmailMatchStillLinks proves that an exact email
-// match still relinks an existing unlinked local user, even when the
-// incoming identity's username trait differs from the stored user's
-// username -- email remains the sole basis for the self-heal relink.
+// TestKratosEnsureLocalUserEmailMatchStillLinks proves that an exact,
+// verified email match still relinks an existing unlinked local user, even
+// when the incoming identity's username trait differs from the stored
+// user's username -- email remains the sole basis for the self-heal relink.
 func TestKratosEnsureLocalUserEmailMatchStillLinks(t *testing.T) {
 	f := newFakeKratos()
 	defer f.close()
@@ -431,7 +490,7 @@ func TestKratosEnsureLocalUserEmailMatchStillLinks(t *testing.T) {
 	svc := newTestKratosService(f, userRepo)
 
 	identityID := uuid.New().String()
-	linked, err := svc.ensureLocalUser(context.Background(), identityID, "g@example.com", "different-username")
+	linked, err := svc.ensureLocalUser(context.Background(), identityID, "g@example.com", "different-username", true)
 	if err != nil {
 		t.Fatalf("ensureLocalUser failed: %v", err)
 	}
@@ -445,6 +504,42 @@ func TestKratosEnsureLocalUserEmailMatchStillLinks(t *testing.T) {
 	}
 	if got.KratosIdentityID == nil || *got.KratosIdentityID != identityID {
 		t.Fatalf("expected preexisting user to be linked to identity %q, got %+v", identityID, got.KratosIdentityID)
+	}
+}
+
+// TestKratosEnsureLocalUserUnverifiedEmailMatchConflicts proves that an
+// exact email match with emailVerified false is refused as a conflict
+// (domain.ErrEmailAlreadyExists) rather than relinked, and does not fall
+// through to Create either -- see ensureLocalUser's GoDoc for the ownership
+// threat this closes.
+func TestKratosEnsureLocalUserUnverifiedEmailMatchConflicts(t *testing.T) {
+	f := newFakeKratos()
+	defer f.close()
+
+	userRepo := &mocks.UserRepo{}
+	preexisting := newSeedUser("h@example.com", "huser")
+	if err := userRepo.Create(context.Background(), preexisting); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	svc := newTestKratosService(f, userRepo)
+
+	identityID := uuid.New().String()
+	_, err := svc.ensureLocalUser(context.Background(), identityID, "h@example.com", "different-username", false)
+	if !errors.Is(err, domain.ErrEmailAlreadyExists) {
+		t.Fatalf("expected domain.ErrEmailAlreadyExists, got %v", err)
+	}
+
+	if got := len(userRepo.Users); got != 1 {
+		t.Errorf("expected the refused relink not to create a shadow account, got %d users", got)
+	}
+
+	got, err := userRepo.GetByID(context.Background(), preexisting.ID)
+	if err != nil {
+		t.Fatalf("get preexisting user: %v", err)
+	}
+	if got.KratosIdentityID != nil {
+		t.Fatalf("expected preexisting user to remain unlinked, got linked to %q", *got.KratosIdentityID)
 	}
 }
 
@@ -735,7 +830,7 @@ func TestKratosEnsureLocalUserConcurrentFirstLoginsConverge(t *testing.T) {
 			defer wg.Done()
 			ready.Done()
 			<-start
-			u, err := svc.ensureLocalUser(context.Background(), identityID, "racer@example.com", "racer")
+			u, err := svc.ensureLocalUser(context.Background(), identityID, "racer@example.com", "racer", false)
 			results[idx] = u
 			errs[idx] = err
 		}(i)

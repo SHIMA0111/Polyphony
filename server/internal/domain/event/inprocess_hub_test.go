@@ -22,6 +22,9 @@ func waitForEvent(t *testing.T, ch <-chan RoomEvent) RoomEvent {
 	}
 }
 
+// TestInProcessHubPublishNoSubscribersDoesNotBlockOrPanic proves Publish
+// returns immediately, without blocking or panicking, when RoomID has no
+// subscribers.
 func TestInProcessHubPublishNoSubscribersDoesNotBlockOrPanic(t *testing.T) {
 	hub := NewInProcessHub()
 	ctx := context.Background()
@@ -44,6 +47,8 @@ func TestInProcessHubPublishNoSubscribersDoesNotBlockOrPanic(t *testing.T) {
 	}
 }
 
+// TestInProcessHubSubscriberReceivesEvent proves a subscribed listener
+// receives a published event matching what was sent.
 func TestInProcessHubSubscriberReceivesEvent(t *testing.T) {
 	hub := NewInProcessHub()
 	ctx := context.Background()
@@ -101,6 +106,9 @@ func TestInProcessHubDeliversTokenChunkEvents(t *testing.T) {
 	}
 }
 
+// TestInProcessHubTargetUserIDsFiltersDelivery proves a non-empty
+// TargetUserIDs delivers only to matching subscribers, not every subscriber
+// of the room.
 func TestInProcessHubTargetUserIDsFiltersDelivery(t *testing.T) {
 	hub := NewInProcessHub()
 	ctx := context.Background()
@@ -128,6 +136,9 @@ func TestInProcessHubTargetUserIDsFiltersDelivery(t *testing.T) {
 	}
 }
 
+// TestInProcessHubUnsubscribeStopsDeliveryAndIsSafeToCallOnce proves
+// unsubscribe closes the subscriber's channel, stops further delivery, and
+// is safe to call more than once.
 func TestInProcessHubUnsubscribeStopsDeliveryAndIsSafeToCallOnce(t *testing.T) {
 	hub := NewInProcessHub()
 	ctx := context.Background()
@@ -152,6 +163,9 @@ func TestInProcessHubUnsubscribeStopsDeliveryAndIsSafeToCallOnce(t *testing.T) {
 	unsubscribe()
 }
 
+// TestInProcessHubPublishNonBlockingOnFullChannel proves Publish never
+// blocks, dropping the event instead, once a subscriber's buffered channel
+// is full.
 func TestInProcessHubPublishNonBlockingOnFullChannel(t *testing.T) {
 	hub := NewInProcessHub()
 	ctx := context.Background()
@@ -249,9 +263,9 @@ func TestInProcessHubConcurrentPublishAndUnsubscribeIsRaceFree(t *testing.T) {
 		}()
 	}
 
-	// Subscribers repeatedly subscribe, receive a couple of events (if any
-	// arrive before they unsubscribe), and unsubscribe, racing against the
-	// publishers above and against each other.
+	// Subscribers repeatedly subscribe, drain events for a brief window, and
+	// unsubscribe, racing against the publishers above and against each
+	// other.
 	var subWG sync.WaitGroup
 	for s := 0; s < subscribeCycles; s++ {
 		subWG.Add(1)
@@ -260,15 +274,31 @@ func TestInProcessHubConcurrentPublishAndUnsubscribeIsRaceFree(t *testing.T) {
 			for i := 0; i < subscribeCycles; i++ {
 				ch, unsubscribe := hub.Subscribe(ctx, roomID, userID)
 
-				// Drain whatever happens to be available without blocking;
-				// the point of this test is the concurrent teardown, not
-				// delivery guarantees.
-				select {
-				case <-ch:
-				case <-time.After(time.Millisecond):
-				}
+				// Range-drain ch continuously in a background goroutine
+				// until unsubscribe closes it, rather than reading at most
+				// one event per cycle: with 4 publishers flooding events for
+				// this test's full duration, a read-at-most-one drain would
+				// leave this subscriber's buffered channel full almost
+				// immediately, so Publish's dropped-subscriber path (and its
+				// slog.Warn call) would fire on nearly every send for the
+				// rest of this subscriber's lifetime. The point of this test
+				// is the concurrent teardown race, not delivery guarantees,
+				// so flooding the log that way adds noise without adding
+				// coverage.
+				drained := make(chan struct{})
+				go func() {
+					defer close(drained)
+					for range ch {
+					}
+				}()
+
+				// Give the drain goroutine and the flood of publishers a
+				// brief window to interleave with this subscriber's live
+				// channel before tearing it down.
+				time.Sleep(time.Millisecond)
 
 				unsubscribe()
+				<-drained // wait for the range loop to observe the channel close
 			}
 		}(userIDForCycle(s))
 	}

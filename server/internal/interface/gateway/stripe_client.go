@@ -24,10 +24,11 @@ type StripeClient struct {
 
 // NewStripeClient creates a new StripeClient authenticated with secretKey.
 // webhookSecret is used by ConstructWebhookEvent to verify the
-// Stripe-Signature header; it may be empty (verification will then always
-// fail with domain.ErrInvalidWebhookSignature until it is set — see
-// container.go/step49.md for how a developer obtains it locally via
-// `docker compose logs stripe-cli`).
+// Stripe-Signature header; it may be empty (ConstructWebhookEvent then
+// rejects every webhook with domain.ErrInvalidWebhookSignature without
+// attempting verification, rather than checking the signature against an
+// empty HMAC key — see container.go/step49.md for how a developer obtains
+// it locally via `docker compose logs stripe-cli`).
 func NewStripeClient(secretKey, webhookSecret string) *StripeClient {
 	return &StripeClient{
 		client:        stripe.NewClient(secretKey),
@@ -119,7 +120,19 @@ func (c *StripeClient) CancelSubscriptionAtPeriodEnd(ctx context.Context, stripe
 // HandleWebhookEvent can safely no-op on anything it doesn't handle. It
 // returns a domain.ErrInvalidWebhookSignature-wrapped error if signature
 // verification itself fails.
+//
+// If webhookSecret is empty, ConstructWebhookEvent returns
+// domain.ErrInvalidWebhookSignature immediately, before calling
+// webhook.ConstructEvent: that function verifies the signature using
+// webhookSecret as an HMAC key, and an empty key is not "no verification" —
+// it is a fixed, publicly-known key any caller can compute a valid
+// signature against, which would let an unauthenticated request forge a
+// webhook event.
 func (c *StripeClient) ConstructWebhookEvent(payload []byte, sigHeader string) (billing.WebhookEvent, error) {
+	if c.webhookSecret == "" {
+		return billing.WebhookEvent{}, fmt.Errorf("%w: webhook secret is not configured", domain.ErrInvalidWebhookSignature)
+	}
+
 	event, err := webhook.ConstructEvent(payload, sigHeader, c.webhookSecret)
 	if err != nil {
 		return billing.WebhookEvent{}, fmt.Errorf("%w: %v", domain.ErrInvalidWebhookSignature, err)

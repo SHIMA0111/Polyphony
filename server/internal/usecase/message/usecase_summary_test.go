@@ -25,6 +25,9 @@ import (
 // regardless of the actual request) rather than relying on real token
 // counting.
 
+// TestAssembleAIContextUnderBudgetNeverSummarizes proves an under-budget
+// context skips summarization entirely: exactly one Complete call (the
+// answer) and no cache write.
 func TestAssembleAIContextUnderBudgetNeverSummarizes(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -61,6 +64,10 @@ func TestAssembleAIContextUnderBudgetNeverSummarizes(t *testing.T) {
 	}
 }
 
+// TestAssembleAIContextSummarizesOnOverflowAndCaches proves an overflowing
+// context triggers summarization (a summarize call followed by the answer
+// call), sends the correct older-public bucket as the summarization
+// prompt, and caches the result keyed on the newest older-public sequence.
 func TestAssembleAIContextSummarizesOnOverflowAndCaches(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -126,6 +133,113 @@ func TestAssembleAIContextSummarizesOnOverflowAndCaches(t *testing.T) {
 	}
 	if cached.CoveredUpToSequence != 2 {
 		t.Errorf("cached.CoveredUpToSequence = %d, want 2 (the sequence of msg-2, the newest older-public message)", cached.CoveredUpToSequence)
+	}
+}
+
+// TestAssembleAIContextExcludedMessageInsideTailWindowStillFillsEligibleTail
+// is the regression test for the eligibility-before-slicing fix in
+// assembleAIContext: the verbatim recent tail must contain the
+// summaryRecentTailCount most-recent ELIGIBLE messages, not simply the
+// summaryRecentTailCount most-recent raw rows by position.
+//
+// 12 human messages (seq 1..12) are seeded, then msg-3 -- which falls inside
+// the raw positional tail window (the 10 newest raw rows span seq 3..12) --
+// is excluded via SetExcludeFromAI. Slicing the raw batch positionally
+// before filtering (the bug) would still take the 10 newest raw rows
+// (seq 3..12, one of which -- msg-3 -- gets silently dropped by
+// ai.ContextBuilder.Build's own filter) as the tail, leaving the raw
+// remainder (seq 1..2) as the older-public bucket and boundarySeq=2:
+// msg-2, despite being newer than every remaining tail candidate other than
+// the excluded msg-3, would wrongly end up summarized instead of verbatim.
+// Filtering for eligibility first (the fix) instead pulls msg-2 into the
+// tail to keep it at 10 eligible entries, leaving only msg-1 in the
+// older-public bucket and boundarySeq=1.
+func TestAssembleAIContextExcludedMessageInsideTailWindowStillFillsEligibleTail(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+	summaryRepo := &mocks.ContextSummaryRepo{}
+
+	var callMessages [][]ai.ChatMessage
+	gw := &mocks.LLMGateway{
+		Models:                []ai.ModelInfo{{ID: "gpt-5-mini", ContextWindow: 8000, SupportsImageInput: true}},
+		TokenEstimateResponse: &ai.TokenEstimateResponse{EstimatedTokens: 999_999},
+		CompleteFunc: func(_ context.Context, req *ai.CompletionRequest) (*ai.CompletionResponse, error) {
+			callMessages = append(callMessages, req.Messages)
+			if len(callMessages) == 1 {
+				return &ai.CompletionResponse{Content: "This is the summary."}, nil
+			}
+			return &ai.CompletionResponse{Content: "Final answer."}, nil
+		},
+	}
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, gw, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, summaryRepo, "gpt-5-mini")
+	ctx := context.Background()
+
+	var msg3ID string
+	for i := 1; i <= 11; i++ {
+		seeded, err := uc.SendMessage(ctx, "user-1", "room-1", fmt.Sprintf("msg-%d", i))
+		if err != nil {
+			t.Fatalf("seed message %d: %v", i, err)
+		}
+		if i == 3 {
+			msg3ID = seeded.ID
+		}
+	}
+	if _, err := uc.SetExcludeFromAI(ctx, "user-1", "room-1", msg3ID, true); err != nil {
+		t.Fatalf("exclude msg-3 from AI context: %v", err)
+	}
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "msg-12", "gpt-5-mini", false)
+	if err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+
+	if !result.UsedContextSummary {
+		t.Fatal("expected UsedContextSummary=true for an overflowing context")
+	}
+	if gw.CompleteCallCount != 2 {
+		t.Fatalf("expected exactly 2 Complete calls (summarize + answer), got %d", gw.CompleteCallCount)
+	}
+
+	// Only msg-1 should have been folded into the summary: msg-3 is
+	// ineligible (excluded) and does not count against the tail, and msg-2
+	// is pulled into the verbatim tail to keep it at 10 eligible entries.
+	expectedOlderPublicChat := []ai.ChatMessage{
+		{Role: "user", Content: "msg-1"},
+	}
+	expectedPrompt := ai.BuildSummarizationPrompt(expectedOlderPublicChat, true)
+	if !reflect.DeepEqual(callMessages[0], expectedPrompt) {
+		t.Fatalf("expected first Complete call's messages to equal BuildSummarizationPrompt's output\ngot:  %+v\nwant: %+v", callMessages[0], expectedPrompt)
+	}
+
+	cached, err := summaryRepo.Get(ctx, "room-1")
+	if err != nil {
+		t.Fatalf("expected a cached summary, got error: %v", err)
+	}
+	if cached.CoveredUpToSequence != 1 {
+		t.Errorf("cached.CoveredUpToSequence = %d, want 1 (only msg-1 remains in the older-public bucket once msg-2 is pulled into the eligible tail)", cached.CoveredUpToSequence)
+	}
+
+	// The final answer-generation call's verbatim messages must contain
+	// msg-2 (pulled into the tail) and must NOT contain msg-3 (excluded, so
+	// never eligible for context regardless of bucket).
+	answerMsgs := callMessages[1]
+	var sawMsg2, sawMsg3 bool
+	for _, m := range answerMsgs {
+		switch m.Content {
+		case "msg-2":
+			sawMsg2 = true
+		case "msg-3":
+			sawMsg3 = true
+		}
+	}
+	if !sawMsg2 {
+		t.Error("expected msg-2 to appear verbatim in the answer-generation context (pulled into the eligible tail)")
+	}
+	if sawMsg3 {
+		t.Error("expected msg-3 to never appear in the answer-generation context (excluded from AI)")
 	}
 }
 
@@ -238,6 +352,11 @@ func TestAssembleAIContextCacheHitOnMatchingBoundary(t *testing.T) {
 	}
 }
 
+// TestAssembleAIContextNeverSummarizesPrivateMessages proves a private
+// message and its AI reply are kept verbatim in the recent/older-private
+// buckets and never appear in the summarization call's input, even once
+// the room's history overflows and forces summarization of the public
+// bucket.
 func TestAssembleAIContextNeverSummarizesPrivateMessages(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -317,6 +436,10 @@ func TestAssembleAIContextNeverSummarizesPrivateMessages(t *testing.T) {
 	}
 }
 
+// TestAssembleAIContextInvalidationForcesFreshSummary proves SetExcludeFromAI
+// invalidates a room's cached summary (via the shared
+// mocks.MessageRepo.SummaryRepo wiring) so the next overflowing
+// SendAIMessage call re-summarizes rather than reusing the now-stale cache.
 func TestAssembleAIContextInvalidationForcesFreshSummary(t *testing.T) {
 	msgRepo := &mocks.MessageRepo{}
 	roomRepo := &mocks.RoomRepo{}
@@ -444,6 +567,12 @@ func TestAssembleAIContextSkipsStaleUpsertOnConcurrentInvalidation(t *testing.T)
 	}
 }
 
+// TestAssembleAIContextIncludeImagesResolvedFromModelMetadata proves the
+// summarization call's includeImages decision is resolved from the target
+// model's SupportsImageInput metadata (via ai.ResolveSupportsImageInput):
+// a Vision-capable model receives the real image URL, while a non-Vision
+// (or catalog-absent, fallback-table) model instead sees the
+// "[image attachment]" text placeholder.
 func TestAssembleAIContextIncludeImagesResolvedFromModelMetadata(t *testing.T) {
 	runCase := func(t *testing.T, models []ai.ModelInfo, model string, expectImagePassthrough bool) {
 		msgRepo := &mocks.MessageRepo{}

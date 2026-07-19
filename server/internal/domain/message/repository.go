@@ -105,7 +105,12 @@ type MessageRepository interface {
 	// persist multiple related messages (e.g. a human message and its AI
 	// response) allocate every sequence number they need in a single atomic
 	// step, so no other message can be interleaved between them. Returns
-	// ErrNotFound if the room has no sequence counter row.
+	// domain.ErrNotFound if the room has no sequence counter row, and
+	// domain.ErrInvalidArgument if count <= 0 — a non-positive count would
+	// either reserve nothing while still consuming a round trip (count == 0)
+	// or corrupt the room's sequence counter by moving it backwards (count <
+	// 0), so implementations must reject it before ever reaching the
+	// underlying storage mutation.
 	ReserveSequenceRange(ctx context.Context, roomID string, count int64) (int64, error)
 
 	// CountByRoom returns the total number of messages (including

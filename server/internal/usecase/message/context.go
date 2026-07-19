@@ -148,11 +148,19 @@ func (u *MessageUsecase) enrichWithAttachments(
 //
 // # Bucketing
 //
-// msgs is split into three buckets, oldest-message-per-bucket-boundary
-// documented inline below:
+// msgs is first filtered down to ai.IsEligibleForContext entries (the same
+// exclusion rules ai.ContextBuilder.Build applies: not soft-deleted, not
+// exclude_from_ai, not a failed/streaming AI placeholder, not before
+// cutoff), preserving msgs' sequence-descending order. Without this
+// pre-filter, tailCount below would be computed positionally over the raw
+// batch, letting ineligible rows occupy tail slots and silently push
+// eligible messages out of the verbatim tail and into the summarizable
+// remainder. The filtered slice is then split into three buckets,
+// oldest-message-per-bucket-boundary documented inline below:
 //   - recentRaw: the first summaryRecentTailCount entries (the newest, by
-//     Sequence) -- always kept verbatim, never summarized, so the AI always
-//     sees the exact wording of the most recent turns.
+//     Sequence, among eligible messages) -- always kept verbatim, never
+//     summarized, so the AI always sees the exact wording of the most
+//     recent eligible turns.
 //   - olderPrivateRaw: everything older than the recent tail whose
 //     Visibility is private. Because msgs was fetched with requestingUserID
 //     already applied (MessageRepository's visibility filter), any private
@@ -202,12 +210,28 @@ func (u *MessageUsecase) assembleAIContext(
 ) ([]ai.ChatMessage, bool, error) {
 	cutoff := rm.AIContextCutoffAt
 
-	tailCount := summaryRecentTailCount
-	if tailCount > len(msgs) {
-		tailCount = len(msgs)
+	// Pre-filter to eligible messages, preserving msgs' sequence-descending
+	// order, before computing the verbatim tail -- see the Bucketing doc
+	// above for why slicing the raw batch positionally would let ineligible
+	// rows steal tail slots from eligible ones. This deliberately does not
+	// reuse filterEligibleMessages: that helper reverses to chronological
+	// (oldest-first) order for the Build-output correlation it exists for,
+	// whereas tailCount/recentRaw/remainder below need eligible messages in
+	// the same newest-first order as msgs, so the tail slice keeps the
+	// newest eligible entries.
+	eligible := make([]*domainmessage.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if ai.IsEligibleForContext(m, cutoff) {
+			eligible = append(eligible, m)
+		}
 	}
-	recentRaw := msgs[:tailCount]
-	remainder := msgs[tailCount:]
+
+	tailCount := summaryRecentTailCount
+	if tailCount > len(eligible) {
+		tailCount = len(eligible)
+	}
+	recentRaw := eligible[:tailCount]
+	remainder := eligible[tailCount:]
 
 	var olderPublicRaw, olderPrivateRaw []*domainmessage.Message
 	for _, m := range remainder {

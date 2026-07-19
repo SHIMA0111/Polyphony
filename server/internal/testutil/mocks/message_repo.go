@@ -405,8 +405,14 @@ func (m *MessageRepo) CreateBatch(_ context.Context, msgs []*message.Message) er
 
 // ReserveSequenceRange atomically reserves count contiguous sequence numbers
 // for the given room, starting at 1, and returns the first one; the caller
-// owns [first, first+count).
+// owns [first, first+count). Returns domain.ErrInvalidArgument if count <=
+// 0, mirroring postgres.MessageRepository.ReserveSequenceRange's guard,
+// without mutating Seqs.
 func (m *MessageRepo) ReserveSequenceRange(_ context.Context, roomID string, count int64) (int64, error) {
+	if count <= 0 {
+		return 0, domain.ErrInvalidArgument
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ensureInit()

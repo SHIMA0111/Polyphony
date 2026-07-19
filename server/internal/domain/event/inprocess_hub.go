@@ -65,10 +65,20 @@ func NewInProcessHub() *InProcessHub {
 // subscriber's channel while holding the write lock, so as long as Publish
 // holds the read lock for its full duration, it can never observe (and send
 // on) a channel that unsubscribe has closed or is in the process of closing.
+//
+// The warning log for a dropped subscriber is deliberately NOT emitted
+// inside the locked send loop: slog.Warn's I/O (writing/formatting the log
+// record) would otherwise run while holding the lock, extending how long
+// every other Publish/Subscribe/unsubscribe call is blocked behind it in
+// proportion to however many subscribers this call drops, not how many
+// subscribers exist. Instead, each drop's (user ID) is appended to a local
+// slice while the lock is held, and the actual slog.Warn calls run after the
+// lock is released. event.RoomID/event.Type are not captured per entry since
+// they are already constant across every drop within one Publish call.
 func (h *InProcessHub) Publish(_ context.Context, event RoomEvent) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	var droppedUserIDs []string
 
+	h.mu.RLock()
 	subs := h.subs[event.RoomID]
 
 	var targets map[string]struct{}
@@ -89,9 +99,14 @@ func (h *InProcessHub) Publish(_ context.Context, event RoomEvent) {
 		select {
 		case sub.ch <- event:
 		default:
-			slog.Warn("event: dropping event for subscriber with full channel",
-				"room_id", event.RoomID, "user_id", sub.userID, "event_type", event.Type)
+			droppedUserIDs = append(droppedUserIDs, sub.userID)
 		}
+	}
+	h.mu.RUnlock()
+
+	for _, userID := range droppedUserIDs {
+		slog.Warn("event: dropping event for subscriber with full channel",
+			"room_id", event.RoomID, "user_id", userID, "event_type", event.Type)
 	}
 }
 

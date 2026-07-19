@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgerrcode"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain"
 	"github.com/SHIMA0111/multi-user-ai/server/internal/domain/ai"
@@ -55,9 +53,10 @@ func seedUserAndRoom(ctx context.Context, t *testing.T, userRepo *UserRepository
 // TestMessages_UniqueRoomSequence proves that the
 // messages_room_sequence_unique UNIQUE(room_id, sequence) constraint added
 // to schema.sql is enforced by the database: inserting two messages with
-// the same room_id and sequence must fail on the second insert with a
-// unique-violation error, independent of application-level sequence
-// allocation.
+// the same room_id and sequence must fail on the second insert, and
+// MessageRepository.Create translates that unique-violation into
+// domainmessage.ErrSequenceConflict rather than leaking a raw
+// *pgconn.PgError, independent of application-level sequence allocation.
 func TestMessages_UniqueRoomSequence(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -101,16 +100,8 @@ func TestMessages_UniqueRoomSequence(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the second insert with a duplicate (room_id, sequence) to fail, got nil error")
 	}
-
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		t.Fatalf("expected a *pgconn.PgError, got %T: %v", err, err)
-	}
-	if pgErr.Code != pgerrcode.UniqueViolation {
-		t.Fatalf("expected unique_violation (%s), got code %s: %v", pgerrcode.UniqueViolation, pgErr.Code, err)
-	}
-	if pgErr.ConstraintName != "messages_room_sequence_unique" {
-		t.Fatalf("expected constraint messages_room_sequence_unique, got %s", pgErr.ConstraintName)
+	if !errors.Is(err, domainmessage.ErrSequenceConflict) {
+		t.Fatalf("expected domainmessage.ErrSequenceConflict, got %T: %v", err, err)
 	}
 }
 
@@ -818,6 +809,20 @@ func TestMessageRepository_DeleteAndInvalidateSummary(t *testing.T) {
 // the cached summary/revision completely untouched -- the all-or-nothing
 // guarantee that motivated combining the two statements into one
 // transaction in the first place.
+//
+// The room-mismatch case additionally seeds otherRoom (the roomID actually
+// passed to the failing call) with its own cached summary, not just rm (the
+// message's real room): DeleteAndInvalidateSummary's mutation predicate
+// binds on room_id, so the message-lookup half is scoped to rm, but the
+// summary-invalidation half is scoped to whatever roomID the caller passes
+// -- otherRoom here. Without a real summary seeded there too, an
+// implementation bug that invalidates otherRoom's summary despite the
+// overall call failing would go undetected: Get would return
+// domain.ErrNotFound both before and after regardless, and an unseeded
+// room's revision counter starting and staying at its zero value looks
+// identical to "correctly left untouched". Seeding a real summary makes a
+// wrongful invalidation observable (Get flips from succeeding to
+// domain.ErrNotFound, revision advances) exactly as it already is for rm.
 func TestMessageRepository_DeleteAndInvalidateSummaryNotFoundLeavesEverythingIntact(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -843,8 +848,16 @@ func TestMessageRepository_DeleteAndInvalidateSummaryNotFoundLeavesEverythingInt
 	// A real message paired with a room it does not belong to must also be
 	// rejected: the mutation predicate binds on room_id, so a mismatched
 	// pair can neither delete the message nor invalidate the other room's
-	// summary.
+	// summary. otherRoom gets its own seeded message/summary (see the doc
+	// comment above) so both rooms' summaries/revisions can be verified
+	// untouched, not just rm's.
 	otherRoom := seedUserAndRoom(ctx, t, userRepo, roomRepo, "delete-invalidate-mismatch-owner")
+	seedMessageAndSummary(ctx, t, msgRepo, summaryRepo, otherRoom)
+	otherRevisionBefore, err := summaryRepo.GetRevision(ctx, otherRoom.ID)
+	if err != nil {
+		t.Fatalf("GetRevision(otherRoom) before delete: %v", err)
+	}
+
 	err = msgRepo.DeleteAndInvalidateSummary(ctx, seeded.ID, otherRoom.ID)
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("expected domain.ErrNotFound for a room-mismatched message, got %v", err)
@@ -854,14 +867,25 @@ func TestMessageRepository_DeleteAndInvalidateSummaryNotFoundLeavesEverythingInt
 	}
 
 	if _, err := summaryRepo.Get(ctx, rm.ID); err != nil {
-		t.Errorf("expected the cached summary to survive a failed delete, Get returned %v", err)
+		t.Errorf("expected rm's cached summary to survive a failed delete, Get returned %v", err)
 	}
 	revisionAfter, err := summaryRepo.GetRevision(ctx, rm.ID)
 	if err != nil {
 		t.Fatalf("GetRevision after failed delete: %v", err)
 	}
 	if revisionAfter != revisionBefore {
-		t.Errorf("revision = %d, want unchanged %d after a failed delete", revisionAfter, revisionBefore)
+		t.Errorf("rm revision = %d, want unchanged %d after a failed delete", revisionAfter, revisionBefore)
+	}
+
+	if _, err := summaryRepo.Get(ctx, otherRoom.ID); err != nil {
+		t.Errorf("expected otherRoom's cached summary to survive a failed delete, Get returned %v", err)
+	}
+	otherRevisionAfter, err := summaryRepo.GetRevision(ctx, otherRoom.ID)
+	if err != nil {
+		t.Fatalf("GetRevision(otherRoom) after failed delete: %v", err)
+	}
+	if otherRevisionAfter != otherRevisionBefore {
+		t.Errorf("otherRoom revision = %d, want unchanged %d after a failed delete", otherRevisionAfter, otherRevisionBefore)
 	}
 }
 

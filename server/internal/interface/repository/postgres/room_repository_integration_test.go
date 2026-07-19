@@ -21,11 +21,19 @@ import (
 
 // TestRoomRepositoryCreateRollback proves that RoomRepository.Create's
 // multi-statement transaction (insert rooms, insert room_sequences, insert
-// room_members) rolls back cleanly via its `defer tx.Rollback(ctx)` when a
-// later statement in the transaction fails: a second Create call reusing an
-// already-existing room ID fails on the rooms primary key, and none of the
-// three tables it writes to should retain a leftover row from that failed
-// attempt.
+// room_members) rolls back cleanly via its `defer tx.Rollback(ctx)` when its
+// FIRST statement fails: a second Create call reusing an already-existing
+// room ID fails immediately on the rooms primary key (before the
+// room_sequences/room_members inserts are ever attempted), and the original
+// room's three rows must be left exactly as they were -- no leftover or
+// duplicated row from the failed attempt.
+//
+// This only exercises a first-statement failure. See
+// TestRoomRepositoryCreateRollbackLaterStatement below for the complementary
+// case -- a later statement failing after an earlier one in the same
+// transaction already succeeded -- which this test cannot: RoomRepository.Create
+// always issues the rooms insert first, so reusing an existing room ID can
+// only ever fail there.
 func TestRoomRepositoryCreateRollback(t *testing.T) {
 	ctx := context.Background()
 	pool := testutilpg.New(ctx, t)
@@ -94,6 +102,103 @@ func TestRoomRepositoryCreateRollback(t *testing.T) {
 	}
 	if memberCount != 1 {
 		t.Fatalf("expected exactly 1 room_members row after the failed duplicate Create, got %d", memberCount)
+	}
+}
+
+// TestRoomRepositoryCreateRollbackLaterStatement proves that
+// RoomRepository.Create's transaction rolls back its EARLIER, already-
+// succeeded statements too when a LATER statement in the same transaction
+// fails -- not just that a failed statement itself has no effect (already
+// covered by TestRoomRepositoryCreateRollback above, which only ever
+// exercises a first-statement failure since Create always inserts into
+// rooms first).
+//
+// To force the SECOND statement (room_sequences) to fail while the FIRST
+// (rooms) succeeds, this plants a conflicting room_sequences row for a
+// brand-new room ID *before* that ID has any rooms row at all -- something
+// room_sequences_room_id_fkey (room_id REFERENCES rooms(id)) would normally
+// forbid, since it requires the referenced rooms row to already exist. That
+// FK is what makes a later-statement failure otherwise unreachable: any
+// pre-existing room_sequences/room_members row for a given ID implies a
+// rooms row for that same ID already exists too, which would instead make
+// the FIRST statement the one that fails (TestRoomRepositoryCreateRollback's
+// scenario). Disabling room_sequences' triggers for the single planting
+// INSERT — table triggers are how PostgreSQL enforces FK/RI checks — lifts
+// that requirement just long enough to construct the otherwise-impossible
+// precondition; the PRIMARY KEY constraint on room_id itself is enforced by
+// a unique index, not a trigger, so it stays enforced throughout and is
+// exactly what makes Create's own (post-re-enable) room_sequences insert
+// fail.
+func TestRoomRepositoryCreateRollbackLaterStatement(t *testing.T) {
+	ctx := context.Background()
+	pool := testutilpg.New(ctx, t)
+
+	userRepo := NewUserRepository(pool)
+	roomRepo := NewRoomRepository(pool)
+
+	owner := &domainuser.User{
+		ID:           uuid.New().String(),
+		Email:        "rollback-later-owner@example.com",
+		Username:     "rollback-later-owner",
+		PasswordHash: "hash",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if err := userRepo.Create(ctx, owner); err != nil {
+		t.Fatalf("create owner user: %v", err)
+	}
+
+	freshRoomID := uuid.New().String()
+
+	if _, err := pool.Exec(ctx, `ALTER TABLE room_sequences DISABLE TRIGGER ALL`); err != nil {
+		t.Fatalf("disable room_sequences triggers: %v", err)
+	}
+	plantErr := func() error {
+		_, err := pool.Exec(ctx, `INSERT INTO room_sequences (room_id, next_sequence) VALUES ($1, 1)`, freshRoomID)
+		return err
+	}()
+	if _, err := pool.Exec(ctx, `ALTER TABLE room_sequences ENABLE TRIGGER ALL`); err != nil {
+		t.Fatalf("re-enable room_sequences triggers: %v", err)
+	}
+	if plantErr != nil {
+		t.Fatalf("plant conflicting room_sequences row: %v", plantErr)
+	}
+
+	rm := &domainroom.Room{
+		ID:          freshRoomID,
+		Name:        "Later Statement Room",
+		Description: "",
+		OwnerID:     owner.ID,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	if err := roomRepo.Create(ctx, rm); err == nil {
+		t.Fatal("expected Create to fail on the planted room_sequences conflict, got nil error")
+	}
+
+	// Remove the planted scaffold row: it was inserted directly (bypassing
+	// Create, and therefore never part of Create's own transaction), so it
+	// would otherwise survive the rollback below and mask what this test is
+	// actually verifying -- that Create's OWN attempted rows (rooms in
+	// particular, whose insert genuinely succeeded before the later failure)
+	// are gone.
+	if _, err := pool.Exec(ctx, `DELETE FROM room_sequences WHERE room_id = $1`, freshRoomID); err != nil {
+		t.Fatalf("clean up planted room_sequences row: %v", err)
+	}
+
+	var roomCount, seqCount, memberCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rooms WHERE id = $1`, freshRoomID).Scan(&roomCount); err != nil {
+		t.Fatalf("count rooms: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM room_sequences WHERE room_id = $1`, freshRoomID).Scan(&seqCount); err != nil {
+		t.Fatalf("count room_sequences: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM room_members WHERE room_id = $1`, freshRoomID).Scan(&memberCount); err != nil {
+		t.Fatalf("count room_members: %v", err)
+	}
+	if roomCount != 0 || seqCount != 0 || memberCount != 0 {
+		t.Fatalf("expected all three tables to be empty for %s after the rolled-back Create, got rooms=%d room_sequences=%d room_members=%d",
+			freshRoomID, roomCount, seqCount, memberCount)
 	}
 }
 

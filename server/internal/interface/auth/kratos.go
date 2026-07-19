@@ -96,9 +96,33 @@ type kratosTraitsDTO struct {
 	Username string `json:"username"`
 }
 
+// kratosVerifiableAddressDTO is one entry of a Kratos identity's
+// verifiable_addresses array, per
+// https://www.ory.sh/docs/kratos/mfa/... — Value is the address itself
+// (email, for this identity schema) and Verified is true only once the
+// identity has proven ownership of it (e.g. by following a verification
+// link), never merely by submitting it as a trait.
+type kratosVerifiableAddressDTO struct {
+	Value    string `json:"value"`
+	Verified bool   `json:"verified"`
+}
+
 type kratosIdentityDTO struct {
-	ID     string          `json:"id"`
-	Traits kratosTraitsDTO `json:"traits"`
+	ID                  string                       `json:"id"`
+	Traits              kratosTraitsDTO              `json:"traits"`
+	VerifiableAddresses []kratosVerifiableAddressDTO `json:"verifiable_addresses"`
+}
+
+// isEmailVerified reports whether email appears in identity's
+// VerifiableAddresses with Verified true. Comparison is case-insensitive to
+// match email addresses' conventional case-insensitivity.
+func (identity kratosIdentityDTO) isEmailVerified(email string) bool {
+	for _, addr := range identity.VerifiableAddresses {
+		if strings.EqualFold(addr.Value, email) && addr.Verified {
+			return true
+		}
+	}
+	return false
 }
 
 type kratosRegistrationReqDTO struct {
@@ -198,7 +222,7 @@ func (s *KratosAuthService) Register(ctx context.Context, email, username, passw
 		return nil, fmt.Errorf("kratos registration succeeded but returned no session_token: is the registration flow's after.password.hooks missing the session hook?")
 	}
 
-	if _, err := s.ensureLocalUser(ctx, result.Identity.ID, email, username); err != nil {
+	if _, err := s.ensureLocalUser(ctx, result.Identity.ID, email, username, result.Identity.isEmailVerified(email)); err != nil {
 		return nil, err
 	}
 
@@ -244,7 +268,7 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 			return nil, err
 		}
 
-		if _, err := s.ensureLocalUser(ctx, identity.ID, identity.Traits.Email, identity.Traits.Username); err != nil {
+		if _, err := s.ensureLocalUser(ctx, identity.ID, identity.Traits.Email, identity.Traits.Username, identity.isEmailVerified(identity.Traits.Email)); err != nil {
 			return nil, err
 		}
 	}
@@ -254,18 +278,34 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 
 // ensureLocalUser resolves the local users row for a Kratos identity
 // (identityID, with the given email/username traits), creating or relinking
-// it as needed:
+// it as needed. emailVerified must reflect whether the Kratos identity has
+// proven ownership of email (i.e. identity.isEmailVerified(email) at the
+// call site) — see the relink bullet below for why this gates the relink
+// path.
 //
 //   - If a local user already exists matching email EXACTLY and has no
-//     kratos_identity_id yet, it is linked to identityID via
-//     SetKratosIdentityID and returned. This is the "re-login of a
-//     pre-Kratos local user" path: a users row created by SimpleJWTService
-//     before AUTH_MODE switched to "kratos", or one created directly via
-//     the Kratos Admin API (bypassing Register) without being linked yet.
-//     Without this lookup, this path would instead fall through to Create
-//     below, which — for a genuinely pre-existing email — fails on the
-//     unique constraint (or, absent that constraint, would create a
-//     duplicate local account for the same person).
+//     kratos_identity_id yet, AND emailVerified is true, it is linked to
+//     identityID via SetKratosIdentityID and returned. This is the
+//     "re-login of a pre-Kratos local user" path: a users row created by
+//     SimpleJWTService before AUTH_MODE switched to "kratos", or one
+//     created directly via the Kratos Admin API (bypassing Register)
+//     without being linked yet. Without this lookup, this path would
+//     instead fall through to Create below, which — for a genuinely
+//     pre-existing email — fails on the unique constraint (or, absent that
+//     constraint, would create a duplicate local account for the same
+//     person).
+//   - If a local user matches email EXACTLY but emailVerified is false, the
+//     relink is refused and domain.ErrEmailAlreadyExists is returned
+//     instead — the same conflict a caller sees for a taken identifier,
+//     and NOT a fallthrough to Create (which would either collide on the
+//     email unique constraint anyway, or, given a distinct enough email
+//     match quirk, create a second shadow account for the same address).
+//     Without this gate, anyone could submit a stranger's email as a Kratos
+//     registration/recovery trait — without ever proving they control that
+//     inbox — and have ensureLocalUser silently hand them the stranger's
+//     existing local account. Kratos only marks an address verified after
+//     the identity completes its verification flow (e.g. clicking the
+//     emailed link), so gating on emailVerified requires that proof.
 //   - Matching is deliberately email-only, never username. A username
 //     match with a different email must NOT be treated as the same person:
 //     an attacker who registers a Kratos identity whose username trait
@@ -303,13 +343,16 @@ func (s *KratosAuthService) Login(ctx context.Context, email, password string) (
 // email/username collides with an unrelated, already-linked-to-someone-else
 // account, or a genuine username-only collision per the bullet above), the
 // original Create error is returned unchanged.
-func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, email, username string) (*user.User, error) {
+func (s *KratosAuthService) ensureLocalUser(ctx context.Context, identityID, email, username string, emailVerified bool) (*user.User, error) {
 	existing, err := s.lookupUnlinkedLocalUser(ctx, email)
 	if err != nil {
 		return nil, err
 	}
 
 	if existing != nil {
+		if !emailVerified {
+			return nil, domain.ErrEmailAlreadyExists
+		}
 		if err := s.userRepo.SetKratosIdentityID(ctx, existing.ID, identityID); err != nil {
 			return nil, err
 		}
@@ -463,7 +506,7 @@ func (s *KratosAuthService) ValidateToken(ctx context.Context, token string) (*d
 		// this method, never Register/Login above), self-heal exactly as
 		// Login does: relink an existing unlinked local user matching
 		// email/username, or create a new one.
-		localUser, err = s.ensureLocalUser(ctx, identity.ID, identity.Traits.Email, identity.Traits.Username)
+		localUser, err = s.ensureLocalUser(ctx, identity.ID, identity.Traits.Email, identity.Traits.Username, identity.isEmailVerified(identity.Traits.Email))
 		if err != nil {
 			return nil, fmt.Errorf("resolve local user for kratos identity: %w", err)
 		}
