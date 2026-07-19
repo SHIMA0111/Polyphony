@@ -1,6 +1,6 @@
 "use client"
 
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query"
 import { sendAIMessage, sendAIMessageStream } from "../api/send-ai-message"
 import { toaster } from "@/components/ui/toaster"
 import {
@@ -12,6 +12,71 @@ import {
   type MessagesInfiniteData,
 } from "../lib/message-cache"
 import type { Message } from "../types"
+
+/**
+ * The original send parameters a failed AI send needs to be retried
+ * faithfully -- recorded in this hook's own `onError` (keyed by the failed
+ * human message's optimistic id) and consulted by `useChatRoom.handleRetry`
+ * via {@link takeFailedAISendIntent} to decide whether a retry should go
+ * through `useSendAIMessage` (with these exact parameters) instead of the
+ * plain `useSendMessage` mutation. Carries `stream`/`private` alongside
+ * `model` -- an earlier version of this map only carried `model`, so a
+ * retry of a failed private (or non-streaming, e.g. attachment-flow) AI
+ * send silently downgraded to a public/streaming send instead of replaying
+ * the original request.
+ */
+export interface FailedAISendIntent {
+  model?: string
+  stream: boolean
+  /**
+   * Whether the failed send was a private AI send. Restored verbatim on
+   * retry (see `useChatRoom.handleRetry`) so a retried private send stays
+   * private instead of silently downgrading to a public one.
+   */
+  private: boolean
+}
+
+/**
+ * Query key under which the retry-intent map for `roomId` is stored in the
+ * `QueryClient`, keyed by each failed AI send's human-echo optimistic id.
+ * Kept in the query cache -- rather than a component-local `useRef` -- so a
+ * failed AI send's retry intent survives a remount of the chat room screen
+ * (e.g. navigating away and back before retrying a failed send): the
+ * `QueryClient` instance outlives any single mount of
+ * `useSendAIMessage`/`useChatRoom`, while a ref does not. No component ever
+ * subscribes to this key via `useQuery`; it is only ever read/written
+ * directly through `queryClient.getQueryData`/`setQueryData`.
+ */
+export function failedAISendIntentQueryKey(roomId: string) {
+  return ["retry-intent", roomId] as const
+}
+
+/**
+ * Reads and removes any {@link FailedAISendIntent} recorded for
+ * `humanMessageId` in `roomId`'s retry-intent map, returning it (or
+ * `undefined` for a failed message that originated from a plain, non-AI
+ * send). Called from `useChatRoom.handleRetry`. Removed unconditionally as
+ * soon as it is consulted -- whether the ensuing retry itself succeeds or
+ * fails -- since a retry that fails again repopulates the map under the
+ * *new* optimistic id this hook's own `onError` produces for that new
+ * attempt; leaving the old entry behind would only grow the map without it
+ * ever being read again.
+ */
+export function takeFailedAISendIntent(
+  queryClient: QueryClient,
+  roomId: string,
+  humanMessageId: string,
+): FailedAISendIntent | undefined {
+  const key = failedAISendIntentQueryKey(roomId)
+  const current = queryClient.getQueryData<Map<string, FailedAISendIntent>>(key)
+  const intent = current?.get(humanMessageId)
+  if (current?.has(humanMessageId)) {
+    const next = new Map(current)
+    next.delete(humanMessageId)
+    queryClient.setQueryData(key, next)
+  }
+  return intent
+}
 
 export interface SendAIMessageInput {
   content: string
@@ -44,17 +109,6 @@ export interface SendAIMessageInput {
 interface SendAIMessageContext {
   humanOptimisticId: string
   aiOptimisticId: string
-}
-
-export interface UseSendAIMessageOptions {
-  /**
-   * Invoked from `onError` with the failed human echo's id and the model
-   * that was requested, so a caller (see `useChatRoom`'s `handleRetry`) can
-   * remember that this particular failed message's retry should re-invoke
-   * the AI mutation with the same model, rather than silently falling back
-   * to a plain (non-AI) resend and losing the user's original intent.
-   */
-  onSendFailed?: (humanMessageId: string, model?: string) => void
 }
 
 /**
@@ -105,16 +159,23 @@ export interface UseSendAIMessageOptions {
  * echo back to `status: "failed"` for `MessageBubble`'s retry affordance and
  * drops the AI placeholder outright — it never represented anything real to
  * retry, and the existing AI regenerate/retry control only makes sense
- * against a real, persisted human message id. It also invokes
- * `options.onSendFailed` (see {@link UseSendAIMessageOptions}) with the
- * failed human echo's id and the requested model, so a caller can route a
- * later retry of that specific message back through this same AI mutation
- * instead of a plain resend.
+ * against a real, persisted human message id. It also records the failed
+ * send's original `model`/`stream`/`private` parameters into the
+ * `QueryClient`-backed retry-intent map (see
+ * `failedAISendIntentQueryKey`'s own doc comment), keyed by
+ * `context.humanOptimisticId` -- the same id the human echo's `status:
+ * "failed"` entry keeps in the cache, and so the same id `MessageBubble`'s
+ * retry affordance passes back as `messageId`. `useChatRoom.handleRetry`
+ * consults this map (via `takeFailedAISendIntent`) to route a retry through
+ * this same AI mutation (with the original model/stream/private) instead of
+ * falling back to the plain-send mutation, which would otherwise silently
+ * downgrade every AI-send retry into a plain send -- including dropping
+ * `private`, which would leak a failed private send's retry to the whole
+ * room.
  *
  * @param roomId - The room to send into.
- * @param options - See {@link UseSendAIMessageOptions}.
  */
-export function useSendAIMessage(roomId: string, options?: UseSendAIMessageOptions) {
+export function useSendAIMessage(roomId: string) {
   const queryClient = useQueryClient()
   const queryKey = ["rooms", roomId, "messages"] as const
 
@@ -205,12 +266,23 @@ export function useSendAIMessage(roomId: string, options?: UseSendAIMessageOptio
     onError: (error, vars, context) => {
       if (!context) return
 
+      // Recorded regardless of error kind so a retry of *any* failed AI
+      // send routes back through this same AI mutation with the original
+      // model/stream/private, not just retries that hit a generic failure.
+      const intentKey = failedAISendIntentQueryKey(roomId)
+      const currentIntents = queryClient.getQueryData<Map<string, FailedAISendIntent>>(intentKey)
+      const nextIntents = new Map(currentIntents)
+      nextIntents.set(context.humanOptimisticId, {
+        model: vars.model,
+        stream: vars.private ? false : (vars.stream ?? true),
+        private: vars.private ?? false,
+      })
+      queryClient.setQueryData(intentKey, nextIntents)
+
       queryClient.setQueryData<MessagesInfiniteData>(queryKey, (old) => {
         const withoutPlaceholder = removeFromNewestPage(old, context.aiOptimisticId)
         return markStatusInNewestPage(withoutPlaceholder, context.humanOptimisticId, "failed")
       })
-
-      options?.onSendFailed?.(context.humanOptimisticId, vars.model)
 
       toaster.create({
         type: "error",

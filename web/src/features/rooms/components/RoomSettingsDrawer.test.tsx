@@ -297,6 +297,74 @@ describe("RoomSettingsDrawer fork room section", () => {
     ).toBeInTheDocument()
   })
 
+  it("persists the fork progress view across the drawer closing and reopening", async () => {
+    // Regression test: `forkJobId`/`forkRoomMutation`/`useForkJob` are owned
+    // by `RoomSettingsDrawer` itself, above `RoomSettingsDrawerBody`'s
+    // per-open `key` remount -- previously they lived inside the body and
+    // were silently discarded by that same remount, so closing the drawer
+    // mid-fork and reopening it showed the initial "Fork this room" button
+    // again instead of the fork that was still actually running.
+    mockFork({
+      id: "job-3",
+      source_room_id: "room-1",
+      new_room_id: "room-1-fork",
+      status: "running",
+      total_messages: 500,
+      copied_messages: 100,
+      error_message: null,
+      created_at: "2026-01-03T00:00:00Z",
+      updated_at: "2026-01-03T00:00:01Z",
+    })
+
+    const user = userEvent.setup()
+    const { rerender } = render(
+      <RoomSettingsDrawer
+        open
+        onOpenChange={vi.fn()}
+        room={roomWithRole("master")}
+        role="master"
+      />,
+    )
+
+    await user.click(
+      await screen.findByRole("button", { name: "Fork this room" }),
+    )
+    expect(
+      await screen.findByText("Copying messages… 100 / 500"),
+    ).toBeInTheDocument()
+
+    // Simulate the parent closing the drawer (e.g. the user clicking away)
+    // by rerendering with `open={false}` -- this is what remounts
+    // `RoomSettingsDrawerBody` under its "closed" key.
+    rerender(
+      <RoomSettingsDrawer
+        open={false}
+        onOpenChange={vi.fn()}
+        room={roomWithRole("master")}
+        role="master"
+      />,
+    )
+
+    // Reopen: the fork progress must still be showing, not the initial
+    // "Fork this room" button, proving the job id/poll survived the body's
+    // remount because it lives in the parent, not the body.
+    rerender(
+      <RoomSettingsDrawer
+        open
+        onOpenChange={vi.fn()}
+        room={roomWithRole("master")}
+        role="master"
+      />,
+    )
+
+    expect(
+      await screen.findByText("Copying messages… 100 / 500"),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Fork this room" }),
+    ).not.toBeInTheDocument()
+  })
+
   it("renders an 'Open forked room' link once the job completes", async () => {
     mockFork({
       id: "job-2",

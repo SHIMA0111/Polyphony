@@ -208,6 +208,44 @@ describe("mergeMessageEvent", () => {
       )
     })
 
+    it("preserves accumulated content (and ORs used_context_summary) when a late message_created echo arrives for an already-streaming placeholder", () => {
+      let data: MessagesInfiniteData | undefined = {
+        pages: [{ messages: [], next_cursor: null }],
+        pageParams: [undefined],
+      }
+
+      // token_chunk(s) race ahead of the message_created echo and build up
+      // real content on a placeholder they create themselves (see the
+      // first-chunk-creates-placeholder case tested above).
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "The "))
+      data = mergeMessageEvent(data, makeChunkEvent("ai-1", "quick fox"))
+      expect(data?.pages[0].messages[0]).toMatchObject({
+        id: "ai-1",
+        status: "streaming",
+        content: "The quick fox",
+        sequence: -1,
+      })
+
+      // The late-arriving message_created echo of the *original* (still
+      // empty) AI placeholder must not wipe the accumulated content back to
+      // "" -- but its other, authoritative fields (sequence included) still
+      // win over the transient chunk-created placeholder's guesses.
+      const lateEcho = makeMessage("ai-1", {
+        type: "ai",
+        content: "",
+        status: "streaming",
+        used_context_summary: true,
+        sequence: 7,
+      })
+      data = mergeMessageEvent(data, makeCreatedEvent(lateEcho))
+
+      const merged = data?.pages[0].messages.find((m) => m.id === "ai-1")
+      expect(merged?.content).toBe("The quick fox")
+      expect(merged?.status).toBe("streaming")
+      expect(merged?.used_context_summary).toBe(true)
+      expect(merged?.sequence).toBe(7)
+    })
+
     it("replaces the in-flight streamed entry wholesale on the terminating message_updated finalize event", () => {
       let data: MessagesInfiniteData | undefined = {
         pages: [{ messages: [], next_cursor: null }],

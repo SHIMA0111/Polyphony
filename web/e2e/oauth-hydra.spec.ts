@@ -74,6 +74,15 @@ const DEMO_CLIENT_SECRET = "e2e-oauth-hydra-demo-client-secret"
 const REDIRECT_URI = "http://localhost:9999/callback"
 const REDIRECT_PORT = 9999
 
+/** Overall deadline for {@link ensureDemoClient}'s retry loop. */
+const DEMO_CLIENT_POLL_TIMEOUT_MS = 30_000
+
+/** Delay between retry attempts while `hydra-e2e`'s admin API is not yet reachable. */
+const DEMO_CLIENT_POLL_INTERVAL_MS = 1_000
+
+/** Per-attempt request timeout for a single provisioning call. */
+const DEMO_CLIENT_REQUEST_TIMEOUT_MS = 5_000
+
 /**
  * Idempotently registers the fixed demo OAuth2 client against `hydra-e2e`'s
  * admin API (`POST /admin/clients`), so this spec never depends on the
@@ -81,29 +90,58 @@ const REDIRECT_PORT = 9999
  * (client id already exists, e.g. from a previous run against a stack that
  * was never torn down) is treated as success, same idempotency convention
  * as `e2e/seed/seed.ts`'s fixture-user/fixture-room helpers.
+ *
+ * Retries on a deadline (mirroring `e2e/seed/seed.ts`'s `waitForHealth`
+ * poll) rather than a single unbounded call: `docker compose up -d` returns
+ * before `hydra-e2e` has finished booting, so an immediate call here can hit
+ * a connection refused/timeout before the admin API is actually listening.
+ * Each attempt is bounded by {@link DEMO_CLIENT_REQUEST_TIMEOUT_MS} via
+ * `AbortSignal.timeout`. A definitive HTTP response that is neither `ok`
+ * nor `409` is not a "still starting up" condition, so it fails immediately
+ * with the original error shape instead of being retried until the
+ * deadline.
  */
 async function ensureDemoClient(): Promise<void> {
-  const res = await fetch(`${HYDRA_E2E_ADMIN_URL}/admin/clients`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_id: DEMO_CLIENT_ID,
-      client_secret: DEMO_CLIENT_SECRET,
-      client_name: "E2E OAuth Hydra Demo Client",
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
-      redirect_uris: [REDIRECT_URI],
-      scope: "openid offline_access profile email",
-      token_endpoint_auth_method: "client_secret_basic",
-    }),
-  })
+  const deadline = Date.now() + DEMO_CLIENT_POLL_TIMEOUT_MS
+  let lastError: unknown
 
-  if (res.ok || res.status === 409) {
-    return
+  while (Date.now() < deadline) {
+    let res: Response
+    try {
+      res = await fetch(`${HYDRA_E2E_ADMIN_URL}/admin/clients`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_id: DEMO_CLIENT_ID,
+          client_secret: DEMO_CLIENT_SECRET,
+          client_name: "E2E OAuth Hydra Demo Client",
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          redirect_uris: [REDIRECT_URI],
+          scope: "openid offline_access profile email",
+          token_endpoint_auth_method: "client_secret_basic",
+        }),
+        signal: AbortSignal.timeout(DEMO_CLIENT_REQUEST_TIMEOUT_MS),
+      })
+    } catch (err) {
+      // Transient: the admin API may not be reachable yet (connection
+      // refused, or this attempt's own timeout) -- retry until the deadline.
+      lastError = err
+      await new Promise((resolve) => setTimeout(resolve, DEMO_CLIENT_POLL_INTERVAL_MS))
+      continue
+    }
+
+    if (res.ok || res.status === 409) {
+      return
+    }
+
+    const body = await res.text()
+    throw new Error(`failed to provision the e2e demo OAuth2 client: HTTP ${res.status}: ${body}`)
   }
 
-  const body = await res.text()
-  throw new Error(`failed to provision the e2e demo OAuth2 client: HTTP ${res.status}: ${body}`)
+  throw new Error(
+    `failed to provision the e2e demo OAuth2 client against ${HYDRA_E2E_ADMIN_URL} within ${DEMO_CLIENT_POLL_TIMEOUT_MS}ms: ${String(lastError)}`,
+  )
 }
 
 test.describe("Hydra OAuth2/OIDC authorization-code flow (Step 55, browser-level regression)", () => {
@@ -125,8 +163,14 @@ test.describe("Hydra OAuth2/OIDC authorization-code flow (Step 55, browser-level
   })
 
   test.afterAll(async () => {
+    // `callbackServer` is only assigned once `beforeAll`'s listener setup
+    // succeeds -- if setup failed before that point (e.g. `ensureDemoClient`
+    // threw), there is nothing to close, and `Server.prototype.close`'s
+    // callback is never invoked on an object that was never listening, which
+    // would otherwise leave this `Promise` unresolved forever.
+    if (!callbackServer) return
     await new Promise<void>((resolve) => {
-      callbackServer?.close(() => resolve())
+      callbackServer.close(() => resolve())
     })
   })
 

@@ -225,7 +225,15 @@ test.describe("billing regression", () => {
 
         // The same error path is exercised through the UI too: `PlanCard`'s
         // mutation surfaces it via a toast instead of silently failing.
-        await page.getByRole("button", { name: "Subscribe" }).first().click()
+        // Scoped to `monthlyPlan`'s own `[data-testid="plan-card-<code>"]`
+        // card (see `PlanCard.tsx`) rather than `.first()`-ing every
+        // "Subscribe" button — the catalog can list more than one monthly
+        // plan, and `.first()` would silently click a different one than
+        // the plan code this test actually probed above.
+        await page
+          .locator(`[data-testid="plan-card-${monthlyPlan.code}"]`)
+          .getByRole("button", { name: "Subscribe" })
+          .click()
         await expect(page.getByText("Could not start checkout")).toBeVisible()
       }
       // Otherwise (`plans` has no monthly entry -- most commonly an empty
@@ -245,7 +253,14 @@ test.describe("billing regression", () => {
     const probeBodyJson = (await probeRes.json()) as { checkout_url?: string }
     expect(probeBodyJson.checkout_url).toBeTruthy()
 
-    await page.getByRole("button", { name: "Subscribe" }).first().click()
+    // `monthlyPlan` is non-null whenever the probe above succeeded (see the
+    // `monthlyPlan!` uses later in this same journey): a bogus fallback
+    // plan code would not produce a real checkout session. Scoped to its
+    // own card for the same reason as the error-path click above.
+    await page
+      .locator(`[data-testid="plan-card-${monthlyPlan!.code}"]`)
+      .getByRole("button", { name: "Subscribe" })
+      .click()
     await page.waitForURL(/^https:\/\/checkout\.stripe\.com\//)
 
     // Fill Stripe's hosted test-mode Checkout form with the documented
@@ -291,7 +306,19 @@ test.describe("billing regression", () => {
     await page.getByRole("button", { name: /cancel/i }).first().click()
     const confirmCancel = page.getByRole("button", { name: /cancel subscription|confirm/i })
     if (await confirmCancel.isVisible().catch(() => false)) {
+      // Wait for evidence the cancellation actually reached Stripe's backend
+      // before navigating away below -- without this, `page.goto` could race
+      // the portal's own async cancel request, occasionally returning to the
+      // app before Stripe has processed anything (the 30s poll further down
+      // would then only be masking that race, not genuinely proving the
+      // flow completed).
+      const cancelResponsePromise = page.waitForResponse(
+        (res) =>
+          res.url().startsWith("https://billing.stripe.com/") &&
+          res.request().method() === "POST",
+      )
       await confirmCancel.click()
+      await cancelResponsePromise
     }
 
     // Return to the app (Stripe's hosted portal links back to the

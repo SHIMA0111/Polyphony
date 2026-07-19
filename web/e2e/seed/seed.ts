@@ -118,6 +118,7 @@ async function ensureHydraDemoFixtureUser(): Promise<void> {
       username: HYDRA_DEMO_FIXTURE_USER.username,
       password: HYDRA_DEMO_FIXTURE_USER.password,
     }),
+    signal: AbortSignal.timeout(SEED_REQUEST_TIMEOUT_MS),
   })
 
   if (registerRes.ok) {
@@ -131,6 +132,7 @@ async function ensureHydraDemoFixtureUser(): Promise<void> {
       email: HYDRA_DEMO_FIXTURE_USER.email,
       password: HYDRA_DEMO_FIXTURE_USER.password,
     }),
+    signal: AbortSignal.timeout(SEED_REQUEST_TIMEOUT_MS),
   })
 
   if (!loginRes.ok) {

@@ -21,7 +21,13 @@ import type { RoomSocketEvent } from "../types/ws-events"
  *   reconciled in place (the server-authoritative copy replaces whatever was
  *   there) rather than appended a second time — this is what keeps the
  *   sender's own optimistic entry from becoming a duplicate once its own WS
- *   echo of the same message arrives.
+ *   echo of the same message arrives. Exception: if the cached entry is
+ *   still `status: "streaming"` and the incoming event is itself a
+ *   non-terminal streaming placeholder (`status: "streaming"`, no finished
+ *   content of its own), a wholesale replace is skipped in favor of
+ *   preserving the cached entry's already-accumulated content and OR-ing
+ *   the two `used_context_summary` flags — see the inline comment at that
+ *   branch for the race this guards against.
  * - `message_created` for an id not yet present is prepended to the newest
  *   page only (see `prependToNewestPage`'s docstring for why: cursor
  *   pagination guarantees a live-created message is always newer than every
@@ -54,9 +60,16 @@ import type { RoomSocketEvent } from "../types/ws-events"
  * correctly, any such event is dropped (logged via a single
  * `console.error`) instead of merged into the cache. The check only runs
  * when `currentUserId` is available and the message actually carries a
- * `sender_id` (a human message; AI messages have a `null` `sender_id` and
- * are never subject to this check) -- no new auth/session endpoint is
- * introduced to make this check possible.
+ * `sender_id`. A human message always does. A *public* AI message has a
+ * `null` `sender_id`, but that's moot for this guard either way since its
+ * `visibility` is never `"private"`. A *private* AI message is the case
+ * this guard actually covers for AI replies: it deliberately records the
+ * owning user's id as its `sender_id` (a documented deviation from the
+ * usual "AI messages have a nil SenderID" convention -- see
+ * `server/internal/usecase/message/usecase.go`'s `SendAIMessage`), which is
+ * exactly what lets this guard scope a private AI reply to its owner the
+ * same way it scopes a private human message -- no new auth/session
+ * endpoint is introduced to make this check possible.
  *
  * @param data - Current cache data, or `undefined` if nothing has loaded yet.
  * @param event - The inbound, already-validated WS event.
@@ -88,7 +101,8 @@ export function mergeMessageEvent(
     return data
   }
 
-  const alreadyPresent = findMessageInPages(data, message.id) !== undefined
+  const existingMessage = findMessageInPages(data, message.id)
+  const alreadyPresent = existingMessage !== undefined
 
   if (event.type === "message_updated") {
     if (!alreadyPresent) return data
@@ -97,6 +111,23 @@ export function mergeMessageEvent(
 
   // event.type === "message_created"
   if (alreadyPresent) {
+    if (existingMessage.status === "streaming" && message.status === "streaming") {
+      // A late-arriving created echo of the same in-flight AI placeholder: a
+      // `token_chunk` can race ahead of this echo and already be
+      // accumulating real content in the cache (see `applyTokenChunk`'s own
+      // first-chunk-creates-placeholder branch) by the time it lands. This
+      // echo's own `message` payload is still the placeholder's original,
+      // empty content -- a wholesale replace with it would wipe the
+      // accumulated progress back to "". Preserve the cached content and OR
+      // the two `used_context_summary` flags instead, mirroring
+      // `applyTokenChunk`'s identical merge for the reverse race.
+      return replaceMessageInAnyPage(data, (m) => m.id === message.id, {
+        ...message,
+        content: existingMessage.content,
+        used_context_summary:
+          existingMessage.used_context_summary || message.used_context_summary,
+      })
+    }
     return replaceMessageInAnyPage(data, (m) => m.id === message.id, message)
   }
   return prependToNewestPage(data, message)

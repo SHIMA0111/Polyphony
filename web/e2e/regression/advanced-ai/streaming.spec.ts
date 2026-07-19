@@ -201,6 +201,20 @@ test("AI reply streams incrementally, disables Regenerate while in flight, and s
   // flight).
   const regenerateButton = page.getByRole("button", { name: /regenerate/i })
   await expect(regenerateButton).toBeEnabled()
+
+  // `FINAL_TEXT` is already visible from the original streamed reply, so
+  // asserting it right after the click would trivially pass even if
+  // Regenerate never actually re-ran. Set up the response listener *before*
+  // the click and await it (same `page.waitForResponse` pattern as
+  // `attachments.spec.ts`'s regenerate coverage) so this proves a genuine
+  // second round trip against `regenerateAIMessage`'s non-streaming
+  // `POST .../regenerate` endpoint completed.
+  const regenerateResponsePromise = page.waitForResponse(
+    (res) =>
+      res.request().method() === "POST" &&
+      new URL(res.url()).pathname.endsWith("/regenerate"),
+  )
   await regenerateButton.click()
+  await regenerateResponsePromise
   await expect(page.getByText(FINAL_TEXT)).toBeVisible({ timeout: 20_000 })
 })

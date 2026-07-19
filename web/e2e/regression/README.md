@@ -42,7 +42,7 @@ Stripe-API-free `200`, the `/billing/plans` page's empty state, and the
      Price ID must already exist).
 2. Run `stripe login` once, then start forwarding webhooks to the E2E API's
    published host port:
-   ```
+   ```sh
    stripe listen --forward-to localhost:8090/webhooks/stripe --print-secret
    ```
    Copy the printed `whsec_...` value into `STRIPE_WEBHOOK_SECRET` above.

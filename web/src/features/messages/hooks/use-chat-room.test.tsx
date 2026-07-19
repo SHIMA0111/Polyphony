@@ -6,6 +6,7 @@ import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import {
   fixtureAiMessage,
+  fixtureAiMessageResponse,
   fixtureAiStreamResponse,
   fixtureAttachmentResponse,
   fixtureHumanMessage,
@@ -244,6 +245,125 @@ describe("useChatRoom handleRetry", () => {
     expect(capturedRetryBody).toEqual({ content: "Hello, AI!", model: "gpt-5" })
     await waitFor(() => {
       expect(result.current.messages.some((m) => m.status === "failed")).toBe(false)
+    })
+  })
+
+  it("retries a failed AI send with stream: false through the non-streaming endpoint, not silently reverting to the streaming default", async () => {
+    // Regression test: an earlier retry-intent map only carried `model`, so
+    // a retry of a failed `stream: false` send (the attachment flow's
+    // opt-out, see `SendAIMessageInput.stream`'s doc comment) silently
+    // reverted to the streaming default instead of replaying the original
+    // request.
+    let nonStreamCallCount = 0
+    let streamCallCount = 0
+
+    server.use(
+      http.get("/api/proxy/rooms/:roomId/messages", () => {
+        return HttpResponse.json<MessagePage>({ messages: [], next_cursor: null })
+      }),
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
+        streamCallCount += 1
+        return HttpResponse.json(
+          { message: "streaming endpoint must not be called for stream: false" },
+          { status: 500 },
+        )
+      }),
+      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+        nonStreamCallCount += 1
+        if (nonStreamCallCount === 1) {
+          return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+        }
+        return HttpResponse.json<AIMessageResponse>(fixtureAiMessageResponse, { status: 201 })
+      }),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    // Attachments opt the send out of streaming -- see `handleSendWithAI`'s
+    // own `stream: attachmentIds.length === 0`.
+    await expect(
+      result.current.handleSendWithAI("Hello, AI!", "gpt-5-mini", ["attachment-ok"]),
+    ).rejects.toThrow()
+
+    await waitFor(() => {
+      expect(result.current.messages.some((m) => m.status === "failed")).toBe(true)
+    })
+    const failed = result.current.messages.find((m) => m.status === "failed")
+    if (!failed) throw new Error("expected a failed message in the cache")
+    expect(streamCallCount).toBe(0)
+
+    await result.current.handleRetry(failed.id, failed.content)
+
+    await waitFor(() => expect(nonStreamCallCount).toBe(2))
+    // The retry must still have gone through the non-streaming endpoint --
+    // dropping `stream: false` from the retry intent would have silently
+    // reverted it to the streaming default instead.
+    expect(streamCallCount).toBe(0)
+  })
+
+  it("retries a failed private AI send with private: true, not silently downgrading to a public send", async () => {
+    // Regression test: an earlier retry-intent map only carried `model`, so
+    // a retry of a failed private send silently downgraded to a public one
+    // -- leaking what the user intended to keep private to the whole room.
+    let aiCallCount = 0
+    let capturedPrivate: boolean | undefined
+
+    server.use(
+      http.get("/api/proxy/rooms/:roomId/messages", () => {
+        return HttpResponse.json<MessagePage>({ messages: [], next_cursor: null })
+      }),
+      // `isPrivate: true` routes through the non-streaming `/messages/ai`
+      // endpoint regardless of the streaming default -- `StreamAI` rejects
+      // `private: true` with HTTP 400 (see `SendAIMessageInput.stream`'s
+      // doc comment).
+      http.post("/api/proxy/rooms/:roomId/messages/ai", async ({ request }) => {
+        aiCallCount += 1
+        if (aiCallCount === 1) {
+          return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+        }
+        const body = (await request.json()) as { content?: string; private?: boolean }
+        capturedPrivate = body.private
+        const visibility = body.private ? "private" : "public"
+        return HttpResponse.json<AIMessageResponse>(
+          {
+            user_message: {
+              ...fixtureAiMessageResponse.user_message,
+              content: body.content ?? fixtureAiMessageResponse.user_message.content,
+              visibility,
+            },
+            ai_message: { ...fixtureAiMessageResponse.ai_message, visibility },
+          },
+          { status: 201 },
+        )
+      }),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await expect(
+      result.current.handleSendWithAI("Secret question", "gpt-5-mini", [], true),
+    ).rejects.toThrow()
+
+    await waitFor(() => {
+      expect(result.current.messages.some((m) => m.status === "failed")).toBe(true)
+    })
+    const failed = result.current.messages.find((m) => m.status === "failed")
+    if (!failed) throw new Error("expected a failed message in the cache")
+    expect(failed.visibility).toBe("private")
+
+    await result.current.handleRetry(failed.id, failed.content)
+
+    await waitFor(() => expect(aiCallCount).toBe(2))
+    expect(capturedPrivate).toBe(true)
+    await waitFor(() => {
+      const retried = result.current.messages.find((m) => m.content === "Secret question")
+      expect(retried?.visibility).toBe("private")
     })
   })
 

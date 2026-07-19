@@ -89,8 +89,17 @@ const CONTEXT_MESSAGE_WINDOW = 50
  * Exists purely so a miscalibrated threshold/filler size fails fast with a
  * descriptive error (see the loop below) instead of silently sending
  * hundreds of messages forever.
+ *
+ * Equal to {@link CONTEXT_MESSAGE_WINDOW} rather than some larger number:
+ * once `messageCount` reaches that window, `windowSize` below is pinned at
+ * `CONTEXT_MESSAGE_WINDOW` and every subsequent estimate call sends the same
+ * `CONTEXT_MESSAGE_WINDOW` identical `FILLER_MESSAGE` copies, so the
+ * estimate itself becomes invariant -- sending further messages past this
+ * point can never change whether the threshold is crossed, only waste sends
+ * until the cap. A previous, larger cap (300) let this loop waste 250 sends
+ * per run before reaching the "never crossed the threshold" error below.
  */
-const MAX_MESSAGES = 300
+const MAX_MESSAGES = CONTEXT_MESSAGE_WINDOW
 
 /** How many messages to send between each self-verification estimate call. */
 const ESTIMATE_CHECK_BATCH = 5
@@ -265,6 +274,17 @@ export async function seedLongHistoryRoom(
   opts: SeedLongHistoryRoomOptions = {},
 ): Promise<SeedLongHistoryRoomResult> {
   const runId = `${Date.now()}_${Math.floor(Math.random() * 100_000)}`
+
+  // `userEmail`/`userPassword` are documented as a pair (see
+  // `SeedLongHistoryRoomOptions.userEmail`'s doc comment) -- only one of the
+  // two being set is a caller mistake (e.g. a typo dropping one field) that
+  // would otherwise silently fall through to registering an unrelated fresh
+  // user instead of failing loudly.
+  if (Boolean(opts.userEmail) !== Boolean(opts.userPassword)) {
+    throw new Error(
+      "seedLongHistoryRoom: opts.userEmail and opts.userPassword must be provided together (or both omitted)",
+    )
+  }
 
   let accessToken: string
   if (opts.userEmail && opts.userPassword) {

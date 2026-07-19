@@ -1,12 +1,12 @@
 import { renderHook, waitFor } from "@testing-library/react"
 import { delay, http, HttpResponse } from "msw"
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import { fixtureAiStreamResponse } from "@/features/messages/api/handlers"
 import { mergeMessageEvent } from "@/features/messages/lib/merge-message-event"
 import type { MessagesInfiniteData } from "@/features/messages/lib/message-cache"
-import { useSendAIMessage } from "./use-send-ai-message"
+import { takeFailedAISendIntent, useSendAIMessage } from "./use-send-ai-message"
 
 const queryKey = ["rooms", "room-1", "messages"] as const
 
@@ -228,27 +228,75 @@ describe("useSendAIMessage", () => {
     expect(data?.pages[0]?.messages[0]?.content).toBe("Hello, AI!")
   })
 
-  it("invokes options.onSendFailed with the failed human echo's id and the requested model", async () => {
+  it("records the failed send's model/stream/private as a retry intent, retrievable via takeFailedAISendIntent", async () => {
     server.use(
       http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
         return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
       }),
     )
 
-    const onSendFailed = vi.fn()
     const queryClient = createTestQueryClient()
-    const { result } = renderHook(() => useSendAIMessage("room-1", { onSendFailed }), {
+    const { result } = renderHook(() => useSendAIMessage("room-1"), {
       wrapper: createQueryClientWrapper(queryClient),
     })
 
     await expect(
-      result.current.mutateAsync({ content: "Hello, AI!", model: "gpt-5" }),
+      result.current.mutateAsync({ content: "Hello, AI!", model: "gpt-5", stream: true }),
     ).rejects.toThrow()
 
     const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
     const failedHumanId = data?.pages[0]?.messages[0]?.id
+    if (!failedHumanId) throw new Error("expected a failed human message id")
 
-    expect(onSendFailed).toHaveBeenCalledTimes(1)
-    expect(onSendFailed).toHaveBeenCalledWith(failedHumanId, "gpt-5")
+    const intent = takeFailedAISendIntent(queryClient, "room-1", failedHumanId)
+    expect(intent).toEqual({ model: "gpt-5", stream: true, private: false })
+  })
+
+  it("records private: true (and stream: false, since StreamAI rejects private sends) in the retry intent for a failed private send", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+        return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+      }),
+    )
+
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useSendAIMessage("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    await expect(
+      result.current.mutateAsync({ content: "Secret question", model: "gpt-5-mini", private: true }),
+    ).rejects.toThrow()
+
+    const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
+    const failedHumanId = data?.pages[0]?.messages[0]?.id
+    if (!failedHumanId) throw new Error("expected a failed human message id")
+
+    const intent = takeFailedAISendIntent(queryClient, "room-1", failedHumanId)
+    expect(intent).toEqual({ model: "gpt-5-mini", stream: false, private: true })
+  })
+
+  it("takeFailedAISendIntent removes the entry once consulted", async () => {
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
+        return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+      }),
+    )
+
+    const queryClient = createTestQueryClient()
+    const { result } = renderHook(() => useSendAIMessage("room-1"), {
+      wrapper: createQueryClientWrapper(queryClient),
+    })
+
+    await expect(
+      result.current.mutateAsync({ content: "Hello, AI!" }),
+    ).rejects.toThrow()
+
+    const data = queryClient.getQueryData<MessagesInfiniteData>(queryKey)
+    const failedHumanId = data?.pages[0]?.messages[0]?.id
+    if (!failedHumanId) throw new Error("expected a failed human message id")
+
+    expect(takeFailedAISendIntent(queryClient, "room-1", failedHumanId)).toBeDefined()
+    expect(takeFailedAISendIntent(queryClient, "room-1", failedHumanId)).toBeUndefined()
   })
 })
