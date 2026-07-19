@@ -337,27 +337,41 @@ func (u *RoomUsecase) runForkJob(ctx context.Context, jobID, sourceRoomID, newRo
 	for attempt := 0; attempt < u.forkTailGraceRetries && copied < maxSeq; attempt++ {
 		time.Sleep(u.forkTailGraceDelay)
 
-		batch, err := u.msgRepo.ListByRoomAfter(ctx, sourceRoomID, 0, maxSeq, int(maxSeq))
-		if err != nil {
-			fail(err)
-			return
-		}
+		// Re-scan the frozen range in forkBatchSize pages, exactly like the
+		// main copy loop, rather than one limit=maxSeq query that would load
+		// the whole room at once. copyForkBatch's idMap dedup makes
+		// re-reading already-copied rows a no-op, so only genuine
+		// stragglers produce inserts.
+		var attemptCopied int64
+		var tailAfter int64
+		for {
+			batch, err := u.msgRepo.ListByRoomAfter(ctx, sourceRoomID, tailAfter, maxSeq, forkBatchSize)
+			if err != nil {
+				fail(err)
+				return
+			}
+			if len(batch) == 0 {
+				break
+			}
 
-		n, err := u.copyForkBatch(ctx, newRoomID, batch, idMap)
-		if err != nil {
-			fail(err)
-			return
+			n, err := u.copyForkBatch(ctx, newRoomID, batch, idMap)
+			if err != nil {
+				fail(err)
+				return
+			}
+			tailAfter = batch[len(batch)-1].Sequence
+			attemptCopied += int64(n)
 		}
-		if n == 0 {
+		if attemptCopied == 0 {
 			continue
 		}
 
-		copied += int64(n)
+		copied += attemptCopied
 		if err := u.forkJobRepo.UpdateProgress(ctx, jobID, copied); err != nil {
 			fail(err)
 			return
 		}
-		logger.Info("room fork tail grace batch copied", "attempt", attempt+1, "batch_size", n, "copied_messages", copied, "total_messages", total)
+		logger.Info("room fork tail grace batch copied", "attempt", attempt+1, "copied_this_attempt", attemptCopied, "copied_messages", copied, "total_messages", total)
 	}
 	if copied < maxSeq {
 		logger.Warn("room fork tail grace period exhausted with a residual gap below the frozen sequence boundary; completing anyway",
