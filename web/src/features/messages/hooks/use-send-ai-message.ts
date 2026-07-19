@@ -33,6 +33,16 @@ export interface FailedAISendIntent {
    * parameter this map previously dropped.
    */
   private: boolean
+  /**
+   * The staged attachment ids the failed send was trying to link to its
+   * (never-created) human message, restored on retry so
+   * `useChatRoom.handleRetry` replays the full attachment-aware workflow
+   * (AI send -> link each attachment -> regenerate) instead of the bare AI
+   * mutation -- without this, a retried attachment send would resend the
+   * text but silently drop the attachments. `undefined`/empty for a failed
+   * AI send that carried no attachments.
+   */
+  attachmentIds?: string[]
 }
 
 /**
@@ -102,6 +112,17 @@ export interface SendAIMessageInput {
    * with HTTP 400 regardless.
    */
   stream?: boolean
+  /**
+   * The staged attachment ids `useChatRoom.handleSendWithAI` is about to
+   * link to this send's human message once it exists (see
+   * `linkAttachments`). Never sent to `sendAIMessage`/`sendAIMessageStream`
+   * themselves -- neither endpoint accepts attachments on the initial send,
+   * they're linked in a separate follow-up call -- carried on this input
+   * only so a failed send's `onError` below can capture them into the
+   * retry-intent map; without this, a retried attachment send would have no
+   * way to know which attachments to re-link.
+   */
+  attachmentIds?: string[]
 }
 
 /** Context carried from `onMutate` through to `onSuccess`/`onError`. */
@@ -167,7 +188,8 @@ interface SendAIMessageContext {
  * finding) was a confusing double-toast for the exact same failure.
  *
  * `onError` also records the failed send's original `model`/`stream`/
- * `private` parameters into the `QueryClient`-backed retry-intent map (see
+ * `private`/`attachmentIds` parameters into the `QueryClient`-backed
+ * retry-intent map (see
  * `failedAISendIntentQueryKey`'s own doc comment), keyed by
  * `context.humanOptimisticId` -- the same id the human echo's `status:
  * "failed"` entry keeps in the cache, and so the same id `MessageBubble`'s
@@ -286,6 +308,7 @@ export function useSendAIMessage(roomId: string) {
         model: vars.model,
         stream: vars.private ? false : (vars.stream ?? true),
         private: vars.private ?? false,
+        attachmentIds: vars.attachmentIds,
       })
       queryClient.setQueryData(intentKey, nextIntents)
 

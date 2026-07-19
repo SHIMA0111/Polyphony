@@ -42,7 +42,8 @@ import type { Room } from "@/features/rooms/types"
  * indication their attachments never actually reached the message. Callers
  * use the returned `failedCount` to decide whether it's worth following up
  * with an action that depends on the attachment actually being linked (see
- * `handleSendWithAI`'s regenerate leg below).
+ * `sendWithAI`'s regenerate leg below, shared by `handleSendWithAI` and
+ * `handleRetry`'s attachment-aware retry branch).
  *
  * @returns The number of `attachmentIds` that failed to link (`0` if all
  *   succeeded). A failure refreshing the attachment list afterward is
@@ -236,10 +237,25 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
     [sendMessageMutation, queryClient, roomId],
   )
 
-  const handleSendWithAI = useCallback(
+  /**
+   * Core AI-send workflow shared by `handleSendWithAI` and `handleRetry`'s
+   * attachment-aware retry branch: sends via `sendAIMessageMutation`, then
+   * -- when `attachmentIds` is non-empty -- links each attachment to the
+   * newly created human message and regenerates the AI reply so it actually
+   * sees them (see `linkAttachments`'s docstring for why a single call
+   * can't do both). Pulled out of `handleSendWithAI` so a retried
+   * attachment send (see `handleRetry` below) replays the exact same
+   * send -> link -> regenerate sequence instead of duplicating it.
+   *
+   * `model` is `string | undefined` (rather than `handleSendWithAI`'s
+   * required `string`) to match both `SendAIMessageInput.model` and
+   * `FailedAISendIntent.model` -- the shape a retried send's original model
+   * comes back as.
+   */
+  const sendWithAI = useCallback(
     async (
       content: string,
-      model: string,
+      model: string | undefined,
       attachmentIds: string[] = [],
       isPrivate = false,
     ) => {
@@ -249,6 +265,7 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
           content,
           model,
           private: isPrivate,
+          attachmentIds,
           // Attachment sends opt out of streaming: the regenerate call
           // below must target a settled AI message, not one whose stream is
           // still in flight -- see `SendAIMessageInput.stream`'s doc
@@ -334,6 +351,12 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
     [sendAIMessageMutation, queryClient, roomId, regenerateMutation],
   )
 
+  const handleSendWithAI = useCallback(
+    (content: string, model: string, attachmentIds: string[] = [], isPrivate = false) =>
+      sendWithAI(content, model, attachmentIds, isPrivate),
+    [sendWithAI],
+  )
+
   const handleRegenerate = useCallback(
     async (aiMessageId: string) => {
       // Resolve the target human message directly from the AI message's
@@ -388,13 +411,15 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
       // `useSendAIMessage`'s own `onError`, see its docstring and
       // `takeFailedAISendIntent`'s) -- consulting it here is what makes a
       // retry of an AI send actually retry as an AI send (with the original
-      // model/stream/private), instead of this method previously always
-      // falling back to the plain-send mutation regardless of how the
-      // message was originally sent -- which also silently downgraded a
-      // failed private send's retry to a public one. A failed *plain* send
-      // has no entry here, so it falls through to the plain-send branch
-      // exactly as before. Stored in the `QueryClient` rather than a
-      // component-local ref so it survives a remount of this hook.
+      // model/stream/private/attachmentIds), instead of this method
+      // previously always falling back to the plain-send mutation regardless
+      // of how the message was originally sent -- which also silently
+      // downgraded a failed private send's retry to a public one and (before
+      // `attachmentIds` was added to the intent) always dropped any staged
+      // attachments on retry. A failed *plain* send has no entry here, so it
+      // falls through to the plain-send branch exactly as before. Stored in
+      // the `QueryClient` rather than a component-local ref so it survives a
+      // remount of this hook.
       const aiIntent = takeFailedAISendIntent(queryClient, roomId, messageId)
 
       // Mirrors `handleRegenerate`'s error handling: both mutations' own
@@ -405,7 +430,14 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
       // re-thrown, unlike `handleSendWithAI`, so `onRetry` callers can fire
       // this without needing their own catch.
       try {
-        if (aiIntent) {
+        if (aiIntent?.attachmentIds && aiIntent.attachmentIds.length > 0) {
+          // The failed send had staged attachments -- replay the full
+          // send -> link -> regenerate workflow via `sendWithAI` (the same
+          // helper `handleSendWithAI` uses) instead of the bare mutation
+          // below, which would resend the text but silently drop the
+          // attachments and skip the Vision-aware regenerate.
+          await sendWithAI(content, aiIntent.model, aiIntent.attachmentIds, aiIntent.private)
+        } else if (aiIntent) {
           await sendAIMessageMutation.mutateAsync({
             content,
             model: aiIntent.model,
@@ -421,7 +453,7 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
         }
       }
     },
-    [queryClient, roomId, sendMessageMutation, sendAIMessageMutation],
+    [queryClient, roomId, sendMessageMutation, sendAIMessageMutation, sendWithAI],
   )
 
   const isRegenerating = regenerateMutation.isPending

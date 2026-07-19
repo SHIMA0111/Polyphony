@@ -513,6 +513,79 @@ describe("useChatRoom handleRetry", () => {
     expect(capturedModel).toBe("gpt-5-mini")
     expect(plainSendCalled).toBe(false)
   })
+
+  // --- attachmentIds retry-intent regression: a retried attachment send
+  // must not silently drop its attachments (see `FailedAISendIntent.attachmentIds`).
+
+  it("retries a failed attachment AI send by linking the original attachment and regenerating, not sending a bare mutation", async () => {
+    let aiCallCount = 0
+    server.use(
+      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+        aiCallCount++
+        if (aiCallCount === 1) {
+          return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+        }
+        return HttpResponse.json<AIMessageResponse>(fixtureAiMessageResponse, {
+          status: 201,
+        })
+      }),
+    )
+
+    let capturedAttachmentId: string | undefined
+    let capturedAttachMessageId: string | undefined
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/attachments",
+        async ({ request, params }) => {
+          const body = (await request.json()) as { attachment_id: string }
+          capturedAttachmentId = body.attachment_id
+          capturedAttachMessageId = String(params.messageId)
+          return HttpResponse.json<AttachmentResponse>({
+            ...fixtureAttachmentResponse,
+            id: body.attachment_id,
+            message_id: String(params.messageId),
+          })
+        },
+      ),
+    )
+
+    let regenerateCalled = false
+    server.use(
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/regenerate",
+        () => {
+          regenerateCalled = true
+          return HttpResponse.json<Message>(fixtureAiMessage)
+        },
+      ),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    // A non-empty `attachmentIds` (3rd arg) forces the non-streaming
+    // `/messages/ai` endpoint -- see `SendAIMessageInput.stream`'s doc
+    // comment -- so the failure/retry below is exercised against that
+    // endpoint, matching the private-retry test above.
+    await expect(
+      result.current.handleSendWithAI("Check this out", "gpt-5-mini", ["attachment-1"]),
+    ).rejects.toThrow()
+
+    await waitFor(() => {
+      expect(result.current.messages.some((m) => m.status === "failed")).toBe(true)
+    })
+    const failed = result.current.messages.find((m) => m.status === "failed")
+    if (!failed) throw new Error("expected a failed message in the cache")
+
+    await result.current.handleRetry(failed.id, failed.content)
+
+    expect(aiCallCount).toBe(2)
+    await waitFor(() => expect(capturedAttachmentId).toBe("attachment-1"))
+    expect(capturedAttachMessageId).toBe(fixtureAiMessageResponse.user_message.id)
+    expect(regenerateCalled).toBe(true)
+  })
 })
 
 /**
