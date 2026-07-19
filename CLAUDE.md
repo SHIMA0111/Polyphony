@@ -21,7 +21,7 @@ See `phases.md` for detailed development phase plans, architecture, and scope.
 3. **Main API Server** — Go + Echo, Clean Architecture, WebSocket via Redis Pub/Sub
 4. **LLM Gateway** — Rust, Hexagonal Architecture (Ports & Adapters), gRPC/REST
 
-**Data layer**: Single PostgreSQL DB (messages with monthly partitioning), Redis (sessions, Pub/Sub, rate limiting), S3 + CloudFront (images, presigned URLs)
+**Data layer**: Single PostgreSQL DB (messages table monthly partitioning is planned for Phase 23, out of this repo's current scope — today it is a plain table), Redis (sessions, Pub/Sub, rate limiting), S3 + CloudFront (images, presigned URLs)
 **Auth**: Initially SimpleJWT (argon2+JWT) → Phase 9: Ory Kratos + Phase 15: Ory Hydra (OAuth2/OIDC)
 **Infra**: Initially Docker Compose → Phase 21: AWS (ECS Fargate, Aurora Serverless v2, ElastiCache), Terraform, GitHub Actions CI/CD
 
@@ -47,7 +47,7 @@ Create `.ai_progress/phaseX.md` when starting each phase, and track tasks with c
 
 ## Development Conventions
 
-- **Language**: All code, comments, and documentation in English
+- **Language**: All code, comments, and documentation in English (`README-ja.md` is the approved Japanese localization and the sole exception)
 - **Go docstrings**: GoDoc format on all exported symbols. Describe what/why/constraints/error behavior
 - **Rust docstrings**: rustdoc (`///`) on all public symbols with `# Arguments`, `# Returns`, `# Errors` sections
 - **Clean Architecture**: Domain layer must NOT import infrastructure packages. All inter-layer communication via interfaces
@@ -56,7 +56,7 @@ Create `.ai_progress/phaseX.md` when starting each phase, and track tasks with c
 - **Testing**: Unit tests with mocked Repository/Gateway, testcontainers integration tests (PostgreSQL), Playwright E2E (web), Flutter integration tests, k6 load tests
 - **DB migrations**: Atlas (declarative schema management + versioned migrations)
 - **Structured logging**: Go uses `slog`, Rust uses `tracing`. JSON format
-- **Tracing**: OpenTelemetry, request ID propagation
+- **Tracing**: Request-ID propagation is implemented (Echo request ID flows into request-scoped `slog`/`tracing` fields on both servers); OpenTelemetry export is planned for Phase 23 (out of this repo's current scope) and not yet wired
 
 ## Key Domain Logic
 
@@ -68,12 +68,15 @@ Create `.ai_progress/phaseX.md` when starting each phase, and track tasks with c
 
 ## Interface Swap Points
 
-| Abstraction | Initial Implementation | Swap Phase |
-|-------------|----------------------|------------|
-| `AuthService` | SimpleJWT (argon2+JWT) | Phase 9 (Kratos) |
-| `MessageHub` | InProcessHub | Phase 10 (Redis) |
-| `LLMClient` | REST client | Phase 8 (gRPC) |
-| Infrastructure | Docker Compose | Phase 21 (AWS) |
+All three application-level swaps below are fully implemented on both sides and selectable at runtime via env var; see `phases.md`'s "Interface Swap Points" table for the full description column.
+
+| Abstraction | Initial Implementation | Swap Phase | Status |
+|-------------|----------------------|------------|--------|
+| `AuthService` | SimpleJWT (argon2+JWT) | Phase 9 (Kratos) | Done — `AUTH_MODE=simple_jwt\|kratos` |
+| `MessageHub` | InProcessHub | Phase 10 (Redis) | Done — `MESSAGE_HUB_DRIVER=inprocess\|redis` |
+| `LLMClient` | REST client | Phase 8 (gRPC) | Done — `LLM_GATEWAY_TRANSPORT=rest\|grpc` |
+| Rate limiting | None | Phase 10 (Redis, swap-adjacent) | Done — Redis Token Bucket, no driver swap |
+| Infrastructure | Docker Compose | Phase 21 (AWS) | Out of this repo's scope |
 
 ## UI Development Workflow
 

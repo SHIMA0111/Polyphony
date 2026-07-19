@@ -129,11 +129,20 @@ test.describe("Room settings: create, rename, delete, and RBAC gating", () => {
     await expect(
       page.getByRole("navigation", { name: "Rooms" }).getByText(renamedName),
     ).toBeVisible()
-    await page
-      .getByRole("navigation", { name: "Rooms" })
-      .getByText(renamedName)
-      .click()
-    await expect(page).toHaveURL(/\/rooms\/[^/]+$/)
+    // Click + URL assertion run inside a `toPass` retry: right after
+    // `page.goto("/rooms")`, Next.js may not have finished hydrating yet, so
+    // a click that lands before the `Link`'s client-side handlers attach is
+    // silently lost (a plain anchor navigation never fires, since the
+    // element is present in the DOM but not yet interactive). Retrying the
+    // click-then-assert pair recovers once hydration completes, matching the
+    // `toPass` deflake pattern already used in `room-fork.spec.ts`.
+    await expect(async () => {
+      await page
+        .getByRole("navigation", { name: "Rooms" })
+        .getByText(renamedName)
+        .click()
+      await expect(page).toHaveURL(/\/rooms\/[^/]+$/, { timeout: 2_000 })
+    }).toPass({ timeout: 15_000 })
     await expect(page.getByRole("heading", { name: renamedName })).toBeVisible()
 
     // Delete: reopen the drawer, invoke "Delete room" behind its
