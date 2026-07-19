@@ -60,6 +60,8 @@ export function useSendMessage(roomId: string) {
         is_deleted: false,
         exclude_from_ai: false,
         used_context_summary: false,
+        // Plain sends never use private AI mode -- always public.
+        visibility: "public",
         created_at: now,
         updated_at: now,
       }

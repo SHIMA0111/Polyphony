@@ -295,6 +295,9 @@ func handleMessageError(c echo.Context, err error) error {
 	if errors.Is(err, domain.ErrArchivedRoom) {
 		return c.JSON(http.StatusConflict, ErrorResponse{Message: "room is archived"})
 	}
+	if errors.Is(err, domain.ErrConflict) {
+		return c.JSON(http.StatusConflict, ErrorResponse{Message: "message is still streaming"})
+	}
 	middleware.GetLogger(c).Error("unhandled message error", "error", err)
 	return c.JSON(http.StatusInternalServerError, ErrorResponse{Message: "internal server error"})
 }

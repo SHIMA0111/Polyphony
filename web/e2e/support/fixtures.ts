@@ -31,3 +31,28 @@ export const DEX_FIXTURE_USER = {
   email: process.env.DEX_STATIC_TEST_EMAIL ?? "oidc-fixture@example.com",
   password: process.env.DEX_STATIC_TEST_PASSWORD ?? "DexFixtureP@ssw0rd!",
 } as const
+
+/**
+ * A dedicated, pre-registered identity for `oauth-hydra.spec.ts`'s Hydra
+ * authorization-code round trip (Step 56). Kept separate from
+ * {@link FIXTURE_USER} (rather than reusing it) so that spec's own setup is
+ * limited to a single UI login instead of also depending on whatever room
+ * state `FIXTURE_USER` accumulates across other specs -- and so a future
+ * regression suite can seed/reset this identity independently without
+ * touching `FIXTURE_USER`'s.
+ *
+ * Seeded (register-then-login-on-conflict, same as `FIXTURE_USER`) by
+ * `e2e/seed/seed.ts`; the Hydra login route itself needs a real Kratos
+ * browser session, so `oauth-hydra.spec.ts` logs in with these credentials
+ * through the rendered UI rather than using a bearer token directly.
+ */
+export const HYDRA_DEMO_FIXTURE_USER = {
+  email: "e2e-hydra-fixture@polyphony.test",
+  username: "e2e_hydra_fixture",
+  // Deliberately dissimilar to the email/username: Kratos's default
+  // password policy rejects a password too similar to an identifier
+  // (`4000031`), which a `e2e-hydra-fixture-password-...` value trips --
+  // the seed's register call then 500s and the whole suite's globalSetup
+  // aborts (caught live by the wave-7 integration run).
+  password: "Polyphony-Demo-P@ss-9271",
+} as const

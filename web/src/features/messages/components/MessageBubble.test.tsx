@@ -40,6 +40,7 @@ const baseMessage: Message = {
   is_deleted: false,
   exclude_from_ai: false,
   used_context_summary: false,
+  visibility: "public",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 }
@@ -92,6 +93,103 @@ function MessageListHarness({ roomId }: { roomId: string }) {
     />
   )
 }
+
+/**
+ * Component coverage for Step 54's three AI-bubble states (thinking / live
+ * streaming / finalized), rendered directly via `<MessageBubble>` rather
+ * than through `MessageListHarness` -- these tests only need to observe
+ * `MessageBubble`'s own conditional rendering for a given `message.status`,
+ * not the query-cache merge behavior `merge-message-event.test.ts` already
+ * covers.
+ */
+describe("MessageBubble streaming states", () => {
+  const baseAiMessage: Message = {
+    id: "ai-1",
+    room_id: "room-1",
+    sender_id: null,
+    content: "",
+    type: "ai",
+    status: "sending",
+    sequence: -1,
+    in_response_to_message_id: "message-1",
+    is_deleted: false,
+    exclude_from_ai: false,
+    used_context_summary: false,
+    visibility: "public",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  }
+
+  it('renders the thinking indicator for status "sending" with no content', async () => {
+    render(<MessageBubble message={baseAiMessage} {...noopProps} />)
+
+    expect(await screen.findByLabelText("AI is thinking")).toBeInTheDocument()
+  })
+
+  it('renders the thinking indicator for status "streaming" before any content has arrived', async () => {
+    render(
+      <MessageBubble
+        message={{ ...baseAiMessage, status: "streaming", content: "" }}
+        {...noopProps}
+      />,
+    )
+
+    expect(await screen.findByLabelText("AI is thinking")).toBeInTheDocument()
+  })
+
+  it('renders growing plain text and a "Streaming…" status once content has arrived while streaming', async () => {
+    render(
+      <MessageBubble
+        message={{ ...baseAiMessage, status: "streaming", content: "Hello there" }}
+        {...noopProps}
+      />,
+    )
+
+    expect(await screen.findByText("Hello there")).toBeInTheDocument()
+    expect(screen.getByText("Streaming…")).toBeInTheDocument()
+    expect(screen.queryByLabelText("AI is thinking")).not.toBeInTheDocument()
+  })
+
+  it("renders the finalized markdown content and a timestamp once completed", async () => {
+    render(
+      <MessageBubble
+        message={{ ...baseAiMessage, status: "completed", content: "Hello there" }}
+        {...noopProps}
+      />,
+    )
+
+    expect(await screen.findByText("Hello there")).toBeInTheDocument()
+    expect(screen.queryByText("Streaming…")).not.toBeInTheDocument()
+    expect(screen.queryByText("Sending…")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("AI is thinking")).not.toBeInTheDocument()
+  })
+
+  // Carryover from wave-7 review: RegenerateAIMessage now rejects a target
+  // AI response that is still mid-stream (see server/internal/usecase/
+  // message/usecase.go), so the client should not let a user trigger that
+  // request in the first place while the message is still streaming.
+  it("disables the Regenerate button while the AI message is still streaming", async () => {
+    render(
+      <MessageBubble
+        message={{ ...baseAiMessage, status: "streaming", content: "Hello there" }}
+        {...noopProps}
+      />,
+    )
+
+    expect(await screen.findByRole("button", { name: /regenerate/i })).toBeDisabled()
+  })
+
+  it("keeps the Regenerate button enabled once the AI message has finalized", async () => {
+    render(
+      <MessageBubble
+        message={{ ...baseAiMessage, status: "completed", content: "Hello there" }}
+        {...noopProps}
+      />,
+    )
+
+    expect(await screen.findByRole("button", { name: /regenerate/i })).toBeEnabled()
+  })
+})
 
 describe("MessageBubble action menu", () => {
   it("toggles exclude_from_ai and updates the visual indicator once the mutation resolves", async () => {

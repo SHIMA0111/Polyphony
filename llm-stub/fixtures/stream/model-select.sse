@@ -1,0 +1,11 @@
+data: {"id":"chatcmpl-e2e-model-select","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-model-select","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"This canned reply "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-model-select","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"confirms the explicitly selected OpenAI model "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-model-select","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{"content":"reached the E2E stub."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e2e-model-select","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]

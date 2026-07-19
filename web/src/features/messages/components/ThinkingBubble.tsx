@@ -6,14 +6,18 @@ import { Box, Flex } from "@chakra-ui/react"
 const DOT_DELAYS_S = [0, 0.16, 0.32]
 
 /**
- * Pre-response placeholder shown in place of an AI message's body while
- * `status === "sending"`: three animated dots inside the same bubble chrome
- * `MessageBubble` already uses for AI messages, so nothing jumps in layout
- * once the real content arrives.
+ * Pre-response placeholder shown in place of an AI message's body while no
+ * content has arrived yet: three animated dots inside the same bubble
+ * chrome `MessageBubble` already uses for AI messages, so nothing jumps in
+ * layout once the real content arrives.
  *
- * This is explicitly the round-trip placeholder this step needs, not a
- * token-by-token streaming renderer — that is a later step and will
- * replace/extend this component.
+ * Covers two of `MessageBubble`'s AI states (Step 54): the pre-round-trip
+ * optimistic placeholder (`status === "sending"`) and a persisted streaming
+ * placeholder that hasn't received its first `token_chunk` yet
+ * (`status === "streaming"` with empty `content`). Once content starts
+ * arriving, `MessageBubble` swaps to its own live-streaming text rendering
+ * instead (a growing `Text` with a pulsing cursor), and finally to
+ * `MarkdownContent` once the message is finalized.
  *
  * The bounce animation is a plain Chakra `css`-prop `@keyframes` (per
  * `.claude/rules/chakra-ui.md`), so no extra animation dependency

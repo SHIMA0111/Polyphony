@@ -557,6 +557,15 @@ func (u *MessageUsecase) RegenerateAIMessage(ctx context.Context, userID, roomID
 	if nextMsg.Type != domainmessage.MessageTypeAI {
 		return nil, false, domain.ErrNotFound
 	}
+	// Reject regeneration while the existing AI response is still
+	// mid-stream (Step 54): its content is a partial, still-growing
+	// accumulation of token_chunk deltas, so overwriting it now would race
+	// the streaming writer and could leave the message in a corrupted,
+	// half-overwritten state. The caller should wait for the stream to
+	// finalize (status moves to completed/failed) before retrying.
+	if nextMsg.Status == domainmessage.MessageStatusStreaming {
+		return nil, false, domain.ErrConflict
+	}
 
 	// Fetch context up to the target message (inclusive), excluding any
 	// other user's private messages from what this regeneration call sees.

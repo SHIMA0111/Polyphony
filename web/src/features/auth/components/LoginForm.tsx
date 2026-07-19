@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import Link from "next/link"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
@@ -39,12 +39,17 @@ export function LoginForm() {
   // validation/credential errors without that being treated as new query
   // data (which `staleTime: 0` would otherwise immediately refetch away).
   const [flow, setFlow] = useState<UiContainer | null>(null)
-
-  useEffect(() => {
-    if (flowQuery.data) {
-      setFlow(flowQuery.data)
-    }
-  }, [flowQuery.data])
+  // Tracks the last query result this component has adopted, so freshly
+  // fetched flow data is picked up during render (React's "adjust state
+  // while rendering" pattern, same as MessageInput's aiError handling)
+  // rather than in a `useEffect`-that-calls-`setState` -- exactly once per
+  // actual data change, without clobbering an error flow a failed
+  // submission swapped in via `setFlow(result.flow)`.
+  const [lastQueryFlow, setLastQueryFlow] = useState<UiContainer | null>(null)
+  if (flowQuery.data && flowQuery.data !== lastQueryFlow) {
+    setLastQueryFlow(flowQuery.data)
+    setFlow(flowQuery.data)
+  }
 
   const {
     register,
@@ -159,6 +164,12 @@ export function LoginForm() {
                 colorPalette="blue"
                 size="lg"
                 w="full"
+                // Disabled until the Kratos login flow has loaded: onSubmit
+                // silently no-ops while `flow` is null, so a click in that
+                // window would otherwise be dropped without any feedback
+                // (caught live by the wave-7 integration run as a stuck
+                // login under load).
+                disabled={!flow}
                 loading={loginMutation.isPending}
                 loadingText="Signing in..."
               >

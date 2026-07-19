@@ -8,7 +8,10 @@ import { useRoom } from "@/features/rooms/hooks/use-room"
 import { useMessages } from "@/features/messages/hooks/use-messages"
 import { useModels } from "@/features/messages/hooks/use-models"
 import { useSendMessage } from "@/features/messages/hooks/use-send-message"
-import { useSendAIMessage } from "@/features/messages/hooks/use-send-ai-message"
+import {
+  takeFailedAISendIntent,
+  useSendAIMessage,
+} from "@/features/messages/hooks/use-send-ai-message"
 import { useRegenerateAIMessage } from "@/features/messages/hooks/use-regenerate-ai-message"
 import { attachToMessage } from "@/features/messages/api/attach-to-message"
 import { listAttachments } from "@/features/messages/api/list-attachments"
@@ -105,74 +108,6 @@ export const INSUFFICIENT_BALANCE_MESSAGE = "Insufficient token balance."
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_MODELS: ModelInfo[] = []
 
-/** The AI-send parameters a retry needs to replay a failed AI send faithfully. */
-interface RetryIntent {
-  model?: string
-}
-
-/**
- * Query key under which the retry-intent map for `roomId` is stored in the
- * `QueryClient`, keyed by each failed AI send's human-echo optimistic id.
- * Kept in the query cache -- rather than a component-local `useRef` -- so a
- * failed AI send's retry intent (which mutation to retry through, and with
- * what model) survives a remount of the chat room screen (e.g. navigating
- * away and back before retrying a failed send): the `QueryClient` instance
- * outlives any single mount of `useChatRoom`, while a ref does not. No
- * component ever subscribes to this key via `useQuery`; it is only ever
- * read/written directly through `queryClient.getQueryData`/`setQueryData`
- * below.
- */
-function retryIntentQueryKey(roomId: string) {
-  return ["retry-intent", roomId] as const
-}
-
-/**
- * Records `intent` for `humanMessageId` in `roomId`'s retry-intent map.
- * Called from `useSendAIMessage`'s `onSendFailed` whenever an AI send
- * fails, so a later `handleRetry` call for this exact message id knows to
- * replay it through the AI mutation instead of falling back to a plain
- * resend.
- */
-function setRetryIntent(
-  queryClient: QueryClient,
-  roomId: string,
-  humanMessageId: string,
-  intent: RetryIntent,
-): void {
-  const key = retryIntentQueryKey(roomId)
-  const current = queryClient.getQueryData<Map<string, RetryIntent>>(key)
-  const next = new Map(current)
-  next.set(humanMessageId, intent)
-  queryClient.setQueryData(key, next)
-}
-
-/**
- * Reads and removes any retry intent recorded for `messageId` in `roomId`'s
- * retry-intent map, returning it (or `undefined` if the failed message
- * originated from a plain, non-AI send). Removed unconditionally as soon as
- * `handleRetry` consults it -- whether the ensuing retry itself succeeds or
- * fails -- since a retry that fails again repopulates the map under the
- * *new* optimistic id `onSendFailed` produces for that new attempt; leaving
- * the old entry behind would only grow the map without it ever being read
- * again (the original failed message id no longer exists in the message
- * cache once `handleRetry` removes it below).
- */
-function takeRetryIntent(
-  queryClient: QueryClient,
-  roomId: string,
-  messageId: string,
-): RetryIntent | undefined {
-  const key = retryIntentQueryKey(roomId)
-  const current = queryClient.getQueryData<Map<string, RetryIntent>>(key)
-  const intent = current?.get(messageId)
-  if (current?.has(messageId)) {
-    const next = new Map(current)
-    next.delete(messageId)
-    queryClient.setQueryData(key, next)
-  }
-  return intent
-}
-
 export interface UseChatRoomResult {
   room: Room | undefined
   messages: Message[]
@@ -195,11 +130,14 @@ export interface UseChatRoomResult {
   /** Sends a message with an AI response, optionally linking
    * `attachmentIds` and then regenerating the AI reply so it sees them (see
    * `linkAttachments`'s docstring and this function's own body for why a
-   * single call can't do both). */
+   * single call can't do both). `isPrivate` (Step 47) sets both the human
+   * message and the AI reply's `visibility` to `"private"` -- see
+   * `SendAIMessageRequest.Private`. */
   handleSendWithAI: (
     content: string,
     model: string,
     attachmentIds?: string[],
+    isPrivate?: boolean,
   ) => Promise<void>
   handleRegenerate: (aiMessageId: string) => Promise<void>
   /** Re-sends a failed human message's original content, replacing its
@@ -236,21 +174,7 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
   const modelsQuery = useModels()
 
   const sendMessageMutation = useSendMessage(roomId)
-
-  // Tracks the send intent of each *currently failed* message that
-  // originated from an AI send, keyed by the failed human echo's id (the
-  // same id `MessageBubble` passes back to `handleRetry` below): populated
-  // by `useSendAIMessage`'s `onSendFailed` callback whenever an AI send
-  // fails, and consulted (then cleared) by `handleRetry` to decide whether
-  // a retry must re-invoke the AI mutation with the original model instead
-  // of silently falling back to a plain resend. Stored in the `QueryClient`
-  // (see `retryIntentQueryKey`'s docstring above), not a `useRef`, so this
-  // intent survives a remount of `useChatRoom` itself.
-  const sendAIMessageMutation = useSendAIMessage(roomId, {
-    onSendFailed: (humanMessageId, model) => {
-      setRetryIntent(queryClient, roomId, humanMessageId, { model })
-    },
-  })
+  const sendAIMessageMutation = useSendAIMessage(roomId)
   const regenerateMutation = useRegenerateAIMessage(roomId)
 
   const room = roomQuery.data
@@ -272,58 +196,96 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
     [sendMessageMutation, queryClient, roomId],
   )
 
-  const handleSendWithAI = useCallback(
-    async (content: string, model: string, attachmentIds: string[] = []) => {
-      setAiError(null)
-      try {
-        const res = await sendAIMessageMutation.mutateAsync({ content, model })
-        // Refresh the top-bar balance promptly after a successful AI send,
-        // rather than waiting for `useBalance`'s background poll — a send
-        // debits the room owner's balance server-side (see
-        // `BillingUsecase.RecordUsage`).
-        await queryClient.invalidateQueries({ queryKey: ["billing", "balance"] })
+  /**
+   * Core of an AI send that may carry staged attachments: invokes
+   * `useSendAIMessage`, and -- when `attachmentIds` is non-empty -- links
+   * each attachment to the resulting human message and then regenerates the
+   * AI reply so it actually sees them (see the inline comments below for why
+   * a single call can't do both). Shared by `handleSendWithAI` (the initial
+   * send) and `handleRetry` (replaying a failed attachment send) so the
+   * link + regenerate sequence and its failure semantics live in exactly one
+   * place.
+   */
+  const sendAIMessageWithAttachments = useCallback(
+    async (
+      content: string,
+      model: string | undefined,
+      attachmentIds: string[],
+      isPrivate: boolean,
+    ) => {
+      const res = await sendAIMessageMutation.mutateAsync({
+        content,
+        model,
+        private: isPrivate,
+        attachmentIds,
+        // Attachment sends opt out of streaming: the regenerate call
+        // below must target a settled AI message, not one whose stream is
+        // still in flight -- see `SendAIMessageInput.stream`'s doc
+        // comment for the finalize-vs-regenerate clobbering race this
+        // avoids.
+        stream: attachmentIds.length === 0,
+      })
+      // Refresh the top-bar balance promptly after a successful AI send,
+      // rather than waiting for `useBalance`'s background poll — a send
+      // debits the room owner's balance server-side (see
+      // `BillingUsecase.RecordUsage`).
+      await queryClient.invalidateQueries({ queryKey: ["billing", "balance"] })
 
-        if (attachmentIds.length > 0) {
-          // `res.ai_message` was generated *before* any attachment could be
-          // linked to `res.user_message` — attachments cannot be linked to a
-          // message that doesn't exist yet. Linking them now and then
-          // regenerating is the only sequence that satisfies both
-          // `RegenerateAIMessage`'s precondition (an AI-typed message must
-          // already exist immediately after the human message it targets,
-          // see `server/internal/usecase/message/usecase.go`) and actually
-          // gets the attachments in front of the model: no existing endpoint
-          // both creates a message and includes attachments linked to that
-          // same message in the same outbound completion request.
-          const { failedCount } = await linkAttachments(
-            queryClient,
-            roomId,
-            res.user_message.id,
-            attachmentIds,
-          )
-          notifyAttachmentLinkFailures(failedCount)
+      if (attachmentIds.length > 0) {
+        // `res.ai_message` was generated *before* any attachment could be
+        // linked to `res.user_message` — attachments cannot be linked to a
+        // message that doesn't exist yet. Linking them now and then
+        // regenerating is the only sequence that satisfies both
+        // `RegenerateAIMessage`'s precondition (an AI-typed message must
+        // already exist immediately after the human message it targets,
+        // see `server/internal/usecase/message/usecase.go`) and actually
+        // gets the attachments in front of the model: no existing endpoint
+        // both creates a message and includes attachments linked to that
+        // same message in the same outbound completion request.
+        const { failedCount } = await linkAttachments(
+          queryClient,
+          roomId,
+          res.user_message.id,
+          attachmentIds,
+        )
+        notifyAttachmentLinkFailures(failedCount)
 
-          // Regenerating against a model that still can't see any of the
-          // attachments the user just staged would only reproduce the exact
-          // same (already-persisted) text-only reply for a second time --
-          // pure wasted cost with no chance of a different, Vision-aware
-          // outcome, so skip it when every link failed. A *partial* failure
-          // still regenerates: the model sees whichever attachments did
-          // link.
-          if (failedCount < attachmentIds.length) {
-            try {
-              await regenerateMutation.mutateAsync({
-                aiMessageId: res.ai_message.id,
-                humanMessageId: res.user_message.id,
-                model,
-              })
-            } catch {
-              // Mirrors `handleRegenerate`'s own swallow below: the mutation's
-              // rejection already reflects as a persisted `status: "failed"`
-              // AI message via `MessageBubble`'s own styling, so there is
-              // nothing further to do here.
-            }
+        // Regenerating against a model that still can't see any of the
+        // attachments the user just staged would only reproduce the exact
+        // same (already-persisted) text-only reply for a second time --
+        // pure wasted cost with no chance of a different, Vision-aware
+        // outcome, so skip it when every link failed. A *partial* failure
+        // still regenerates: the model sees whichever attachments did
+        // link.
+        if (failedCount < attachmentIds.length) {
+          try {
+            await regenerateMutation.mutateAsync({
+              aiMessageId: res.ai_message.id,
+              humanMessageId: res.user_message.id,
+              model,
+            })
+          } catch {
+            // Mirrors `handleRegenerate`'s own swallow below: the mutation's
+            // rejection already reflects as a persisted `status: "failed"`
+            // AI message via `MessageBubble`'s own styling, so there is
+            // nothing further to do here.
           }
         }
+      }
+    },
+    [sendAIMessageMutation, queryClient, roomId, regenerateMutation],
+  )
+
+  const handleSendWithAI = useCallback(
+    async (
+      content: string,
+      model: string,
+      attachmentIds: string[] = [],
+      isPrivate = false,
+    ) => {
+      setAiError(null)
+      try {
+        await sendAIMessageWithAttachments(content, model, attachmentIds, isPrivate)
       } catch (error) {
         if (error instanceof ApiRequestError && error.status === 402) {
           // Distinguish "the AI declined to answer" from "the request was
@@ -339,7 +301,7 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
         throw error
       }
     },
-    [sendAIMessageMutation, queryClient, roomId, regenerateMutation],
+    [sendAIMessageWithAttachments],
   )
 
   const handleRegenerate = useCallback(
@@ -376,11 +338,15 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
   const handleRetry = useCallback(
     async (messageId: string, content: string) => {
       // A failed message that originated from an AI send has an entry here
-      // (see `retryIntentQueryKey`'s docstring above); anything else (a
-      // plain send's failure) has none, and falls back to a plain resend
-      // below — its original intent already *was* plain, so there is
-      // nothing to recover.
-      const intent = takeRetryIntent(queryClient, roomId, messageId)
+      // (set in `useSendAIMessage`'s own `onError`, see
+      // `failedAISendIntentQueryKey`'s docstring); anything else (a plain
+      // send's failure) has none, and falls back to a plain resend below --
+      // its original intent already *was* plain, so there is nothing to
+      // recover. Restoring `stream`/`private` here (not just `model`) is
+      // what keeps a retried private send private and a retried
+      // non-streaming send non-streaming, instead of silently reverting to
+      // this mutation's public/streaming defaults.
+      const intent = takeFailedAISendIntent(queryClient, roomId, messageId)
 
       // Drop the stale failed optimistic entry first so the mutation's own
       // `onMutate` (which appends a *new* optimistic entry with a fresh id)
@@ -392,20 +358,38 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
       )
 
       try {
-        if (intent) {
-          await sendAIMessageMutation.mutateAsync({ content, model: intent.model })
+        if (intent?.attachmentIds && intent.attachmentIds.length > 0) {
+          // The original send had staged attachments -- replaying the bare
+          // AI-send mutation below would silently drop them (the attachments
+          // were never part of that mutation's own request body; they are
+          // linked in afterward, see `sendAIMessageWithAttachments`). Replay
+          // the same link + regenerate workflow `handleSendWithAI` used
+          // instead, so the retry re-links the *original* attachments.
+          await sendAIMessageWithAttachments(
+            content,
+            intent.model,
+            intent.attachmentIds,
+            intent.private,
+          )
+        } else if (intent) {
+          await sendAIMessageMutation.mutateAsync({
+            content,
+            model: intent.model,
+            stream: intent.stream,
+            private: intent.private,
+          })
         } else {
           await sendMessageMutation.mutateAsync(content)
         }
       } catch {
         // The mutation's own `onError` already reflects the failure (a new
         // `status: "failed"` entry, plus a toast) and — for the AI path —
-        // re-populates the retry-intent map for the newly-failed message id
-        // via `onSendFailed`; there is nothing further to do here, mirroring
-        // `handleRegenerate`'s identical catch-and-ignore above.
+        // re-populates the retry-intent map for the newly-failed message id;
+        // there is nothing further to do here, mirroring `handleRegenerate`'s
+        // identical catch-and-ignore above.
       }
     },
-    [queryClient, roomId, sendMessageMutation, sendAIMessageMutation],
+    [queryClient, roomId, sendMessageMutation, sendAIMessageMutation, sendAIMessageWithAttachments],
   )
 
   const isRegenerating = regenerateMutation.isPending

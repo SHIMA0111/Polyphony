@@ -160,10 +160,14 @@ test("attach an image and send it with AI", async ({ page }) => {
   // regenerate both draw from the same canned stub fixture
   // (`llm-stub/fixtures/default.json`), so this only proves *a* reply
   // landed; the sequence-marker assertion below is what proves the
-  // regenerate pass actually ran.
+  // regenerate pass actually ran. Longer timeout (wave-7): the non-private
+  // AI send now goes through the streaming endpoint (Step 54) with the
+  // stub's paced SSE delivery, and this send is additionally followed by a
+  // Vision regenerate -- under full-suite parallelism the combined round
+  // trip can exceed the default 5s expect timeout.
   await expect(
     page.getByText("This is a canned E2E stub response for testing purposes."),
-  ).toBeVisible()
+  ).toBeVisible({ timeout: 15_000 })
 
   // Distinguishability: extract each pass's own `[[seq:N]]` marker (see
   // this spec's own doc comment) from the two captured responses' bodies,

@@ -1,0 +1,17 @@
+{
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Streaming responses render token by token, so the reader watches each word appear as soon as the model produces it."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 24,
+    "total_tokens": 34
+  }
+}

@@ -8,11 +8,19 @@
 export type MessageType = "human" | "ai"
 
 /**
- * `"completed"` and `"failed"` are persisted server statuses (see
- * `server/internal/domain/message`'s `MessageStatus`); `"failed"` covers both
- * a genuinely failed AI response (an LLM-call failure the server itself
- * recorded, retryable via `RegenerateAIMessage`) and, client-side, an
- * optimistic send that never made it to the server at all.
+ * `"completed"`, `"failed"`, and `"streaming"` are persisted server statuses
+ * (see `server/internal/domain/message`'s `MessageStatus`); `"failed"`
+ * covers both a genuinely failed AI response (an LLM-call failure the
+ * server itself recorded, retryable via `RegenerateAIMessage`) and,
+ * client-side, an optimistic send that never made it to the server at all.
+ *
+ * `"streaming"` (Step 51/54) is a **wire value**, not a client-only
+ * invention: `POST /rooms/:roomId/messages/ai/stream`'s `202` response
+ * returns `ai_message.status === "streaming"` for the AI placeholder it
+ * persists synchronously, before any token has actually been generated.
+ * `token_chunk` WS frames (see `../types/ws-events.ts`) append to a message
+ * in this state; the terminating `message_updated` frame always resolves it
+ * to `"completed"` or `"failed"`, exactly as the non-streaming path does.
  *
  * `"sending"` is a **client-only** status: it is synthesized locally by
  * `useSendMessage`/`useSendAIMessage`'s optimistic `onMutate` for a message
@@ -20,7 +28,7 @@ export type MessageType = "human" | "ai"
  * API. The server never emits `"sending"` in any response body — do not
  * treat it as a persisted state.
  */
-export type MessageStatus = "completed" | "failed" | "sending"
+export type MessageStatus = "completed" | "failed" | "sending" | "streaming"
 
 export interface Message {
   id: string
@@ -65,6 +73,22 @@ export interface Message {
    * later refetch of the same message) always report `false`.
    */
   used_context_summary: boolean
+  /**
+   * `"public"` (the default) or `"private"` (Step 41's private AI mode,
+   * `phases.md` Phase 14; see `server/internal/interface/handler/dto.go`'s
+   * `MessageResponse.Visibility`). A `"private"` message (set via
+   * `SendAIMessageRequest.Private`) is only ever delivered -- over both REST
+   * (`GET /rooms/:roomId/messages`) and WebSocket (`message_created`/
+   * `message_updated`) -- to its own sender's client; the server never sends
+   * a private row/event to any other room member in the first place. Because
+   * of that server-side guarantee, this client never needs to compare
+   * `sender_id` to decide whether to show `MessageBubble`'s private badge --
+   * any `visibility === "private"` message present in this client's cache
+   * already belongs to the current user's own private exchange (see
+   * `../lib/merge-message-event.ts`'s defensive sender-mismatch guard for the
+   * one place that check *does* happen, as a belt-and-suspenders measure).
+   */
+  visibility: "public" | "private"
   created_at: string
   updated_at: string
 }

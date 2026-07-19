@@ -32,6 +32,7 @@ export const fixtureHumanMessage: Message = {
   is_deleted: false,
   exclude_from_ai: false,
   used_context_summary: false,
+  visibility: "public",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 }
@@ -48,6 +49,7 @@ export const fixtureAiMessage: Message = {
   is_deleted: false,
   exclude_from_ai: false,
   used_context_summary: false,
+  visibility: "public",
   created_at: "2026-01-01T00:00:01Z",
   updated_at: "2026-01-01T00:00:01Z",
 }
@@ -67,6 +69,25 @@ export const fixtureMessagePage: MessagePage = {
 export const fixtureAiMessageResponse: AIMessageResponse = {
   user_message: fixtureHumanMessage,
   ai_message: fixtureAiMessage,
+}
+
+/**
+ * The AI placeholder as `POST /rooms/:roomId/messages/ai/stream`'s `202`
+ * response actually returns it (see
+ * `server/internal/interface/handler/message_handler.go`'s `StreamAI` doc
+ * comment): `status: "streaming"`, empty `content` — the real text arrives
+ * afterward as `token_chunk` WS frames, never in this response body.
+ */
+export const fixtureAiMessageStreaming: Message = {
+  ...fixtureAiMessage,
+  status: "streaming",
+  content: "",
+}
+
+/** Response body for `POST /rooms/:roomId/messages/ai/stream`. */
+export const fixtureAiStreamResponse: AIMessageResponse = {
+  user_message: fixtureHumanMessage,
+  ai_message: fixtureAiMessageStreaming,
 }
 
 export const fixtureUploadTicket: UploadTicket = {
@@ -147,9 +168,30 @@ export const messagesHandlers = [
     return HttpResponse.json<Message>(fixtureHumanMessage, { status: 201 })
   }),
 
-  http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
-    return HttpResponse.json<AIMessageResponse>(fixtureAiMessageResponse, {
-      status: 201,
+  http.post("/api/proxy/rooms/:roomId/messages/ai", async ({ request }) => {
+    // Mirrors `SendAIMessageRequest.Private` (Step 41): echoes the request's
+    // `private` flag onto both response messages' `visibility`, so
+    // component tests can exercise the private-mode toggle end to end.
+    const body = (await request.json().catch(() => ({}))) as {
+      private?: boolean
+    }
+    const visibility = body.private ? "private" : "public"
+    return HttpResponse.json<AIMessageResponse>(
+      {
+        user_message: { ...fixtureAiMessageResponse.user_message, visibility },
+        ai_message: { ...fixtureAiMessageResponse.ai_message, visibility },
+      },
+      { status: 201 },
+    )
+  }),
+
+  // `useSendAIMessage`'s mutationFn calls this streaming endpoint by
+  // default (Step 54) — see `fixtureAiStreamResponse`'s docstring for why
+  // its `ai_message` is `status: "streaming"` with empty `content` rather
+  // than the finished reply `fixtureAiMessageResponse` carries.
+  http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
+    return HttpResponse.json<AIMessageResponse>(fixtureAiStreamResponse, {
+      status: 202,
     })
   }),
 

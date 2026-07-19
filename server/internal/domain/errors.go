@@ -136,6 +136,15 @@ var (
 	// specifically to fall back to the unary Complete path instead of
 	// failing the send outright.
 	ErrStreamingUnsupported = errors.New("streaming not supported by this llm gateway transport")
+
+	// ErrConflict indicates a request cannot be fulfilled because the
+	// target resource is in a state incompatible with the requested
+	// operation — e.g. MessageUsecase.RegenerateAIMessage rejecting a
+	// regenerate call against an AI message that is still
+	// domainmessage.MessageStatusStreaming (mid-stream, not yet finalized).
+	// Mapped to HTTP 409 by handler.handleMessageError, alongside the more
+	// specific ErrArchivedRoom which predates this generic sentinel.
+	ErrConflict = errors.New("conflict")
 )
 
 // IsLLMGatewayError checks if the error wraps ErrLLMGateway.

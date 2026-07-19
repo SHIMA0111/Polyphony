@@ -33,10 +33,19 @@ interface RouteContext {
  * `GET /models`, reachable without a session) and protected endpoints
  * (which get the Go API's own `401` when the cookie is absent or invalid).
  *
- * The upstream body is streamed back unchanged, but the only response
- * header forwarded is `Content-Type` — `Content-Encoding`/
- * `Transfer-Encoding` are intentionally dropped since the body was already
- * read and decoded here.
+ * The upstream response body is fully buffered here (`Response.arrayBuffer()`)
+ * rather than streamed straight through, so that both the upstream `fetch`
+ * *and* the read of its body can share one `AbortController` timeout (see
+ * below) — a streamed pass-through would leave the body read unbounded once
+ * the initial `fetch` call itself had already resolved. Only `Content-Type`
+ * and `Retry-After` are forwarded from the upstream response —
+ * `Content-Encoding`/`Transfer-Encoding` are intentionally dropped since the
+ * body was already read and decoded here. `Retry-After` is forwarded (Step
+ * 57's `rate-limiting.spec.ts` regression coverage) because
+ * `middleware.RateLimit` (Step 33) sets it on every HTTP 429 response and a
+ * caller cannot compute a sane backoff without it — omitting it silently
+ * turned every rate-limit-aware client into one that can't actually back off
+ * correctly.
  *
  * The upstream `fetch` *and* the subsequent read of its response body are
  * both bounded by a single `AbortController` timeout
@@ -96,6 +105,10 @@ async function proxy(
   const upstreamContentType = upstreamRes.headers.get("Content-Type")
   if (upstreamContentType) {
     responseHeaders["Content-Type"] = upstreamContentType
+  }
+  const upstreamRetryAfter = upstreamRes.headers.get("Retry-After")
+  if (upstreamRetryAfter) {
+    responseHeaders["Retry-After"] = upstreamRetryAfter
   }
 
   return new NextResponse(responseBody, {
