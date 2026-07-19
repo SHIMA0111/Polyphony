@@ -1,40 +1,9 @@
-import { execFileSync } from "node:child_process"
-import path from "node:path"
 import { expect, test } from "@playwright/test"
+import { creditTokenBalance } from "./support/credit-token-balance"
 
 // NOTE: this spec must stay CommonJS-compatible (no `import.meta`):
 // Playwright transpiles e2e specs to CJS because web/package.json has no
-// `"type": "module"`, so the ambient CJS `__dirname` is used directly (see
-// `attachments.spec.ts`, which this spec's balance-crediting helper is
-// copied from).
-
-/** `server/`, so `go run ./cmd/seed-tokens` below resolves relative to the
- * Go module root regardless of the shell's own working directory. */
-const SERVER_DIR = path.resolve(__dirname, "../../server")
-
-/**
- * Credits `email`'s token balance directly against the e2e stack's Postgres
- * database (`db-e2e`, mapped to the host at `localhost:5433` — see
- * `docker-compose.yml`), by shelling out to `server/cmd/seed-tokens` — see
- * `attachments.spec.ts`'s identical helper for the full rationale. A
- * brand-new user's `token_balances` row is lazily created at zero balance,
- * so "Send with AI" always 402s unless topped up first.
- */
-function creditTokenBalance(email: string, amount: number): void {
-  const databaseUrl =
-    process.env.E2E_SEED_DATABASE_URL ??
-    "postgres://polyphony:polyphony@localhost:5433/polyphony?sslmode=disable"
-
-  execFileSync(
-    "go",
-    ["run", "./cmd/seed-tokens", "-email", email, "-amount", String(amount)],
-    {
-      cwd: SERVER_DIR,
-      env: { ...process.env, DATABASE_URL: databaseUrl },
-      stdio: "pipe",
-    },
-  )
-}
+// `"type": "module"` (see `attachments.spec.ts`'s identical note).
 
 /**
  * The full assembled text of `llm-stub/fixtures/stream/streaming-demo.sse`

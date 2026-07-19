@@ -333,7 +333,12 @@ describe("MessageList", () => {
       {
         id: "message-private-ai",
         room_id: "room-1",
-        sender_id: null,
+        // A private AI message deliberately records the owning human's id
+        // as its sender_id -- a documented deviation from the usual "AI
+        // messages have a nil SenderID" convention (see
+        // `merge-message-event.ts`'s sender-mismatch guard docstring) -- so
+        // this must not be `null` here the way a *public* AI message's is.
+        sender_id: "user-1",
         content: "I can't know that.",
         type: "ai",
         status: "completed",

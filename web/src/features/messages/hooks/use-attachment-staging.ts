@@ -271,5 +271,17 @@ export function useAttachmentStaging(roomId: string): UseAttachmentStagingResult
     }
   }, [])
 
+  // `ChatRoom` doesn't remount this hook across room navigation (no
+  // `key={roomId}`), so without this the previous room's staged/in-flight
+  // attachments would otherwise leak into the newly-entered room. A ref
+  // (rather than depending on `attachments`) distinguishes an actual
+  // roomId transition from every other render.
+  const previousRoomIdRef = useRef(roomId)
+  useEffect(() => {
+    if (previousRoomIdRef.current === roomId) return
+    previousRoomIdRef.current = roomId
+    reset()
+  }, [roomId, reset])
+
   return { attachments, addFiles, remove, reset, retry }
 }

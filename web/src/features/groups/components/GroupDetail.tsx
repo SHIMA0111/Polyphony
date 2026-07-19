@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Box, Button, Card, Dialog, Flex, Heading, Portal, Skeleton, Text } from "@chakra-ui/react"
 import { Trash2 } from "lucide-react"
+import { ApiRequestError } from "@/lib/http-client"
 import { useGroup } from "../hooks/use-group"
 import { useDeleteGroup } from "../hooks/use-delete-group"
 import { GroupFormDialog } from "./GroupFormDialog"
@@ -47,13 +48,36 @@ export function GroupDetail({ groupId }: GroupDetailProps) {
   }
 
   if (groupQuery.isError || !groupQuery.data) {
+    const status =
+      groupQuery.error instanceof ApiRequestError ? groupQuery.error.status : undefined
+    // A non-404 failure (network error, 500, ...) is not evidence the group
+    // doesn't exist -- claiming "not found" there would send the viewer
+    // looking for a group that may well still be there once the request
+    // that just failed is retried. The `!groupQuery.isError` arm covers the
+    // defensive `!groupQuery.data` fallback above, which has no error to
+    // read a status from either.
+    const isNotFound = !groupQuery.isError || status === 404
+
     return (
       <Box h="100%" bg="bg">
         <Box as="main" maxW="4xl" mx="auto" px={4} py={8}>
-          <Heading size="md">Group not found</Heading>
+          <Heading size="md">{isNotFound ? "Group not found" : "Unable to load group"}</Heading>
           <Text color="fg.muted" mt={2}>
-            This group may have been deleted, or you don&apos;t have access to it.
+            {isNotFound
+              ? "This group may have been deleted, or you don't have access to it."
+              : "Something went wrong while loading this group."}
           </Text>
+          {!isNotFound && (
+            <Button
+              mt={4}
+              size="sm"
+              variant="outline"
+              loading={groupQuery.isFetching}
+              onClick={() => groupQuery.refetch()}
+            >
+              Retry
+            </Button>
+          )}
         </Box>
       </Box>
     )

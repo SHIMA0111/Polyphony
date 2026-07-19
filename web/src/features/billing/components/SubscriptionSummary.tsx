@@ -104,8 +104,17 @@ export function SubscriptionSummary() {
 
         {subscription.current_period_end && (
           <Text color="fg.muted" fontSize="sm">
-            {subscription.cancel_at_period_end ? "Ends" : "Renews"} on{" "}
-            {formatDate(subscription.current_period_end)}
+            {/* A "canceled" subscription must never read "Renews" even when
+              `cancel_at_period_end` happens to be unset for it — the two
+              flags aren't the same axis: `cancel_at_period_end` predicts a
+              future non-renewal on an otherwise-active subscription,
+              `status === "canceled"` reports one that's already over. */}
+            {subscription.status === "canceled"
+              ? "Ended"
+              : subscription.cancel_at_period_end
+                ? "Ends"
+                : "Renews"}{" "}
+            on {formatDate(subscription.current_period_end)}
           </Text>
         )}
 

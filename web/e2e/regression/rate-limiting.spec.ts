@@ -1,6 +1,7 @@
-import { execFileSync, execSync } from "node:child_process"
+import { execSync } from "node:child_process"
 import path from "node:path"
 import { expect, test, type Page, type Response } from "@playwright/test"
+import { creditTokenBalance } from "../support/credit-token-balance"
 
 // NOTE: this spec must stay CommonJS-compatible (no `import.meta`):
 // Playwright transpiles e2e specs to CJS because `web/package.json` has no
@@ -10,10 +11,6 @@ import { expect, test, type Page, type Response } from "@playwright/test"
  * the shell's own working directory (this file lives two levels deeper than
  * the repo root's `docker-compose.yml`). */
 const REPO_ROOT = path.resolve(__dirname, "../../../")
-
-/** `server/`, so `go run ./cmd/seed-tokens` resolves relative to the Go
- * module root -- see `attachments.spec.ts`'s identical helper. */
-const SERVER_DIR = path.resolve(__dirname, "../../../server")
 
 /** Base URL of the test-profile Go API, reachable from the host -- matches
  * `e2e/seed/seed.ts`'s own default. */
@@ -76,24 +73,6 @@ function recreateApiE2E(rateLimitOverride: string | undefined): void {
   execSync(
     "docker compose -p polyphony-e2e --profile test up -d --no-deps api-e2e",
     { cwd: REPO_ROOT, env, stdio: "pipe" },
-  )
-}
-
-/** See `attachments.spec.ts`'s identical helper for the full rationale --
- * AI sends need a nonzero token balance. */
-function creditTokenBalance(email: string, amount: number): void {
-  const databaseUrl =
-    process.env.E2E_SEED_DATABASE_URL ??
-    "postgres://polyphony:polyphony@localhost:5433/polyphony?sslmode=disable"
-
-  execFileSync(
-    "go",
-    ["run", "./cmd/seed-tokens", "-email", email, "-amount", String(amount)],
-    {
-      cwd: SERVER_DIR,
-      env: { ...process.env, DATABASE_URL: databaseUrl },
-      stdio: "pipe",
-    },
   )
 }
 

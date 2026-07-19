@@ -37,8 +37,15 @@ export function GroupFormDialog({ mode, initialGroup }: GroupFormDialogProps) {
   // the `lastInitialGroup` marker makes this fire exactly once per new
   // `initialGroup` object, and the `useState` initializers above already
   // cover the mount-time case.
+  //
+  // Gated on `!open`: without it, a background refetch of `initialGroup`
+  // while the dialog is open would clobber whatever the user is actively
+  // typing. While closed there's no draft to protect, so this keeps
+  // tracking the latest `initialGroup` the whole time the dialog isn't
+  // open, and `resetState()` (on close) picks up whatever is current at
+  // that moment.
   const [lastInitialGroup, setLastInitialGroup] = useState(initialGroup)
-  if (mode === "edit" && initialGroup && initialGroup !== lastInitialGroup) {
+  if (mode === "edit" && initialGroup && initialGroup !== lastInitialGroup && !open) {
     setLastInitialGroup(initialGroup)
     setName(initialGroup.name)
     setDescription(initialGroup.description)
@@ -131,7 +138,18 @@ export function GroupFormDialog({ mode, initialGroup }: GroupFormDialogProps) {
               </Flex>
             </Dialog.Body>
             <Dialog.Footer>
-              <Button variant="outline" onClick={() => setOpen(false)}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  // A plain button click doesn't go through the dialog's own
+                  // dismiss handling, so it never invokes `onOpenChange` --
+                  // `resetState()` must be called explicitly here too, or a
+                  // canceled draft would still be showing the next time this
+                  // dialog opens.
+                  setOpen(false)
+                  resetState()
+                }}
+              >
                 Cancel
               </Button>
               <Button

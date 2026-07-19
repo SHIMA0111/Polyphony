@@ -63,6 +63,35 @@ describe("http-client", () => {
     expect(result).toBeUndefined()
   })
 
+  it("preserves headers passed as a Headers instance and still defaults Content-Type", async () => {
+    let capturedHeaders: Headers | undefined
+    global.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedHeaders = new Headers(init?.headers)
+      return jsonResponse(200, {})
+    })
+
+    await apiRequest("/rooms", {
+      headers: new Headers({ "X-Custom-Header": "custom-value" }),
+    })
+
+    expect(capturedHeaders?.get("X-Custom-Header")).toBe("custom-value")
+    expect(capturedHeaders?.get("Content-Type")).toBe("application/json")
+  })
+
+  it("does not override an explicitly-set Content-Type on a Headers instance", async () => {
+    let capturedHeaders: Headers | undefined
+    global.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedHeaders = new Headers(init?.headers)
+      return jsonResponse(200, {})
+    })
+
+    await apiRequest("/attachments/upload", {
+      headers: new Headers({ "Content-Type": "image/png" }),
+    })
+
+    expect(capturedHeaders?.get("Content-Type")).toBe("image/png")
+  })
+
   it("apiRequest prefixes paths with /api/proxy", async () => {
     let capturedUrl = ""
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {

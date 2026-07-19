@@ -27,16 +27,19 @@ export function getPaymentHistory(
 }
 
 /**
- * `infiniteQueryOptions()` factory for the `["billing", "payment-history"]`
- * query — cursor-based "load more" pagination via `useInfiniteQuery`,
- * mirroring `get-usage-history.ts`'s `getUsageHistoryQueryOptions`.
+ * `infiniteQueryOptions()` factory for the `["billing", "payment-history",
+ * { limit }]` query — cursor-based "load more" pagination via
+ * `useInfiniteQuery`, mirroring `get-usage-history.ts`'s
+ * `getUsageHistoryQueryOptions` (whose key includes `{ limit }` for the same
+ * reason: two callers passing different `limit`s must not collide on, or
+ * silently reuse, the same cache entry).
  */
 export function getPaymentHistoryQueryOptions(
   limit = PAYMENT_HISTORY_PAGE_LIMIT,
   fetcher: Fetcher = apiRequest,
 ) {
   return infiniteQueryOptions({
-    queryKey: ["billing", "payment-history"] as const,
+    queryKey: ["billing", "payment-history", { limit }] as const,
     queryFn: ({ pageParam }): Promise<PaymentHistoryPage> =>
       getPaymentHistory({ cursor: pageParam, limit }, fetcher),
     initialPageParam: undefined as string | undefined,

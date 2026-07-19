@@ -2,47 +2,17 @@ import { execFileSync } from "node:child_process"
 import path from "node:path"
 import { expect, test } from "@playwright/test"
 import { seedLongHistoryRoom } from "../../support/seed-long-history"
+import { creditTokenBalance } from "../../support/credit-token-balance"
 
 // NOTE: this spec must stay CommonJS-compatible (no `import.meta`):
 // Playwright transpiles e2e specs to CJS because web/package.json has no
 // `"type": "module"`, so the ambient CJS `__dirname` is used directly (see
 // `attachments.spec.ts`'s identical note).
 
-/** `server/`, so `go run ./cmd/seed-tokens` below resolves relative to the
- * Go module root regardless of the shell's own working directory. */
-const SERVER_DIR = path.resolve(__dirname, "../../../../server")
-
 /** Repo root, so the `docker compose exec` below resolves the compose file
  * regardless of the shell's own working directory (see `room-fork.spec.ts`'s
  * identical constant). */
 const REPO_ROOT = path.resolve(__dirname, "../../../../")
-
-/**
- * Credits `email`'s token balance directly against the e2e stack's Postgres
- * database, by shelling out to `server/cmd/seed-tokens` -- see
- * `attachments.spec.ts`'s identical helper for the full rationale. A
- * brand-new user's balance is lazily created at zero, so "Send with AI"
- * 402s unless topped up first. The stub's canned `usage` block
- * (`llm-stub/fixtures/default.json`) is a fixed, tiny 22-token debit
- * regardless of how large the actual prompt was, so this amount is far more
- * than either AI send in this spec will ever need -- generous headroom, not
- * a precise budget.
- */
-function creditTokenBalance(email: string, amount: number): void {
-  const databaseUrl =
-    process.env.E2E_SEED_DATABASE_URL ??
-    "postgres://polyphony:polyphony@localhost:5433/polyphony?sslmode=disable"
-
-  execFileSync(
-    "go",
-    ["run", "./cmd/seed-tokens", "-email", email, "-amount", String(amount)],
-    {
-      cwd: SERVER_DIR,
-      env: { ...process.env, DATABASE_URL: databaseUrl },
-      stdio: "pipe",
-    },
-  )
-}
 
 /**
  * Counts `message_context_summaries` rows for `roomId` directly against the
@@ -133,6 +103,10 @@ test.describe("Summarization regression", () => {
     // navigation can exceed Playwright's default 5s.
     await expect(page).toHaveURL(/\/rooms$/, { timeout: 15_000 })
 
+    // The stub's canned `usage` block (`llm-stub/fixtures/default.json`) is
+    // a fixed, tiny 22-token debit regardless of how large the actual
+    // prompt was, so this amount is far more than either AI send in this
+    // spec will ever need -- generous headroom, not a precise budget.
     creditTokenBalance(email, 1_000_000)
 
     // (a) Seed a long-history room via direct REST, reusing this same

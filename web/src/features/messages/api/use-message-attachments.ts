@@ -38,5 +38,11 @@ export function useMessageAttachments(
       return res.attachments
     },
     enabled,
+    // The returned `view_url`s are presigned and expire after 1h
+    // server-side. Without a refetch, a message left open in a
+    // long-lived tab (or a background/scrolled-past room) would keep
+    // rendering an attachment whose URL has since gone stale. 45min stays
+    // safely under that 1h TTL even accounting for scheduling jitter.
+    refetchInterval: 45 * 60 * 1000,
   })
 }

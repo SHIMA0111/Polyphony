@@ -1,42 +1,10 @@
-import { execFileSync } from "node:child_process"
-import path from "node:path"
 import { expect, test } from "@playwright/test"
 import { FIXTURE_ROOM_NAME, FIXTURE_USER } from "../support/fixtures"
+import { creditTokenBalance } from "../support/credit-token-balance"
 
 // NOTE: this spec must stay CommonJS-compatible (no `import.meta`):
 // Playwright transpiles e2e specs to CJS because `web/package.json` has no
-// `"type": "module"`, so the ambient CJS `__dirname` is used directly (see
-// `attachments.spec.ts`, whose `creditTokenBalance` helper this one mirrors).
-
-/** `server/`, so `go run ./cmd/seed-tokens` below resolves relative to the
- * Go module root regardless of the shell's own working directory. One level
- * deeper than `attachments.spec.ts` since this file lives under
- * `e2e/regression/` rather than directly under `e2e/`. */
-const SERVER_DIR = path.resolve(__dirname, "../../../server")
-
-/**
- * Credits `email`'s token balance directly against the e2e stack's Postgres
- * database (`db-e2e`, mapped to the host at `localhost:5433`), by shelling
- * out to `server/cmd/seed-tokens` -- see `attachments.spec.ts`'s identical
- * helper for the full rationale. The fixture user starts (like any user)
- * with a lazily-created zero balance, so "Send with AI" would otherwise 402
- * before ever reaching the model-selection assertion this spec cares about.
- */
-function creditTokenBalance(email: string, amount: number): void {
-  const databaseUrl =
-    process.env.E2E_SEED_DATABASE_URL ??
-    "postgres://polyphony:polyphony@localhost:5433/polyphony?sslmode=disable"
-
-  execFileSync(
-    "go",
-    ["run", "./cmd/seed-tokens", "-email", email, "-amount", String(amount)],
-    {
-      cwd: SERVER_DIR,
-      env: { ...process.env, DATABASE_URL: databaseUrl },
-      stdio: "pipe",
-    },
-  )
-}
+// `"type": "module"` (see `attachments.spec.ts`'s identical note).
 
 /** Logs into the seeded fixture user via the real login form and waits for
  * the post-login redirect to `/rooms`. */

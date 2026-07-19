@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react"
 import { http, HttpResponse } from "msw"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { server } from "@/test/msw/server"
 import { useAttachmentStaging } from "./use-attachment-staging"
 
@@ -149,6 +149,43 @@ describe("useAttachmentStaging", () => {
     expect(putAttempts).toBe(2)
     expect(result.current.attachments[0].attachmentId).toBe("attachment-1")
     expect(result.current.attachments[0].progress).toBe(100)
+  })
+
+  it("clears staged attachments (and revokes their preview URLs) when roomId changes", () => {
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL")
+    const { result, rerender } = renderHook(
+      ({ roomId }) => useAttachmentStaging(roomId),
+      { initialProps: { roomId: "room-1" } },
+    )
+
+    act(() => {
+      result.current.addFiles([makeFile("photo.png", "image/png", 1024)])
+    })
+    expect(result.current.attachments).toHaveLength(1)
+    const previewUrl = result.current.attachments[0].previewUrl
+
+    rerender({ roomId: "room-2" })
+
+    expect(result.current.attachments).toHaveLength(0)
+    expect(revokeSpy).toHaveBeenCalledWith(previewUrl)
+
+    revokeSpy.mockRestore()
+  })
+
+  it("does not clear staged attachments on a re-render with the same roomId", () => {
+    const { result, rerender } = renderHook(
+      ({ roomId }) => useAttachmentStaging(roomId),
+      { initialProps: { roomId: "room-1" } },
+    )
+
+    act(() => {
+      result.current.addFiles([makeFile("photo.png", "image/png", 1024)])
+    })
+    expect(result.current.attachments).toHaveLength(1)
+
+    rerender({ roomId: "room-1" })
+
+    expect(result.current.attachments).toHaveLength(1)
   })
 
   it("reset() clears every staged entry", () => {

@@ -78,4 +78,40 @@ describe("GroupFormDialog", () => {
       }),
     )
   })
+
+  it("does not clobber an open draft when initialGroup gets a fresh reference (e.g. a background refetch)", async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(<GroupFormDialog mode="edit" initialGroup={fixtureGroup} />)
+
+    await user.click(screen.getByRole("button", { name: "Edit" }))
+    const nameInput = screen.getByDisplayValue("Team A")
+    await user.clear(nameInput)
+    await user.type(nameInput, "My draft name")
+
+    // A new object reference, as a background refetch of the group detail
+    // query would produce -- the dialog is still open, so this must not
+    // overwrite the in-progress draft above.
+    const refetchedGroup: Group = { ...fixtureGroup }
+    rerender(<GroupFormDialog mode="edit" initialGroup={refetchedGroup} />)
+
+    expect(screen.getByDisplayValue("My draft name")).toBeInTheDocument()
+  })
+
+  it("Cancel discards an in-progress draft back to initialGroup's values", async () => {
+    const user = userEvent.setup()
+    render(<GroupFormDialog mode="edit" initialGroup={fixtureGroup} />)
+
+    await user.click(screen.getByRole("button", { name: "Edit" }))
+    const nameInput = screen.getByDisplayValue("Team A")
+    await user.clear(nameInput)
+    await user.type(nameInput, "Unsaved change")
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+
+    // Reopening must show the original values, not the discarded draft --
+    // proves Cancel actually called resetState() rather than only closing.
+    await user.click(screen.getByRole("button", { name: "Edit" }))
+    expect(screen.getByDisplayValue("Team A")).toBeInTheDocument()
+    expect(screen.queryByDisplayValue("Unsaved change")).not.toBeInTheDocument()
+  })
 })

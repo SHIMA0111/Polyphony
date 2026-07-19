@@ -114,9 +114,15 @@ async function clearKratosSession(): Promise<void> {
  * - otherwise resolves the decoded JSON body.
  */
 async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...((options.headers as Record<string, string>) ?? {}),
+  // `new Headers(...)` accepts a plain object, a `Headers` instance, or a
+  // tuple array alike -- spreading `options.headers` as a `Record` (the
+  // previous approach) silently dropped entries from the latter two shapes.
+  // `has`/`set` below are also case-insensitively normalized by `Headers`
+  // itself, so this can't end up sending two different-cased
+  // "Content-Type" headers.
+  const headers = new Headers(options.headers)
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json")
   }
 
   const res = await fetch(url, { ...options, headers })

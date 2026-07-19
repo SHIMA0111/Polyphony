@@ -30,6 +30,14 @@ import { server } from "./msw/server"
  * - Start/reset/stop the MSW Node server for the whole suite so fetches made
  *   by components/hooks under test are intercepted rather than hitting the
  *   network.
+ * - Clear every `vi.fn()`'s recorded calls/results after each test
+ *   (`vi.clearAllMocks()`), so a module-level mock shared across a whole
+ *   test file's `it`s (e.g. `billing/checkout/success/page.test.tsx`'s
+ *   `mockSearchParams`) doesn't leak call history into the next test if that
+ *   file's own `beforeEach` forgets to reset it. This only clears recorded
+ *   calls, not `mockImplementation`/`mockReturnValue` setups, so
+ *   module-level mock wiring (e.g. `vi.mock(...)` factories) still survives
+ *   between tests in the same file.
  */
 
 window.HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -66,5 +74,6 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }))
 afterEach(() => {
   server.resetHandlers()
   cleanup()
+  vi.clearAllMocks()
 })
 afterAll(() => server.close())

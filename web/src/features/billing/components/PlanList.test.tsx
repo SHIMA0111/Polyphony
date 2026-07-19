@@ -80,7 +80,18 @@ describe("PlanList", () => {
     expect(screen.getByRole("button", { name: "Buy tokens" })).toBeInTheDocument()
   })
 
-  it('clicking "Subscribe" calls the checkout-session mutation and navigates to checkout_url', async () => {
+  it('clicking "Subscribe" posts the subscription payload (type + plan_code) and navigates to checkout_url', async () => {
+    let capturedBody: unknown
+    server.use(
+      http.post("/api/proxy/billing/checkout-session", async ({ request }) => {
+        capturedBody = await request.json()
+        return HttpResponse.json(
+          { checkout_url: "https://checkout.stripe.com/c/pay/cs_test_fixture" },
+          { status: 201 },
+        )
+      }),
+    )
+
     const user = userEvent.setup()
     render(<PlanList />)
 
@@ -93,6 +104,38 @@ describe("PlanList", () => {
     await waitFor(() =>
       expect(window.location.href).toBe("https://checkout.stripe.com/c/pay/cs_test_fixture"),
     )
+    // A monthly plan (interval "month") must be keyed by plan_code, not
+    // package_code -- the two CTAs drive distinct request shapes.
+    expect(capturedBody).toEqual({ type: "subscription", plan_code: fixturePlans[0].code })
+  })
+
+  it('clicking "Buy tokens" posts the token_purchase payload (type + package_code) and navigates to checkout_url', async () => {
+    let capturedBody: unknown
+    server.use(
+      http.post("/api/proxy/billing/checkout-session", async ({ request }) => {
+        capturedBody = await request.json()
+        return HttpResponse.json(
+          { checkout_url: "https://checkout.stripe.com/c/pay/cs_test_fixture" },
+          { status: 201 },
+        )
+      }),
+    )
+
+    const user = userEvent.setup()
+    render(<PlanList />)
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Buy tokens" })).toBeInTheDocument(),
+    )
+
+    await user.click(screen.getByRole("button", { name: "Buy tokens" }))
+
+    await waitFor(() =>
+      expect(window.location.href).toBe("https://checkout.stripe.com/c/pay/cs_test_fixture"),
+    )
+    // A one-time token pack (interval "one_time") must be keyed by
+    // package_code, not plan_code.
+    expect(capturedBody).toEqual({ type: "token_purchase", package_code: fixturePlans[1].code })
   })
 
   it("disables every card's CTA while any card's checkout session is pending", async () => {

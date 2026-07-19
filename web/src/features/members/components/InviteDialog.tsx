@@ -198,7 +198,8 @@ export function InviteDialog({ roomId }: InviteDialogProps) {
             <Dialog.Header>
               <Dialog.Title>Invite to this room</Dialog.Title>
               <Dialog.Description color="fg.muted">
-                Invite an exact username, or share a reusable link
+                Invite an exact username, share a reusable link, or invite an
+                entire group at once
               </Dialog.Description>
             </Dialog.Header>
             <Dialog.Body>

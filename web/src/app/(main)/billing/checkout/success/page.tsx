@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, useEffect, useState } from "react"
+import { Suspense, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { useQueryClient } from "@tanstack/react-query"
@@ -80,6 +80,25 @@ function formatDate(iso: string): string {
  * to re-poll an endpoint that's already failing. If polling instead simply
  * hasn't resolved after {@link MAX_POLL_ATTEMPTS}, it shows a non-erroring
  * "still processing" fallback with its own manual "Check again" button.
+ *
+ * The automatic polling loop (the `setInterval` below, distinct from the
+ * "Try again"/"Check again" manual retries) only stops once *both* sources
+ * have errored -- one source erroring (e.g. a transient 500 on
+ * `/billing/subscription`) must not stop the other, still-healthy source
+ * from continuing to poll toward its own resolution. Because
+ * {@link resolved} already takes precedence over the rendered error state
+ * above, a background resolution on the healthy source still swaps the
+ * error screen for a success screen on its next render even while the other
+ * source keeps failing.
+ *
+ * Each round skips firing a new `refetch()` while the previous round's is
+ * still in flight, via a plain ref rather than React state: a fast-settling
+ * refetch can have its "in flight" `true` -> `false` transition collapse
+ * into the *same* React commit as the state update that set it (net
+ * unchanged from before that commit), which would make the transition
+ * invisible to a `useEffect` dependency and silently stall the interval
+ * after a single round. A ref sidesteps that entirely -- it's read/written
+ * synchronously and needs no commit to become visible.
  */
 function CheckoutSuccessContent() {
   const searchParams = useSearchParams()
@@ -90,6 +109,10 @@ function CheckoutSuccessContent() {
   const sessionId = searchParams.get("session_id")?.trim() || null
   const queryClient = useQueryClient()
   const [attempts, setAttempts] = useState(0)
+  // True from the moment a poll round's refetch() calls are issued until
+  // both have settled -- see this function's docstring for why this is a
+  // ref rather than React state.
+  const pollInFlightRef = useRef(false)
 
   // Runs once on mount (React Query's `QueryClient` instance is stable for
   // the lifetime of the app, so `queryClient` never actually changes): a
@@ -139,6 +162,12 @@ function CheckoutSuccessContent() {
   const isError = sessionId !== null && !resolved && (subscriptionIsError || paymentHistoryIsError)
   const error = subscriptionIsError ? subscriptionError : paymentHistoryError
   const exhausted = sessionId !== null && !resolved && !isError && attempts >= MAX_POLL_ATTEMPTS
+  // Distinct from the rendered `isError` above (which flips as soon as
+  // *either* source errors, to surface the retryable error screen quickly):
+  // the automatic polling loop below must keep retrying a still-healthy
+  // source even while the other one is failing, so it only treats polling
+  // as terminally dead once neither source has any hope left.
+  const bothSourcesErrored = subscriptionIsError && paymentHistoryIsError
 
   const retry = () => {
     setAttempts(0)
@@ -147,14 +176,17 @@ function CheckoutSuccessContent() {
   }
 
   useEffect(() => {
-    if (!sessionId || isPending || isError || resolved || exhausted) return
-    const timer = setTimeout(() => {
+    if (!sessionId || isPending || bothSourcesErrored || resolved || exhausted) return
+    const interval = setInterval(() => {
+      if (pollInFlightRef.current) return
+      pollInFlightRef.current = true
       setAttempts((a) => a + 1)
-      refetchSubscription()
-      refetchPaymentHistory()
+      Promise.allSettled([refetchSubscription(), refetchPaymentHistory()]).finally(() => {
+        pollInFlightRef.current = false
+      })
     }, POLL_INTERVAL_MS)
-    return () => clearTimeout(timer)
-  }, [sessionId, isPending, isError, resolved, exhausted, refetchSubscription, refetchPaymentHistory])
+    return () => clearInterval(interval)
+  }, [sessionId, isPending, bothSourcesErrored, resolved, exhausted, refetchSubscription, refetchPaymentHistory])
 
   // No session_id: either a direct/bookmarked visit or a success URL
   // configured without Stripe's placeholder. Either way there's nothing to

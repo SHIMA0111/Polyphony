@@ -55,7 +55,7 @@ describe("SubscriptionSummary", () => {
     expect(screen.getByText("active")).toHaveAttribute("data-status", "active")
   })
 
-  it("renders a canceled subscription's status badge and cancellation notice", async () => {
+  it("renders a canceling (still-active) subscription's status badge and cancellation notice", async () => {
     const canceling: Subscription = {
       status: "active",
       plan_code: "pro-monthly",
@@ -78,6 +78,31 @@ describe("SubscriptionSummary", () => {
     expect(
       screen.getByText(/will not renew/i),
     ).toBeInTheDocument()
+    expect(screen.queryByText(/renews/i)).not.toBeInTheDocument()
+  })
+
+  it("never renders 'Renews' for an already-canceled subscription, even without cancel_at_period_end", async () => {
+    const canceled: Subscription = {
+      status: "canceled",
+      plan_code: "pro-monthly",
+      monthly_token_allocation: 500_000,
+      current_period_start: "2026-01-01T00:00:00Z",
+      current_period_end: "2026-02-01T00:00:00Z",
+      cancel_at_period_end: false,
+      canceled_at: "2026-01-15T00:00:00Z",
+      stripe_checkout_session_id: "cs_test_canceled",
+    }
+    server.use(
+      http.get("/api/proxy/billing/subscription", () => {
+        return HttpResponse.json<Subscription>(canceled)
+      }),
+    )
+
+    render(<SubscriptionSummary />)
+
+    await waitFor(() => expect(screen.getByText("canceled")).toBeInTheDocument())
+    expect(screen.getByText(/ended on/i)).toBeInTheDocument()
+    expect(screen.queryByText(/renews/i)).not.toBeInTheDocument()
   })
 
   it('clicking "Manage subscription" calls the billing-portal mutation and navigates to portal_url', async () => {

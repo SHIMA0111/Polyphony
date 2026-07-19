@@ -1,34 +1,10 @@
-import { execFileSync } from "node:child_process"
-import path from "node:path"
 import { expect, test } from "@playwright/test"
 import { FIXTURE_USER } from "../support/fixtures"
+import { creditTokenBalance } from "../support/credit-token-balance"
 
 // NOTE: this spec must stay CommonJS-compatible (no `import.meta`):
 // Playwright transpiles e2e specs to CJS because `web/package.json` has no
-// `"type": "module"`, so the ambient CJS `__dirname` is used directly (see
-// `attachments.spec.ts`, whose `creditTokenBalance` helper this one mirrors).
-
-/** `server/`, so `go run ./cmd/seed-tokens` below resolves relative to the
- * Go module root regardless of the shell's own working directory. */
-const SERVER_DIR = path.resolve(__dirname, "../../../server")
-
-/** See `ai-send-model-select.spec.ts`'s identical helper for the full
- * rationale -- a fresh AI send needs a nonzero token balance. */
-function creditTokenBalance(email: string, amount: number): void {
-  const databaseUrl =
-    process.env.E2E_SEED_DATABASE_URL ??
-    "postgres://polyphony:polyphony@localhost:5433/polyphony?sslmode=disable"
-
-  execFileSync(
-    "go",
-    ["run", "./cmd/seed-tokens", "-email", email, "-amount", String(amount)],
-    {
-      cwd: SERVER_DIR,
-      env: { ...process.env, DATABASE_URL: databaseUrl },
-      stdio: "pipe",
-    },
-  )
-}
+// `"type": "module"` (see `attachments.spec.ts`'s identical note).
 
 /**
  * End-to-end coverage proving that Step 36's room-level AI context cutoff

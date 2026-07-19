@@ -3,6 +3,18 @@ import { NextResponse, type NextRequest } from "next/server"
 import { KRATOS_SESSION_COOKIE_NAME } from "@/lib/kratos-cookie"
 
 const AUTH_PATHS = ["/login", "/register"]
+const PROTECTED_PATHS = ["/rooms", "/invite"]
+
+/**
+ * Matches `pathname` against `path` on a segment boundary (`pathname ===
+ * path`, or `pathname` starts with `path` followed by `/`) rather than a
+ * bare `startsWith`, which would also match an unrelated route that merely
+ * shares `path`'s prefix (e.g. `/roomsxyz` for `/rooms`, `/invitee` for
+ * `/invite`).
+ */
+function matchesPathBoundary(pathname: string, path: string): boolean {
+  return pathname === path || pathname.startsWith(`${path}/`)
+}
 
 /**
  * Route guard for the `(main)` and `(auth)` App Router groups.
@@ -28,14 +40,10 @@ export function middleware(request: NextRequest) {
   const hasSession = request.cookies.has(KRATOS_SESSION_COOKIE_NAME)
   const { pathname } = request.nextUrl
 
-  const isAuthPath = AUTH_PATHS.some(
-    (path) => pathname === path || pathname.startsWith(`${path}/`),
-  )
+  const isAuthPath = AUTH_PATHS.some((path) => matchesPathBoundary(pathname, path))
+  const isProtectedPath = PROTECTED_PATHS.some((path) => matchesPathBoundary(pathname, path))
 
-  if (
-    !hasSession &&
-    (pathname.startsWith("/rooms") || pathname.startsWith("/invite"))
-  ) {
+  if (!hasSession && isProtectedPath) {
     return NextResponse.redirect(new URL("/login", request.url))
   }
 

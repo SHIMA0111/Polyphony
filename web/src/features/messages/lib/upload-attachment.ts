@@ -47,8 +47,9 @@ export class UploadAttachmentAbortedError extends Error {
  *
  * Resolves once the response status is in the `2xx` range; rejects with a
  * typed {@link UploadAttachmentError} otherwise (including for a network
- * error, where `status` is `0`), or {@link UploadAttachmentAbortedError} for
- * a caller-initiated cancellation.
+ * error or a stalled upload that never completes within the timeout, both of
+ * which report `status: 0`), or {@link UploadAttachmentAbortedError} for a
+ * caller-initiated cancellation.
  */
 export function uploadAttachment(
   file: File,
@@ -65,6 +66,11 @@ export function uploadAttachment(
     const xhr = new XMLHttpRequest()
     xhr.open("PUT", uploadUrl)
     xhr.setRequestHeader("Content-Type", file.type)
+    // Without a timeout, a connection that stalls after the request is sent
+    // (no response, no further progress) leaves the staged entry stuck in
+    // "uploading" forever -- there's no other signal that tells the caller
+    // to give up and let the user retry.
+    xhr.timeout = 60_000
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
@@ -87,6 +93,10 @@ export function uploadAttachment(
 
     xhr.onerror = () => {
       reject(new UploadAttachmentError(0, "Network error during attachment upload"))
+    }
+
+    xhr.ontimeout = () => {
+      reject(new UploadAttachmentError(0, "Attachment upload timed out"))
     }
 
     xhr.onabort = () => {

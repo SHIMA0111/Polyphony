@@ -22,10 +22,11 @@ import { expect, test } from "@playwright/test"
  * exercising the full flow where an operator has manually run
  * `stripe login` + `stripe listen` per this file's own doc comment above.
  *
- * Set `STRIPE_E2E=1` to turn both probe checks into hard assertions instead
- * of a graceful skip -- for an operator who has deliberately configured
- * Stripe test-mode credentials and wants a probe failure caught as a real
- * test failure (e.g. in CI) rather than silently skipped.
+ * Set `STRIPE_E2E=1` to turn every one of the four probe checks below into a
+ * hard assertion instead of a graceful skip -- for an operator who has
+ * deliberately configured Stripe test-mode credentials and wants a probe
+ * failure caught as a real test failure (e.g. in CI) rather than silently
+ * skipped.
  */
 const STRIPE_E2E = process.env.STRIPE_E2E === "1"
 test("plan selection through Stripe test Checkout to a webhook-driven subscription update", async ({
@@ -55,13 +56,10 @@ test("plan selection through Stripe test Checkout to a webhook-driven subscripti
   // so this authenticated call succeeds the same way the app's own
   // `apiRequest` calls do.
   const plansRes = await page.request.get("/api/proxy/billing/plans")
-  if (STRIPE_E2E) {
-    expect(
-      plansRes.ok(),
-      `GET /billing/plans returned HTTP ${plansRes.status()} -- STRIPE_E2E=1 requires Stripe test-mode credentials to be configured`,
-    ).toBeTruthy()
-  } else if (!plansRes.ok()) {
-    test.skip(true, `GET /billing/plans returned HTTP ${plansRes.status()} — skipping (Stripe test-mode plan catalog is not configured on this stack)`)
+  if (!plansRes.ok()) {
+    const reason = `GET /billing/plans returned HTTP ${plansRes.status()} — skipping (Stripe test-mode plan catalog is not configured on this stack)`
+    if (STRIPE_E2E) expect(plansRes.ok(), reason).toBeTruthy()
+    test.skip(true, reason)
     return
   }
 
@@ -70,7 +68,9 @@ test("plan selection through Stripe test Checkout to a webhook-driven subscripti
   }
   const monthlyPlan = plans.find((plan) => plan.interval === "month")
   if (!monthlyPlan) {
-    test.skip(true, "No monthly subscription plan in the catalog — skipping")
+    const reason = "No monthly subscription plan in the catalog — skipping"
+    if (STRIPE_E2E) expect(Boolean(monthlyPlan), reason).toBeTruthy()
+    test.skip(true, reason)
     return
   }
 
@@ -82,21 +82,17 @@ test("plan selection through Stripe test Checkout to a webhook-driven subscripti
   const probeRes = await page.request.post("/api/proxy/billing/checkout-session", {
     data: { type: "subscription", plan_code: monthlyPlan.code },
   })
-  if (STRIPE_E2E) {
-    expect(
-      probeRes.ok(),
-      `POST /billing/checkout-session returned HTTP ${probeRes.status()} -- STRIPE_E2E=1 requires Stripe test-mode credentials to be configured`,
-    ).toBeTruthy()
-  } else if (!probeRes.ok()) {
-    test.skip(
-      true,
-      `POST /billing/checkout-session returned HTTP ${probeRes.status()} — skipping (Stripe test-mode keys are not configured on this stack)`,
-    )
+  if (!probeRes.ok()) {
+    const reason = `POST /billing/checkout-session returned HTTP ${probeRes.status()} — skipping (Stripe test-mode keys are not configured on this stack)`
+    if (STRIPE_E2E) expect(probeRes.ok(), reason).toBeTruthy()
+    test.skip(true, reason)
     return
   }
   const probeBody = (await probeRes.json()) as { checkout_url?: string }
   if (!probeBody.checkout_url) {
-    test.skip(true, "POST /billing/checkout-session did not return a checkout_url — skipping")
+    const reason = "POST /billing/checkout-session did not return a checkout_url — skipping"
+    if (STRIPE_E2E) expect(Boolean(probeBody.checkout_url), reason).toBeTruthy()
+    test.skip(true, reason)
     return
   }
 

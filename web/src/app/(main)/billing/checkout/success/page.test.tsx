@@ -139,4 +139,97 @@ describe("BillingCheckoutSuccessPage", () => {
 
     await waitFor(() => expect(screen.getByText(/Confirming your payment/)).toBeInTheDocument())
   })
+
+  it(
+    "still resolves via the still-healthy payment-history source even while the subscription source is permanently erroring",
+    async () => {
+      // Subscription errors on every attempt -- the automatic polling loop
+      // must not treat that as terminal for the *other* source, which finds
+      // its match a round later (not on the very first fetch, so this
+      // actually exercises polling rather than immediate resolution).
+      server.use(
+        http.get("/api/proxy/billing/subscription", () => {
+          return HttpResponse.json({ message: "internal error" }, { status: 500 })
+        }),
+      )
+
+      let paymentRequestCount = 0
+      server.use(
+        http.get("/api/proxy/billing/payments", () => {
+          paymentRequestCount++
+          if (paymentRequestCount === 1) {
+            return HttpResponse.json({ payments: [], next_cursor: null })
+          }
+          return HttpResponse.json({
+            payments: [
+              {
+                id: "pay-late",
+                kind: "token_purchase",
+                amount_cents: 900,
+                currency: "usd",
+                tokens_credited: 100_000,
+                status: "succeeded",
+                stripe_reference_id: "cs_test_late_match",
+                created_at: "2026-01-10T00:00:00Z",
+              },
+            ],
+            next_cursor: null,
+          })
+        }),
+      )
+      mockSearchParams.mockReturnValue(new URLSearchParams("session_id=cs_test_late_match"))
+
+      render(<BillingCheckoutSuccessPage />)
+
+      // Before the match lands, the erroring subscription source alone must
+      // not be allowed to strand the page -- it should still be polling
+      // (either the spinner or, since isError is OR-based for the rendered
+      // state, the retryable error screen), never something else entirely.
+      await waitFor(() => expect(paymentRequestCount).toBeGreaterThanOrEqual(1))
+
+      await waitFor(
+        () => expect(screen.getByText("Tokens added")).toBeInTheDocument(),
+        { timeout: 8000 },
+      )
+      expect(paymentRequestCount).toBeGreaterThanOrEqual(2)
+    },
+    10_000,
+  )
+
+  it(
+    "polls in more than a single round instead of stalling after the first",
+    async () => {
+      // No fixture ever matches this session_id, so the page stays in its
+      // polling loop for the whole test -- a scheduling bug that only ever
+      // fires a single round would plateau the request count and time out
+      // the second waitFor below instead of satisfying it.
+      mockSearchParams.mockReturnValue(new URLSearchParams("session_id=cs_test_unrelated"))
+
+      let subscriptionRequestCount = 0
+      const onRequestStart = ({ request }: { request: Request }) => {
+        if (new URL(request.url).pathname === "/api/proxy/billing/subscription") {
+          subscriptionRequestCount++
+        }
+      }
+      server.events.on("request:start", onRequestStart)
+
+      try {
+        render(<BillingCheckoutSuccessPage />)
+
+        await waitFor(() =>
+          expect(screen.getByText(/Confirming your payment/)).toBeInTheDocument(),
+        )
+        await waitFor(() => expect(subscriptionRequestCount).toBeGreaterThanOrEqual(1))
+
+        // Initial load (1) + at least two subsequent poll rounds (3 total).
+        await waitFor(
+          () => expect(subscriptionRequestCount).toBeGreaterThanOrEqual(3),
+          { timeout: 8000 },
+        )
+      } finally {
+        server.events.removeListener("request:start", onRequestStart)
+      }
+    },
+    10_000,
+  )
 })
