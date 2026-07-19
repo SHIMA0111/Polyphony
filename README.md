@@ -55,7 +55,7 @@ handful of deliberate deviations from the original per-phase plan).
 
 ## Directory Structure
 
-```
+```text
 server/            — Go API Server (Clean Architecture)
 llm-gateway/       — Rust LLM Gateway (Ports & Adapters)
 web/               — Next.js Web Frontend

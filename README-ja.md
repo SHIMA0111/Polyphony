@@ -54,7 +54,7 @@ E2Eテストで検証済みです（フェーズごとの状態は [`phases.md` 
 
 ## ディレクトリ構成
 
-```
+```text
 server/            — Go APIサーバー（クリーンアーキテクチャ）
 llm-gateway/       — Rust LLM Gateway（Ports & Adapters）
 web/               — Next.js Web Frontend
