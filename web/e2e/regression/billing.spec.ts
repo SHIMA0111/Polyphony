@@ -117,8 +117,12 @@ test.describe("billing regression", () => {
     await expect(page.getByRole("heading", { name: "Billing History" })).toBeVisible()
     await expect(page.getByText("No payments yet")).toBeVisible()
 
-    // Back to the room to drive the AI-send balance guard.
-    await page.getByRole("button", { name: "Rooms" }).click()
+    // Back to the room to drive the AI-send balance guard. Unlike
+    // `/billing/usage` (a standalone full-page layout with its own "Rooms"
+    // back button, which Step 48's own `billing.spec.ts` clicks),
+    // `/billing/history` renders inside the `(main)` layout and has no such
+    // button — navigate directly instead (wave-8 review fix).
+    await page.goto("/rooms")
     await expect(page).toHaveURL(/\/rooms$/)
     await page.getByRole("heading", { name: roomName }).click()
     await expect(page).toHaveURL(/\/rooms\/[^/]+$/)

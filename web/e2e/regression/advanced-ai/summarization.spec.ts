@@ -96,6 +96,16 @@ function countContextSummaryRows(roomId: string): number {
  * rather than the UI's streaming "Send with AI" button -- the API-driven
  * path the step doc calls out as preferred for setup speed, and one that
  * sidesteps any streaming-timing flakiness entirely for this assertion.
+ *
+ * The room page is opened (with its WebSocket connected) *before* that
+ * final send: `used_context_summary` is, by Step 50's shipped design, a
+ * one-time, request-scoped signal describing how a message was *generated*
+ * -- `handler.MessageResponse.UsedContextSummary`'s doc comment pins that
+ * list/historical reads always report `false`, so the badge is only ever
+ * client-visible on the live delivery (the send response or the WS
+ * `message_created`/`message_updated` frame), never on a cold refetch
+ * (wave-8 review fix: this spec originally asserted the badge after a fresh
+ * `page.goto`, which the shipped contract explicitly never renders).
  */
 test.describe("Summarization regression", () => {
   test("a long-history room triggers server-side summarization and renders the badge; a fresh short room does not", async ({
@@ -105,8 +115,11 @@ test.describe("Summarization regression", () => {
     const runId = `${Date.now()}_${Math.floor(Math.random() * 100_000)}`
     const email = `summarization-${runId}@polyphony.test`
     // Underscores only: registerSchema's username regex (`/^[a-zA-Z0-9_]+$/`)
-    // rejects hyphens, matching every other spec's convention.
-    const username = `summarization_${runId}`
+    // rejects hyphens, matching every other spec's convention. Prefix kept
+    // short: registerSchema also caps usernames at 32 characters, and the
+    // runId alone is up to 19 (`summarization_` + runId reached 33 and
+    // failed client-side validation — wave-8 review fix).
+    const username = `summ_${runId}`
     const password = "summarization-test-password-123"
 
     await page.goto("/register")
@@ -133,7 +146,17 @@ test.describe("Summarization regression", () => {
     expect(seeded.messageCount).toBeGreaterThan(0)
     expect(seeded.estimatedTokens).toBeGreaterThan(0)
 
-    // (b) The final AI-triggering send: non-streaming, API-driven, sharing
+    // (b) Open the room page and wait for its WebSocket to connect *before*
+    // the AI-triggering send: `used_context_summary` is a one-time,
+    // request-scoped signal (see this file's header comment), so the badge
+    // only ever renders for a live-delivered message -- never on a cold
+    // refetch of history.
+    await page.goto(`/rooms/${seeded.roomId}`)
+    await expect(
+      page.locator('[aria-label="Connection status: Connected"]'),
+    ).toBeVisible({ timeout: 15_000 })
+
+    // (c) The final AI-triggering send: non-streaming, API-driven, sharing
     // the browser's own Kratos session cookie via the BFF proxy.
     const aiRes = await page.request.post(
       `/api/proxy/rooms/${seeded.roomId}/messages/ai`,
@@ -146,17 +169,18 @@ test.describe("Summarization regression", () => {
     expect(aiBody.ai_message.status).toBe("completed")
     expect(aiBody.ai_message.used_context_summary).toBe(true)
 
-    // (c) Stronger-than-badge evidence: a summary was actually cached
+    // (d) Stronger-than-badge evidence: a summary was actually cached
     // server-side for this room (Step 50's `message_context_summaries`).
     expect(countContextSummaryRows(seeded.roomId)).toBeGreaterThanOrEqual(1)
 
-    // (d) The rendered UI shows the "Summarized history" badge for that
-    // exchange once the room is opened fresh (a real GET /messages fetch,
-    // not just the original response).
-    await page.goto(`/rooms/${seeded.roomId}`)
-    await expect(page.getByText("Summarized history")).toBeVisible()
+    // (e) The live WS delivery (`message_created` carrying
+    // `used_context_summary: true`) renders the "Summarized history" badge
+    // on the AI exchange in the already-open room page.
+    await expect(page.getByText("Summarized history")).toBeVisible({
+      timeout: 15_000,
+    })
 
-    // (e) A fresh, short room (a couple of messages, no seeding) does NOT
+    // (f) A fresh, short room (a couple of messages, no seeding) does NOT
     // show the badge -- proving it is conditional, not always-on for every
     // AI reply.
     const shortRoomRes = await page.request.post("/api/proxy/rooms", {
