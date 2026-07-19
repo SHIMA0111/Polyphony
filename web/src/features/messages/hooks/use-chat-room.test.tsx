@@ -6,11 +6,16 @@ import { server } from "@/test/msw/server"
 import { createQueryClientWrapper, createTestQueryClient } from "@/test/render"
 import {
   fixtureAiMessage,
-  fixtureAiMessageResponse,
+  fixtureAiStreamResponse,
   fixtureAttachmentResponse,
   fixtureHumanMessage,
 } from "@/features/messages/api/handlers"
-import type { AttachmentResponse, Message, MessagePage } from "@/features/messages/types"
+import type {
+  AIMessageResponse,
+  AttachmentResponse,
+  Message,
+  MessagePage,
+} from "@/features/messages/types"
 import { useChatRoom } from "./use-chat-room"
 
 /**
@@ -203,13 +208,16 @@ describe("useChatRoom handleRetry", () => {
       http.get("/api/proxy/rooms/:roomId/messages", () => {
         return HttpResponse.json<MessagePage>({ messages: [], next_cursor: null })
       }),
-      http.post("/api/proxy/rooms/:roomId/messages/ai", async ({ request }) => {
+      // `handleSendWithAI` with no attachments routes through the
+      // streaming endpoint by default (Step 54) -- see
+      // `SendAIMessageInput.stream`'s doc comment.
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", async ({ request }) => {
         aiCallCount += 1
         if (aiCallCount === 1) {
           return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
         }
         capturedRetryBody = (await request.json()) as { content?: string; model?: string }
-        return HttpResponse.json(fixtureAiMessageResponse, { status: 201 })
+        return HttpResponse.json<AIMessageResponse>(fixtureAiStreamResponse, { status: 202 })
       }),
     )
 
@@ -247,13 +255,16 @@ describe("useChatRoom handleRetry", () => {
       http.get("/api/proxy/rooms/:roomId/messages", () => {
         return HttpResponse.json<MessagePage>({ messages: [], next_cursor: null })
       }),
-      http.post("/api/proxy/rooms/:roomId/messages/ai", async ({ request }) => {
+      // `handleSendWithAI` with no attachments routes through the
+      // streaming endpoint by default (Step 54) -- see
+      // `SendAIMessageInput.stream`'s doc comment.
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", async ({ request }) => {
         aiCallCount += 1
         if (aiCallCount === 1) {
           return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
         }
         capturedRetryBody = (await request.json()) as { content?: string; model?: string }
-        return HttpResponse.json(fixtureAiMessageResponse, { status: 201 })
+        return HttpResponse.json<AIMessageResponse>(fixtureAiStreamResponse, { status: 202 })
       }),
     )
 

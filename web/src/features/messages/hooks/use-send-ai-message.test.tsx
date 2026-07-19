@@ -230,7 +230,7 @@ describe("useSendAIMessage", () => {
 
   it("invokes options.onSendFailed with the failed human echo's id and the requested model", async () => {
     server.use(
-      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+      http.post("/api/proxy/rooms/:roomId/messages/ai/stream", () => {
         return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
       }),
     )
