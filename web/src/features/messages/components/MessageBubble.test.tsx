@@ -163,6 +163,32 @@ describe("MessageBubble streaming states", () => {
     expect(screen.queryByText("Sending…")).not.toBeInTheDocument()
     expect(screen.queryByLabelText("AI is thinking")).not.toBeInTheDocument()
   })
+
+  // Carryover from wave-7 review: RegenerateAIMessage now rejects a target
+  // AI response that is still mid-stream (see server/internal/usecase/
+  // message/usecase.go), so the client should not let a user trigger that
+  // request in the first place while the message is still streaming.
+  it("disables the Regenerate button while the AI message is still streaming", async () => {
+    render(
+      <MessageBubble
+        message={{ ...baseAiMessage, status: "streaming", content: "Hello there" }}
+        {...noopProps}
+      />,
+    )
+
+    expect(await screen.findByRole("button", { name: /regenerate/i })).toBeDisabled()
+  })
+
+  it("keeps the Regenerate button enabled once the AI message has finalized", async () => {
+    render(
+      <MessageBubble
+        message={{ ...baseAiMessage, status: "completed", content: "Hello there" }}
+        {...noopProps}
+      />,
+    )
+
+    expect(await screen.findByRole("button", { name: /regenerate/i })).toBeEnabled()
+  })
 })
 
 describe("MessageBubble action menu", () => {

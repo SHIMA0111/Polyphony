@@ -293,6 +293,34 @@ func TestRegenerateAIMessageOverwritesExisting(t *testing.T) {
 	}
 }
 
+// TestRegenerateAIMessageRejectsStreamingTarget asserts that
+// RegenerateAIMessage rejects a request whose target AI response is still
+// domainmessage.MessageStatusStreaming with domain.ErrConflict, rather than
+// racing the in-flight streaming writer by overwriting its content.
+func TestRegenerateAIMessageRejectsStreamingTarget(t *testing.T) {
+	msgRepo := &mocks.MessageRepo{}
+	roomRepo := &mocks.RoomRepo{}
+	roomRepo.SeedMember("room-1", "user-1", "member")
+	roomRepo.SeedRoom("room-1", nil)
+
+	uc := NewMessageUsecase(msgRepo, roomRepo, &mocks.LLMGateway{}, event.NewInProcessHub(), &mocks.BillingGuard{}, &mocks.AttachmentRepo{}, &mocks.ObjectStorage{}, &mocks.ContextSummaryRepo{}, "gpt-5-mini")
+	ctx := context.Background()
+
+	result, err := uc.SendAIMessage(ctx, "user-1", "room-1", "What is Go?", "test-model", false)
+	if err != nil {
+		t.Fatalf("SendAIMessage failed: %v", err)
+	}
+
+	// Force the existing AI response into the still-streaming state, as if
+	// a token_chunk stream were still in flight for it.
+	msgRepo.Messages[result.AIMessage.ID].Status = domainmessage.MessageStatusStreaming
+
+	_, _, err = uc.RegenerateAIMessage(ctx, "user-1", "room-1", result.HumanMessage.ID, "test-model")
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("expected domain.ErrConflict, got %v", err)
+	}
+}
+
 // TestRegenerateAIMessageHonorsRoomConfiguredModel asserts that, when the
 // request omits a model, RegenerateAIMessage resolves to the room's
 // configured Room.AIModel rather than the deployment-wide default.
