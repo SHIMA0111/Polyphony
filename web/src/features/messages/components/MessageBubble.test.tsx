@@ -179,6 +179,19 @@ describe("MessageBubble streaming states", () => {
     expect(await screen.findByRole("button", { name: /regenerate/i })).toBeDisabled()
   })
 
+  // Step 60 hardening: `useSendAIMessage` (Step 29) optimistically appends
+  // the AI placeholder itself with `status: "sending"` before the request
+  // has round-tripped -- that window is distinct from `"streaming"` (no
+  // `token_chunk` has necessarily arrived yet, or ever will if the model
+  // doesn't stream), but a Regenerate click at that point targets a message
+  // that isn't finalized any more than a streaming one is, so it must be
+  // disabled too.
+  it('disables the Regenerate button while the AI message is still the optimistic "sending" placeholder', async () => {
+    render(<MessageBubble message={baseAiMessage} {...noopProps} />)
+
+    expect(await screen.findByRole("button", { name: /regenerate/i })).toBeDisabled()
+  })
+
   it("keeps the Regenerate button enabled once the AI message has finalized", async () => {
     render(
       <MessageBubble
