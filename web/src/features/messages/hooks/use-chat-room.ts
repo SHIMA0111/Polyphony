@@ -196,6 +196,86 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
     [sendMessageMutation, queryClient, roomId],
   )
 
+  /**
+   * Core of an AI send that may carry staged attachments: invokes
+   * `useSendAIMessage`, and -- when `attachmentIds` is non-empty -- links
+   * each attachment to the resulting human message and then regenerates the
+   * AI reply so it actually sees them (see the inline comments below for why
+   * a single call can't do both). Shared by `handleSendWithAI` (the initial
+   * send) and `handleRetry` (replaying a failed attachment send) so the
+   * link + regenerate sequence and its failure semantics live in exactly one
+   * place.
+   */
+  const sendAIMessageWithAttachments = useCallback(
+    async (
+      content: string,
+      model: string | undefined,
+      attachmentIds: string[],
+      isPrivate: boolean,
+    ) => {
+      const res = await sendAIMessageMutation.mutateAsync({
+        content,
+        model,
+        private: isPrivate,
+        attachmentIds,
+        // Attachment sends opt out of streaming: the regenerate call
+        // below must target a settled AI message, not one whose stream is
+        // still in flight -- see `SendAIMessageInput.stream`'s doc
+        // comment for the finalize-vs-regenerate clobbering race this
+        // avoids.
+        stream: attachmentIds.length === 0,
+      })
+      // Refresh the top-bar balance promptly after a successful AI send,
+      // rather than waiting for `useBalance`'s background poll — a send
+      // debits the room owner's balance server-side (see
+      // `BillingUsecase.RecordUsage`).
+      await queryClient.invalidateQueries({ queryKey: ["billing", "balance"] })
+
+      if (attachmentIds.length > 0) {
+        // `res.ai_message` was generated *before* any attachment could be
+        // linked to `res.user_message` — attachments cannot be linked to a
+        // message that doesn't exist yet. Linking them now and then
+        // regenerating is the only sequence that satisfies both
+        // `RegenerateAIMessage`'s precondition (an AI-typed message must
+        // already exist immediately after the human message it targets,
+        // see `server/internal/usecase/message/usecase.go`) and actually
+        // gets the attachments in front of the model: no existing endpoint
+        // both creates a message and includes attachments linked to that
+        // same message in the same outbound completion request.
+        const { failedCount } = await linkAttachments(
+          queryClient,
+          roomId,
+          res.user_message.id,
+          attachmentIds,
+        )
+        notifyAttachmentLinkFailures(failedCount)
+
+        // Regenerating against a model that still can't see any of the
+        // attachments the user just staged would only reproduce the exact
+        // same (already-persisted) text-only reply for a second time --
+        // pure wasted cost with no chance of a different, Vision-aware
+        // outcome, so skip it when every link failed. A *partial* failure
+        // still regenerates: the model sees whichever attachments did
+        // link.
+        if (failedCount < attachmentIds.length) {
+          try {
+            await regenerateMutation.mutateAsync({
+              aiMessageId: res.ai_message.id,
+              humanMessageId: res.user_message.id,
+              model,
+            })
+          } catch {
+            // Mirrors `handleRegenerate`'s own swallow below: the mutation's
+            // rejection already reflects as a persisted `status: "failed"`
+            // AI message via `MessageBubble`'s own styling, so there is
+            // nothing further to do here.
+          }
+        }
+      }
+    },
+    [sendAIMessageMutation, queryClient, roomId, regenerateMutation],
+  )
+
   const handleSendWithAI = useCallback(
     async (
       content: string,
@@ -205,64 +285,7 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
     ) => {
       setAiError(null)
       try {
-        const res = await sendAIMessageMutation.mutateAsync({
-          content,
-          model,
-          private: isPrivate,
-          // Attachment sends opt out of streaming: the regenerate call
-          // below must target a settled AI message, not one whose stream is
-          // still in flight -- see `SendAIMessageInput.stream`'s doc
-          // comment for the finalize-vs-regenerate clobbering race this
-          // avoids.
-          stream: attachmentIds.length === 0,
-        })
-        // Refresh the top-bar balance promptly after a successful AI send,
-        // rather than waiting for `useBalance`'s background poll — a send
-        // debits the room owner's balance server-side (see
-        // `BillingUsecase.RecordUsage`).
-        await queryClient.invalidateQueries({ queryKey: ["billing", "balance"] })
-
-        if (attachmentIds.length > 0) {
-          // `res.ai_message` was generated *before* any attachment could be
-          // linked to `res.user_message` — attachments cannot be linked to a
-          // message that doesn't exist yet. Linking them now and then
-          // regenerating is the only sequence that satisfies both
-          // `RegenerateAIMessage`'s precondition (an AI-typed message must
-          // already exist immediately after the human message it targets,
-          // see `server/internal/usecase/message/usecase.go`) and actually
-          // gets the attachments in front of the model: no existing endpoint
-          // both creates a message and includes attachments linked to that
-          // same message in the same outbound completion request.
-          const { failedCount } = await linkAttachments(
-            queryClient,
-            roomId,
-            res.user_message.id,
-            attachmentIds,
-          )
-          notifyAttachmentLinkFailures(failedCount)
-
-          // Regenerating against a model that still can't see any of the
-          // attachments the user just staged would only reproduce the exact
-          // same (already-persisted) text-only reply for a second time --
-          // pure wasted cost with no chance of a different, Vision-aware
-          // outcome, so skip it when every link failed. A *partial* failure
-          // still regenerates: the model sees whichever attachments did
-          // link.
-          if (failedCount < attachmentIds.length) {
-            try {
-              await regenerateMutation.mutateAsync({
-                aiMessageId: res.ai_message.id,
-                humanMessageId: res.user_message.id,
-                model,
-              })
-            } catch {
-              // Mirrors `handleRegenerate`'s own swallow below: the mutation's
-              // rejection already reflects as a persisted `status: "failed"`
-              // AI message via `MessageBubble`'s own styling, so there is
-              // nothing further to do here.
-            }
-          }
-        }
+        await sendAIMessageWithAttachments(content, model, attachmentIds, isPrivate)
       } catch (error) {
         if (error instanceof ApiRequestError && error.status === 402) {
           // Distinguish "the AI declined to answer" from "the request was
@@ -278,7 +301,7 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
         throw error
       }
     },
-    [sendAIMessageMutation, queryClient, roomId, regenerateMutation],
+    [sendAIMessageWithAttachments],
   )
 
   const handleRegenerate = useCallback(
@@ -335,7 +358,20 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
       )
 
       try {
-        if (intent) {
+        if (intent?.attachmentIds && intent.attachmentIds.length > 0) {
+          // The original send had staged attachments -- replaying the bare
+          // AI-send mutation below would silently drop them (the attachments
+          // were never part of that mutation's own request body; they are
+          // linked in afterward, see `sendAIMessageWithAttachments`). Replay
+          // the same link + regenerate workflow `handleSendWithAI` used
+          // instead, so the retry re-links the *original* attachments.
+          await sendAIMessageWithAttachments(
+            content,
+            intent.model,
+            intent.attachmentIds,
+            intent.private,
+          )
+        } else if (intent) {
           await sendAIMessageMutation.mutateAsync({
             content,
             model: intent.model,
@@ -353,7 +389,7 @@ export function useChatRoom(roomId: string): UseChatRoomResult {
         // identical catch-and-ignore above.
       }
     },
-    [queryClient, roomId, sendMessageMutation, sendAIMessageMutation],
+    [queryClient, roomId, sendMessageMutation, sendAIMessageMutation, sendAIMessageWithAttachments],
   )
 
   const isRegenerating = regenerateMutation.isPending

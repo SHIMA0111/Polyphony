@@ -367,6 +367,71 @@ describe("useChatRoom handleRetry", () => {
     })
   })
 
+  it("retries a failed attachment AI send by re-linking the original attachment and regenerating, instead of dropping it", async () => {
+    // Regression test for the bug this item fixes: the retry-intent map used
+    // to omit staged attachment ids entirely, so `handleRetry` always
+    // replayed the bare AI-send mutation -- silently downgrading a retried
+    // attachment send into a text-only one.
+    let aiCallCount = 0
+    let capturedAttachBody: { attachment_id?: string } | undefined
+    let regenerateCallCount = 0
+
+    server.use(
+      http.get("/api/proxy/rooms/:roomId/messages", () => {
+        return HttpResponse.json<MessagePage>({ messages: [], next_cursor: null })
+      }),
+      // Attachment sends opt out of streaming (`attachmentIds.length === 0`
+      // is false here) -- see `SendAIMessageInput.stream`'s doc comment.
+      http.post("/api/proxy/rooms/:roomId/messages/ai", () => {
+        aiCallCount += 1
+        if (aiCallCount === 1) {
+          return HttpResponse.json({ message: "Internal Server Error" }, { status: 500 })
+        }
+        return HttpResponse.json<AIMessageResponse>(fixtureAiMessageResponse, { status: 201 })
+      }),
+      http.post(
+        "/api/proxy/rooms/:roomId/messages/:messageId/attachments",
+        async ({ request, params }) => {
+          capturedAttachBody = (await request.json()) as { attachment_id?: string }
+          return HttpResponse.json<AttachmentResponse>({
+            ...fixtureAttachmentResponse,
+            message_id: String(params.messageId),
+          })
+        },
+      ),
+      http.post("/api/proxy/rooms/:roomId/messages/:messageId/regenerate", () => {
+        regenerateCallCount += 1
+        return HttpResponse.json<Message>(fixtureAiMessage)
+      }),
+    )
+
+    const { result } = renderHook(() => useChatRoom("room-1"), {
+      wrapper: createQueryClientWrapper(),
+    })
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+    await expect(
+      result.current.handleSendWithAI("Look at this", "gpt-5-mini", ["attachment-original"]),
+    ).rejects.toThrow()
+    await waitFor(() => {
+      expect(result.current.messages.some((m) => m.status === "failed")).toBe(true)
+    })
+    const failed = result.current.messages.find((m) => m.status === "failed")
+    if (!failed) throw new Error("expected a failed message in the cache")
+    expect(aiCallCount).toBe(1)
+
+    await result.current.handleRetry(failed.id, "Look at this")
+
+    await waitFor(() => expect(aiCallCount).toBe(2))
+    // The retry must have re-linked the *original* staged attachment, not
+    // dropped it.
+    await waitFor(() => expect(capturedAttachBody).toEqual({ attachment_id: "attachment-original" }))
+    await waitFor(() => expect(regenerateCallCount).toBe(1))
+    await waitFor(() => {
+      expect(result.current.messages.some((m) => m.status === "failed")).toBe(false)
+    })
+  })
+
   it("retains a failed AI send's retry intent across a remount of useChatRoom, since it lives in the QueryClient rather than a component ref", async () => {
     let aiCallCount = 0
     let capturedRetryBody: { content?: string; model?: string } | undefined
